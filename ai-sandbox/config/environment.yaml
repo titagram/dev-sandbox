@@ -1,0 +1,7 @@
+environment:
+  host_os: ""
+  host_arch: ""
+  python: ""
+  docker_os: ""
+  docker_arch: ""
+  git_root: ""

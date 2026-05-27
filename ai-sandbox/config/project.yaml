@@ -1,0 +1,43 @@
+project:
+  initialized: false
+  name: ""
+  type: "existing"
+  root: "project"
+  stack: []
+  protected_paths: []
+  source_of_truth: []
+  start_commands: []
+  test_commands: []
+  build_commands: []
+
+environment:
+  host_os: ""
+  host_arch: ""
+  docker_os: ""
+  docker_arch: ""
+  python: ""
+
+docker:
+  required: false
+  compose_files: []
+  services: []
+
+graph:
+  enabled: true
+  ast_root: "project"
+  neo4j_required: true
+  neo4j_url: "bolt://localhost:7687"
+  neo4j_user: "neo4j"
+  neo4j_password: "graphify-sandbox"
+
+documentation:
+  wiki_root: "ai-sandbox/wiki"
+  source_status_values:
+    - verified_from_code
+    - developer_provided
+    - inferred
+    - needs_verification
+
+logs:
+  project_logbook: "ai-sandbox/logbooks/LOGBOOK_PROJECT.md"
+  sandbox_logbook: "ai-sandbox/logbooks/LOGBOOK_SANDBOX_IA.md"

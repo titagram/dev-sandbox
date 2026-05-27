@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+ai-sandbox/.venv/
+graphify-out/
+ai-sandbox/graph/*.json
+ai-sandbox/graph/*.cypher
+ai-sandbox/graph/*.html
+ai-sandbox/docs/discovery.json
+ai-sandbox/docs/discovery.md

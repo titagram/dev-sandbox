@@ -1,0 +1,9 @@
+adapter:
+  name: generic
+  signals:
+    files: []
+    keywords: []
+  sidecar_edges:
+    - file_references
+    - package_dependency
+    - import_dependency

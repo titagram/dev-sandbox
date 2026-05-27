@@ -1,0 +1,11 @@
+adapter:
+  name: python
+  signals:
+    files:
+      - pyproject.toml
+      - requirements.txt
+      - setup.py
+  sidecar_edges:
+    - package_dependency
+    - import_dependency
+    - test_entrypoint

@@ -1,0 +1,13 @@
+adapter:
+  name: symfony
+  signals:
+    files:
+      - composer.json
+      - bin/console
+    composer_keywords:
+      - symfony
+  sidecar_edges:
+    - route_handled_by
+    - doctrine_relation
+    - twig_reference
+    - service_declares

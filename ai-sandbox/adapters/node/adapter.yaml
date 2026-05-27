@@ -1,0 +1,12 @@
+adapter:
+  name: node
+  signals:
+    files:
+      - package.json
+      - pnpm-lock.yaml
+      - package-lock.json
+      - yarn.lock
+  sidecar_edges:
+    - package_script
+    - import_dependency
+    - build_entrypoint

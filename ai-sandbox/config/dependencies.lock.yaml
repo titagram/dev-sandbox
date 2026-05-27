@@ -1,0 +1,11 @@
+dependencies:
+  graphify:
+    source: "system-or-vendored-wheel"
+    package: "graphifyy==0.8.19"
+  neo4j:
+    required: true
+    image: "neo4j:5-community"
+    docker_os: ""
+    docker_arch: ""
+    vendored_archives:
+      - ""
