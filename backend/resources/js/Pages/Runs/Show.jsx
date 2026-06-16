@@ -1,0 +1,107 @@
+import { AlertTriangle, CheckCircle2, FileJson, GitBranch, RadioTower } from 'lucide-react';
+import AppLayout from '../../Layouts/AppLayout';
+
+export default function RunShow({ run, project, repository, events, artifacts, sourceLabel, risk, safety, state, dashboard }) {
+  return (
+    <AppLayout title={`Run ${run.id}`} dashboard={dashboard}>
+      <header className="rounded border border-zinc-200 bg-white p-4">
+        <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+          <h1 className="text-lg font-semibold">Run {run.id}</h1>
+          <div className="text-sm">Status: {run.status} · Risk: {run.risk_level}</div>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-500">
+          <span>Project: {project.name}</span>
+          <span>Repo: {repository?.name ?? 'none'}</span>
+          <span>Branch: {run.branch}</span>
+          <span>Source: {sourceLabel}</span>
+        </div>
+        <div className="mt-3 inline-flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+          <RadioTower size={14} />
+          {state.source_truth}
+        </div>
+      </header>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-[380px_1fr]">
+        <div className="rounded border border-zinc-200 bg-white p-4">
+          <div className="font-semibold">Timeline</div>
+          <div className="mt-3 space-y-3 text-sm">
+            {events.map((event) => (
+              <div key={event.id} className="grid grid-cols-[88px_1fr] gap-2">
+                <span className="text-xs text-zinc-500">{event.created_at}</span>
+                <span>
+                  <span className="font-medium">{event.event_type}</span>
+                  <span className="text-zinc-500"> · {event.severity} · {event.message}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded border border-zinc-200 bg-white p-4">
+          <div className="font-semibold">Summary</div>
+          <p className="mt-2 text-sm text-zinc-600">{run.summary ?? 'No summary yet.'}</p>
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
+            <StatusTile label="Graph" value={state.graph_status} />
+            <StatusTile label="Wiki" value={state.wiki_status} />
+            <StatusTile label="Risk review" value={risk.severity} />
+          </div>
+          <div className="mt-4 text-sm font-semibold">Artifacts</div>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            {artifacts.map((artifact) => (
+              <span key={artifact.id} className="inline-flex items-center gap-1 rounded bg-zinc-100 px-2 py-1">
+                <FileJson size={12} />
+                {artifact.artifact_type} · {artifact.status}
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-2">
+        <div className="rounded border border-zinc-200 bg-white p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <AlertTriangle size={16} />
+            Risk Triggers
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-600">
+            {risk.triggers.length === 0 ? 'none' : risk.triggers.map((trigger) => <span key={trigger} className="rounded bg-zinc-100 px-2 py-1">{trigger}</span>)}
+          </div>
+        </div>
+        <div className="rounded border border-zinc-200 bg-white p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <CheckCircle2 size={16} />
+            Safety Results
+          </div>
+          <SafetyList title="Blocked" items={safety.blocked} />
+          <SafetyList title="Warnings" items={safety.warnings} />
+        </div>
+      </section>
+
+      <section className="mt-5 rounded border border-zinc-200 bg-white p-4 text-sm">
+        <div className="flex items-center gap-2 font-semibold">
+          <GitBranch size={16} />
+          Evidence
+        </div>
+        <div className="mt-2 text-zinc-600">file hashes · command output · graph nodes · wiki revisions</div>
+      </section>
+    </AppLayout>
+  );
+}
+
+function StatusTile({ label, value }) {
+  return (
+    <div className="rounded border border-zinc-200 bg-zinc-50 px-3 py-2">
+      <div className="text-xs text-zinc-500">{label}</div>
+      <div className="mt-1 text-sm font-medium">{value}</div>
+    </div>
+  );
+}
+
+function SafetyList({ title, items }) {
+  return (
+    <div className="mt-2 text-xs text-zinc-600">
+      <span className="font-medium text-zinc-800">{title}: </span>
+      {items.length === 0 ? 'none' : items.map((item) => `${item.path ?? item.pattern ?? 'item'}:${item.reason ?? 'flag'}`).join(', ')}
+    </div>
+  );
+}
