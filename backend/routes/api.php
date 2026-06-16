@@ -1,6 +1,10 @@
 <?php
 
 use App\Http\Controllers\Plugin\AuthCheckController;
+use App\Http\Controllers\Plugin\DeltaChunkController;
+use App\Http\Controllers\Plugin\DeltaFinalizeController;
+use App\Http\Controllers\Plugin\DeltaLocalSnapshotController;
+use App\Http\Controllers\Plugin\DeltaStartController;
 use App\Http\Controllers\Plugin\ListProjectsController;
 use App\Http\Controllers\Plugin\ListRepositoriesController;
 use App\Http\Controllers\Plugin\RegisterDeviceController;
@@ -50,6 +54,18 @@ Route::prefix('plugin/v1')->group(function () {
 
     Route::post('/runs/{run}/finish', RunFinishController::class)
         ->middleware('plugin.token:runs.write');
+
+    Route::post('/runs/{run}/local-snapshots', DeltaLocalSnapshotController::class)
+        ->middleware('plugin.token:runs.write');
+
+    Route::post('/runs/{run}/delta-syncs', DeltaStartController::class)
+        ->middleware('plugin.token:runs.write,artifacts.write');
+
+    Route::put('/delta-syncs/{deltaSync}/artifacts/{artifact}/chunks/{chunk}', DeltaChunkController::class)
+        ->middleware('plugin.token:artifacts.write');
+
+    Route::post('/delta-syncs/{deltaSync}/finalize', DeltaFinalizeController::class)
+        ->middleware('plugin.token:artifacts.write');
 
     Route::post('/repositories/{repository}/genesis-imports', GenesisStartController::class)
         ->middleware('plugin.token:repositories.read,artifacts.write');

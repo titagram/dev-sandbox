@@ -5,7 +5,7 @@ from pathlib import Path
 
 import typer
 
-from devboard_plugin.artifacts import upload_genesis_bundle
+from devboard_plugin.artifacts import upload_delta_bundle, upload_genesis_bundle
 from devboard_plugin.client import DevBoardApiError, DevBoardClient
 from devboard_plugin.config import credentials_from_options, load_credentials, save_credentials, Credentials
 from devboard_plugin.git_local import current_branch, dirty_status, ensure_devboard_excluded, head_sha, local_root_hash
@@ -18,6 +18,7 @@ repos_app = typer.Typer(help="Link and inspect repositories")
 context_app = typer.Typer(help="Pull repository context")
 runs_app = typer.Typer(help="Manage plugin run lifecycle")
 genesis_app = typer.Typer(help="Build and upload Genesis artifacts")
+delta_app = typer.Typer(help="Build and upload Delta Sync artifacts")
 artifacts_app = typer.Typer(help="Upload generated artifacts")
 
 app.add_typer(auth_app, name="auth")
@@ -26,6 +27,7 @@ app.add_typer(repos_app, name="repos")
 app.add_typer(context_app, name="context")
 app.add_typer(runs_app, name="runs")
 app.add_typer(genesis_app, name="genesis")
+app.add_typer(delta_app, name="delta")
 app.add_typer(artifacts_app, name="artifacts")
 
 
@@ -258,34 +260,127 @@ def genesis_run(
 @artifacts_app.command("upload")
 def artifacts_upload(
     genesis: bool = typer.Option(False, "--genesis"),
+    delta: bool = typer.Option(False, "--delta"),
     repository_id: str | None = typer.Option(None, "--repository-id"),
     run_id: str | None = typer.Option(None, "--run-id"),
     local_workspace_id: str | None = typer.Option(None, "--local-workspace-id"),
+    base_snapshot_id: str | None = typer.Option(None, "--base-snapshot-id"),
     bundle_path: Path | None = typer.Option(None, "--bundle-path"),
     repo_path: Path = typer.Option(Path("."), "--repo-path"),
     server_url: str | None = typer.Option(None, "--server-url"),
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
-    if not genesis:
-        raise typer.BadParameter("Only --genesis upload is supported in v1.")
+    if genesis == delta:
+        raise typer.BadParameter("Choose exactly one upload type: --genesis or --delta.")
 
     state = read_repo_state(repo_path)
-    repository_id = repository_id or state.get("repository_id")
     run_id = run_id or state.get("run_id")
     local_workspace_id = local_workspace_id or state.get("local_workspace_id")
-    bundle_path = bundle_path or Path(state["genesis_bundle_path"])
 
-    if not repository_id or not run_id or not local_workspace_id:
-        raise typer.BadParameter("repository_id, run_id, and local_workspace_id are required.")
+    if genesis:
+        repository_id = repository_id or state.get("repository_id")
+        bundle_path = bundle_path or resolve_state_path(repo_path, state["genesis_bundle_path"])
 
-    response = upload_genesis_bundle(
-        client_from_options(server_url, token),
-        repository_id=repository_id,
+        if not repository_id or not run_id or not local_workspace_id:
+            raise typer.BadParameter("repository_id, run_id, and local_workspace_id are required.")
+
+        response = upload_genesis_bundle(
+            client_from_options(server_url, token),
+            repository_id=repository_id,
+            run_id=run_id,
+            local_workspace_id=local_workspace_id,
+            bundle_path=bundle_path,
+        )
+    else:
+        base_snapshot_id = base_snapshot_id or state.get("base_snapshot_id") or state.get("snapshot_id")
+        bundle_path = bundle_path or resolve_state_path(repo_path, state["delta_bundle_path"])
+
+        if not run_id or not local_workspace_id or not base_snapshot_id:
+            raise typer.BadParameter("run_id, local_workspace_id, and base_snapshot_id are required.")
+
+        response = upload_delta_bundle(
+            client_from_options(server_url, token),
+            run_id=run_id,
+            local_workspace_id=local_workspace_id,
+            base_snapshot_id=base_snapshot_id,
+            bundle_path=bundle_path,
+        )
+
+    echo_json(response)
+
+
+@delta_app.command("run")
+def delta_run(
+    project_id: str = typer.Option(..., "--project-id"),
+    repository_id: str = typer.Option(..., "--repository-id"),
+    local_workspace_id: str = typer.Option(..., "--local-workspace-id"),
+    base_snapshot_id: str = typer.Option(..., "--base-snapshot-id"),
+    repo_path: Path = typer.Option(Path("."), "--repo-path"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    output: Path | None = typer.Option(None, "--output"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    client = client_from_options(server_url, token)
+
+    if run_id is None:
+        start_response = client.start_run(
+            {
+                "project_id": project_id,
+                "repository_id": repository_id,
+                "local_workspace_id": local_workspace_id,
+                "task_id": None,
+                "run_type": "delta_sync",
+                "runtime_profile": "agent_plugin",
+                "branch": current_branch(repo_path),
+                "base_branch": current_branch(repo_path),
+                "base_sha": head_sha(repo_path) or "unknown",
+                "head_sha": head_sha(repo_path),
+                "dirty_status": dirty_status(repo_path),
+            }
+        )
+        run_id = start_response["run_id"]
+
+    state = read_repo_state(repo_path)
+    policy = client.repository_policy(repository_id)
+    output_dir = output or repo_path / ".devboard" / "artifacts" / "delta" / run_id
+    bundle = build_delta_bundle(
+        repo_path,
+        output_dir,
+        {
+            "project_id": project_id,
+            "repository_id": repository_id,
+            "local_workspace_id": local_workspace_id,
+            "run_id": run_id,
+            "base_snapshot_id": base_snapshot_id,
+            "base_file_hashes": load_base_file_hashes(repo_path, state),
+            "code_exposure": policy.get("code_exposure", "full_code_artifacts"),
+            "branch": current_branch(repo_path),
+            "base_sha": head_sha(repo_path) or "unknown",
+            "head_sha": head_sha(repo_path),
+            "dirty_status": dirty_status(repo_path),
+        },
+    )
+    upload = upload_delta_bundle(
+        client,
         run_id=run_id,
         local_workspace_id=local_workspace_id,
-        bundle_path=bundle_path,
+        base_snapshot_id=base_snapshot_id,
+        bundle_path=output_dir,
     )
-    echo_json(response)
+    write_repo_state(
+        repo_path,
+        {
+            "project_id": project_id,
+            "repository_id": repository_id,
+            "local_workspace_id": local_workspace_id,
+            "run_id": run_id,
+            "base_snapshot_id": base_snapshot_id,
+            "snapshot_id": upload.get("snapshot_id"),
+            "delta_bundle_path": str(output_dir),
+        },
+    )
+    echo_json({"run_id": run_id, "status": upload.get("status"), "bundle": bundle, "upload": upload})
 
 
 def client_from_options(server_url: str | None, token: str | None) -> DevBoardClient:
@@ -312,3 +407,33 @@ def build_genesis_bundle(repo_path: Path, output_dir: Path, context: dict) -> di
     from devboard_analyzer.genesis_bundle import build_genesis_bundle as build
 
     return build(repo_path, output_dir, context)
+
+
+def build_delta_bundle(repo_path: Path, output_dir: Path, context: dict) -> dict:
+    from devboard_analyzer.delta_bundle import build_delta_bundle as build
+
+    return build(repo_path, output_dir, context)
+
+
+def load_base_file_hashes(repo_path: Path, state: dict) -> dict[str, str]:
+    for key in ("delta_bundle_path", "genesis_bundle_path"):
+        bundle_path = state.get(key)
+        if not bundle_path:
+            continue
+
+        hashes_path = resolve_state_path(repo_path, bundle_path) / "file-hashes.json"
+        if not hashes_path.exists():
+            continue
+
+        document = json.loads(hashes_path.read_text())
+        return {row["path"]: row["sha256"] for row in document.get("hashes", [])}
+
+    return {}
+
+
+def resolve_state_path(repo_path: Path, value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+
+    return repo_path / path

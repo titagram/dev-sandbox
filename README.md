@@ -56,6 +56,18 @@ python3 -m venv /tmp/devboard-plugin-venv
 /tmp/devboard-plugin-venv/bin/devboard version
 ```
 
+Delta Sync after Genesis:
+
+```bash
+/tmp/devboard-plugin-venv/bin/devboard delta run \
+  --project-id <project_id> \
+  --repository-id <repository_id> \
+  --local-workspace-id <local_workspace_id> \
+  --base-snapshot-id <snapshot_id>
+```
+
+`delta run` starts a `delta_sync` run when needed, builds a local Delta bundle under `.devboard/artifacts/delta/`, uploads artifacts by chunks, finalizes the sync, and stores the new snapshot id in `.devboard/state.json`.
+
 Codex/Claude MCP setup:
 
 ```bash

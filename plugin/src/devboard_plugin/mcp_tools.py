@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from devboard_plugin.artifacts import upload_genesis_bundle
+from devboard_plugin.artifacts import upload_delta_bundle, upload_genesis_bundle
 from devboard_plugin.client import DevBoardClient
 from devboard_plugin.config import Credentials, credentials_from_options
 from devboard_plugin.git_local import (
@@ -154,12 +154,79 @@ def devboard_genesis_import(
     return {"run_id": run_id, "status": "bundle_built", "bundle": bundle}
 
 
-def devboard_delta_sync(repository_id: str, server_url: str | None = None) -> dict[str, Any]:
-    """Report Delta Sync availability for the current implementation slice."""
-    return {
-        "status": "not_implemented",
-        "message": "Delta Sync is specified for V1 but not implemented in the current slice.",
-    }
+def devboard_delta_sync(
+    project_id: str,
+    repository_id: str,
+    local_workspace_id: str,
+    base_snapshot_id: str,
+    repo_path: str = ".",
+    output_path: str | None = None,
+    run_id: str | None = None,
+    server_url: str | None = None,
+) -> dict[str, Any]:
+    """Build, upload, and finalize a Delta Sync bundle."""
+    repo = Path(repo_path)
+    client = client_from_options(server_url)
+
+    if run_id is None:
+        start = client.start_run(
+            {
+                "project_id": project_id,
+                "repository_id": repository_id,
+                "local_workspace_id": local_workspace_id,
+                "task_id": None,
+                "run_type": "delta_sync",
+                "runtime_profile": "agent_plugin",
+                "branch": git_current_branch(repo),
+                "base_branch": git_current_branch(repo),
+                "base_sha": git_head_sha(repo) or "unknown",
+                "head_sha": git_head_sha(repo),
+                "dirty_status": git_dirty_status(repo),
+            }
+        )
+        run_id = start["run_id"]
+
+    state = read_repo_state(repo)
+    policy = client.repository_policy(repository_id)
+    output_dir = Path(output_path) if output_path else repo / ".devboard" / "artifacts" / "delta" / run_id
+    bundle = build_delta_bundle(
+        repo,
+        output_dir,
+        {
+            "project_id": project_id,
+            "repository_id": repository_id,
+            "local_workspace_id": local_workspace_id,
+            "run_id": run_id,
+            "base_snapshot_id": base_snapshot_id,
+            "base_file_hashes": load_base_file_hashes(repo, state),
+            "code_exposure": policy.get("code_exposure", "full_code_artifacts"),
+            "branch": git_current_branch(repo),
+            "base_sha": git_head_sha(repo) or "unknown",
+            "head_sha": git_head_sha(repo),
+            "dirty_status": git_dirty_status(repo),
+        },
+    )
+    upload = upload_delta_bundle(
+        client,
+        run_id=run_id,
+        local_workspace_id=local_workspace_id,
+        base_snapshot_id=base_snapshot_id,
+        bundle_path=output_dir,
+    )
+    write_repo_state(
+        repo,
+        {
+            "project_id": project_id,
+            "repository_id": repository_id,
+            "local_workspace_id": local_workspace_id,
+            "run_id": run_id,
+            "base_snapshot_id": base_snapshot_id,
+            "snapshot_id": upload.get("snapshot_id"),
+            "delta_bundle_path": str(output_dir),
+        },
+    )
+
+    return {"run_id": run_id, "bundle": bundle, **upload}
 
 
 def devboard_upload_artifact(
@@ -189,7 +256,7 @@ def devboard_upload_artifact(
         repository_id=resolved_repository_id,
         run_id=resolved_run_id,
         local_workspace_id=resolved_workspace_id,
-        bundle_path=resolved_bundle_path,
+        bundle_path=resolve_state_path(repo, resolved_bundle_path),
     )
 
 
@@ -229,6 +296,38 @@ def build_genesis_bundle(repo_path: Path, output_dir: Path, context: dict[str, A
     from devboard_analyzer.genesis_bundle import build_genesis_bundle as build
 
     return build(repo_path, output_dir, context)
+
+
+def build_delta_bundle(repo_path: Path, output_dir: Path, context: dict[str, Any]) -> dict[str, Any]:
+    from devboard_analyzer.delta_bundle import build_delta_bundle as build
+
+    return build(repo_path, output_dir, context)
+
+
+def load_base_file_hashes(repo_path: Path, state: dict[str, Any]) -> dict[str, str]:
+    for key in ("delta_bundle_path", "genesis_bundle_path"):
+        bundle_path = state.get(key)
+        if not bundle_path:
+            continue
+
+        hashes_path = resolve_state_path(repo_path, bundle_path) / "file-hashes.json"
+        if not hashes_path.exists():
+            continue
+
+        import json
+
+        document = json.loads(hashes_path.read_text())
+        return {row["path"]: row["sha256"] for row in document.get("hashes", [])}
+
+    return {}
+
+
+def resolve_state_path(repo_path: Path, value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+
+    return repo_path / path
 
 
 TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {

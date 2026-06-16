@@ -103,13 +103,32 @@ def test_genesis_import_builds_bundle_without_returning_credentials(monkeypatch,
     assert fake_client.calls[0][0] == "start_run"
 
 
-def test_delta_sync_tool_returns_safe_not_implemented_status():
-    response = mcp_tools.devboard_delta_sync(repository_id="repo_123")
+def test_delta_sync_builds_and_uploads_bundle(monkeypatch, tmp_path):
+    fake_client = FakeClient()
+    uploads = []
+    monkeypatch.setattr(mcp_tools, "client_from_options", lambda server_url=None: fake_client)
+    monkeypatch.setattr(mcp_tools, "git_current_branch", lambda repo_path: "feature/devboard")
+    monkeypatch.setattr(mcp_tools, "git_head_sha", lambda repo_path: "head456")
+    monkeypatch.setattr(mcp_tools, "git_dirty_status", lambda repo_path: "dirty")
+    monkeypatch.setattr(mcp_tools, "build_delta_bundle", fake_build_delta_bundle)
+    monkeypatch.setattr(
+        mcp_tools,
+        "upload_delta_bundle",
+        lambda client, **kwargs: uploads.append(kwargs) or {"status": "active", "snapshot_id": "snap_new"},
+    )
 
-    assert response == {
-        "status": "not_implemented",
-        "message": "Delta Sync is specified for V1 but not implemented in the current slice.",
-    }
+    response = mcp_tools.devboard_delta_sync(
+        project_id="proj_123",
+        repository_id="repo_123",
+        local_workspace_id="lw_123",
+        base_snapshot_id="snap_base",
+        repo_path=str(tmp_path),
+    )
+
+    assert response["status"] == "active"
+    assert response["run_id"] == "run_123"
+    assert uploads[0]["base_snapshot_id"] == "snap_base"
+    assert (tmp_path / ".devboard" / "state.json").exists()
 
 
 class FakeClient:
@@ -149,6 +168,15 @@ def fake_build_genesis_bundle(repo_path: Path, output_dir: Path, context: dict):
     return {
         "output_dir": str(output_dir),
         "manifest_path": str(output_dir / "genesis-manifest.json"),
+        "artifacts": [],
+        "context": context,
+    }
+
+
+def fake_build_delta_bundle(repo_path: Path, output_dir: Path, context: dict):
+    return {
+        "output_dir": str(output_dir),
+        "manifest_path": str(output_dir / "delta-manifest.json"),
         "artifacts": [],
         "context": context,
     }

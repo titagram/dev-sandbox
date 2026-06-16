@@ -85,23 +85,17 @@ class GenesisGraphImportService
             throw new RuntimeException('Genesis snapshot does not reference a graph artifact.');
         }
 
-        $artifact = DB::table('artifacts')->where('id', $snapshot->graph_snapshot_artifact_id)->first();
-        if (! $artifact) {
-            throw new RuntimeException('Graph snapshot artifact was not found.');
-        }
-
-        $graph = json_decode(Storage::disk('local')->get($artifact->storage_path), true, 512, JSON_THROW_ON_ERROR);
-
         try {
-            $this->runCommand($client, self::devBoardSnapshotCommand($snapshot->id, $import->repository_id, $import->run_id));
-
-            foreach ($graph['nodes'] ?? [] as $node) {
-                $this->runCommand($client, self::nodeCommand($node, $snapshot->id, $import->run_id, $import->repository_id));
-            }
-
-            foreach ($graph['relationships'] ?? [] as $relationship) {
-                $this->runCommand($client, self::relationshipCommand($relationship, $snapshot->id, $import->run_id, $import->repository_id));
-            }
+            $this->importGraphArtifact(
+                $snapshot->id,
+                $import->repository_id,
+                $import->run_id,
+                $snapshot->graph_snapshot_artifact_id,
+                $client,
+                $mode,
+                'Genesis graph import validated in fake mode.',
+                'Genesis graph imported into Neo4j.',
+            );
         } catch (\Throwable $exception) {
             DB::table('genesis_imports')->where('id', $importId)->update([
                 'status' => 'failed',
@@ -110,21 +104,48 @@ class GenesisGraphImportService
 
             throw $exception;
         }
+    }
 
-        DB::table('artifacts')->where('id', $artifact->id)->update([
+    public function importGraphArtifact(
+        string $snapshotId,
+        string $repositoryId,
+        string $runId,
+        string $artifactId,
+        ?object $client = null,
+        string $mode = 'neo4j',
+        string $fakeMessage = 'Graph import validated in fake mode.',
+        string $neo4jMessage = 'Graph imported into Neo4j.',
+    ): void {
+        $client ??= app(Neo4jClientFactory::class)->client();
+        $artifact = DB::table('artifacts')->where('id', $artifactId)->first();
+        if (! $artifact) {
+            throw new RuntimeException('Graph snapshot artifact was not found.');
+        }
+
+        $graph = json_decode(Storage::disk('local')->get($artifact->storage_path), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->runCommand($client, self::devBoardSnapshotCommand($snapshotId, $repositoryId, $runId));
+
+        foreach ($graph['nodes'] ?? [] as $node) {
+            $this->runCommand($client, self::nodeCommand($node, $snapshotId, $runId, $repositoryId));
+        }
+
+        foreach ($graph['relationships'] ?? [] as $relationship) {
+            $this->runCommand($client, self::relationshipCommand($relationship, $snapshotId, $runId, $repositoryId));
+        }
+
+        DB::table('artifacts')->where('id', $artifactId)->update([
             'status' => 'imported',
             'updated_at' => now(),
         ]);
 
         DB::table('run_events')->insert([
             'id' => (string) Str::ulid(),
-            'run_id' => $import->run_id,
+            'run_id' => $runId,
             'event_type' => 'graph.imported',
             'severity' => 'info',
-            'message' => $mode === 'fake'
-                ? 'Genesis graph import validated in fake mode.'
-                : 'Genesis graph imported into Neo4j.',
-            'payload' => json_encode(['snapshot_id' => $snapshot->id, 'mode' => $mode], JSON_THROW_ON_ERROR),
+            'message' => $mode === 'fake' ? $fakeMessage : $neo4jMessage,
+            'payload' => json_encode(['snapshot_id' => $snapshotId, 'mode' => $mode], JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
     }

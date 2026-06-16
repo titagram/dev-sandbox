@@ -7,19 +7,19 @@ use Illuminate\Support\Facades\Storage;
 
 class ArtifactStorageService
 {
-    public function chunkPath(string $importId, string $artifactId, int $chunkIndex): string
+    public function chunkPath(string $importId, string $artifactId, int $chunkIndex, string $scope = 'genesis'): string
     {
-        return "devboard/artifacts/genesis/{$importId}/{$artifactId}/chunks/{$chunkIndex}";
+        return "devboard/artifacts/{$scope}/{$importId}/{$artifactId}/chunks/{$chunkIndex}";
     }
 
-    public function artifactPath(string $importId, string $artifactId): string
+    public function artifactPath(string $importId, string $artifactId, string $scope = 'genesis'): string
     {
-        return "devboard/artifacts/genesis/{$importId}/{$artifactId}/artifact";
+        return "devboard/artifacts/{$scope}/{$importId}/{$artifactId}/artifact";
     }
 
-    public function storeChunk(string $importId, string $artifactId, int $chunkIndex, string $content, string $hash): string
+    public function storeChunk(string $importId, string $artifactId, int $chunkIndex, string $content, string $hash, string $scope = 'genesis'): string
     {
-        $path = $this->chunkPath($importId, $artifactId, $chunkIndex);
+        $path = $this->chunkPath($importId, $artifactId, $chunkIndex, $scope);
 
         if (Storage::disk('local')->exists($path)) {
             $existingHash = hash('sha256', Storage::disk('local')->get($path));
@@ -39,14 +39,14 @@ class ArtifactStorageService
         return $path;
     }
 
-    public function assembleArtifact(object $artifact, string $importId): string
+    public function assembleArtifact(object $artifact, string $importId, string $scope = 'genesis'): string
     {
         $metadata = json_decode($artifact->metadata, true, 512, JSON_THROW_ON_ERROR);
         $chunkCount = (int) ($metadata['chunk_count'] ?? 0);
         $content = '';
 
         for ($index = 0; $index < $chunkCount; $index++) {
-            $chunkPath = $this->chunkPath($importId, $artifact->id, $index);
+            $chunkPath = $this->chunkPath($importId, $artifact->id, $index, $scope);
 
             if (! Storage::disk('local')->exists($chunkPath)) {
                 throw new ArtifactStorageException('artifact_chunk_missing', 'Artifact upload is missing one or more chunks.');

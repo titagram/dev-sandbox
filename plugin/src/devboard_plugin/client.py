@@ -140,6 +140,44 @@ class DevBoardClient:
     def finalize_genesis_import(self, import_id: str) -> dict[str, Any]:
         return self.post(f"/api/plugin/v1/genesis-imports/{import_id}/finalize")
 
+    def record_local_snapshot(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.post(f"/api/plugin/v1/runs/{run_id}/local-snapshots", payload)
+
+    def start_delta_sync(
+        self,
+        run_id: str,
+        manifest: dict[str, Any],
+        local_workspace_id: str,
+        base_snapshot_id: str,
+    ) -> dict[str, Any]:
+        return self.post(
+            f"/api/plugin/v1/runs/{run_id}/delta-syncs",
+            {
+                "local_workspace_id": local_workspace_id,
+                "base_snapshot_id": base_snapshot_id,
+                "branch": manifest.get("branch", "unknown"),
+                "base_sha": manifest.get("base_sha") or manifest.get("head_sha") or "unknown",
+                "head_sha": manifest.get("head_sha"),
+                "dirty_status": manifest.get("dirty_status", "unknown"),
+                "manifest": manifest,
+            },
+        )
+
+    def upload_delta_chunk(self, delta_id: str, artifact_id: str, chunk_index: int, content: bytes) -> dict[str, Any]:
+        return self.request_bytes(
+            "PUT",
+            f"/api/plugin/v1/delta-syncs/{delta_id}/artifacts/{artifact_id}/chunks/{chunk_index}",
+            content,
+            {
+                "X-DevBoard-Chunk-SHA256": hashlib.sha256(content).hexdigest(),
+                "X-DevBoard-Chunk-Size": str(len(content)),
+                "Content-Type": "application/octet-stream",
+            },
+        )
+
+    def finalize_delta_sync(self, delta_id: str) -> dict[str, Any]:
+        return self.post(f"/api/plugin/v1/delta-syncs/{delta_id}/finalize")
+
     def _raise_api_error(self, response: httpx.Response) -> None:
         try:
             error = response.json()["error"]

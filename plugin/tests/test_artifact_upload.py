@@ -1,17 +1,21 @@
 import json
 from pathlib import Path
+import hashlib
 
 import httpx
 
-from devboard_plugin.artifacts import upload_genesis_bundle
+from devboard_plugin.artifacts import upload_delta_bundle, upload_genesis_bundle
 from devboard_plugin.client import DevBoardClient
 
 
 class FakeArtifactClient:
     def __init__(self):
         self.started = None
+        self.started_delta = None
         self.chunks = []
+        self.delta_chunks = []
         self.finalized = None
+        self.finalized_delta = None
         self.finished = None
 
     def start_genesis_import(self, repository_id, manifest, run_id, local_workspace_id):
@@ -24,6 +28,25 @@ class FakeArtifactClient:
 
     def finalize_genesis_import(self, import_id):
         self.finalized = import_id
+        return {"status": "active"}
+
+    def start_delta_sync(self, run_id, manifest, local_workspace_id, base_snapshot_id):
+        self.started_delta = (
+            run_id,
+            {
+                "manifest": manifest,
+                "local_workspace_id": local_workspace_id,
+                "base_snapshot_id": base_snapshot_id,
+            },
+        )
+        return {"delta_id": "delta_123", "status": "uploading"}
+
+    def upload_delta_chunk(self, delta_id, artifact_id, chunk_index, content):
+        self.delta_chunks.append((delta_id, artifact_id, chunk_index, content))
+        return {"status": "received"}
+
+    def finalize_delta_sync(self, delta_id):
+        self.finalized_delta = delta_id
         return {"status": "active"}
 
     def finish_run(self, run_id, payload):
@@ -68,6 +91,30 @@ def test_upload_genesis_bundle_finishes_run_after_successful_finalize(tmp_path):
     assert fake.finished == (
         "run_123",
         {"status": "finished", "summary": "Genesis import completed."},
+    )
+
+
+def test_upload_delta_bundle_uses_delta_endpoints_and_finishes_run(tmp_path):
+    artifact_content = b'{"changed_file_count":1}'
+    bundle = _write_delta_bundle(tmp_path, artifact_content)
+    fake = FakeArtifactClient()
+
+    result = upload_delta_bundle(
+        fake,
+        run_id="run_123",
+        local_workspace_id="lw_123",
+        base_snapshot_id="snap_base",
+        bundle_path=bundle,
+    )
+
+    assert result == {"status": "active"}
+    assert fake.started_delta[0] == "run_123"
+    assert fake.started_delta[1]["base_snapshot_id"] == "snap_base"
+    assert fake.delta_chunks == [("delta_123", "art_delta", 0, artifact_content)]
+    assert fake.finalized_delta == "delta_123"
+    assert fake.finished == (
+        "run_123",
+        {"status": "finished", "summary": "Delta sync completed."},
     )
 
 
@@ -128,5 +175,29 @@ def _write_bundle(tmp_path: Path, artifact_content: bytes) -> Path:
         ],
     }
     (bundle / "genesis-manifest.json").write_text(json.dumps(manifest))
+
+    return bundle
+
+
+def _write_delta_bundle(tmp_path: Path, artifact_content: bytes) -> Path:
+    bundle = tmp_path / "delta-bundle"
+    bundle.mkdir()
+    (bundle / "diff-summary.json").write_bytes(artifact_content)
+    manifest = {
+        "protocol_version": "v1",
+        "bundle_type": "delta_sync",
+        "schema_version": "v1",
+        "artifacts": [
+            {
+                "artifact_id": "art_delta",
+                "artifact_type": "diff_summary",
+                "filename": "diff-summary.json",
+                "sha256": "sha256:" + hashlib.sha256(artifact_content).hexdigest(),
+                "size_bytes": len(artifact_content),
+                "chunk_count": 1,
+            }
+        ],
+    }
+    (bundle / "delta-manifest.json").write_text(json.dumps(manifest))
 
     return bundle
