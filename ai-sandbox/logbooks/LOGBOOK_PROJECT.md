@@ -65,3 +65,14 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Verification: `cd backend && php artisan test tests/Feature/PluginRepositoryApiTest.php` failed before implementation with 404s; after implementation it passed 6 tests and 24 assertions; `cd backend && php artisan test` passed 16 tests and 69 assertions; `cd backend && php artisan route:list --path=api/plugin` showed 7 plugin routes; `git diff --check` exited 0.
 - Skipped checks: did not run plugin CLI against these endpoints yet; plugin-side API client commands are planned in the next task.
 - Residual risks: authorization is currently scope-based at route level; richer role policy checks and audit events are still future tasks.
+
+## 2026-06-16 - DevBoard plugin CLI task 5
+
+- Request: continue the DevBoard onboarding + Genesis implementation plan with Python plugin auth, device, project, repository, policy, and context commands.
+- Context read: `docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md`, `docs/ai-devboard/04_PLUGIN_SERVER_CONTRACT.md`, existing plugin CLI and pyproject.
+- Intended write paths: `plugin/src/devboard_plugin/config.py`, `plugin/src/devboard_plugin/client.py`, `plugin/src/devboard_plugin/state.py`, `plugin/src/devboard_plugin/git_local.py`, `plugin/src/devboard_plugin/cli.py`, `plugin/tests/test_config.py`, `plugin/tests/test_client.py`, `plugin/tests/test_repo_link.py`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added RED plugin tests, implemented credential path/load/save helpers, HTTP client protocol headers and error handling, secret-filtered `.devboard/state.json`, `.git/info/exclude` helper, and CLI groups for auth, projects, repos, and context.
+- Files changed: `plugin/src/devboard_plugin/config.py`, `plugin/src/devboard_plugin/client.py`, `plugin/src/devboard_plugin/state.py`, `plugin/src/devboard_plugin/git_local.py`, `plugin/src/devboard_plugin/cli.py`, `plugin/tests/test_config.py`, `plugin/tests/test_client.py`, `plugin/tests/test_repo_link.py`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `cd plugin && /tmp/devboard-plugin-venv/bin/python -m pytest -q` failed before implementation because the new modules were missing; after implementation it passed 6 tests; `/tmp/devboard-plugin-venv/bin/devboard version` printed `devboard-plugin 0.1.0`; `/tmp/devboard-plugin-venv/bin/devboard --help` showed `auth`, `projects`, `repos`, and `context`; `git diff --check` exited 0.
+- Skipped checks: did not execute CLI commands against a live Laravel server yet; later E2E coverage will exercise backend and plugin together.
+- Residual risks: local Git metadata helpers are intentionally small and do not yet cover detached HEAD or non-Git directories beyond safe fallback values.
