@@ -43,3 +43,14 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Verification: `cd backend && php artisan test tests/Feature/DomainSchemaTest.php` failed before implementation because `roles` and `DevBoardSeeder` were missing; after implementation it passed 2 tests and 22 assertions; `cd backend && php artisan test` passed 5 tests and 26 assertions; `git diff --check` exited 0.
 - Skipped checks: did not run PostgreSQL-backed migrations yet; current schema tests run through Laravel's configured in-memory SQLite test database.
 - Residual risks: database-specific PostgreSQL constraints and Neo4j integration are not exercised until later tasks add service-backed E2E coverage.
+
+## 2026-06-16 - DevBoard plugin auth task 3
+
+- Request: continue the DevBoard onboarding + Genesis implementation plan with plugin token validation and device registration.
+- Context read: `docs/ai-devboard/04_PLUGIN_SERVER_CONTRACT.md`, Laravel bootstrap routing config, existing Pest setup, and DevBoard core schema from task 2.
+- Intended write paths: `backend/app/Services/**`, `backend/app/Http/Middleware/**`, `backend/app/Http/Controllers/Plugin/**`, `backend/routes/api.php`, `backend/bootstrap/app.php`, `backend/tests/Feature/PluginAuthTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added RED tests for plugin auth/device registration, exposed `/api/plugin/v1/auth/check` and `/api/plugin/v1/devices/register`, implemented token parsing/hash verification/revocation handling, protocol validation, and device binding.
+- Files changed: `backend/app/Services/PluginTokenService.php`, `backend/app/Services/PluginTokenException.php`, `backend/app/Http/Middleware/AuthenticatePluginToken.php`, `backend/app/Http/Controllers/Plugin/AuthCheckController.php`, `backend/app/Http/Controllers/Plugin/RegisterDeviceController.php`, `backend/routes/api.php`, `backend/bootstrap/app.php`, `backend/tests/Feature/PluginAuthTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `cd backend && php artisan test tests/Feature/PluginAuthTest.php` failed before implementation with 404s; after implementation it passed 5 tests and 19 assertions; `cd backend && php artisan test` passed 10 tests and 45 assertions; `cd backend && php artisan route:list --path=api/plugin` showed the two plugin routes; `git diff --check` exited 0.
+- Skipped checks: did not test token generation from the dashboard because dashboard token UI is not implemented yet.
+- Residual risks: token creation, scope enforcement, and dashboard role permissions are still future tasks; token hashing currently uses SHA-256 secret hashing per the V1 plan.
