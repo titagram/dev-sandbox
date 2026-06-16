@@ -8,6 +8,20 @@
 
 **Tech Stack:** Laravel + Inertia React, PostgreSQL, filesystem artifact storage, Neo4j, Python 3, pytest, tree-sitter/Graphify-compatible analyzer adapters.
 
+## Execution Status - 2026-06-16
+
+The first vertical slice has been implemented through Task 12 on branch `fase-1`.
+
+Verified locally:
+
+- backend domain, plugin auth, repository linkage, run lifecycle, Genesis artifact upload/finalize, wiki revisions, graph import service, dashboard auth/slice, and onboarding Genesis E2E;
+- analyzer Genesis bundles now emit backend-compatible `artifact_id` and `chunk_count` values;
+- `scripts/devboard_e2e_bootstrap.sh` runs the full happy path against isolated SQLite and records graph acceptance in fake mode when live Neo4j is not available.
+
+Remaining deployment acceptance:
+
+- run the same flow against Docker Compose PostgreSQL and a live Neo4j service on the target Ubuntu x64 environment.
+
 ---
 
 ## Required Specs
@@ -100,7 +114,7 @@ test: add onboarding genesis e2e coverage
 - Modify: `ai-sandbox/config/dependencies.lock.yaml`
 - Modify: `.gitignore`
 
-- [ ] **Step 1: Create an isolated implementation workspace**
+- [x] **Step 1: Create an isolated implementation workspace**
 
 Run:
 
@@ -110,7 +124,7 @@ git status --short --untracked-files=all
 
 Expected: only previously agreed documentation files are modified or untracked. Stop if unrelated user changes appear in files this plan will edit.
 
-- [ ] **Step 2: Scaffold Laravel backend**
+- [x] **Step 2: Scaffold Laravel backend**
 
 Run:
 
@@ -127,7 +141,7 @@ npm install @inertiajs/react react react-dom vite @vitejs/plugin-react lucide-re
 
 Expected: Laravel app exists under `backend/`; `composer test` or `php artisan test` can run.
 
-- [ ] **Step 3: Add backend environment defaults**
+- [x] **Step 3: Add backend environment defaults**
 
 Update `backend/.env.example` with PostgreSQL, artifact disk, and Neo4j variables:
 
@@ -147,7 +161,7 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=graphify-sandbox
 ```
 
-- [ ] **Step 4: Write backend smoke test**
+- [x] **Step 4: Write backend smoke test**
 
 Create `backend/tests/Feature/HealthTest.php`:
 
@@ -165,7 +179,7 @@ it('loads the application test environment', function () {
 });
 ```
 
-- [ ] **Step 5: Verify backend smoke test fails before route registration is fixed if needed**
+- [x] **Step 5: Verify backend smoke test fails before route registration is fixed if needed**
 
 Run:
 
@@ -176,7 +190,7 @@ php artisan test tests/Feature/HealthTest.php
 
 Expected: PASS. This is a scaffold smoke check, not a product behavior test.
 
-- [ ] **Step 6: Scaffold Python plugin**
+- [x] **Step 6: Scaffold Python plugin**
 
 Create `plugin/pyproject.toml`:
 
@@ -227,7 +241,7 @@ def test_version_command_outputs_version():
     assert "devboard-plugin 0.1.0" in result.output
 ```
 
-- [ ] **Step 7: Scaffold analyzer package**
+- [x] **Step 7: Scaffold analyzer package**
 
 Create `analyzer/pyproject.toml`:
 
@@ -254,7 +268,7 @@ def test_analyzer_package_imports():
     assert devboard_analyzer.__name__ == "devboard_analyzer"
 ```
 
-- [ ] **Step 8: Run scaffold tests**
+- [x] **Step 8: Run scaffold tests**
 
 Run:
 
@@ -266,7 +280,7 @@ cd ../backend && php artisan test
 
 Expected: all scaffold tests pass. If `pytest` is missing, create local virtualenvs and install test dependencies from `pyproject.toml` before rerunning.
 
-- [ ] **Step 9: Add Docker compose scaffolding**
+- [x] **Step 9: Add Docker compose scaffolding**
 
 Add a Docker Compose runtime for `app`, `node`, `postgres`, and `neo4j`.
 
@@ -284,7 +298,7 @@ docker compose -f docker-compose.devboard.yaml config
 docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config
 ```
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 Run:
 
@@ -305,7 +319,7 @@ git commit -m "chore: scaffold devboard backend and plugin workspace"
 - Create: `backend/app/Enums/SourceType.php`
 - Create: `backend/tests/Feature/DomainSchemaTest.php`
 
-- [ ] **Step 1: Write failing schema test**
+- [x] **Step 1: Write failing schema test**
 
 Create `backend/tests/Feature/DomainSchemaTest.php`:
 
@@ -352,7 +366,7 @@ it('seeds the required role names and default kanban columns', function () {
 });
 ```
 
-- [ ] **Step 2: Verify test fails**
+- [x] **Step 2: Verify test fails**
 
 Run:
 
@@ -363,7 +377,7 @@ php artisan test tests/Feature/DomainSchemaTest.php
 
 Expected: FAIL because the DevBoard tables do not exist yet.
 
-- [ ] **Step 3: Implement migrations**
+- [x] **Step 3: Implement migrations**
 
 Create migrations matching `docs/ai-devboard/03_DOMAIN_MODEL.md`. Use ULID or UUID primary keys consistently. Required JSON columns:
 
@@ -399,7 +413,7 @@ audit_logs.actor_type
 audit_logs.action
 ```
 
-- [ ] **Step 4: Implement enums**
+- [x] **Step 4: Implement enums**
 
 Create enum values exactly:
 
@@ -421,7 +435,7 @@ enum SourceStatus: string
 
 Create equivalent enums for `SourceType` and `RunStatus` using values from `03_DOMAIN_MODEL.md`.
 
-- [ ] **Step 5: Implement seed data**
+- [x] **Step 5: Implement seed data**
 
 `DevBoardSeeder` must create:
 
@@ -434,7 +448,7 @@ one default Kanban board
 columns: Backlog, Ready, In Progress, Blocked, Review, Done
 ```
 
-- [ ] **Step 6: Verify schema tests pass**
+- [x] **Step 6: Verify schema tests pass**
 
 Run:
 
@@ -445,7 +459,7 @@ php artisan test tests/Feature/DomainSchemaTest.php
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -465,7 +479,7 @@ git commit -m "feat: add devboard domain schema"
 - Modify: `backend/routes/api.php`
 - Create: `backend/tests/Feature/PluginAuthTest.php`
 
-- [ ] **Step 1: Write failing auth tests**
+- [x] **Step 1: Write failing auth tests**
 
 Create tests for:
 
@@ -479,7 +493,7 @@ wrong secret returns unauthorized
 
 Use token hash storage from `04_PLUGIN_SERVER_CONTRACT.md`.
 
-- [ ] **Step 2: Verify auth tests fail**
+- [x] **Step 2: Verify auth tests fail**
 
 Run:
 
@@ -490,7 +504,7 @@ php artisan test tests/Feature/PluginAuthTest.php
 
 Expected: FAIL because routes and services do not exist.
 
-- [ ] **Step 3: Implement token service**
+- [x] **Step 3: Implement token service**
 
 `PluginTokenService` must:
 
@@ -505,7 +519,7 @@ return authenticated token, user, device when present
 
 Use SHA-256 or HMAC-SHA256 for secret hash as specified.
 
-- [ ] **Step 4: Implement middleware and controllers**
+- [x] **Step 4: Implement middleware and controllers**
 
 Routes:
 
@@ -518,7 +532,7 @@ Route::prefix('plugin/v1')->group(function () {
 
 Responses must follow the error shape in `04_PLUGIN_SERVER_CONTRACT.md`.
 
-- [ ] **Step 5: Verify auth tests pass**
+- [x] **Step 5: Verify auth tests pass**
 
 Run:
 
@@ -529,7 +543,7 @@ php artisan test tests/Feature/PluginAuthTest.php
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -550,7 +564,7 @@ git commit -m "feat: add plugin token and device auth"
 - Create: `backend/tests/Feature/PluginRepositoryApiTest.php`
 - Modify: `backend/routes/api.php`
 
-- [ ] **Step 1: Write failing repository API tests**
+- [x] **Step 1: Write failing repository API tests**
 
 Tests must cover:
 
@@ -563,7 +577,7 @@ instructions response excludes token-like content
 missing scope returns scope_missing
 ```
 
-- [ ] **Step 2: Verify repository API tests fail**
+- [x] **Step 2: Verify repository API tests fail**
 
 Run:
 
@@ -574,7 +588,7 @@ php artisan test tests/Feature/PluginRepositoryApiTest.php
 
 Expected: FAIL because endpoints do not exist.
 
-- [ ] **Step 3: Implement controllers**
+- [x] **Step 3: Implement controllers**
 
 Add routes:
 
@@ -588,7 +602,7 @@ GET  /api/plugin/v1/repositories/{repository}/instructions
 
 Policy response must match `RepositoryPolicy` in `04_PLUGIN_SERVER_CONTRACT.md`.
 
-- [ ] **Step 4: Verify repository API tests pass**
+- [x] **Step 4: Verify repository API tests pass**
 
 Run:
 
@@ -599,7 +613,7 @@ php artisan test tests/Feature/PluginRepositoryApiTest.php
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -621,7 +635,7 @@ git commit -m "feat: add project repository policy endpoints"
 - Create: `plugin/tests/test_client.py`
 - Create: `plugin/tests/test_repo_link.py`
 
-- [ ] **Step 1: Write failing plugin tests**
+- [x] **Step 1: Write failing plugin tests**
 
 Tests must cover:
 
@@ -633,7 +647,7 @@ repo link creates .devboard/state.json with project/repository/local_workspace i
 .devboard is added to .git/info/exclude when .git exists
 ```
 
-- [ ] **Step 2: Verify plugin tests fail**
+- [x] **Step 2: Verify plugin tests fail**
 
 Run:
 
@@ -644,7 +658,7 @@ python3 -m pytest -q
 
 Expected: FAIL because modules do not exist.
 
-- [ ] **Step 3: Implement plugin modules**
+- [x] **Step 3: Implement plugin modules**
 
 Responsibilities:
 
@@ -656,7 +670,7 @@ git_local.py: branch/head/dirty status and .git/info/exclude helper
 cli.py: auth check, auth register-device, projects list, repos link, repos policy, context pull
 ```
 
-- [ ] **Step 4: Verify plugin tests pass**
+- [x] **Step 4: Verify plugin tests pass**
 
 Run:
 
@@ -667,7 +681,7 @@ python3 -m pytest -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -689,7 +703,7 @@ git commit -m "feat: add plugin auth and repo link commands"
 - Modify: `plugin/src/devboard_plugin/cli.py`
 - Create: `plugin/tests/test_runs.py`
 
-- [ ] **Step 1: Write failing backend run lifecycle tests**
+- [x] **Step 1: Write failing backend run lifecycle tests**
 
 Cover:
 
@@ -702,7 +716,7 @@ failed finish records risk summary
 finished run rejects new artifact_uploaded event
 ```
 
-- [ ] **Step 2: Write failing plugin run tests**
+- [x] **Step 2: Write failing plugin run tests**
 
 Cover:
 
@@ -712,7 +726,7 @@ devboard runs heartbeat sends run id
 devboard runs finish sends status and summary
 ```
 
-- [ ] **Step 3: Run failing tests**
+- [x] **Step 3: Run failing tests**
 
 Run:
 
@@ -723,11 +737,11 @@ cd ../plugin && python3 -m pytest tests/test_runs.py -q
 
 Expected: FAIL.
 
-- [ ] **Step 4: Implement backend run controllers**
+- [x] **Step 4: Implement backend run controllers**
 
 Use statuses from `03_DOMAIN_MODEL.md`. Every mutating call writes a `run_events` row. Denied or invalid transitions use the standard error shape.
 
-- [ ] **Step 5: Implement plugin run commands**
+- [x] **Step 5: Implement plugin run commands**
 
 Commands:
 
@@ -739,7 +753,7 @@ devboard runs finish
 
 Read ids from `.devboard/state.json` unless explicitly passed.
 
-- [ ] **Step 6: Verify run lifecycle tests pass**
+- [x] **Step 6: Verify run lifecycle tests pass**
 
 Run:
 
@@ -750,7 +764,7 @@ cd ../plugin && python3 -m pytest tests/test_runs.py -q
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -773,7 +787,7 @@ git commit -m "feat: add run lifecycle"
 - Modify: `plugin/src/devboard_plugin/cli.py`
 - Create: `plugin/tests/test_genesis_command.py`
 
-- [ ] **Step 1: Write failing analyzer tests**
+- [x] **Step 1: Write failing analyzer tests**
 
 Cover:
 
@@ -788,7 +802,7 @@ manifest contains protocol_version v1 and code_exposure full_code_artifacts
 wiki page artifact includes source_status and evidence_refs
 ```
 
-- [ ] **Step 2: Verify analyzer tests fail**
+- [x] **Step 2: Verify analyzer tests fail**
 
 Run:
 
@@ -799,7 +813,7 @@ python3 -m pytest -q
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement analyzer modules**
+- [x] **Step 3: Implement analyzer modules**
 
 Implement:
 
@@ -812,7 +826,7 @@ build_genesis_bundle(root, output_dir, context)
 
 Initial Graphify integration can use a graph artifact adapter that emits valid `graph-snapshot.json` from file and symbol placeholders for the fixture repository. It must keep the public artifact schema stable for later Graphify replacement.
 
-- [ ] **Step 4: Add plugin genesis command**
+- [x] **Step 4: Add plugin genesis command**
 
 Command:
 
@@ -830,7 +844,7 @@ store bundle path in .devboard/state.json
 not upload yet
 ```
 
-- [ ] **Step 5: Verify analyzer and plugin genesis tests pass**
+- [x] **Step 5: Verify analyzer and plugin genesis tests pass**
 
 Run:
 
@@ -841,7 +855,7 @@ cd ../plugin && python3 -m pytest tests/test_genesis_command.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -865,7 +879,7 @@ git commit -m "feat: add genesis analyzer bundle"
 - Modify: `plugin/src/devboard_plugin/cli.py`
 - Create: `plugin/tests/test_artifact_upload.py`
 
-- [ ] **Step 1: Write failing backend upload tests**
+- [x] **Step 1: Write failing backend upload tests**
 
 Cover:
 
@@ -880,7 +894,7 @@ finalize valid bundle creates snapshot and marks import active
 secret_scan_blocked security report fails finalize
 ```
 
-- [ ] **Step 2: Write failing plugin upload tests**
+- [x] **Step 2: Write failing plugin upload tests**
 
 Cover:
 
@@ -892,7 +906,7 @@ plugin calls finalize
 retry duplicate chunk is treated as success
 ```
 
-- [ ] **Step 3: Run failing tests**
+- [x] **Step 3: Run failing tests**
 
 Run:
 
@@ -903,7 +917,7 @@ cd ../plugin && python3 -m pytest tests/test_artifact_upload.py -q
 
 Expected: FAIL.
 
-- [ ] **Step 4: Implement artifact storage**
+- [x] **Step 4: Implement artifact storage**
 
 Storage layout:
 
@@ -914,7 +928,7 @@ storage/app/devboard/artifacts/genesis/<import_id>/<artifact_id>/artifact
 
 Use generated server paths only. Do not use client filenames as storage paths.
 
-- [ ] **Step 5: Implement Genesis finalize**
+- [x] **Step 5: Implement Genesis finalize**
 
 Finalize must validate:
 
@@ -938,7 +952,7 @@ run event appended
 audit log written
 ```
 
-- [ ] **Step 6: Implement plugin upload/finalize command**
+- [x] **Step 6: Implement plugin upload/finalize command**
 
 Command:
 
@@ -948,7 +962,7 @@ devboard artifacts upload --genesis
 
 It reads `.devboard/state.json` and the latest Genesis bundle path.
 
-- [ ] **Step 7: Verify upload tests pass**
+- [x] **Step 7: Verify upload tests pass**
 
 Run:
 
@@ -959,7 +973,7 @@ cd ../plugin && python3 -m pytest tests/test_artifact_upload.py -q
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 Run:
 
@@ -979,7 +993,7 @@ git commit -m "feat: add artifact upload and genesis finalize"
 - Create: `backend/tests/Unit/GenesisGraphCypherTest.php`
 - Modify: `backend/config/services.php`
 
-- [ ] **Step 1: Write failing graph import tests**
+- [x] **Step 1: Write failing graph import tests**
 
 Cover:
 
@@ -992,7 +1006,7 @@ failed Neo4j import leaves genesis_import failed and snapshot not active
 
 Use a fake Neo4j client in tests. Do not require a live Neo4j service for unit tests.
 
-- [ ] **Step 2: Verify graph tests fail**
+- [x] **Step 2: Verify graph tests fail**
 
 Run:
 
@@ -1003,7 +1017,7 @@ php artisan test tests/Feature/GenesisGraphImportTest.php tests/Unit/GenesisGrap
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement graph import service**
+- [x] **Step 3: Implement graph import service**
 
 Service must:
 
@@ -1016,7 +1030,7 @@ record graph import run event
 mark graph status imported only after all writes succeed
 ```
 
-- [ ] **Step 4: Verify graph tests pass**
+- [x] **Step 4: Verify graph tests pass**
 
 Run:
 
@@ -1027,7 +1041,7 @@ php artisan test tests/Feature/GenesisGraphImportTest.php tests/Unit/GenesisGrap
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -1046,7 +1060,7 @@ git commit -m "feat: import genesis graph into neo4j"
 - Modify: `backend/routes/api.php`
 - Modify: `backend/app/Services/GenesisFinalizeService.php`
 
-- [ ] **Step 1: Write failing wiki tests**
+- [x] **Step 1: Write failing wiki tests**
 
 Cover:
 
@@ -1059,7 +1073,7 @@ older revision remains accessible
 current_revision_id updates
 ```
 
-- [ ] **Step 2: Verify wiki tests fail**
+- [x] **Step 2: Verify wiki tests fail**
 
 Run:
 
@@ -1070,7 +1084,7 @@ php artisan test tests/Feature/WikiRevisionTest.php
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement wiki revision service**
+- [x] **Step 3: Implement wiki revision service**
 
 Rules:
 
@@ -1082,11 +1096,11 @@ audit log wiki.updated
 plugin writes allowed with wiki.write scope
 ```
 
-- [ ] **Step 4: Wire Genesis finalize to wiki artifact**
+- [x] **Step 4: Wire Genesis finalize to wiki artifact**
 
 When `wiki-pages.json` exists and Genesis validation succeeds, create or update pages by slug.
 
-- [ ] **Step 5: Verify wiki tests pass**
+- [x] **Step 5: Verify wiki tests pass**
 
 Run:
 
@@ -1097,7 +1111,7 @@ php artisan test tests/Feature/WikiRevisionTest.php
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -1122,7 +1136,7 @@ git commit -m "feat: write genesis wiki revisions"
 - Create: `backend/tests/Feature/DashboardSliceTest.php`
 - Modify: `backend/routes/web.php`
 
-- [ ] **Step 1: Write failing dashboard feature tests**
+- [x] **Step 1: Write failing dashboard feature tests**
 
 Cover:
 
@@ -1134,7 +1148,7 @@ PM cannot access Admin token page
 Admin can create token and full token is returned once
 ```
 
-- [ ] **Step 2: Verify dashboard tests fail**
+- [x] **Step 2: Verify dashboard tests fail**
 
 Run:
 
@@ -1145,7 +1159,7 @@ php artisan test tests/Feature/DashboardSliceTest.php
 
 Expected: FAIL.
 
-- [ ] **Step 3: Implement dashboard controllers and routes**
+- [x] **Step 3: Implement dashboard controllers and routes**
 
 Routes:
 
@@ -1158,7 +1172,7 @@ POST /admin/plugin-tokens
 DELETE /admin/plugin-tokens/{token}
 ```
 
-- [ ] **Step 4: Implement React pages**
+- [x] **Step 4: Implement React pages**
 
 Pages must match `09_DASHBOARD_WIREFRAMES.md` at low fidelity:
 
@@ -1172,7 +1186,7 @@ Wiki source status banner where wiki data appears
 
 Use dense operational UI. Do not build a landing page.
 
-- [ ] **Step 5: Verify dashboard tests pass**
+- [x] **Step 5: Verify dashboard tests pass**
 
 Run:
 
@@ -1184,7 +1198,7 @@ npm run build
 
 Expected: PASS and frontend build succeeds.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -1202,7 +1216,7 @@ git commit -m "feat: add devboard dashboard slice"
 - Modify: `README.md`
 - Modify: `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`
 
-- [ ] **Step 1: Write failing E2E test**
+- [x] **Step 1: Write failing E2E test**
 
 The E2E test should:
 
@@ -1219,7 +1233,7 @@ assert graph import status is imported or fake-imported in test mode
 assert dashboard project endpoint includes repository initialized status
 ```
 
-- [ ] **Step 2: Verify E2E test fails before wiring**
+- [x] **Step 2: Verify E2E test fails before wiring**
 
 Run:
 
@@ -1229,7 +1243,7 @@ python3 -m pytest tests/e2e/test_onboarding_genesis.py -q
 
 Expected: FAIL until bootstrap wiring is complete.
 
-- [ ] **Step 3: Implement E2E bootstrap script**
+- [x] **Step 3: Implement E2E bootstrap script**
 
 `scripts/devboard_e2e_bootstrap.sh` must:
 
@@ -1241,7 +1255,7 @@ run migrations and seeders
 run E2E command sequence
 ```
 
-- [ ] **Step 4: Add README instructions**
+- [x] **Step 4: Add README instructions**
 
 Document:
 
@@ -1253,7 +1267,7 @@ Neo4j requirement
 how to run the onboarding Genesis E2E test
 ```
 
-- [ ] **Step 5: Verify all tests**
+- [x] **Step 5: Verify all tests**
 
 Run:
 
@@ -1266,7 +1280,7 @@ cd .. && python3 -m pytest tests/e2e/test_onboarding_genesis.py -q
 
 Expected: all tests pass in a prepared local environment. If Neo4j is unavailable, run the E2E in fake graph import mode and record live Neo4j verification as a required manual acceptance check.
 
-- [ ] **Step 6: Update logbook**
+- [x] **Step 6: Update logbook**
 
 Append a logbook entry with:
 
@@ -1279,7 +1293,7 @@ files changed
 residual risks
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -1314,18 +1328,18 @@ git diff --check exits 0
 
 ## Acceptance Checklist
 
-- [ ] Admin can create a plugin token and see the full token once.
-- [ ] Plugin stores token outside the repository.
-- [ ] Plugin registers a device.
-- [ ] Plugin links a local repository.
-- [ ] `.devboard/state.json` exists without secrets.
-- [ ] Plugin starts a Genesis run.
-- [ ] Analyzer produces required Genesis artifacts.
-- [ ] Secret hard-block prevents unsafe finalize.
-- [ ] Artifact upload uses manifest, chunks, finalize, and hash validation.
-- [ ] Backend creates active snapshot after successful finalize.
-- [ ] Neo4j graph import runs from validated artifact data.
-- [ ] Wiki revisions are written with source status and evidence.
-- [ ] Kanban home, project detail, and run detail expose the imported state.
-- [ ] PM cannot create plugin tokens or access code-write controls.
-- [ ] Local plugin snapshot is labeled as local state, not remote Git truth.
+- [x] Admin can create a plugin token and see the full token once.
+- [x] Plugin stores token outside the repository.
+- [x] Plugin registers a device.
+- [x] Plugin links a local repository.
+- [x] `.devboard/state.json` exists without secrets.
+- [x] Plugin starts a Genesis run.
+- [x] Analyzer produces required Genesis artifacts.
+- [x] Secret hard-block prevents unsafe finalize.
+- [x] Artifact upload uses manifest, chunks, finalize, and hash validation.
+- [x] Backend creates active snapshot after successful finalize.
+- [x] Neo4j graph import runs from validated artifact data.
+- [x] Wiki revisions are written with source status and evidence.
+- [x] Kanban home, project detail, and run detail expose the imported state.
+- [x] PM cannot create plugin tokens or access code-write controls.
+- [x] Local plugin snapshot is labeled as local state, not remote Git truth.

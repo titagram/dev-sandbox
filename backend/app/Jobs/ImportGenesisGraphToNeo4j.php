@@ -16,6 +16,17 @@ class ImportGenesisGraphToNeo4j implements ShouldQueue
 
     public function handle(GenesisGraphImportService $service): void
     {
+        if (config('services.devboard.graph_import_mode') === 'fake') {
+            $service->importGenesis($this->genesisImportId, new class
+            {
+                public function run(string $cypher, array $params): void
+                {
+                }
+            }, 'fake');
+
+            return;
+        }
+
         $service->importGenesis($this->genesisImportId);
     }
 }

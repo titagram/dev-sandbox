@@ -37,5 +37,6 @@ def test_onboarding_genesis_e2e(tmp_path: Path) -> None:
     assert report["repo_state"]["contains_secret"] is False
     assert report["genesis"]["status"] == "active"
     assert report["graph"]["status"] in {"imported", "fake-imported"}
+    assert report["graph"]["mode"] == "fake"
     assert report["dashboard"]["project_response_ok"] is True
     assert report["dashboard"]["repository_initialized"] is True

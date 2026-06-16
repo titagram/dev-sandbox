@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Jobs\ImportGenesisGraphToNeo4j;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -103,6 +104,10 @@ class GenesisFinalizeService
             'payload' => json_encode(['snapshot_id' => $snapshotId], JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
+
+        if ($graphSnapshot) {
+            ImportGenesisGraphToNeo4j::dispatch($importId);
+        }
 
         return ['status' => 'active', 'snapshot_id' => $snapshotId];
     }

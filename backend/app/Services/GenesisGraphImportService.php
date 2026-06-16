@@ -72,7 +72,7 @@ class GenesisGraphImportService
         ];
     }
 
-    public function importGenesis(string $importId, ?object $client = null): void
+    public function importGenesis(string $importId, ?object $client = null, string $mode = 'neo4j'): void
     {
         $client ??= app(Neo4jClientFactory::class)->client();
         $import = DB::table('genesis_imports')->where('id', $importId)->first();
@@ -121,8 +121,10 @@ class GenesisGraphImportService
             'run_id' => $import->run_id,
             'event_type' => 'graph.imported',
             'severity' => 'info',
-            'message' => 'Genesis graph imported into Neo4j.',
-            'payload' => json_encode(['snapshot_id' => $snapshot->id], JSON_THROW_ON_ERROR),
+            'message' => $mode === 'fake'
+                ? 'Genesis graph import validated in fake mode.'
+                : 'Genesis graph imported into Neo4j.',
+            'payload' => json_encode(['snapshot_id' => $snapshot->id, 'mode' => $mode], JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
     }

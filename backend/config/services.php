@@ -43,4 +43,8 @@ return [
         ],
     ],
 
+    'devboard' => [
+        'graph_import_mode' => env('DEVBOARD_GRAPH_IMPORT_MODE', 'neo4j'),
+    ],
+
 ];

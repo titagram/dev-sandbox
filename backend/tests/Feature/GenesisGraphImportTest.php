@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\GenesisGraphImportService;
+use App\Services\Neo4jClientFactory;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -65,6 +66,15 @@ it('marks the import failed when Neo4j import fails', function () {
 
     expect(DB::table('genesis_imports')->where('id', $context['import_id'])->value('status'))->toBe('failed');
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeFalse();
+});
+
+it('builds a Neo4j client from configured basic auth', function () {
+    config([
+        'services.neo4j.uri' => 'bolt://localhost:7687',
+        'services.neo4j.auth' => ['neo4j', 'graphify-sandbox'],
+    ]);
+
+    expect(app(Neo4jClientFactory::class)->client())->toBeObject();
 });
 
 class FakeNeo4jClient

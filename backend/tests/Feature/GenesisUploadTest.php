@@ -10,6 +10,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
+    config(['services.devboard.graph_import_mode' => 'fake']);
     $this->seed(\Database\Seeders\DevBoardSeeder::class);
 });
 
@@ -112,6 +113,7 @@ it('finalizes a valid bundle and creates an active snapshot', function () {
 
     expect(DB::table('genesis_imports')->where('id', $importId)->value('status'))->toBe('active');
     expect(DB::table('snapshots')->where('repository_id', $context['repository_id'])->exists())->toBeTrue();
+    expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
 it('blocks finalize when security report contains blocked findings', function () {

@@ -4,7 +4,18 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKDIR="${DEVBOARD_E2E_WORKDIR:-/tmp/devboard-e2e}"
 REPORT="${DEVBOARD_E2E_REPORT:-${WORKDIR}/report.json}"
-PORT="${DEVBOARD_E2E_PORT:-8091}"
+if [[ -n "${DEVBOARD_E2E_PORT:-}" ]]; then
+  PORT="${DEVBOARD_E2E_PORT}"
+else
+  PORT="$(python3 - <<'PY'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)"
+fi
 SERVER_URL="http://127.0.0.1:${PORT}"
 DB_PATH="${WORKDIR}/devboard-e2e.sqlite"
 VENV="${WORKDIR}/venv"
@@ -126,6 +137,7 @@ cp -R "${ROOT}/fixtures/repos/simple-python" "${REPO_PATH}"
   DB_CONNECTION=sqlite \
   DB_DATABASE="${DB_PATH}" \
   APP_URL="${SERVER_URL}" \
+  DEVBOARD_GRAPH_IMPORT_MODE=fake \
   QUEUE_CONNECTION=sync \
   php artisan serve --host=127.0.0.1 --port="${PORT}" >"${SERVER_LOG}" 2>&1
 ) &
@@ -248,6 +260,14 @@ with sqlite3.connect(db_path) as conn:
         "select status from artifacts where repository_id = ? and artifact_type = 'graph_snapshot' order by created_at desc limit 1",
         (repository_id,),
     ).fetchone()
+    graph_event = conn.execute(
+        "select payload from run_events where run_id = ? and event_type = 'graph.imported' order by created_at desc limit 1",
+        (state.get("run_id"),),
+    ).fetchone()
+
+graph_mode = None
+if graph_event:
+    graph_mode = json.loads(graph_event["payload"]).get("mode")
 
 dashboard_project_ok = False
 dashboard_repository_initialized = False
@@ -291,7 +311,12 @@ report = {
         "status": active_genesis["status"] if active_genesis else None,
     },
     "graph": {
-        "status": "fake-imported" if graph_artifact and graph_artifact["status"] == "imported" else "missing",
+        "status": (
+            "fake-imported"
+            if graph_artifact and graph_artifact["status"] == "imported" and graph_mode == "fake"
+            else "missing"
+        ),
+        "mode": graph_mode,
     },
     "dashboard": {
         "project_response_ok": dashboard_project_ok,
