@@ -32,3 +32,17 @@ def test_devboard_directory_is_added_to_git_info_exclude(tmp_path):
     lines = exclude_path.read_text().splitlines()
 
     assert lines.count(".devboard/") == 1
+
+
+def test_devboard_directory_is_excluded_from_parent_git_info_when_nested(tmp_path):
+    info_dir = tmp_path / ".git" / "info"
+    nested_repo = tmp_path / "fixtures" / "repo"
+    info_dir.mkdir(parents=True)
+    nested_repo.mkdir(parents=True)
+    exclude_path = info_dir / "exclude"
+    exclude_path.write_text("# existing\n")
+
+    result = ensure_devboard_excluded(nested_repo)
+
+    assert result == exclude_path
+    assert ".devboard/" in exclude_path.read_text().splitlines()

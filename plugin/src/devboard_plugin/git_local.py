@@ -6,9 +6,9 @@ from pathlib import Path
 
 def ensure_devboard_excluded(repo_path: Path | str = ".") -> Path | None:
     root = Path(repo_path)
-    info_dir = root / ".git" / "info"
+    info_dir = _nearest_git_info_dir(root)
 
-    if not info_dir.exists():
+    if info_dir is None:
         return None
 
     info_dir.mkdir(parents=True, exist_ok=True)
@@ -22,6 +22,19 @@ def ensure_devboard_excluded(repo_path: Path | str = ".") -> Path | None:
             handle.write(".devboard/\n")
 
     return exclude_path
+
+
+def _nearest_git_info_dir(path: Path) -> Path | None:
+    current = path.resolve()
+    if current.is_file():
+        current = current.parent
+
+    for candidate in (current, *current.parents):
+        info_dir = candidate / ".git" / "info"
+        if info_dir.exists():
+            return info_dir
+
+    return None
 
 
 def current_branch(repo_path: Path | str = ".") -> str:
