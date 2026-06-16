@@ -1,0 +1,137 @@
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use RuntimeException;
+
+class GenesisGraphImportService
+{
+    /**
+     * @return array{cypher: string, params: array<string, mixed>}
+     */
+    public static function devBoardSnapshotCommand(string $snapshotId, string $repositoryId, string $runId): array
+    {
+        return [
+            'cypher' => 'MERGE (s:DevBoardSnapshot {snapshot_id: $snapshot_id}) SET s.repository_id = $repository_id, s.run_id = $run_id',
+            'params' => [
+                'snapshot_id' => $snapshotId,
+                'repository_id' => $repositoryId,
+                'run_id' => $runId,
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $node
+     * @return array{cypher: string, params: array<string, mixed>}
+     */
+    public static function nodeCommand(array $node, string $snapshotId, string $runId, string $repositoryId): array
+    {
+        $properties = array_merge($node['properties'] ?? [], [
+            'snapshot_id' => $snapshotId,
+            'run_id' => $runId,
+            'repository_id' => $repositoryId,
+        ]);
+
+        return [
+            'cypher' => 'MERGE (n:CodeNode {external_id: $id, snapshot_id: $snapshot_id}) SET n += $properties, n.labels = $labels',
+            'params' => [
+                'id' => $node['id'],
+                'snapshot_id' => $snapshotId,
+                'labels' => $node['labels'] ?? [],
+                'properties' => $properties,
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $relationship
+     * @return array{cypher: string, params: array<string, mixed>}
+     */
+    public static function relationshipCommand(array $relationship, string $snapshotId, string $runId, string $repositoryId): array
+    {
+        $properties = array_merge($relationship['properties'] ?? [], [
+            'snapshot_id' => $snapshotId,
+            'run_id' => $runId,
+            'repository_id' => $repositoryId,
+        ]);
+
+        return [
+            'cypher' => 'MATCH (source:CodeNode {external_id: $source_id, snapshot_id: $snapshot_id}) MATCH (target:CodeNode {external_id: $target_id, snapshot_id: $snapshot_id}) MERGE (source)-[r:RELATED {external_id: $id, snapshot_id: $snapshot_id}]->(target) SET r.type = $type, r += $properties',
+            'params' => [
+                'id' => $relationship['id'] ?? (string) Str::ulid(),
+                'source_id' => $relationship['source_id'] ?? $relationship['source_symbol_id'],
+                'target_id' => $relationship['target_id'] ?? $relationship['target_symbol_id'],
+                'type' => $relationship['type'],
+                'snapshot_id' => $snapshotId,
+                'properties' => $properties,
+            ],
+        ];
+    }
+
+    public function importGenesis(string $importId, ?object $client = null): void
+    {
+        $client ??= app(Neo4jClientFactory::class)->client();
+        $import = DB::table('genesis_imports')->where('id', $importId)->first();
+        if (! $import || ! $import->snapshot_id) {
+            throw new RuntimeException('Genesis import is not ready for graph import.');
+        }
+
+        $snapshot = DB::table('snapshots')->where('id', $import->snapshot_id)->first();
+        if (! $snapshot || ! $snapshot->graph_snapshot_artifact_id) {
+            throw new RuntimeException('Genesis snapshot does not reference a graph artifact.');
+        }
+
+        $artifact = DB::table('artifacts')->where('id', $snapshot->graph_snapshot_artifact_id)->first();
+        if (! $artifact) {
+            throw new RuntimeException('Graph snapshot artifact was not found.');
+        }
+
+        $graph = json_decode(Storage::disk('local')->get($artifact->storage_path), true, 512, JSON_THROW_ON_ERROR);
+
+        try {
+            $this->runCommand($client, self::devBoardSnapshotCommand($snapshot->id, $import->repository_id, $import->run_id));
+
+            foreach ($graph['nodes'] ?? [] as $node) {
+                $this->runCommand($client, self::nodeCommand($node, $snapshot->id, $import->run_id, $import->repository_id));
+            }
+
+            foreach ($graph['relationships'] ?? [] as $relationship) {
+                $this->runCommand($client, self::relationshipCommand($relationship, $snapshot->id, $import->run_id, $import->repository_id));
+            }
+        } catch (\Throwable $exception) {
+            DB::table('genesis_imports')->where('id', $importId)->update([
+                'status' => 'failed',
+                'updated_at' => now(),
+            ]);
+
+            throw $exception;
+        }
+
+        DB::table('artifacts')->where('id', $artifact->id)->update([
+            'status' => 'imported',
+            'updated_at' => now(),
+        ]);
+
+        DB::table('run_events')->insert([
+            'id' => (string) Str::ulid(),
+            'run_id' => $import->run_id,
+            'event_type' => 'graph.imported',
+            'severity' => 'info',
+            'message' => 'Genesis graph imported into Neo4j.',
+            'payload' => json_encode(['snapshot_id' => $snapshot->id], JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+        ]);
+    }
+
+    /**
+     * @param array{cypher: string, params: array<string, mixed>} $command
+     */
+    private function runCommand(object $client, array $command): void
+    {
+        $client->run($command['cypher'], $command['params']);
+    }
+}

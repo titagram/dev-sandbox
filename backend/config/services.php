@@ -35,4 +35,12 @@ return [
         ],
     ],
 
+    'neo4j' => [
+        'uri' => env('NEO4J_URI', 'bolt://localhost:7687'),
+        'auth' => [
+            env('NEO4J_USER', 'neo4j'),
+            env('NEO4J_PASSWORD', 'graphify-sandbox'),
+        ],
+    ],
+
 ];

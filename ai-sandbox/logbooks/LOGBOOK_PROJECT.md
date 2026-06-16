@@ -109,3 +109,14 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Verification: `cd backend && php artisan test tests/Feature/GenesisUploadTest.php` failed before implementation with missing endpoints; `cd plugin && /tmp/devboard-plugin-venv/bin/python -m pytest tests/test_artifact_upload.py -q` failed before implementation because artifact upload module was missing; after implementation Genesis upload tests passed 8 tests and 34 assertions, full backend tests passed 30 tests and 133 assertions, full plugin tests passed 13 tests, `cd backend && npm run build` passed, `cd backend && npm audit --json` reported 0 vulnerabilities, and `git diff --check` exited 0.
 - Skipped checks: did not run against persistent Docker volumes or target Ubuntu x64 yet; storage was verified with Laravel `Storage::fake`.
 - Residual risks: finalize currently creates the relational snapshot and defers full Neo4j graph import and wiki revision upserts to the next planned tasks.
+
+## 2026-06-16 - DevBoard Neo4j import task 9
+
+- Request: continue the DevBoard onboarding + Genesis implementation plan with Neo4j graph import.
+- Context read: `docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md`, graph artifact format emitted by the analyzer, existing Genesis finalize snapshot rows, and backend service config.
+- Intended write paths: `backend/app/Services/Neo4jClientFactory.php`, `backend/app/Services/GenesisGraphImportService.php`, `backend/app/Jobs/ImportGenesisGraphToNeo4j.php`, `backend/config/services.php`, `backend/tests/Feature/GenesisGraphImportTest.php`, `backend/tests/Unit/GenesisGraphCypherTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added RED graph import tests, implemented Neo4j client factory config, graph import service with parameterized DevBoardSnapshot/node/relationship command payloads, graph import run event, failure status handling, and a queue job wrapper.
+- Files changed: `backend/app/Services/Neo4jClientFactory.php`, `backend/app/Services/GenesisGraphImportService.php`, `backend/app/Jobs/ImportGenesisGraphToNeo4j.php`, `backend/config/services.php`, `backend/tests/Feature/GenesisGraphImportTest.php`, `backend/tests/Unit/GenesisGraphCypherTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `cd backend && php artisan test tests/Feature/GenesisGraphImportTest.php tests/Unit/GenesisGraphCypherTest.php` failed before implementation because `GenesisGraphImportService` was missing; after implementation graph tests passed 7 tests and 42 assertions; `cd backend && php artisan test` passed 37 tests and 175 assertions; `git diff --check` exited 0.
+- Skipped checks: did not connect to a live Neo4j container; tests use fake clients as required by the plan.
+- Residual risks: Cypher import currently stores graph nodes under generic `CodeNode` plus labels metadata; label-specific Neo4j modeling can be tightened after parser-backed Graphify extraction lands.
