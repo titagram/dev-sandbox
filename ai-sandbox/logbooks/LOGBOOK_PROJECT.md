@@ -54,3 +54,14 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Verification: `cd backend && php artisan test tests/Feature/PluginAuthTest.php` failed before implementation with 404s; after implementation it passed 5 tests and 19 assertions; `cd backend && php artisan test` passed 10 tests and 45 assertions; `cd backend && php artisan route:list --path=api/plugin` showed the two plugin routes; `git diff --check` exited 0.
 - Skipped checks: did not test token generation from the dashboard because dashboard token UI is not implemented yet.
 - Residual risks: token creation, scope enforcement, and dashboard role permissions are still future tasks; token hashing currently uses SHA-256 secret hashing per the V1 plan.
+
+## 2026-06-16 - DevBoard repository API task 4
+
+- Request: continue the DevBoard onboarding + Genesis implementation plan with project/repository listing, repository policy, local workspace registration, and safe instructions endpoints.
+- Context read: `docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md`, `docs/ai-devboard/04_PLUGIN_SERVER_CONTRACT.md`, existing plugin auth middleware, DevBoard seed data, and Laravel route config.
+- Intended write paths: `backend/app/Http/Controllers/Plugin/**`, `backend/app/Http/Middleware/AuthenticatePluginToken.php`, `backend/routes/api.php`, `backend/tests/Feature/PluginRepositoryApiTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added RED tests for repository API behavior, implemented scoped plugin route middleware, project and repository listing, local workspace upsert, V1 repository policy response, and token-safe repository instructions.
+- Files changed: `backend/app/Http/Middleware/AuthenticatePluginToken.php`, `backend/app/Http/Controllers/Plugin/ListProjectsController.php`, `backend/app/Http/Controllers/Plugin/ListRepositoriesController.php`, `backend/app/Http/Controllers/Plugin/RegisterLocalWorkspaceController.php`, `backend/app/Http/Controllers/Plugin/RepositoryPolicyController.php`, `backend/app/Http/Controllers/Plugin/RepositoryInstructionsController.php`, `backend/routes/api.php`, `backend/tests/Feature/PluginRepositoryApiTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `cd backend && php artisan test tests/Feature/PluginRepositoryApiTest.php` failed before implementation with 404s; after implementation it passed 6 tests and 24 assertions; `cd backend && php artisan test` passed 16 tests and 69 assertions; `cd backend && php artisan route:list --path=api/plugin` showed 7 plugin routes; `git diff --check` exited 0.
+- Skipped checks: did not run plugin CLI against these endpoints yet; plugin-side API client commands are planned in the next task.
+- Residual risks: authorization is currently scope-based at route level; richer role policy checks and audit events are still future tasks.

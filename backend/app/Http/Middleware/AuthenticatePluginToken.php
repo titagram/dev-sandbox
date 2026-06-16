@@ -18,15 +18,16 @@ class AuthenticatePluginToken
     /**
      * @param Closure(Request): Response $next
      */
-    public function handle(Request $request, Closure $next): Response
+    public function handle(Request $request, Closure $next, string ...$scopes): Response
     {
         try {
-            $request->attributes->set('plugin_auth', $this->tokens->authenticateRequest($request));
+            $auth = $this->tokens->authenticateRequest($request);
+            $request->attributes->set('plugin_auth', $auth);
         } catch (PluginTokenException $exception) {
             return $this->error($exception->errorCode, $exception->getMessage(), Response::HTTP_UNAUTHORIZED);
         }
 
-        if ($request->header('X-DevBoard-Protocol') !== 'v1' || $request->input('protocol_version') !== 'v1') {
+        if (! $this->hasSupportedProtocol($request)) {
             return $this->error(
                 'protocol_version_unsupported',
                 'Unsupported plugin protocol version.',
@@ -35,7 +36,46 @@ class AuthenticatePluginToken
             );
         }
 
+        $missingScopes = $this->missingScopes($auth['token']->scopes, $scopes);
+
+        if ($missingScopes !== []) {
+            return $this->error(
+                'scope_missing',
+                'Plugin token does not include the required scope.',
+                Response::HTTP_FORBIDDEN,
+                ['missing_scopes' => $missingScopes],
+            );
+        }
+
         return $next($request);
+    }
+
+    private function hasSupportedProtocol(Request $request): bool
+    {
+        if ($request->header('X-DevBoard-Protocol') !== 'v1') {
+            return false;
+        }
+
+        if ($request->isMethod('GET') || $request->isMethod('HEAD')) {
+            return true;
+        }
+
+        return $request->input('protocol_version') === 'v1';
+    }
+
+    /**
+     * @param array<int, string> $requiredScopes
+     * @return list<string>
+     */
+    private function missingScopes(string $tokenScopesJson, array $requiredScopes): array
+    {
+        if ($requiredScopes === []) {
+            return [];
+        }
+
+        $tokenScopes = json_decode($tokenScopesJson, true, 512, JSON_THROW_ON_ERROR);
+
+        return array_values(array_diff($requiredScopes, $tokenScopes));
     }
 
     /**
