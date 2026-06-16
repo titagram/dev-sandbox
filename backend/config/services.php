@@ -46,6 +46,7 @@ return [
     'devboard' => [
         'graph_import_mode' => env('DEVBOARD_GRAPH_IMPORT_MODE', 'neo4j'),
         'plugin_rate_limit_per_minute' => env('DEVBOARD_PLUGIN_RATE_LIMIT_PER_MINUTE', 120),
+        'artifact_retention_days' => env('DEVBOARD_ARTIFACT_RETENTION_DAYS', 90),
     ],
 
 ];

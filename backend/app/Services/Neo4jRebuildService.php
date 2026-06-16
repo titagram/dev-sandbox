@@ -4,7 +4,9 @@ namespace App\Services;
 
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
+use RuntimeException;
 
 class Neo4jRebuildService
 {
@@ -44,6 +46,7 @@ class Neo4jRebuildService
             }
 
             try {
+                $this->ensureGraphArtifactReadable($snapshot);
                 $this->purgeSnapshot($client, $snapshot->snapshot_id);
                 $this->graphs->importGraphArtifact(
                     $snapshot->snapshot_id,
@@ -83,6 +86,7 @@ class Neo4jRebuildService
                 'snapshots.created_by_run_id as run_id',
                 'snapshots.graph_snapshot_artifact_id as artifact_id',
                 'artifacts.status as artifact_status',
+                'artifacts.storage_path as artifact_storage_path',
             ])
             ->where('artifacts.artifact_type', 'graph_snapshot')
             ->when($filters['project_id'] ?? null, fn ($query, string $projectId) => $query->where('snapshots.project_id', $projectId))
@@ -90,6 +94,13 @@ class Neo4jRebuildService
             ->when($filters['snapshot_id'] ?? null, fn ($query, string $snapshotId) => $query->where('snapshots.id', $snapshotId))
             ->orderBy('snapshots.created_at')
             ->get();
+    }
+
+    private function ensureGraphArtifactReadable(object $snapshot): void
+    {
+        if (! Storage::disk('local')->exists($snapshot->artifact_storage_path)) {
+            throw new RuntimeException('Stored graph artifact is not readable.');
+        }
     }
 
     private function purgeSnapshot(object $client, string $snapshotId): void

@@ -117,6 +117,26 @@ it('exposes an artisan command to rebuild Neo4j projection by snapshot', functio
     expect(Artisan::output())->toContain('Rebuilt 1 graph projection');
 });
 
+it('does not purge an existing projection when the stored graph artifact is missing', function () {
+    $context = createGraphImportContext();
+    $client = new FakeNeo4jClient();
+    $storagePath = DB::table('artifacts')->where('id', $context['artifact_id'])->value('storage_path');
+
+    Storage::disk('local')->delete($storagePath);
+
+    $result = app(Neo4jRebuildService::class)->rebuild([
+        'snapshot_id' => $context['snapshot_id'],
+    ], $client, 'fake');
+
+    expect($result)->toMatchArray([
+        'scanned' => 1,
+        'rebuilt' => 0,
+        'failed' => 1,
+    ]);
+    expect($result['failures'][0]['message'])->toContain('Stored graph artifact is not readable');
+    expect($client->commands)->toBe([]);
+});
+
 class FakeNeo4jClient
 {
     public array $commands = [];

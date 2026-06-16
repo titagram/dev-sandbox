@@ -56,6 +56,13 @@ docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:neo
 docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:neo4j-rebuild --mode=fake
 ```
 
+Purge retained artifact contents after the configured window while preserving DB metadata and audit logs:
+
+```bash
+docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:artifacts-retain --dry-run
+docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:artifacts-retain --days=90
+```
+
 Python plugin/analyzer setup:
 
 ```bash

@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\ArtifactRetentionService;
 use App\Services\Neo4jRebuildService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -36,3 +37,42 @@ Artisan::command('devboard:neo4j-rebuild {--project=} {--repository=} {--snapsho
 
     return $result['failed'] === 0 ? 0 : 1;
 })->purpose('Rebuild the Neo4j projection from stored DevBoard graph artifacts');
+
+Artisan::command('devboard:artifacts-retain {--days=} {--dry-run} {--limit=}', function () {
+    $days = (int) ($this->option('days') ?: config('services.devboard.artifact_retention_days', 90));
+    $limitOption = $this->option('limit');
+    $limit = $limitOption === null ? null : (int) $limitOption;
+
+    if ($days < 1) {
+        $this->error('Invalid --days value. Use an integer greater than zero.');
+
+        return 1;
+    }
+
+    if ($limit !== null && $limit < 1) {
+        $this->error('Invalid --limit value. Use an integer greater than zero.');
+
+        return 1;
+    }
+
+    $dryRun = (bool) $this->option('dry-run');
+    $result = app(ArtifactRetentionService::class)->purgeOlderThan($days, $dryRun, $limit);
+
+    $this->info("Scanned {$result['scanned']} artifact(s).");
+
+    if ($dryRun) {
+        $this->info("Would purge {$result['would_purge']} artifact(s).");
+    } else {
+        $this->info("Purged {$result['purged']} artifact(s).");
+    }
+
+    if ($result['skipped'] > 0) {
+        $this->warn("Skipped {$result['skipped']} artifact(s) pinned by current workspace snapshots.");
+    }
+
+    foreach ($result['failures'] as $failure) {
+        $this->error("Failed {$failure['artifact_id']}: {$failure['message']}");
+    }
+
+    return $result['failed'] === 0 ? 0 : 1;
+})->purpose('Purge retained artifact contents after the configured retention window');
