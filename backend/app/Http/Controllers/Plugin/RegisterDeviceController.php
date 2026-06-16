@@ -7,6 +7,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\Response;
 
 class RegisterDeviceController extends Controller
 {
@@ -30,6 +31,15 @@ class RegisterDeviceController extends Controller
             ->first();
 
         if ($device) {
+            if ($device->status !== 'active') {
+                return response()->json([
+                    'error' => [
+                        'code' => 'device_required',
+                        'message' => 'A registered active plugin device is required.',
+                    ],
+                ], Response::HTTP_UNAUTHORIZED);
+            }
+
             DB::table('devices')->where('id', $device->id)->update([
                 'name' => $validated['name'],
                 'platform_os' => $validated['platform_os'],

@@ -50,6 +50,28 @@ it('registers a device and binds it to the active token', function () {
     expect(DB::table('api_tokens')->where('id', $token['id'])->value('device_id'))->toBe($deviceId);
 });
 
+it('does not reactivate a revoked device during registration', function () {
+    $token = createPluginToken();
+    $deviceId = createPluginDevice($token['user_id'], [
+        'fingerprint_hash' => 'sha256:revoked-registration-device',
+        'status' => 'revoked',
+    ]);
+
+    $this->postJson('/api/plugin/v1/devices/register', [
+        'protocol_version' => 'v1',
+        'name' => 'Revoked MacBook Pro',
+        'fingerprint_hash' => 'sha256:revoked-registration-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+    ], pluginHeaders($token['plain_token']))
+        ->assertUnauthorized()
+        ->assertJsonPath('error.code', 'device_required');
+
+    expect(DB::table('devices')->where('id', $deviceId)->value('status'))->toBe('revoked');
+    expect(DB::table('api_tokens')->where('id', $token['id'])->value('device_id'))->toBeNull();
+});
+
 it('rejects a revoked plugin token with token_revoked', function () {
     $token = createPluginToken(['revoked_at' => now()]);
 
