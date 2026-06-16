@@ -120,3 +120,14 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Verification: `cd backend && php artisan test tests/Feature/GenesisGraphImportTest.php tests/Unit/GenesisGraphCypherTest.php` failed before implementation because `GenesisGraphImportService` was missing; after implementation graph tests passed 7 tests and 42 assertions; `cd backend && php artisan test` passed 37 tests and 175 assertions; `git diff --check` exited 0.
 - Skipped checks: did not connect to a live Neo4j container; tests use fake clients as required by the plan.
 - Residual risks: Cypher import currently stores graph nodes under generic `CodeNode` plus labels metadata; label-specific Neo4j modeling can be tightened after parser-backed Graphify extraction lands.
+
+## 2026-06-16 - DevBoard wiki revisions task 10
+
+- Request: continue the DevBoard onboarding + Genesis implementation plan with direct plugin wiki writes and Genesis finalize wiki upserts.
+- Context read: `docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md`, wiki domain rules in `docs/ai-devboard/03_DOMAIN_MODEL.md`, plugin contract wiki payload shape, and existing Genesis finalize service.
+- Intended write paths: `backend/app/Services/WikiRevisionService.php`, `backend/app/Services/WikiRevisionException.php`, `backend/app/Http/Controllers/Plugin/WikiRevisionController.php`, `backend/routes/api.php`, `backend/app/Services/GenesisFinalizeService.php`, `backend/tests/Feature/WikiRevisionTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added RED wiki tests, implemented append-only wiki revisions, evidence enforcement for `verified_from_code`, direct plugin wiki revision endpoint, audit logging, page current revision updates, and Genesis finalize upsert from `wiki-pages.json`.
+- Files changed: `backend/app/Services/WikiRevisionService.php`, `backend/app/Services/WikiRevisionException.php`, `backend/app/Http/Controllers/Plugin/WikiRevisionController.php`, `backend/routes/api.php`, `backend/app/Services/GenesisFinalizeService.php`, `backend/tests/Feature/WikiRevisionTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `cd backend && php artisan test tests/Feature/WikiRevisionTest.php` failed before implementation with missing endpoint/service behavior; after implementation it passed 5 tests and 15 assertions; `cd backend && php artisan test` passed 42 tests and 190 assertions; `git diff --check` exited 0.
+- Skipped checks: UI rendering of wiki source labels is deferred to dashboard task.
+- Residual risks: wiki page conflict resolution beyond append-only revisions remains out of V1 scope.

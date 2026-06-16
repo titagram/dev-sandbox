@@ -15,6 +15,7 @@ use App\Http\Controllers\Plugin\GenesisChunkController;
 use App\Http\Controllers\Plugin\GenesisFinalizeController;
 use App\Http\Controllers\Plugin\GenesisStartController;
 use App\Http\Controllers\Plugin\GenesisStatusController;
+use App\Http\Controllers\Plugin\WikiRevisionController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('plugin/v1')->group(function () {
@@ -61,4 +62,7 @@ Route::prefix('plugin/v1')->group(function () {
 
     Route::get('/genesis-imports/{genesisImport}', GenesisStatusController::class)
         ->middleware('plugin.token:artifacts.write');
+
+    Route::post('/runs/{run}/wiki/revisions', WikiRevisionController::class)
+        ->middleware('plugin.token:wiki.write');
 });

@@ -7,7 +7,10 @@ use Illuminate\Support\Str;
 
 class GenesisFinalizeService
 {
-    public function __construct(private readonly ArtifactStorageService $storage)
+    public function __construct(
+        private readonly ArtifactStorageService $storage,
+        private readonly WikiRevisionService $wiki,
+    )
     {
     }
 
@@ -42,6 +45,8 @@ class GenesisFinalizeService
                 throw new ArtifactStorageException('secret_scan_blocked', 'Security report contains blocked findings.');
             }
         }
+
+        $this->writeWikiRevisions($artifacts, $import);
 
         DB::table('artifacts')
             ->where('run_id', $import->run_id)
@@ -100,5 +105,25 @@ class GenesisFinalizeService
         ]);
 
         return ['status' => 'active', 'snapshot_id' => $snapshotId];
+    }
+
+    private function writeWikiRevisions(object $artifacts, object $import): void
+    {
+        $wikiArtifact = $artifacts->firstWhere('artifact_type', 'wiki_pages');
+        if (! $wikiArtifact) {
+            return;
+        }
+
+        $run = DB::table('runs')->where('id', $import->run_id)->first();
+        $document = json_decode($this->storage->artifactContents($wikiArtifact), true, 512, JSON_THROW_ON_ERROR);
+
+        foreach ($document['pages'] ?? [] as $page) {
+            $this->wiki->write(array_merge($page, [
+                'project_id' => $page['project_id'] ?? $import->project_id,
+                'repository_id' => $page['repository_id'] ?? $import->repository_id,
+                'producer' => $page['producer'] ?? 'plugin',
+                'evidence_refs' => $page['evidence_refs'] ?? [],
+            ]), null, $run?->device_id);
+        }
     }
 }
