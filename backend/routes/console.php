@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\ArtifactRetentionService;
+use App\Services\AuditExportService;
 use App\Services\Neo4jRebuildService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -76,3 +77,25 @@ Artisan::command('devboard:artifacts-retain {--days=} {--dry-run} {--limit=}', f
 
     return $result['failed'] === 0 ? 0 : 1;
 })->purpose('Purge retained artifact contents after the configured retention window');
+
+Artisan::command('devboard:audit-export {--format=jsonl} {--path=} {--action=} {--actor-type=} {--from=} {--to=}', function () {
+    $format = $this->option('format') ?: 'jsonl';
+
+    if (! in_array($format, ['jsonl', 'csv'], true)) {
+        $this->error('Invalid --format value. Use jsonl or csv.');
+
+        return 1;
+    }
+
+    $result = app(AuditExportService::class)->export([
+        'action' => $this->option('action'),
+        'actor_type' => $this->option('actor-type'),
+        'from' => $this->option('from'),
+        'to' => $this->option('to'),
+    ], $format, $this->option('path') ?: null);
+
+    $this->info("Exported {$result['exported']} audit record(s) to {$result['path']}.");
+    $this->info("SHA-256: {$result['sha256']}");
+
+    return 0;
+})->purpose('Export sanitized audit logs to local JSONL or CSV storage');

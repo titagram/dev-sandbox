@@ -63,6 +63,14 @@ docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:art
 docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:artifacts-retain --days=90
 ```
 
+Export sanitized audit logs to local JSONL storage:
+
+```bash
+docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:audit-export
+docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:audit-export --action=artifact.purged
+docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:audit-export --format=csv --path=devboard/audit-exports/audit.csv
+```
+
 Python plugin/analyzer setup:
 
 ```bash
