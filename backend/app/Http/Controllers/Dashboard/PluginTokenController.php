@@ -104,4 +104,51 @@ class PluginTokenController extends Controller
 
         return back(303);
     }
+
+    public function rotate(Request $request, string $token): JsonResponse
+    {
+        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+
+        $tokenRow = DB::table('api_tokens')->where('id', $token)->first();
+        abort_unless($tokenRow, 404);
+        abort_if($tokenRow->revoked_at !== null, 409, 'Cannot rotate a revoked plugin token.');
+
+        $secret = Str::random(48);
+        $plainToken = $tokenRow->token_prefix.'|'.$secret;
+        $now = now();
+
+        DB::table('api_tokens')->where('id', $token)->update([
+            'token_hash' => hash('sha256', $secret),
+            'last_used_at' => null,
+            'updated_at' => $now,
+        ]);
+
+        DB::table('audit_logs')->insert([
+            'id' => (string) Str::ulid(),
+            'actor_user_id' => $request->user()->id,
+            'actor_device_id' => null,
+            'actor_type' => 'user',
+            'action' => 'token.rotated',
+            'target_type' => 'api_token',
+            'target_id' => $token,
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'payload' => json_encode([
+                'token_prefix' => $tokenRow->token_prefix,
+                'device_id' => $tokenRow->device_id,
+                'scopes' => json_decode($tokenRow->scopes, true, 512, JSON_THROW_ON_ERROR),
+            ], JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+        ]);
+
+        return response()->json([
+            'plain_token' => $plainToken,
+            'token' => [
+                'id' => $tokenRow->id,
+                'name' => $tokenRow->name,
+                'token_prefix' => $tokenRow->token_prefix,
+                'scopes' => json_decode($tokenRow->scopes, true, 512, JSON_THROW_ON_ERROR),
+            ],
+        ]);
+    }
 }

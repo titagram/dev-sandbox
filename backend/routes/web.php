@@ -20,6 +20,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/runs/{run}', RunShowController::class);
     Route::get('/admin/plugin-tokens', [PluginTokenController::class, 'index']);
     Route::post('/admin/plugin-tokens', [PluginTokenController::class, 'store']);
+    Route::post('/admin/plugin-tokens/{token}/rotate', [PluginTokenController::class, 'rotate']);
     Route::delete('/admin/plugin-tokens/{token}', [PluginTokenController::class, 'destroy']);
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy']);
 });

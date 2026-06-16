@@ -112,6 +112,42 @@ it('lets Admin revoke a plugin token', function () {
     expect(DB::table('api_tokens')->where('id', $token['id'])->value('revoked_at'))->not->toBeNull();
 });
 
+it('lets Admin rotate a plugin token and invalidates the old secret', function () {
+    $admin = dashboardUserWithRole('Admin');
+
+    $created = $this->actingAs($admin)->postJson('/admin/plugin-tokens', [
+        'name' => 'Rotatable plugin',
+        'scopes' => ['projects.read'],
+        'expires_in_days' => 30,
+    ])->json();
+
+    $oldPlainToken = $created['plain_token'];
+    $token = $created['token'];
+
+    $response = $this->actingAs($admin)->postJson("/admin/plugin-tokens/{$token['id']}/rotate")
+        ->assertOk()
+        ->assertJsonStructure(['plain_token', 'token']);
+
+    $newPlainToken = $response->json('plain_token');
+
+    expect($newPlainToken)->toStartWith($token['token_prefix'].'|');
+    expect($newPlainToken)->not->toBe($oldPlainToken);
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], pluginAuthHeaders($oldPlainToken))
+        ->assertUnauthorized()
+        ->assertJsonPath('error.code', 'unauthorized');
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], pluginAuthHeaders($newPlainToken))
+        ->assertOk()
+        ->assertJsonPath('authenticated', true);
+
+    expect(DB::table('audit_logs')
+        ->where('action', 'token.rotated')
+        ->where('target_type', 'api_token')
+        ->where('target_id', $token['id'])
+        ->exists())->toBeTrue();
+});
+
 function dashboardUserWithRole(string $roleName): User
 {
     $user = User::factory()->create();
@@ -125,6 +161,15 @@ function dashboardUserWithRole(string $roleName): User
     ]);
 
     return $user;
+}
+
+function pluginAuthHeaders(string $plainToken): array
+{
+    return [
+        'Authorization' => 'Bearer '.$plainToken,
+        'X-DevBoard-Protocol' => 'v1',
+        'X-DevBoard-Plugin-Version' => '0.1.0',
+    ];
 }
 
 function createDashboardRun(): string

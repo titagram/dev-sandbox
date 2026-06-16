@@ -1,5 +1,5 @@
 import { router } from '@inertiajs/react';
-import { Clipboard, KeyRound, Trash2 } from 'lucide-react';
+import { Clipboard, KeyRound, RotateCw, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import AppLayout from '../../Layouts/AppLayout';
 
@@ -48,6 +48,31 @@ export default function Tokens({ tokens, dashboard }) {
       preserveScroll: true,
       only: ['tokens'],
     });
+  }
+
+  async function rotateToken(tokenId) {
+    setSubmitting(true);
+    setError(null);
+
+    const response = await fetch(`/admin/plugin-tokens/${tokenId}/rotate`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
+    });
+
+    setSubmitting(false);
+
+    if (!response.ok) {
+      setError('Token rotation failed.');
+      return;
+    }
+
+    const payload = await response.json();
+    setPlainToken(payload.plain_token);
+    router.reload({ only: ['tokens'] });
   }
 
   return (
@@ -101,7 +126,7 @@ export default function Tokens({ tokens, dashboard }) {
                 <th>scopes</th>
                 <th>last used</th>
                 <th>state</th>
-                <th>revoke</th>
+                <th>actions</th>
               </tr>
             </thead>
             <tbody>
@@ -114,15 +139,26 @@ export default function Tokens({ tokens, dashboard }) {
                   <td>{token.last_used_at ?? 'never'}</td>
                   <td>{token.revoked_at ? 'revoked' : 'active'}</td>
                   <td>
-                    <button
-                      type="button"
-                      disabled={Boolean(token.revoked_at)}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded border border-zinc-200 text-zinc-600 disabled:opacity-40"
-                      onClick={() => revokeToken(token.id)}
-                      title="Revoke token"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={Boolean(token.revoked_at) || submitting}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded border border-zinc-200 text-zinc-600 disabled:opacity-40"
+                        onClick={() => rotateToken(token.id)}
+                        title="Rotate token"
+                      >
+                        <RotateCw size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={Boolean(token.revoked_at)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded border border-zinc-200 text-zinc-600 disabled:opacity-40"
+                        onClick={() => revokeToken(token.id)}
+                        title="Revoke token"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
