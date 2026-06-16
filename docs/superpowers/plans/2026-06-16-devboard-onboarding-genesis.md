@@ -43,10 +43,14 @@ analyzer/
   pyproject.toml
   src/devboard_analyzer/
   tests/
+docker/
+  devboard/
 fixtures/
   repos/simple-python/
 docs/ai-devboard/
 docs/superpowers/plans/
+docker-compose.devboard.yaml
+docker-compose.devboard.amd64.yaml
 ```
 
 Keep `ai-sandbox/` unchanged except for logbooks until its logic is deliberately migrated into `analyzer/` or `plugin/`.
@@ -84,9 +88,17 @@ test: add onboarding genesis e2e coverage
 - Create: `analyzer/pyproject.toml`
 - Create: `analyzer/src/devboard_analyzer/__init__.py`
 - Create: `analyzer/tests/test_analyzer_smoke.py`
+- Create: `docker-compose.devboard.yaml`
+- Create: `docker-compose.devboard.amd64.yaml`
+- Create: `docker/devboard/backend.Dockerfile`
+- Create: `docker/devboard/php.ini`
+- Create: `docker/devboard/README.md`
 - Create: `fixtures/repos/simple-python/pyproject.toml`
 - Create: `fixtures/repos/simple-python/src/simple_app/__init__.py`
 - Create: `fixtures/repos/simple-python/src/simple_app/routes.py`
+- Modify: `ai-sandbox/config/project.yaml`
+- Modify: `ai-sandbox/config/dependencies.lock.yaml`
+- Modify: `.gitignore`
 
 - [ ] **Step 1: Create an isolated implementation workspace**
 
@@ -254,12 +266,30 @@ cd ../backend && php artisan test
 
 Expected: all scaffold tests pass. If `pytest` is missing, create local virtualenvs and install test dependencies from `pyproject.toml` before rerunning.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 9: Add Docker compose scaffolding**
+
+Add a Docker Compose runtime for `app`, `node`, `postgres`, and `neo4j`.
+
+Rules:
+
+- Use `docker info --format '{{.OSType}}/{{.Architecture}}'` to record the current Docker platform.
+- Keep the base compose file multi-arch and do not infer image architecture from the Mac host.
+- Add an amd64 override with `platform: linux/amd64` for Ubuntu x64 deployment validation.
+- Keep PostgreSQL and Neo4j credentials aligned with `backend/.env.example`.
+
+Verify:
+
+```bash
+docker compose -f docker-compose.devboard.yaml config
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config
+```
+
+- [ ] **Step 10: Commit**
 
 Run:
 
 ```bash
-git add backend plugin analyzer fixtures
+git add backend plugin analyzer fixtures docker docker-compose.devboard.yaml docker-compose.devboard.amd64.yaml .gitignore ai-sandbox/config/project.yaml ai-sandbox/config/dependencies.lock.yaml docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md
 git commit -m "chore: scaffold devboard backend and plugin workspace"
 ```
 
@@ -1299,4 +1329,3 @@ git diff --check exits 0
 - [ ] Kanban home, project detail, and run detail expose the imported state.
 - [ ] PM cannot create plugin tokens or access code-write controls.
 - [ ] Local plugin snapshot is labeled as local state, not remote Git truth.
-

@@ -1,5 +1,11 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+plugin/src/*.egg-info/
+analyzer/src/*.egg-info/
 .DS_Store
 ai-sandbox/.venv/
 graphify-out/

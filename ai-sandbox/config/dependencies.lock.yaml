@@ -1,11 +1,21 @@
 dependencies:
+  docker:
+    docker_os: "linux"
+    docker_arch: "aarch64"
+    deploy_platform: "linux/amd64"
+    images:
+      php_backend: "php:8.4-cli-alpine"
+      composer: "composer:2"
+      node: "node:24-alpine"
+      postgres: "postgres:16-alpine"
+      neo4j: "neo4j:5-community"
   graphify:
     source: "system-or-vendored-wheel"
     package: "graphifyy==0.8.19"
   neo4j:
     required: true
     image: "neo4j:5-community"
-    docker_os: ""
-    docker_arch: ""
+    docker_os: "linux"
+    docker_arch: "aarch64"
     vendored_archives:
       - ""
