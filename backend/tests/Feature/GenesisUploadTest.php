@@ -55,6 +55,43 @@ it('allows duplicate uploads of the same chunk hash', function () {
         ->assertJsonPath('status', 'received');
 });
 
+it('finalizes a large multi-chunk Genesis artifact after retrying a chunk upload', function () {
+    $context = createGenesisUploadContext();
+    $largeContent = json_encode([
+        'files' => array_map(
+            fn (int $index): array => [
+                'path' => "src/LargeFile{$index}.php",
+                'sha256' => hash('sha256', str_repeat("line {$index}\n", 40)),
+                'size_bytes' => 4096 + $index,
+            ],
+            range(1, 180),
+        ),
+    ], JSON_THROW_ON_ERROR);
+    $chunks = str_split($largeContent, 1024);
+    $largeArtifact = genesisArtifact('file_inventory', 'file-inventory.json', $largeContent, count($chunks));
+    $securityReport = genesisArtifact('security_report', 'security-report.json', '{"blocked":[]}');
+    $importId = genesisStart($context, genesisManifest([$largeArtifact, $securityReport]))->json('import_id');
+
+    foreach ($chunks as $index => $chunk) {
+        genesisChunk($context, $importId, $largeArtifact['artifact_id'], $index, $chunk, hash('sha256', $chunk))->assertOk();
+
+        if ($index === 2) {
+            genesisChunk($context, $importId, $largeArtifact['artifact_id'], $index, $chunk, hash('sha256', $chunk))->assertOk();
+        }
+    }
+
+    genesisChunk($context, $importId, $securityReport['artifact_id'], 0, $securityReport['content'], hash('sha256', $securityReport['content']))->assertOk();
+
+    genesisFinalize($context, $importId)
+        ->assertOk()
+        ->assertJsonPath('status', 'active');
+
+    $storagePath = DB::table('artifacts')->where('id', $largeArtifact['artifact_id'])->value('storage_path');
+
+    expect(Storage::disk('local')->get($storagePath))->toBe($largeContent);
+    expect(DB::table('genesis_imports')->where('id', $importId)->value('status'))->toBe('active');
+});
+
 it('rejects duplicate uploads of the same chunk index with a different hash', function () {
     $context = createGenesisUploadContext();
     $artifact = genesisArtifact('file_inventory', 'file-inventory.json', 'hello');

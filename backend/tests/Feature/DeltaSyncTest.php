@@ -81,6 +81,52 @@ it('finalizes a valid delta bundle and creates a new snapshot', function () {
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
+it('finalizes a large multi-chunk Delta artifact after retrying a chunk upload', function () {
+    $context = createDeltaContext();
+    $largeContent = json_encode([
+        'hashes' => array_map(
+            fn (int $index): array => [
+                'path' => "src/ChangedFile{$index}.php",
+                'sha256' => hash('sha256', str_repeat("changed {$index}\n", 50)),
+            ],
+            range(1, 180),
+        ),
+    ], JSON_THROW_ON_ERROR);
+    $chunks = str_split($largeContent, 1024);
+    $fileHashes = deltaArtifact('file_hashes', 'file-hashes.json', $largeContent, count($chunks));
+    $artifacts = [
+        deltaArtifact('delta_manifest', 'delta-manifest.json', '{"protocol_version":"v1"}'),
+        $fileHashes,
+        deltaArtifact('diff_summary', 'diff-summary.json', '{"changed_file_count":180}'),
+        deltaArtifact('graph_snapshot', 'graph-snapshot.json', '{"nodes":[],"relationships":[]}'),
+        deltaArtifact('security_report', 'security-report.json', '{"blocked":[]}'),
+    ];
+    $deltaId = deltaStart($context, deltaManifest($artifacts))->json('delta_id');
+
+    foreach ($artifacts as $artifact) {
+        if ($artifact['artifact_id'] !== $fileHashes['artifact_id']) {
+            deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+        }
+    }
+
+    foreach ($chunks as $index => $chunk) {
+        deltaChunk($context, $deltaId, $fileHashes['artifact_id'], $index, $chunk, hash('sha256', $chunk))->assertOk();
+
+        if ($index === 2) {
+            deltaChunk($context, $deltaId, $fileHashes['artifact_id'], $index, $chunk, hash('sha256', $chunk))->assertOk();
+        }
+    }
+
+    deltaFinalize($context, $deltaId)
+        ->assertOk()
+        ->assertJsonPath('status', 'active');
+
+    $storagePath = DB::table('artifacts')->where('id', $fileHashes['artifact_id'])->value('storage_path');
+
+    expect(Storage::disk('local')->get($storagePath))->toBe($largeContent);
+    expect(DB::table('delta_syncs')->where('id', $deltaId)->value('status'))->toBe('active');
+});
+
 it('blocks delta finalize when security report contains blocked findings', function () {
     $context = createDeltaContext();
     $artifacts = [
