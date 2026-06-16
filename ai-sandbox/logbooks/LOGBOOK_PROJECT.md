@@ -11,3 +11,13 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Verification: placeholder scan over `docs/ai-devboard` returned no matches; `git diff --check` exited 0; targeted `rg` checks confirmed required public types and V1 decisions appear in the new docs.
 - Skipped checks: `python3 -m pytest -q` could not run because the active Python environment has no `pytest` module installed.
 - Residual risks: documentation has not yet been reviewed by a second human or implementation agent; no application behavior changed in this pass.
+
+## 2026-06-16 - DevBoard onboarding Genesis implementation plan
+
+- Request: proceed from the DevBoard V1 specification package by preparing the first implementation plan for `onboarding + Genesis Import`.
+- Context read: `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, `docs/ai-devboard/04_PLUGIN_SERVER_CONTRACT.md`, `docs/ai-devboard/05_GENESIS_IMPORT.md`, and `docs/ai-devboard/08_IMPLEMENTATION_STEPS.md`.
+- Work performed: added a task-by-task implementation plan for the first DevBoard vertical slice, including backend Laravel/Inertia scaffolding, plugin auth, device registration, repository link, run lifecycle, Genesis bundle generation, chunk upload/finalize, Neo4j import, wiki revisions, dashboard slice, and E2E acceptance.
+- Files changed: `docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: plan file exists; placeholder scan over the plan, DevBoard docs, and logbook returned no matches; trailing whitespace scan returned no matches; `git diff --check` exited 0.
+- Skipped checks: `python3 -m pytest -q` could not run because the active Python environment has no `pytest` module installed.
+- Residual risks: the plan references future application files that do not exist yet; implementation has not started.
