@@ -32,3 +32,14 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Verification: `docker info --format '{{.OSType}}/{{.Architecture}}'` returned `linux/aarch64`; `docker compose -f docker-compose.devboard.yaml config` passed; `docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config` passed; `cd backend && php artisan test` passed 3 tests and 4 assertions; `cd backend && npm run build` passed; `cd backend && npm audit --json` reported 0 vulnerabilities; `cd plugin && /tmp/devboard-plugin-venv/bin/python -m pytest -q` passed 1 test; `cd analyzer && /tmp/devboard-analyzer-venv/bin/python -m pytest -q` passed 1 test; `git diff --check` exited 0.
 - Skipped checks: did not start the long-running Compose services yet; this scaffold step validated Compose syntax and local smoke tests only.
 - Residual risks: Docker image pulls/builds are not yet verified on the target Ubuntu x64 server; the implementation is still scaffold-only and does not yet include domain schema or product endpoints.
+
+## 2026-06-16 - DevBoard domain schema task 2
+
+- Request: continue the DevBoard onboarding + Genesis implementation plan with the backend domain schema and seed data.
+- Context read: `docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md`, `docs/ai-devboard/03_DOMAIN_MODEL.md`, existing Laravel migrations, Pest setup, and database seeders.
+- Intended write paths: `backend/database/migrations/**`, `backend/database/seeders/**`, `backend/app/Enums/**`, `backend/tests/Feature/DomainSchemaTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added a failing domain schema test first, then implemented DevBoard core tables, source/run enums, required role/permission seed data, demo project/repository, and default Kanban board columns.
+- Files changed: `backend/database/migrations/0001_01_01_000000_create_users_table.php`, `backend/database/migrations/2026_06_16_000000_create_devboard_core_tables.php`, `backend/database/seeders/DatabaseSeeder.php`, `backend/database/seeders/DevBoardSeeder.php`, `backend/app/Enums/RunStatus.php`, `backend/app/Enums/SourceStatus.php`, `backend/app/Enums/SourceType.php`, `backend/tests/Feature/DomainSchemaTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `cd backend && php artisan test tests/Feature/DomainSchemaTest.php` failed before implementation because `roles` and `DevBoardSeeder` were missing; after implementation it passed 2 tests and 22 assertions; `cd backend && php artisan test` passed 5 tests and 26 assertions; `git diff --check` exited 0.
+- Skipped checks: did not run PostgreSQL-backed migrations yet; current schema tests run through Laravel's configured in-memory SQLite test database.
+- Residual risks: database-specific PostgreSQL constraints and Neo4j integration are not exercised until later tasks add service-backed E2E coverage.
