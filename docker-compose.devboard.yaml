@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: docker/devboard/backend.Dockerfile
     working_dir: /workspace/backend
-    command: sh -lc "composer install && php artisan serve --host=0.0.0.0 --port=8000"
+    command: sh -lc "composer install && php artisan serve --host=0.0.0.0 --port=8000 --no-reload"
     environment:
       APP_ENV: local
       APP_DEBUG: "true"
@@ -24,7 +24,7 @@ services:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: graphify-sandbox
     ports:
-      - "8000:8000"
+      - "${DEVBOARD_APP_PORT:-8000}:8000"
     volumes:
       - .:/workspace
       - devboard-composer-cache:/tmp/composer-cache
@@ -41,10 +41,11 @@ services:
     environment:
       VITE_DEV_SERVER_HOST: 0.0.0.0
     ports:
-      - "5173:5173"
+      - "${DEVBOARD_VITE_PORT:-5173}:5173"
     volumes:
       - .:/workspace
       - devboard-npm-cache:/root/.npm
+      - devboard-node-modules:/workspace/backend/node_modules
 
   postgres:
     image: postgres:16-alpine
@@ -53,7 +54,7 @@ services:
       POSTGRES_USER: devboard
       POSTGRES_PASSWORD: devboard
     ports:
-      - "5432:5432"
+      - "${DEVBOARD_POSTGRES_PORT:-5432}:5432"
     volumes:
       - devboard-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -69,8 +70,8 @@ services:
       NEO4J_server_memory_heap_initial__size: 512m
       NEO4J_server_memory_heap_max__size: 1G
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "${DEVBOARD_NEO4J_HTTP_PORT:-7474}:7474"
+      - "${DEVBOARD_NEO4J_BOLT_PORT:-7687}:7687"
     volumes:
       - devboard-neo4j-data:/data
       - devboard-neo4j-logs:/logs
@@ -87,6 +88,7 @@ services:
 volumes:
   devboard-composer-cache:
   devboard-npm-cache:
+  devboard-node-modules:
   devboard-postgres-data:
   devboard-neo4j-data:
   devboard-neo4j-logs:

@@ -12,6 +12,7 @@ class FakeArtifactClient:
         self.started = None
         self.chunks = []
         self.finalized = None
+        self.finished = None
 
     def start_genesis_import(self, repository_id, manifest, run_id, local_workspace_id):
         self.started = (repository_id, manifest, run_id, local_workspace_id)
@@ -24,6 +25,10 @@ class FakeArtifactClient:
     def finalize_genesis_import(self, import_id):
         self.finalized = import_id
         return {"status": "active"}
+
+    def finish_run(self, run_id, payload):
+        self.finished = (run_id, payload)
+        return {"run_id": run_id, "status": payload["status"]}
 
 
 def test_upload_genesis_bundle_reads_manifest_uploads_chunks_and_finalizes(tmp_path):
@@ -45,6 +50,25 @@ def test_upload_genesis_bundle_reads_manifest_uploads_chunks_and_finalizes(tmp_p
     assert [chunk[2] for chunk in fake.chunks] == [0, 1, 2]
     assert fake.finalized == "gen_123"
     assert result["status"] == "active"
+
+
+def test_upload_genesis_bundle_finishes_run_after_successful_finalize(tmp_path):
+    artifact_content = b'{"files":[]}'
+    bundle = _write_bundle(tmp_path, artifact_content)
+    fake = FakeArtifactClient()
+
+    upload_genesis_bundle(
+        fake,
+        repository_id="repo_123",
+        run_id="run_123",
+        local_workspace_id="lw_123",
+        bundle_path=bundle,
+    )
+
+    assert fake.finished == (
+        "run_123",
+        {"status": "finished", "summary": "Genesis import completed."},
+    )
 
 
 def test_client_upload_chunk_sends_chunk_hash_headers():

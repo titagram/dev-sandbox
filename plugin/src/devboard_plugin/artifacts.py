@@ -21,6 +21,9 @@ class GenesisUploadClient(Protocol):
     def finalize_genesis_import(self, import_id: str) -> dict[str, Any]:
         ...
 
+    def finish_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        ...
+
 
 def upload_genesis_bundle(
     client: GenesisUploadClient,
@@ -44,4 +47,7 @@ def upload_genesis_bundle(
             chunk = content[offset : offset + chunk_size]
             client.upload_genesis_chunk(import_id, artifact["artifact_id"], chunk_index, chunk)
 
-    return client.finalize_genesis_import(import_id)
+    finalized = client.finalize_genesis_import(import_id)
+    client.finish_run(run_id, {"status": "finished", "summary": "Genesis import completed."})
+
+    return finalized

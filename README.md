@@ -21,12 +21,25 @@ docker info --format '{{.OSType}}/{{.Architecture}}'
 docker compose -f docker-compose.devboard.yaml up app node postgres neo4j
 ```
 
+If local ports are already occupied, override only the host bindings:
+
+```bash
+DEVBOARD_APP_PORT=18000 \
+DEVBOARD_VITE_PORT=15173 \
+DEVBOARD_POSTGRES_PORT=15432 \
+DEVBOARD_NEO4J_HTTP_PORT=17474 \
+DEVBOARD_NEO4J_BOLT_PORT=17687 \
+docker compose -f docker-compose.devboard.yaml up app node postgres neo4j
+```
+
 The base compose file is multi-arch and should be used for local development. On a Mac M4, do not infer the deployment platform from the host CPU; Docker Desktop reports the actual container platform. For Ubuntu server x64 validation, add the amd64 override:
 
 ```bash
 docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config
 docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml up app node postgres neo4j
 ```
+
+The `node` service keeps `backend/node_modules` inside a Docker volume. This prevents Linux native npm bindings from overwriting the host checkout when local Mac builds and Docker builds are both used.
 
 Initialize the backend inside the app container:
 
@@ -42,6 +55,14 @@ python3 -m venv /tmp/devboard-plugin-venv
 /tmp/devboard-plugin-venv/bin/python -m pip install -e analyzer -e plugin pytest
 /tmp/devboard-plugin-venv/bin/devboard version
 ```
+
+Codex/Claude MCP setup:
+
+```bash
+/tmp/devboard-plugin-venv/bin/devboard-mcp
+```
+
+The versioned Codex plugin source is under `plugin/`. It includes `plugin/.codex-plugin/plugin.json` and `plugin/.mcp.json`, which expose the `devboard` MCP server through the `devboard-mcp` entrypoint. MCP tools use credentials from `~/.config/devboard/credentials.json` or `DEVBOARD_CREDENTIALS_PATH`; they do not accept raw backend tokens as tool parameters.
 
 PostgreSQL and Neo4j are required for the target self-hosted runtime. The automated onboarding Genesis E2E is a fast isolated smoke test: it uses temporary SQLite storage and fake graph-import acceptance so it can run without mutating persistent Docker volumes.
 
