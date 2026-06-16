@@ -54,16 +54,21 @@ class PluginTokenService
             throw new PluginTokenException('unauthorized', 'Plugin token is invalid.');
         }
 
+        $user = DB::table('users')->where('id', $token->user_id)->first();
+        $device = $token->device_id
+            ? DB::table('devices')->where('id', $token->device_id)->first()
+            : null;
+
+        if ($token->device_id !== null && (! $device || $device->status !== 'active')) {
+            throw new PluginTokenException('device_required', 'A registered active plugin device is required.');
+        }
+
         DB::table('api_tokens')->where('id', $token->id)->update([
             'last_used_at' => now(),
             'updated_at' => now(),
         ]);
 
         $token = DB::table('api_tokens')->where('id', $token->id)->first();
-        $user = DB::table('users')->where('id', $token->user_id)->first();
-        $device = $token->device_id
-            ? DB::table('devices')->where('id', $token->device_id)->first()
-            : null;
 
         return [
             'token' => $token,

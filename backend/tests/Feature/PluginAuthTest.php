@@ -58,6 +58,20 @@ it('rejects a revoked plugin token with token_revoked', function () {
         ->assertJsonPath('error.code', 'token_revoked');
 });
 
+it('rejects a plugin token bound to a revoked device', function () {
+    $token = createPluginToken();
+    $deviceId = createPluginDevice($token['user_id'], ['status' => 'revoked']);
+
+    DB::table('api_tokens')->where('id', $token['id'])->update([
+        'device_id' => $deviceId,
+        'updated_at' => now(),
+    ]);
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], pluginHeaders($token['plain_token']))
+        ->assertUnauthorized()
+        ->assertJsonPath('error.code', 'device_required');
+});
+
 it('rejects a plugin token with the wrong secret', function () {
     $token = createPluginToken();
     $wrongToken = $token['prefix'].'|wrong-secret';
@@ -83,7 +97,7 @@ function pluginHeaders(?string $token = null): array
 
 /**
  * @param array<string, mixed> $overrides
- * @return array{id: string, prefix: string, plain_token: string, secret: string}
+ * @return array{id: string, prefix: string, plain_token: string, secret: string, user_id: int}
  */
 function createPluginToken(array $overrides = []): array
 {
@@ -113,5 +127,31 @@ function createPluginToken(array $overrides = []): array
         'prefix' => $prefix,
         'plain_token' => $prefix.'|'.$secret,
         'secret' => $secret,
+        'user_id' => $user->id,
     ];
+}
+
+/**
+ * @param array<string, mixed> $overrides
+ */
+function createPluginDevice(int $userId, array $overrides = []): string
+{
+    $id = (string) Str::ulid();
+    $now = now();
+
+    DB::table('devices')->insert(array_merge([
+        'id' => $id,
+        'user_id' => $userId,
+        'name' => 'Test Device',
+        'fingerprint_hash' => 'sha256:test-revoked-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ], $overrides));
+
+    return $id;
 }

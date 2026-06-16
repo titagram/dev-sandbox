@@ -224,3 +224,13 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Files changed: `backend/app/Providers/AppServiceProvider.php`, `backend/config/services.php`, `backend/routes/api.php`, `backend/tests/Feature/PluginRateLimitTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
 - Verification: `cd backend && php artisan test tests/Feature/PluginRateLimitTest.php` failed before implementation because the third request returned 200 instead of 429, then passed 1 test and 4 assertions after implementation; `cd backend && php artisan test` passed 58 tests and 313 assertions. `php artisan route:list --path=api/plugin/v1 --columns=method,uri,middleware` was not supported by this Laravel version, so route listing was rerun without `--columns` and showed the 20 plugin v1 routes.
 - Residual risks: rate limiting is fixed-window Laravel throttling; differentiated limits for large artifact chunk uploads versus lightweight auth/context calls remain future tuning.
+
+## 2026-06-16 - DevBoard revoked device hardening
+
+- Request: continue Phase 10 hardening by denying plugin tokens bound to revoked or missing devices.
+- Context read: plugin token authentication service, plugin auth tests, device status domain fields, and Phase 10 acceptance item for revoked tokens/devices.
+- Intended write paths: `backend/app/Http/Controllers/Plugin/RegisterDeviceController.php`, `backend/app/Services/PluginTokenService.php`, `backend/tests/Feature/PluginAuthTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: changed plugin token authentication so a token already bound to a device only authenticates when that device still exists and has `status = active`; added a regression test for a token bound to a revoked device.
+- Files changed: `backend/app/Services/PluginTokenService.php`, `backend/tests/Feature/PluginAuthTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `cd backend && php artisan test tests/Feature/PluginAuthTest.php --filter='revoked device'` passed 1 test and 2 assertions; `cd backend && php artisan test tests/Feature/PluginAuthTest.php tests/Feature/PluginRateLimitTest.php` passed 7 tests and 25 assertions; `cd backend && php artisan test` passed 59 tests and 315 assertions.
+- Residual risks: device revocation is enforced at authentication time; an Admin dashboard control to revoke devices directly remains a future UI hardening task.
