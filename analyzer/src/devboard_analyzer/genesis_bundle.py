@@ -7,6 +7,7 @@ import secrets
 import time
 from typing import Any
 
+from devboard_analyzer.code_graph import build_code_graph, relation_index_from_graph, symbol_index_from_graph
 from devboard_analyzer.file_hashes import hash_file
 from devboard_analyzer.file_inventory import iter_repository_files
 from devboard_analyzer.safety import scan_safety
@@ -22,10 +23,13 @@ def build_genesis_bundle(root: Path | str, output_dir: Path | str, context: dict
     context = context or {}
     files = list(iter_repository_files(repo))
     safety_report = scan_safety(repo, files)
+    graph = build_code_graph(repo, files, context, graph_mode="full_snapshot")
 
     _write_json(output / "file-inventory.json", _file_inventory(repo, files))
     _write_json(output / "file-hashes.json", _file_hashes(repo, files))
-    _write_json(output / "graph-snapshot.json", _graph_snapshot(repo, files, context))
+    _write_json(output / "symbol-index.json", symbol_index_from_graph(graph))
+    _write_json(output / "relation-index.json", relation_index_from_graph(graph))
+    _write_json(output / "graph-snapshot.json", graph)
     _write_json(output / "wiki-pages.json", _wiki_pages(context))
     _write_json(output / "analysis-quality-report.json", _quality_report(files, safety_report))
     _write_json(output / "security-report.json", _security_report(safety_report))
@@ -33,6 +37,8 @@ def build_genesis_bundle(root: Path | str, output_dir: Path | str, context: dict
     artifact_filenames = [
         "file-inventory.json",
         "file-hashes.json",
+        "symbol-index.json",
+        "relation-index.json",
         "graph-snapshot.json",
         "wiki-pages.json",
         "analysis-quality-report.json",
@@ -81,24 +87,6 @@ def _file_hashes(repo: Path, files: list[Path]) -> dict[str, Any]:
             }
             for path in files
         ],
-    }
-
-
-def _graph_snapshot(repo: Path, files: list[Path], context: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "protocol_version": "v1",
-        "source_type": "local_analyzer",
-        "source_status": "verified_from_code",
-        "repository_id": context.get("repository_id"),
-        "nodes": [
-            {
-                "id": "file:" + path.relative_to(repo).as_posix(),
-                "labels": ["File"],
-                "properties": {"path": path.relative_to(repo).as_posix()},
-            }
-            for path in files
-        ],
-        "relationships": [],
     }
 
 

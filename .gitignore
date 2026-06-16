@@ -9,6 +9,7 @@ analyzer/src/*.egg-info/
 .DS_Store
 ai-sandbox/.venv/
 graphify-out/
+.devboard/
 ai-sandbox/graph/*.json
 ai-sandbox/graph/*.cypher
 ai-sandbox/graph/*.html

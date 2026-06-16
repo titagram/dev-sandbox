@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from devboard_analyzer.code_graph import build_code_graph, relation_index_from_graph, symbol_index_from_graph
 from devboard_analyzer.file_hashes import hash_file
 from devboard_analyzer.file_inventory import iter_repository_files
 from devboard_analyzer.genesis_bundle import _artifact_record, _write_json
@@ -20,34 +21,21 @@ def build_delta_bundle(root: Path | str, output_dir: Path | str, context: dict[s
     current_hashes = _current_hashes(repo, files)
     changed_files = _changed_files(base_hashes, current_hashes)
     safety_report = scan_safety(repo, files)
+    graph_files = _graph_files(repo, changed_files)
+    graph = build_code_graph(repo, graph_files, context, graph_mode="affected_subgraph")
+    risk_report = _risk_report(changed_files, safety_report)
+    payload = _delta_payload(context, changed_files, graph, risk_report)
 
     _write_json(output / "file-hashes.json", {"protocol_version": "v1", "hashes": _hash_rows(current_hashes)})
     _write_json(output / "diff-summary.json", _diff_summary(changed_files))
-    _write_json(output / "symbol-index.json", {"protocol_version": "v1", "symbols": []})
-    _write_json(output / "relation-index.json", {"protocol_version": "v1", "relations": []})
-    _write_json(output / "graph-snapshot.json", _graph_snapshot(context, changed_files))
+    _write_json(output / "delta-payload.json", payload)
+    _write_json(output / "symbol-index.json", symbol_index_from_graph(graph))
+    _write_json(output / "relation-index.json", relation_index_from_graph(graph))
+    _write_json(output / "graph-snapshot.json", graph)
     _write_json(output / "wiki-pages.json", _wiki_pages(context, changed_files))
-    _write_json(output / "risk-report.json", _risk_report(changed_files, safety_report))
+    _write_json(output / "risk-report.json", risk_report)
     _write_json(output / "analysis-quality-report.json", _quality_report(changed_files, safety_report))
     _write_json(output / "security-report.json", _security_report(safety_report))
-    delta_payload = {
-        "protocol_version": "v1",
-        "schema_version": "v1",
-        "bundle_type": "delta_sync",
-        "project_id": context.get("project_id"),
-        "repository_id": context.get("repository_id"),
-        "local_workspace_id": context.get("local_workspace_id"),
-        "run_id": context.get("run_id"),
-        "base_snapshot_id": context.get("base_snapshot_id"),
-        "branch": context.get("branch"),
-        "base_sha": context.get("base_sha"),
-        "head_sha": context.get("head_sha"),
-        "dirty_status": context.get("dirty_status", "unknown"),
-        "changed_files": changed_files,
-        "changed_file_count": len(changed_files),
-        "risk_report": _risk_report(changed_files, safety_report),
-    }
-    _write_json(output / "delta-payload.json", delta_payload)
 
     artifact_filenames = [
         "delta-payload.json",
@@ -63,7 +51,7 @@ def build_delta_bundle(root: Path | str, output_dir: Path | str, context: dict[s
     ]
     artifact_records = [_artifact_record(output / filename) for filename in artifact_filenames]
     artifact_records[0]["artifact_type"] = "delta_manifest"
-    manifest = {**delta_payload, "artifacts": artifact_records}
+    manifest = {**payload, "artifacts": artifact_records}
     _write_json(output / "delta-manifest.json", manifest)
 
     return {
@@ -131,22 +119,39 @@ def _count_changes(changed_files: list[dict[str, Any]], change_type: str) -> int
     return sum(1 for file in changed_files if file["change_type"] == change_type)
 
 
-def _graph_snapshot(context: dict[str, Any], changed_files: list[dict[str, Any]]) -> dict[str, Any]:
+def _graph_files(repo: Path, changed_files: list[dict[str, Any]]) -> list[Path]:
+    return [
+        repo / file["path"]
+        for file in changed_files
+        if file["change_type"] != "deleted" and (repo / file["path"]).exists()
+    ]
+
+
+def _delta_payload(
+    context: dict[str, Any],
+    changed_files: list[dict[str, Any]],
+    graph: dict[str, Any],
+    risk_report: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "protocol_version": "v1",
-        "source_type": "local_analyzer",
-        "source_status": "verified_from_code",
+        "schema_version": "v1",
+        "bundle_type": "delta_sync",
+        "project_id": context.get("project_id"),
         "repository_id": context.get("repository_id"),
-        "nodes": [
-            {
-                "id": "file:" + file["path"],
-                "labels": ["File"],
-                "properties": {"path": file["path"], "change_type": file["change_type"]},
-            }
-            for file in changed_files
-            if file["change_type"] != "deleted"
-        ],
-        "relationships": [],
+        "local_workspace_id": context.get("local_workspace_id"),
+        "run_id": context.get("run_id"),
+        "base_snapshot_id": context.get("base_snapshot_id"),
+        "branch": context.get("branch"),
+        "base_branch": context.get("base_branch"),
+        "base_sha": context.get("base_sha"),
+        "head_sha": context.get("head_sha"),
+        "dirty_status": context.get("dirty_status", "unknown"),
+        "changed_files": changed_files,
+        "changed_file_count": len(changed_files),
+        "graph_mode": graph.get("graph_mode", "affected_subgraph"),
+        "affected_symbol_ids": graph.get("affected_symbol_ids", []),
+        "risk_report": risk_report,
     }
 
 
