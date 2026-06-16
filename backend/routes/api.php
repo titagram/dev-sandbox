@@ -7,6 +7,10 @@ use App\Http\Controllers\Plugin\RegisterDeviceController;
 use App\Http\Controllers\Plugin\RegisterLocalWorkspaceController;
 use App\Http\Controllers\Plugin\RepositoryInstructionsController;
 use App\Http\Controllers\Plugin\RepositoryPolicyController;
+use App\Http\Controllers\Plugin\RunEventController;
+use App\Http\Controllers\Plugin\RunFinishController;
+use App\Http\Controllers\Plugin\RunHeartbeatController;
+use App\Http\Controllers\Plugin\RunStartController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('plugin/v1')->group(function () {
@@ -29,4 +33,16 @@ Route::prefix('plugin/v1')->group(function () {
 
     Route::get('/repositories/{repository}/instructions', RepositoryInstructionsController::class)
         ->middleware('plugin.token:repositories.read,policies.read');
+
+    Route::post('/runs', RunStartController::class)
+        ->middleware('plugin.token:runs.write');
+
+    Route::post('/runs/{run}/heartbeat', RunHeartbeatController::class)
+        ->middleware('plugin.token:runs.write');
+
+    Route::post('/runs/{run}/events', RunEventController::class)
+        ->middleware('plugin.token:runs.write');
+
+    Route::post('/runs/{run}/finish', RunFinishController::class)
+        ->middleware('plugin.token:runs.write');
 });

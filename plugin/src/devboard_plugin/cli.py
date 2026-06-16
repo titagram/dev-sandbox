@@ -15,11 +15,13 @@ auth_app = typer.Typer(help="Authenticate this local plugin")
 projects_app = typer.Typer(help="Read DevBoard projects")
 repos_app = typer.Typer(help="Link and inspect repositories")
 context_app = typer.Typer(help="Pull repository context")
+runs_app = typer.Typer(help="Manage plugin run lifecycle")
 
 app.add_typer(auth_app, name="auth")
 app.add_typer(projects_app, name="projects")
 app.add_typer(repos_app, name="repos")
 app.add_typer(context_app, name="context")
+app.add_typer(runs_app, name="runs")
 
 
 @app.callback()
@@ -124,6 +126,71 @@ def context_pull(
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
     echo_json(client_from_options(server_url, token).repository_instructions(repository_id))
+
+
+@runs_app.command("start")
+def runs_start(
+    project_id: str = typer.Option(..., "--project-id"),
+    repository_id: str = typer.Option(..., "--repository-id"),
+    local_workspace_id: str = typer.Option(..., "--local-workspace-id"),
+    task_id: str | None = typer.Option(None, "--task-id"),
+    run_type: str = typer.Option("genesis_import", "--run-type"),
+    runtime_profile: str = typer.Option("agent_plugin", "--runtime-profile"),
+    branch: str = typer.Option("main", "--branch"),
+    base_branch: str = typer.Option("main", "--base-branch"),
+    base_sha: str = typer.Option(..., "--base-sha"),
+    head_sha: str | None = typer.Option(None, "--head-sha"),
+    dirty_status: str = typer.Option("clean", "--dirty-status"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    payload = {
+        "project_id": project_id,
+        "repository_id": repository_id,
+        "local_workspace_id": local_workspace_id,
+        "task_id": task_id,
+        "run_type": run_type,
+        "runtime_profile": runtime_profile,
+        "branch": branch,
+        "base_branch": base_branch,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "dirty_status": dirty_status,
+    }
+    echo_json(client_from_options(server_url, token).start_run(payload))
+
+
+@runs_app.command("heartbeat")
+def runs_heartbeat(
+    run_id: str,
+    message: str | None = typer.Option(None, "--message"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    payload = {}
+    if message is not None:
+        payload["message"] = message
+
+    echo_json(client_from_options(server_url, token).heartbeat_run(run_id, payload))
+
+
+@runs_app.command("finish")
+def runs_finish(
+    run_id: str,
+    status: str = typer.Option("finished", "--status"),
+    summary: str | None = typer.Option(None, "--summary"),
+    risk_level: str | None = typer.Option(None, "--risk-level"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    payload = {
+        "status": status,
+        "summary": summary,
+    }
+    if risk_level is not None:
+        payload["risk_report"] = {"risk_level": risk_level}
+
+    echo_json(client_from_options(server_url, token).finish_run(run_id, payload))
 
 
 def client_from_options(server_url: str | None, token: str | None) -> DevBoardClient:

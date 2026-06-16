@@ -83,6 +83,15 @@ class DevBoardClient:
     def repository_instructions(self, repository_id: str) -> dict[str, Any]:
         return self.get(f"/api/plugin/v1/repositories/{repository_id}/instructions")
 
+    def start_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.post("/api/plugin/v1/runs", payload)
+
+    def heartbeat_run(self, run_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.post(f"/api/plugin/v1/runs/{run_id}/heartbeat", payload or {})
+
+    def finish_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.post(f"/api/plugin/v1/runs/{run_id}/finish", payload)
+
     def _raise_api_error(self, response: httpx.Response) -> None:
         try:
             error = response.json()["error"]
