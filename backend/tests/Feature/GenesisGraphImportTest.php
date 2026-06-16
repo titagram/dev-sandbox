@@ -2,7 +2,9 @@
 
 use App\Services\GenesisGraphImportService;
 use App\Services\Neo4jClientFactory;
+use App\Services\Neo4jRebuildService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -75,6 +77,44 @@ it('builds a Neo4j client from configured basic auth', function () {
     ]);
 
     expect(app(Neo4jClientFactory::class)->client())->toBeObject();
+});
+
+it('rebuilds a Neo4j projection from stored graph artifacts', function () {
+    $context = createGraphImportContext();
+    $client = new FakeNeo4jClient();
+
+    $result = app(Neo4jRebuildService::class)->rebuild([
+        'snapshot_id' => $context['snapshot_id'],
+    ], $client, 'fake');
+
+    expect($result)->toMatchArray([
+        'scanned' => 1,
+        'rebuilt' => 1,
+        'failed' => 0,
+    ]);
+
+    expect($client->commands[0]['cypher'])->toContain('DETACH DELETE');
+    expect($client->commands[0]['params']['snapshot_id'])->toBe($context['snapshot_id']);
+    expect(collect($client->commands)->contains(
+        fn (array $command): bool => str_contains($command['cypher'], 'DevBoardSnapshot'),
+    ))->toBeTrue();
+    expect(DB::table('run_events')
+        ->where('run_id', $context['run_id'])
+        ->where('event_type', 'graph.imported')
+        ->where('message', 'Neo4j rebuild validated in fake mode.')
+        ->exists())->toBeTrue();
+});
+
+it('exposes an artisan command to rebuild Neo4j projection by snapshot', function () {
+    $context = createGraphImportContext();
+
+    $exitCode = Artisan::call('devboard:neo4j-rebuild', [
+        '--snapshot' => $context['snapshot_id'],
+        '--mode' => 'fake',
+    ]);
+
+    expect($exitCode)->toBe(0);
+    expect(Artisan::output())->toContain('Rebuilt 1 graph projection');
 });
 
 class FakeNeo4jClient
@@ -228,6 +268,7 @@ function createGraphImportContext(): array
     return [
         'import_id' => $importId,
         'snapshot_id' => $snapshotId,
+        'artifact_id' => $artifactId,
         'run_id' => $runId,
         'repository_id' => $repositoryId,
     ];

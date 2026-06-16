@@ -48,6 +48,14 @@ docker compose -f docker-compose.devboard.yaml exec app php artisan migrate --se
 docker compose -f docker-compose.devboard.yaml exec app php artisan test
 ```
 
+Rebuild the Neo4j projection from stored validated graph artifacts:
+
+```bash
+docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:neo4j-rebuild
+docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:neo4j-rebuild --snapshot=<snapshot_id>
+docker compose -f docker-compose.devboard.yaml exec app php artisan devboard:neo4j-rebuild --mode=fake
+```
+
 Python plugin/analyzer setup:
 
 ```bash
