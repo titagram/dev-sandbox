@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
+import secrets
+import time
 from typing import Any
 
 from devboard_analyzer.file_hashes import hash_file
 from devboard_analyzer.file_inventory import iter_repository_files
 from devboard_analyzer.safety import scan_safety
+
+DEFAULT_CHUNK_SIZE = 5_242_880
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
 def build_genesis_bundle(root: Path | str, output_dir: Path | str, context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -44,12 +50,10 @@ def build_genesis_bundle(root: Path | str, output_dir: Path | str, context: dict
         "artifacts": artifact_records,
     }
     _write_json(output / "genesis-manifest.json", manifest)
-    manifest["artifacts"] = [_artifact_record(output / "genesis-manifest.json"), *artifact_records]
-    _write_json(output / "genesis-manifest.json", manifest)
 
     return {
         "output_dir": str(output),
-        "artifacts": manifest["artifacts"],
+        "artifacts": [_artifact_record(output / "genesis-manifest.json"), *artifact_records],
         "manifest_path": str(output / "genesis-manifest.json"),
     }
 
@@ -141,13 +145,17 @@ def _security_report(safety_report: Any) -> dict[str, Any]:
 
 
 def _artifact_record(path: Path) -> dict[str, Any]:
+    size_bytes = path.stat().st_size
+
     return {
+        "artifact_id": _ulid(),
         "filename": path.name,
         "artifact_type": path.stem.replace("-", "_"),
         "schema_version": "v1",
         "mime_type": "application/json",
         "sha256": hash_file(path),
-        "size_bytes": path.stat().st_size,
+        "size_bytes": size_bytes,
+        "chunk_count": max(1, math.ceil(size_bytes / DEFAULT_CHUNK_SIZE)),
         "producer": "devboard-python-plugin",
         "source_type": "local_analyzer",
         "source_status": "verified_from_code",
@@ -156,3 +164,10 @@ def _artifact_record(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def _ulid() -> str:
+    timestamp_ms = int(time.time() * 1000)
+    value = (timestamp_ms << 80) | secrets.randbits(80)
+
+    return "".join(_CROCKFORD[(value >> shift) & 31] for shift in range(125, -1, -5))

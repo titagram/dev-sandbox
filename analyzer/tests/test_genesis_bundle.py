@@ -44,6 +44,20 @@ def test_genesis_manifest_records_protocol_and_code_exposure(tmp_path):
     assert manifest["code_exposure"] == "full_code_artifacts"
 
 
+def test_genesis_manifest_records_upload_artifact_contract(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("print('ok')\n")
+    output = tmp_path / "bundle"
+
+    build_genesis_bundle(repo, output, {"code_exposure": "full_code_artifacts"})
+    manifest = json.loads((output / "genesis-manifest.json").read_text())
+
+    assert "genesis-manifest.json" not in {artifact["filename"] for artifact in manifest["artifacts"]}
+    assert all(len(artifact["artifact_id"]) == 26 for artifact in manifest["artifacts"])
+    assert all(artifact["chunk_count"] >= 1 for artifact in manifest["artifacts"])
+
+
 def test_wiki_page_artifact_includes_source_metadata(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

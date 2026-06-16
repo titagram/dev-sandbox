@@ -2,6 +2,65 @@
 
 Portable Codex-native framework for onboarding new or existing projects into an agentic development workflow.
 
+## DevBoard V1
+
+This repository is being migrated into DevBoard: a self-hosted Laravel + Inertia React dashboard with a local Python plugin and analyzer for onboarding repositories through Genesis Import.
+
+Primary modules:
+
+```text
+backend/   Laravel API, dashboard, artifact registry, wiki, graph import
+plugin/    Python CLI/local plugin used by Codex or Claude-facing adapters
+analyzer/  Python code analyzer that generates Genesis artifacts
+```
+
+Docker setup:
+
+```bash
+docker info --format '{{.OSType}}/{{.Architecture}}'
+docker compose -f docker-compose.devboard.yaml up app node postgres neo4j
+```
+
+The base compose file is multi-arch and should be used for local development. On a Mac M4, do not infer the deployment platform from the host CPU; Docker Desktop reports the actual container platform. For Ubuntu server x64 validation, add the amd64 override:
+
+```bash
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml up app node postgres neo4j
+```
+
+Initialize the backend inside the app container:
+
+```bash
+docker compose -f docker-compose.devboard.yaml exec app php artisan migrate --seed --seeder=DevBoardSeeder
+docker compose -f docker-compose.devboard.yaml exec app php artisan test
+```
+
+Python plugin/analyzer setup:
+
+```bash
+python3 -m venv /tmp/devboard-plugin-venv
+/tmp/devboard-plugin-venv/bin/python -m pip install -e analyzer -e plugin pytest
+/tmp/devboard-plugin-venv/bin/devboard version
+```
+
+PostgreSQL and Neo4j are required for the target self-hosted runtime. The automated onboarding Genesis E2E is a fast isolated smoke test: it uses temporary SQLite storage and fake graph-import acceptance so it can run without mutating persistent Docker volumes.
+
+```bash
+python3 -m venv /tmp/devboard-e2e-venv
+/tmp/devboard-e2e-venv/bin/python -m pip install pytest
+/tmp/devboard-e2e-venv/bin/python -m pytest tests/e2e/test_onboarding_genesis.py -q
+```
+
+The bootstrap script can also be run directly:
+
+```bash
+scripts/devboard_e2e_bootstrap.sh
+```
+
+It creates a temporary Laravel database, seeds Admin/project/repository/token state, starts the backend, registers a plugin device, links a fixture repository, builds and uploads Genesis artifacts, validates `.devboard/state.json` has no token, checks the dashboard project endpoint, and writes a JSON report.
+
+See `docker/devboard/README.md` for service ports and platform notes.
+
 ## Workspace Shape
 
 ```text
