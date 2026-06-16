@@ -22,7 +22,7 @@ use App\Http\Controllers\Plugin\GenesisStatusController;
 use App\Http\Controllers\Plugin\WikiRevisionController;
 use Illuminate\Support\Facades\Route;
 
-Route::prefix('plugin/v1')->group(function () {
+Route::prefix('plugin/v1')->middleware('throttle:plugin-api')->group(function () {
     Route::middleware('plugin.token')->group(function () {
         Route::post('/auth/check', AuthCheckController::class);
         Route::post('/devices/register', RegisterDeviceController::class);
