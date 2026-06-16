@@ -282,15 +282,14 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Intended write paths: `backend/app/Jobs/ImportGenesisGraphToNeo4j.php`, `backend/tests/Feature/GraphImportJobRetryTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
 - Work performed: added a bounded retry policy for Genesis graph imports with 3 tries, 3 max exceptions, 120 second timeout, and `[10, 60, 300]` second backoff; added a `failed()` callback that marks the Genesis Import failed and appends a `graph.import_failed` run event with retry metadata.
 - Files changed: `backend/app/Jobs/ImportGenesisGraphToNeo4j.php`, `backend/tests/Feature/GraphImportJobRetryTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
-- Verification: `cd backend && php artisan test tests/Feature/GraphImportJobRetryTest.php` failed before implementation because `maxExceptions` and `failed()` were missing, then passed 2 tests and 5 assertions.
+- Verification: `cd backend && php artisan test tests/Feature/GraphImportJobRetryTest.php` failed before implementation because `maxExceptions` and `failed()` were missing, then passed 2 tests and 5 assertions; `php artisan test tests/Feature/GraphImportJobRetryTest.php tests/Feature/GenesisGraphImportTest.php` passed 10 tests and 39 assertions; `php artisan test` passed 71 tests and 394 assertions; PHP lint passed for `ImportGenesisGraphToNeo4j.php`.
 - Residual risks: retry policy is deterministic and unit/feature covered; live queue worker behavior with the database queue should still be observed under real Neo4j outage conditions.
 
-## 2026-06-16 - DevBoard background job retry policy
+## 2026-06-16 - DevBoard large artifact stress tests
 
-- Request: continue Phase 10 hardening by making graph import job retry behavior explicit.
-- Context read: `ImportGenesisGraphToNeo4j` job, graph import tests, and Phase 10 background job retry policy requirement.
-- Intended write paths: `backend/app/Jobs/ImportGenesisGraphToNeo4j.php`, `backend/tests/Feature/GenesisGraphImportTest.php`, `backend/tests/Feature/GraphImportJobRetryTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
-- Work performed: declared explicit queue retry behavior on `ImportGenesisGraphToNeo4j`: 3 attempts, 3 max exceptions, 120-second timeout, and stepped backoff `[10, 60, 300]`; added a `failed()` handler that marks the Genesis Import failed and records `graph.import_failed`; added regression coverage so this policy remains visible.
-- Files changed: `backend/app/Jobs/ImportGenesisGraphToNeo4j.php`, `backend/tests/Feature/GenesisGraphImportTest.php`, `backend/tests/Feature/GraphImportJobRetryTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
-- Verification: Docker RED test `php artisan test tests/Feature/GenesisGraphImportTest.php --filter='retry policy'` failed before implementation because `$tries` was undefined; Docker retry file `php artisan test tests/Feature/GraphImportJobRetryTest.php` then failed because `$maxExceptions` and `failed()` were missing; after implementation, Docker retry tests passed 3 tests and 8 assertions, Docker graph suite passed 12 tests and 66 assertions, and Docker full backend `php artisan test` passed 72 tests and 397 assertions.
-- Residual risks: retry policy is explicit for the graph import job; broader queue worker deployment settings such as process supervision, dead-letter handling, and alerting remain deployment concerns.
+- Request: finish Phase 10 hardening by covering large chunked artifact retry and finalize.
+- Context read: Genesis and Delta upload/finalize tests and helper functions, artifact storage service behavior, and Phase 10 large upload acceptance item.
+- Intended write paths: `backend/tests/Feature/GenesisUploadTest.php`, `backend/tests/Feature/DeltaSyncTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: pending.
+- Verification: pending.
+- Residual risks: pending.
