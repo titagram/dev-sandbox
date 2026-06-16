@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Any
 
 import httpx
@@ -48,6 +49,22 @@ class DevBoardClient:
 
         return {}
 
+    def request_bytes(self, method: str, path: str, content: bytes, headers: dict[str, str]) -> dict[str, Any]:
+        merged_headers = self.headers()
+        merged_headers.update(headers)
+        with httpx.Client(
+            base_url=self.base_url.rstrip("/"),
+            headers=merged_headers,
+            transport=self.transport,
+            timeout=30.0,
+        ) as client:
+            response = client.request(method, path, content=content)
+
+        if response.is_error:
+            self._raise_api_error(response)
+
+        return response.json() if response.content else {}
+
     def headers(self) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -91,6 +108,37 @@ class DevBoardClient:
 
     def finish_run(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post(f"/api/plugin/v1/runs/{run_id}/finish", payload)
+
+    def start_genesis_import(
+        self,
+        repository_id: str,
+        manifest: dict[str, Any],
+        run_id: str,
+        local_workspace_id: str,
+    ) -> dict[str, Any]:
+        return self.post(
+            f"/api/plugin/v1/repositories/{repository_id}/genesis-imports",
+            {
+                "run_id": run_id,
+                "local_workspace_id": local_workspace_id,
+                "manifest": manifest,
+            },
+        )
+
+    def upload_genesis_chunk(self, import_id: str, artifact_id: str, chunk_index: int, content: bytes) -> dict[str, Any]:
+        return self.request_bytes(
+            "PUT",
+            f"/api/plugin/v1/genesis-imports/{import_id}/artifacts/{artifact_id}/chunks/{chunk_index}",
+            content,
+            {
+                "X-DevBoard-Chunk-SHA256": hashlib.sha256(content).hexdigest(),
+                "X-DevBoard-Chunk-Size": str(len(content)),
+                "Content-Type": "application/octet-stream",
+            },
+        )
+
+    def finalize_genesis_import(self, import_id: str) -> dict[str, Any]:
+        return self.post(f"/api/plugin/v1/genesis-imports/{import_id}/finalize")
 
     def _raise_api_error(self, response: httpx.Response) -> None:
         try:

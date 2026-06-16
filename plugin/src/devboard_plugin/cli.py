@@ -5,10 +5,11 @@ from pathlib import Path
 
 import typer
 
+from devboard_plugin.artifacts import upload_genesis_bundle
 from devboard_plugin.client import DevBoardApiError, DevBoardClient
 from devboard_plugin.config import credentials_from_options, load_credentials, save_credentials, Credentials
 from devboard_plugin.git_local import current_branch, dirty_status, ensure_devboard_excluded, head_sha, local_root_hash
-from devboard_plugin.state import write_repo_link_state, write_repo_state
+from devboard_plugin.state import read_repo_state, write_repo_link_state, write_repo_state
 
 app = typer.Typer(help="DevBoard local plugin")
 auth_app = typer.Typer(help="Authenticate this local plugin")
@@ -17,6 +18,7 @@ repos_app = typer.Typer(help="Link and inspect repositories")
 context_app = typer.Typer(help="Pull repository context")
 runs_app = typer.Typer(help="Manage plugin run lifecycle")
 genesis_app = typer.Typer(help="Build and upload Genesis artifacts")
+artifacts_app = typer.Typer(help="Upload generated artifacts")
 
 app.add_typer(auth_app, name="auth")
 app.add_typer(projects_app, name="projects")
@@ -24,6 +26,7 @@ app.add_typer(repos_app, name="repos")
 app.add_typer(context_app, name="context")
 app.add_typer(runs_app, name="runs")
 app.add_typer(genesis_app, name="genesis")
+app.add_typer(artifacts_app, name="artifacts")
 
 
 @app.callback()
@@ -250,6 +253,39 @@ def genesis_run(
         },
     )
     echo_json({"run_id": run_id, "status": "bundle_built", "bundle": bundle})
+
+
+@artifacts_app.command("upload")
+def artifacts_upload(
+    genesis: bool = typer.Option(False, "--genesis"),
+    repository_id: str | None = typer.Option(None, "--repository-id"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    local_workspace_id: str | None = typer.Option(None, "--local-workspace-id"),
+    bundle_path: Path | None = typer.Option(None, "--bundle-path"),
+    repo_path: Path = typer.Option(Path("."), "--repo-path"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    if not genesis:
+        raise typer.BadParameter("Only --genesis upload is supported in v1.")
+
+    state = read_repo_state(repo_path)
+    repository_id = repository_id or state.get("repository_id")
+    run_id = run_id or state.get("run_id")
+    local_workspace_id = local_workspace_id or state.get("local_workspace_id")
+    bundle_path = bundle_path or Path(state["genesis_bundle_path"])
+
+    if not repository_id or not run_id or not local_workspace_id:
+        raise typer.BadParameter("repository_id, run_id, and local_workspace_id are required.")
+
+    response = upload_genesis_bundle(
+        client_from_options(server_url, token),
+        repository_id=repository_id,
+        run_id=run_id,
+        local_workspace_id=local_workspace_id,
+        bundle_path=bundle_path,
+    )
+    echo_json(response)
 
 
 def client_from_options(server_url: str | None, token: str | None) -> DevBoardClient:

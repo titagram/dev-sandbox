@@ -60,6 +60,10 @@ class AuthenticatePluginToken
             return true;
         }
 
+        if (str_starts_with((string) $request->header('Content-Type'), 'application/octet-stream')) {
+            return true;
+        }
+
         return $request->input('protocol_version') === 'v1';
     }
 
