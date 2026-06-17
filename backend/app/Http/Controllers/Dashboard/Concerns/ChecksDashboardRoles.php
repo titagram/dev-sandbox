@@ -65,7 +65,7 @@ trait ChecksDashboardRoles
             return [
                 ...$items,
                 ['label' => 'Admin', 'href' => '/admin/plugin-tokens', 'key' => 'admin'],
-                ['label' => 'System', 'href' => '/kanban', 'key' => 'system'],
+                ['label' => 'System', 'href' => '/system', 'key' => 'system'],
             ];
         }
 
@@ -74,7 +74,7 @@ trait ChecksDashboardRoles
                 ['label' => 'Projects', 'href' => $projectId ? "/projects/{$projectId}" : '/kanban', 'key' => 'projects'],
                 ['label' => 'Runs', 'href' => '/runs', 'key' => 'runs'],
                 ['label' => 'Artifacts', 'href' => '/artifacts', 'key' => 'artifacts'],
-                ['label' => 'System', 'href' => '/kanban', 'key' => 'system'],
+                ['label' => 'System', 'href' => '/system', 'key' => 'system'],
             ];
         }
 

@@ -330,6 +330,30 @@ it('blocks PM access to Admin token page', function () {
     $this->actingAs($pm)->get('/admin/plugin-tokens')->assertForbidden();
 });
 
+it('lets a Sysadmin open the system page and blocks PM access', function () {
+    $sysadmin = dashboardUserWithRole('Sysadmin');
+    $pm = dashboardUserWithRole('PM');
+    createDashboardDeltaRun();
+
+    $this->actingAs($sysadmin)->get('/system')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('System/Show')
+            ->where('dashboard.navigation', function ($navigation) {
+                $items = collect($navigation);
+
+                expect($items->firstWhere('key', 'system')['href'] ?? null)->toBe('/system');
+
+                return true;
+            })
+            ->where('health.active_devices', 1)
+            ->where('health.runs_total', 1)
+            ->where('health.repositories_total', 1)
+        );
+
+    $this->actingAs($pm)->get('/system')->assertForbidden();
+});
+
 it('lets Admin create a plugin token and only returns the secret once', function () {
     $admin = dashboardUserWithRole('Admin');
 
