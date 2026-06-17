@@ -30,10 +30,39 @@ it('lets an authenticated PM see the Kanban home', function () {
                 expect($items->firstWhere('key', 'graph')['href'] ?? null)->toBe('/graph');
                 expect($items->firstWhere('key', 'runs')['href'] ?? null)->toBe('/runs');
                 expect($items->firstWhere('key', 'wiki')['href'] ?? null)->toBe('/wiki');
+                expect($items->firstWhere('key', 'artifacts')['href'] ?? null)->toBe('/artifacts');
 
                 return true;
             })
             ->has('recentRuns')
+        );
+});
+
+it('shows an artifacts index with download and run links when available', function () {
+    Storage::fake('local');
+
+    $pm = dashboardUserWithRole('PM');
+    $deltaRunId = createDashboardDeltaRun();
+    $graphRunId = createDashboardGraphViewRun();
+
+    $this->actingAs($pm)->get('/artifacts')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Artifacts/Index')
+            ->where('artifacts', function ($artifacts) use ($deltaRunId, $graphRunId) {
+                $items = collect($artifacts);
+                $diffArtifact = $items->firstWhere('artifact_type', 'diff_summary');
+                $graphArtifact = $items->firstWhere('run_id', $graphRunId);
+
+                expect($diffArtifact['status'] ?? null)->toBe('validated');
+                expect($diffArtifact['source_label'] ?? null)->toBe('local_plugin_snapshot');
+                expect($diffArtifact['run']['href'] ?? null)->toBe("/runs/{$deltaRunId}");
+                expect($diffArtifact['download_href'] ?? null)->not->toBeNull();
+                expect($graphArtifact['artifact_type'] ?? null)->toBe('graph_snapshot');
+                expect($graphArtifact['run']['href'] ?? null)->toBe("/runs/{$graphRunId}");
+
+                return true;
+            })
         );
 });
 

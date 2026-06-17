@@ -58,7 +58,7 @@ trait ChecksDashboardRoles
             ['label' => 'Runs', 'href' => '/runs', 'key' => 'runs'],
             ['label' => 'Wiki', 'href' => '/wiki', 'key' => 'wiki'],
             ['label' => 'Graph', 'href' => '/graph', 'key' => 'graph'],
-            ['label' => 'Artifacts', 'href' => '/kanban', 'key' => 'artifacts'],
+            ['label' => 'Artifacts', 'href' => '/artifacts', 'key' => 'artifacts'],
         ];
 
         if (in_array('Admin', $roles, true)) {
@@ -73,7 +73,7 @@ trait ChecksDashboardRoles
             return [
                 ['label' => 'Projects', 'href' => $projectId ? "/projects/{$projectId}" : '/kanban', 'key' => 'projects'],
                 ['label' => 'Runs', 'href' => '/runs', 'key' => 'runs'],
-                ['label' => 'Artifacts', 'href' => '/kanban', 'key' => 'artifacts'],
+                ['label' => 'Artifacts', 'href' => '/artifacts', 'key' => 'artifacts'],
                 ['label' => 'System', 'href' => '/kanban', 'key' => 'system'],
             ];
         }
