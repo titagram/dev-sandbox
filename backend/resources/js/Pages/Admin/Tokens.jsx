@@ -94,6 +94,10 @@ export default function Tokens({ tokens, devices, dashboard }) {
   }
 
   async function rotateToken(tokenId) {
+    if (!window.confirm('Rotate this token now and invalidate the current secret immediately?')) {
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
 
@@ -104,6 +108,9 @@ export default function Tokens({ tokens, devices, dashboard }) {
         'Content-Type': 'application/json',
         'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
       },
+      body: JSON.stringify({
+        confirm_rotate: true,
+      }),
     });
 
     setSubmitting(false);

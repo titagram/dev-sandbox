@@ -95,6 +95,7 @@ export default function RunShow({ run, linkedTask, graphView, runContext, projec
           ) : null}
           <div className="mt-4 grid gap-3 lg:grid-cols-3">
             <StatusTile label="Graph" value={state.graph_status} />
+            <StatusTile label="Graph mode" value={state.graph_extraction_mode ?? 'unknown'} />
             <StatusTile label="Wiki" value={state.wiki_status} />
             <StatusTile label="Risk review" value={risk.severity} />
           </div>

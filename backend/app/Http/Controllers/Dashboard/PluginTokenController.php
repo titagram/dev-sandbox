@@ -147,6 +147,19 @@ class PluginTokenController extends Controller
     {
         abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
 
+        $validated = $request->validate([
+            'confirm_rotate' => ['nullable', 'boolean'],
+        ]);
+
+        if (! ($validated['confirm_rotate'] ?? false)) {
+            return response()->json([
+                'message' => 'The confirm rotate field must be accepted before token rotation.',
+                'errors' => [
+                    'confirm_rotate' => ['Explicit confirmation is required before token rotation.'],
+                ],
+            ], 422);
+        }
+
         $tokenRow = DB::table('api_tokens')->where('id', $token)->first();
         abort_unless($tokenRow, 404);
         abort_if($tokenRow->revoked_at !== null, 409, 'Cannot rotate a revoked plugin token.');
@@ -194,15 +207,35 @@ class PluginTokenController extends Controller
     {
         abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
 
-        abort_unless(DB::table('devices')->where('id', $device)->exists(), 404);
+        $deviceRow = DB::table('devices')->where('id', $device)->first();
+        abort_unless($deviceRow, 404);
+        $now = now();
 
         DB::table('devices')
             ->where('id', $device)
             ->where('status', '!=', 'revoked')
             ->update([
                 'status' => 'revoked',
-                'updated_at' => now(),
+                'updated_at' => $now,
             ]);
+
+        DB::table('audit_logs')->insert([
+            'id' => (string) Str::ulid(),
+            'actor_user_id' => $request->user()->id,
+            'actor_device_id' => null,
+            'actor_type' => 'user',
+            'action' => 'device.revoked',
+            'target_type' => 'device',
+            'target_id' => $device,
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'payload' => json_encode([
+                'device_name' => $deviceRow->name,
+                'previous_status' => $deviceRow->status,
+                'bound_token_count' => DB::table('api_tokens')->where('device_id', $device)->count(),
+            ], JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+        ]);
 
         return response()->json(['revoked' => true]);
     }

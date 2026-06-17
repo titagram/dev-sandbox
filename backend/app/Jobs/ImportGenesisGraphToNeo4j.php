@@ -39,12 +39,12 @@ class ImportGenesisGraphToNeo4j implements ShouldQueue
                 public function run(string $cypher, array $params): void
                 {
                 }
-            }, 'fake');
+            }, 'fake', false);
 
             return;
         }
 
-        $service->importGenesis($this->genesisImportId);
+        $service->importGenesis($this->genesisImportId, null, 'neo4j', false);
     }
 
     public function failed(Throwable $exception): void

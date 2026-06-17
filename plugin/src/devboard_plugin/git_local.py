@@ -30,11 +30,48 @@ def _nearest_git_info_dir(path: Path) -> Path | None:
         current = current.parent
 
     for candidate in (current, *current.parents):
-        info_dir = candidate / ".git" / "info"
-        if info_dir.exists():
+        info_dir = _git_info_dir_for_candidate(candidate)
+        if info_dir is not None:
             return info_dir
 
     return None
+
+
+def _git_info_dir_for_candidate(candidate: Path) -> Path | None:
+    dot_git = candidate / ".git"
+
+    if dot_git.is_dir():
+        return dot_git / "info"
+
+    if not dot_git.is_file():
+        return None
+
+    gitdir = _gitdir_from_pointer_file(dot_git)
+    if gitdir is None:
+        return None
+
+    return gitdir / "info"
+
+
+def _gitdir_from_pointer_file(dot_git: Path) -> Path | None:
+    try:
+        content = dot_git.read_text().strip()
+    except OSError:
+        return None
+
+    prefix = "gitdir:"
+    if not content.lower().startswith(prefix):
+        return None
+
+    gitdir_value = content[len(prefix):].strip()
+    if not gitdir_value:
+        return None
+
+    gitdir = Path(gitdir_value)
+    if not gitdir.is_absolute():
+        gitdir = (dot_git.parent / gitdir).resolve()
+
+    return gitdir
 
 
 def current_branch(repo_path: Path | str = ".") -> str:

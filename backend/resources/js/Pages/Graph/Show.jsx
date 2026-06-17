@@ -26,8 +26,8 @@ export default function GraphShow({ sourceLabel, project, repository, linkedRun,
       <section className="mt-5 grid gap-4 lg:grid-cols-4">
         <StatusTile label="Nodes" value={graph.node_count} />
         <StatusTile label="Relationships" value={graph.relationship_count} />
-        <StatusTile label="Snapshot" value={snapshot?.id ?? 'n/a'} />
-        <StatusTile label="Dirty status" value={snapshot?.dirty_status ?? 'n/a'} />
+        <StatusTile label="Extraction mode" value={graph.extraction_mode ?? 'unknown'} />
+        <StatusTile label="Parser" value={graph.parser ?? 'unknown'} />
       </section>
 
       <section className="mt-5 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
@@ -37,8 +37,11 @@ export default function GraphShow({ sourceLabel, project, repository, linkedRun,
             Snapshot Context
           </div>
           <div className="mt-3 space-y-2 text-sm text-zinc-600">
+            <div>snapshot: {snapshot?.id ?? 'n/a'}</div>
             <div>run: {snapshot?.run_id ?? 'n/a'}</div>
             <div>source: {snapshot?.source_type ?? 'n/a'}</div>
+            <div>analyzer: {graph.analyzer ?? 'unknown'}</div>
+            <div>dirty status: {snapshot?.dirty_status ?? 'n/a'}</div>
             <div>base: {snapshot?.base_sha ?? 'n/a'}</div>
             <div>head: {snapshot?.head_sha ?? 'n/a'}</div>
           </div>

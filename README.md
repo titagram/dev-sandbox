@@ -196,6 +196,14 @@ La pagina `/admin/plugin-tokens` ora copre:
 - elenco device registrati
 - revoca device registrati
 
+La rotazione token richiede ora una conferma esplicita lato UI e lato server.
+
+La pagina `/system` ora copre anche:
+
+- artifact retention con `dry-run` e purge live confermato
+- audit export con filtri `action`, `actor_type`, `from`, `to`
+- storico locale dell'ultima operazione nella sessione corrente
+
 ## Creazione token plugin
 
 Il flusso standard e`:
@@ -405,7 +413,10 @@ docker compose -f docker-compose.devboard.yaml exec -T app php artisan devboard:
 ```bash
 docker compose -f docker-compose.devboard.yaml exec -T app php artisan devboard:artifacts-retain --dry-run
 docker compose -f docker-compose.devboard.yaml exec -T app php artisan devboard:artifacts-retain --days=90
+docker compose -f docker-compose.devboard.yaml exec -T app php artisan schedule:list
 ```
+
+Lo scheduler Laravel registra anche una retention giornaliera automatica alle `03:15`, usando `DEVBOARD_ARTIFACT_RETENTION_DAYS`.
 
 ### Export audit log
 
@@ -432,6 +443,56 @@ docker compose -f docker-compose.devboard.yaml exec -T neo4j cypher-shell -u neo
   "MATCH (s:DevBoardSnapshot) RETURN count(s) AS snapshots; MATCH (n:CodeNode) RETURN count(n) AS code_nodes;"
 ```
 
+## Note runtime e limiti plugin
+
+Rate limit plugin attuali:
+
+- light bucket: `DEVBOARD_PLUGIN_LIGHT_RATE_LIMIT_PER_MINUTE` default `240`
+- heavy bucket: `DEVBOARD_PLUGIN_HEAVY_RATE_LIMIT_PER_MINUTE` default `30`
+- fallback legacy compat: `DEVBOARD_PLUGIN_RATE_LIMIT_PER_MINUTE`
+
+Bucket `light`:
+
+- auth
+- device register
+- project/repository list
+- policy/instructions
+- run lifecycle leggero
+- local snapshot
+- wiki revision
+
+Bucket `heavy`:
+
+- Genesis start
+- Delta start
+- chunk upload
+- finalize
+
+Nei dettagli run e nella graph page viene mostrato anche il `graph_extraction_mode` corrente:
+
+- `graphify`
+- `python_ast_fallback`
+- `lightweight_fallback`
+- `file_only`
+
+Questo evita di sovrastimare la copertura graph sui repository non Python.
+
+## Verifiche recenti sul branch
+
+Verificate in questa sessione:
+
+- `docker compose -f docker-compose.devboard.yaml config`
+- `docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config`
+- stack Docker locale `app + postgres + neo4j` avviato e healthy
+- `curl http://127.0.0.1:8000/up`
+- `psql select 1`
+- `cypher-shell RETURN 1`
+- E2E `tests/e2e/test_onboarding_genesis.py`
+- backend `php artisan test`
+- plugin `pytest`
+- analyzer `pytest`
+- frontend `npm run build`
+
 ## Cose che restano da fare
 
 Questa sezione e` intenzionalmente mantenuta come backlog operativo sintetico.
@@ -439,23 +500,21 @@ Questa sezione e` intenzionalmente mantenuta come backlog operativo sintetico.
 ### Deployment e runtime
 
 - validazione reale su host Ubuntu x64, non solo config/compose da Mac
-- osservazione di un vero queue worker con fault Neo4j reali
-- tuning rate limit distinto tra auth/context e upload chunk pesanti
+- harness piu` deterministico per esaurire anche i retry Neo4j live e osservare il passaggio finale a `graph.import_failed`
 
 ### Hardening prodotto
 
-- scheduler o UI per artifact retention
-- controlli UI piu` espliciti su export audit
-- conferma aggiuntiva per la rotazione token
+- download/link gestiti per gli export audit generati dalla UI
+- policy di retention dedicata per i file di audit export
 
 ### Analyzer / graph
 
-- espansione adapter Graphify/tree-sitter oltre il fallback Python AST
-- miglior supporto a repository non Python quando Graphify non e` disponibile
+- espansione parser-backed oltre il fallback lightweight regex
+- copertura piu` profonda dei simboli non Python oltre il livello dichiarativo
 
 ### File system / Git edge cases
 
-- hardening per repository/worktree che espongono `.git` come file invece che directory
+- test live su repository reali con submodule/worktree complessi, oltre ai fixture sintetici
 
 ## Note
 

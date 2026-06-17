@@ -98,6 +98,7 @@ class RunShowController extends Controller
             ],
             'state' => [
                 'graph_status' => $graphArtifact?->status ?? 'not_promoted',
+                'graph_extraction_mode' => $this->artifactMetadataValue($graphArtifact, 'graph_extraction_mode') ?? 'unknown',
                 'wiki_status' => DB::table('wiki_revisions')
                     ->whereIn('wiki_page_id', DB::table('wiki_pages')->where('project_id', $runRow->project_id)->pluck('id'))
                     ->where('producer', 'devboard-python-plugin')
@@ -300,5 +301,16 @@ class RunShowController extends Controller
         }
 
         return [];
+    }
+
+    private function artifactMetadataValue(?object $artifact, string $key): mixed
+    {
+        if (! $artifact) {
+            return null;
+        }
+
+        $metadata = $this->decodeJson($artifact->metadata);
+
+        return $metadata[$key] ?? null;
     }
 }

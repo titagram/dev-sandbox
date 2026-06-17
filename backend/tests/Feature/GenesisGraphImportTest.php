@@ -3,6 +3,7 @@
 use App\Services\GenesisGraphImportService;
 use App\Services\Neo4jClientFactory;
 use App\Services\Neo4jRebuildService;
+use App\Jobs\ImportGenesisGraphToNeo4j;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -68,6 +69,32 @@ it('marks the import failed when Neo4j import fails', function () {
 
     expect(DB::table('genesis_imports')->where('id', $context['import_id'])->value('status'))->toBe('failed');
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeFalse();
+});
+
+it('keeps the import active while a queued graph retry is still pending', function () {
+    $context = createGraphImportContext();
+
+    expect(fn () => app(GenesisGraphImportService::class)->importGenesis(
+        $context['import_id'],
+        new FailingNeo4jClient(),
+        'neo4j',
+        false,
+    ))->toThrow(RuntimeException::class);
+
+    expect(DB::table('genesis_imports')->where('id', $context['import_id'])->value('status'))->toBe('active');
+    expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.import_failed')->exists())->toBeFalse();
+});
+
+it('marks the import failed and records a run event after queue retries are exhausted', function () {
+    $context = createGraphImportContext();
+
+    (new ImportGenesisGraphToNeo4j($context['import_id']))->failed(new RuntimeException('neo4j unavailable'));
+
+    expect(DB::table('genesis_imports')->where('id', $context['import_id'])->value('status'))->toBe('failed');
+    expect(DB::table('run_events')
+        ->where('run_id', $context['run_id'])
+        ->where('event_type', 'graph.import_failed')
+        ->exists())->toBeTrue();
 });
 
 it('builds a Neo4j client from configured basic auth', function () {

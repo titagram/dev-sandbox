@@ -72,7 +72,12 @@ class GenesisGraphImportService
         ];
     }
 
-    public function importGenesis(string $importId, ?object $client = null, string $mode = 'neo4j'): void
+    public function importGenesis(
+        string $importId,
+        ?object $client = null,
+        string $mode = 'neo4j',
+        bool $markFailedOnException = true,
+    ): void
     {
         $client ??= app(Neo4jClientFactory::class)->client();
         $import = DB::table('genesis_imports')->where('id', $importId)->first();
@@ -97,10 +102,12 @@ class GenesisGraphImportService
                 'Genesis graph imported into Neo4j.',
             );
         } catch (\Throwable $exception) {
-            DB::table('genesis_imports')->where('id', $importId)->update([
-                'status' => 'failed',
-                'updated_at' => now(),
-            ]);
+            if ($markFailedOnException) {
+                DB::table('genesis_imports')->where('id', $importId)->update([
+                    'status' => 'failed',
+                    'updated_at' => now(),
+                ]);
+            }
 
             throw $exception;
         }

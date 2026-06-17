@@ -37,6 +37,17 @@ class SystemShowController extends Controller
                 'neo4j_uri' => config('services.neo4j.uri'),
                 'queue_connection' => config('queue.default'),
             ],
+            'operations' => [
+                'artifact_retention' => [
+                    'run_href' => '/system/artifact-retention',
+                    'default_days' => (int) config('services.devboard.artifact_retention_days', 90),
+                ],
+                'audit_export' => [
+                    'run_href' => '/system/audit-exports',
+                    'formats' => ['jsonl', 'csv'],
+                    'actor_types' => ['user', 'plugin', 'system'],
+                ],
+            ],
             'dashboard' => [
                 'user' => $this->dashboardUser($request->user()),
                 'navigation' => $this->dashboardNavigation($request->user(), $project?->id),

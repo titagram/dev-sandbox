@@ -75,6 +75,13 @@ it('exposes an artisan command for dry-run artifact retention', function () {
     expect(DB::table('artifacts')->where('id', $artifact['id'])->value('status'))->toBe('validated');
 });
 
+it('registers a scheduled artifact retention command', function () {
+    $exitCode = Artisan::call('schedule:list');
+
+    expect($exitCode)->toBe(0);
+    expect(Artisan::output())->toContain('devboard:artifacts-retain');
+});
+
 /**
  * @param array<string, mixed> $overrides
  * @return array{id: string, project_id: string, repository_id: string, run_id: string, storage_path: string}

@@ -2,7 +2,9 @@
 
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\Dashboard\ArtifactDownloadController;
+use App\Http\Controllers\Dashboard\ArtifactRetentionRunController;
 use App\Http\Controllers\Dashboard\ArtifactsIndexController;
+use App\Http\Controllers\Dashboard\AuditExportStoreController;
 use App\Http\Controllers\Dashboard\GraphShowController;
 use App\Http\Controllers\Dashboard\KanbanController;
 use App\Http\Controllers\Dashboard\PluginTokenController;
@@ -32,6 +34,8 @@ Route::middleware('auth')->group(function () {
     Route::get('/runs', RunsIndexController::class);
     Route::get('/runs/{run}', RunShowController::class);
     Route::get('/system', SystemShowController::class);
+    Route::post('/system/artifact-retention', ArtifactRetentionRunController::class);
+    Route::post('/system/audit-exports', AuditExportStoreController::class);
     Route::get('/tasks/{task}', TaskShowController::class);
     Route::get('/wiki', WikiIndexController::class);
     Route::get('/wiki/pages/{page}', WikiShowController::class);

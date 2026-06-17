@@ -3,7 +3,54 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+_LIGHTWEIGHT_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
+    ".js": [
+        ("function", re.compile(r"^\s*(?:export\s+)?function\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE)),
+        ("class", re.compile(r"^\s*(?:export\s+)?class\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("const", re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\(", re.MULTILINE)),
+    ],
+    ".jsx": [
+        ("function", re.compile(r"^\s*(?:export\s+)?function\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE)),
+        ("class", re.compile(r"^\s*(?:export\s+)?class\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("const", re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_]\w*)\s*=\s*(?:async\s*)?\(", re.MULTILINE)),
+    ],
+    ".ts": [
+        ("function", re.compile(r"^\s*(?:export\s+)?function\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE)),
+        ("class", re.compile(r"^\s*(?:export\s+)?class\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("interface", re.compile(r"^\s*(?:export\s+)?interface\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("enum", re.compile(r"^\s*(?:export\s+)?enum\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("type", re.compile(r"^\s*(?:export\s+)?type\s+([A-Za-z_]\w*)\s*=", re.MULTILINE)),
+    ],
+    ".tsx": [
+        ("function", re.compile(r"^\s*(?:export\s+)?function\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE)),
+        ("class", re.compile(r"^\s*(?:export\s+)?class\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("interface", re.compile(r"^\s*(?:export\s+)?interface\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("enum", re.compile(r"^\s*(?:export\s+)?enum\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("type", re.compile(r"^\s*(?:export\s+)?type\s+([A-Za-z_]\w*)\s*=", re.MULTILINE)),
+    ],
+    ".php": [
+        ("class", re.compile(r"^\s*(?:final\s+|abstract\s+)?class\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("interface", re.compile(r"^\s*interface\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("trait", re.compile(r"^\s*trait\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("function", re.compile(r"^\s*(?:public|protected|private)?\s*function\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE)),
+    ],
+    ".go": [
+        ("function", re.compile(r"^\s*func\s+(?:\([^)]+\)\s*)?([A-Za-z_]\w*)\s*\(", re.MULTILINE)),
+        ("type", re.compile(r"^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)\b", re.MULTILINE)),
+    ],
+    ".java": [
+        ("class", re.compile(r"^\s*(?:public\s+)?class\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("interface", re.compile(r"^\s*(?:public\s+)?interface\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+        ("enum", re.compile(r"^\s*(?:public\s+)?enum\s+([A-Za-z_]\w*)\b", re.MULTILINE)),
+    ],
+    ".rb": [
+        ("class", re.compile(r"^\s*class\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)", re.MULTILINE)),
+        ("module", re.compile(r"^\s*module\s+([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)", re.MULTILINE)),
+        ("function", re.compile(r"^\s*def\s+([A-Za-z_]\w*[!?=]?)", re.MULTILINE)),
+    ],
+}
 
 
 def build_code_graph(
@@ -20,6 +67,8 @@ def build_code_graph(
 
     nodes: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
+    python_symbols_found = False
+    lightweight_symbols_found = False
 
     for file_path in files:
         relative_path = file_path.relative_to(repo).as_posix()
@@ -32,24 +81,40 @@ def build_code_graph(
             }
         )
 
-        if file_path.suffix != ".py":
+        if file_path.suffix == ".py":
+            before_nodes = len(nodes)
+            before_relationships = len(relationships)
+
+            try:
+                tree = ast.parse(file_path.read_text(), filename=relative_path)
+            except SyntaxError:
+                continue
+
+            extractor = _PythonGraphExtractor(relative_path, file_id)
+            extractor.visit(tree)
+            nodes.extend(extractor.nodes)
+            relationships.extend(extractor.relationships)
+
+            if len(nodes) > before_nodes or len(relationships) > before_relationships:
+                python_symbols_found = True
+
             continue
 
-        try:
-            tree = ast.parse(file_path.read_text(), filename=relative_path)
-        except SyntaxError:
-            continue
-
-        extractor = _PythonGraphExtractor(relative_path, file_id)
-        extractor.visit(tree)
-        nodes.extend(extractor.nodes)
-        relationships.extend(extractor.relationships)
+        added_nodes, added_relationships = _lightweight_extract(file_path, relative_path, file_id)
+        if added_nodes or added_relationships:
+            lightweight_symbols_found = True
+            nodes.extend(added_nodes)
+            relationships.extend(added_relationships)
 
     affected_symbol_ids = [
         node["id"]
         for node in nodes
         if "Symbol" in node.get("labels", []) and node["id"].startswith("symbol:")
     ]
+    extraction_mode, analyzer_name, parser_name = _graph_extraction_profile(
+        python_symbols_found,
+        lightweight_symbols_found,
+    )
 
     return {
         "protocol_version": "v1",
@@ -57,8 +122,9 @@ def build_code_graph(
         "source_status": "verified_from_code",
         "repository_id": context.get("repository_id"),
         "base_snapshot_id": context.get("base_snapshot_id"),
-        "analyzer": "python_ast",
-        "parser": "ast",
+        "analyzer": analyzer_name,
+        "parser": parser_name,
+        "graph_extraction_mode": extraction_mode,
         "graph_mode": graph_mode,
         "nodes_upserted": len(nodes),
         "nodes_deleted": [],
@@ -102,6 +168,7 @@ def _build_graphify_graph(
         "base_snapshot_id": context.get("base_snapshot_id"),
         "analyzer": "graphify",
         "parser": "tree-sitter",
+        "graph_extraction_mode": "graphify",
         "graph_mode": graph_mode,
         "nodes_upserted": len(nodes),
         "nodes_deleted": [],
@@ -116,6 +183,89 @@ def _build_graphify_graph(
         "nodes": nodes,
         "relationships": relationships,
     }
+
+
+def _graph_extraction_profile(
+    python_symbols_found: bool,
+    lightweight_symbols_found: bool,
+) -> tuple[str, str, str]:
+    if lightweight_symbols_found:
+        return (
+            "lightweight_fallback",
+            "lightweight_fallback",
+            "ast+regex" if python_symbols_found else "regex",
+        )
+
+    if python_symbols_found:
+        return ("python_ast_fallback", "python_ast", "ast")
+
+    return ("file_only", "file_inventory", "none")
+
+
+def _lightweight_extract(
+    file_path: Path,
+    relative_path: str,
+    file_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    patterns = _LIGHTWEIGHT_PATTERNS.get(file_path.suffix.lower())
+    if not patterns:
+        return [], []
+
+    try:
+        content = file_path.read_text()
+    except OSError:
+        return [], []
+
+    nodes: list[dict[str, Any]] = []
+    relationships: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for kind, pattern in patterns:
+        for match in pattern.finditer(content):
+            name = match.group(1)
+            line_start = content.count("\n", 0, match.start()) + 1
+            symbol_id = f"symbol:{relative_path}:{name}:{line_start}"
+
+            if symbol_id in seen_ids:
+                continue
+
+            seen_ids.add(symbol_id)
+            nodes.append(
+                {
+                    "id": symbol_id,
+                    "labels": ["Symbol", kind.title()],
+                    "properties": {
+                        "name": name,
+                        "kind": kind,
+                        "path": relative_path,
+                        "source_file": relative_path,
+                        "source_location": f"L{line_start}",
+                        "line_start": line_start,
+                        "line_end": line_start,
+                        "confidence": "LIGHTWEIGHT",
+                        "extractor": "lightweight_fallback",
+                    },
+                }
+            )
+            relationships.append(
+                {
+                    "id": f"declares:{file_id}->{symbol_id}:{line_start}",
+                    "source_id": file_id,
+                    "target_id": symbol_id,
+                    "type": "DECLARES",
+                    "properties": {
+                        "path": relative_path,
+                        "source_file": relative_path,
+                        "source_location": f"L{line_start}",
+                        "line_start": line_start,
+                        "line_end": line_start,
+                        "confidence": "LIGHTWEIGHT",
+                        "extractor": "lightweight_fallback",
+                    },
+                }
+            )
+
+    return nodes, relationships
 
 
 def _graphify_node(repo: Path, node: dict[str, Any]) -> dict[str, Any]:

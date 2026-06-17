@@ -79,6 +79,9 @@ class GraphShowController extends Controller
             return [
                 'artifact_status' => $artifact->status ?? 'missing',
                 'artifact_id' => $artifact->id ?? null,
+                'extraction_mode' => 'unknown',
+                'parser' => 'unknown',
+                'analyzer' => 'unknown',
                 'node_count' => 0,
                 'relationship_count' => 0,
                 'labels' => [],
@@ -86,6 +89,7 @@ class GraphShowController extends Controller
         }
 
         $payload = json_decode(Storage::disk('local')->get($artifact->storage_path), true);
+        $metadata = $this->decodeJson($artifact->metadata);
         $nodes = is_array($payload['nodes'] ?? null) ? $payload['nodes'] : [];
         $relationships = is_array($payload['relationships'] ?? null) ? $payload['relationships'] : [];
         $labelCounts = [];
@@ -110,9 +114,26 @@ class GraphShowController extends Controller
         return [
             'artifact_status' => $artifact->status,
             'artifact_id' => $artifact->id,
+            'extraction_mode' => $metadata['graph_extraction_mode'] ?? 'unknown',
+            'parser' => $metadata['graph_parser'] ?? 'unknown',
+            'analyzer' => $metadata['graph_analyzer'] ?? 'unknown',
             'node_count' => count($nodes),
             'relationship_count' => count($relationships),
             'labels' => $labels->all(),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeJson(?string $payload): array
+    {
+        if (! $payload) {
+            return [];
+        }
+
+        $decoded = json_decode($payload, true);
+
+        return is_array($decoded) ? $decoded : [];
     }
 }

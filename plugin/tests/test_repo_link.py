@@ -46,3 +46,36 @@ def test_devboard_directory_is_excluded_from_parent_git_info_when_nested(tmp_pat
 
     assert result == exclude_path
     assert ".devboard/" in exclude_path.read_text().splitlines()
+
+
+def test_devboard_directory_uses_gitdir_pointer_when_dot_git_is_a_file(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    gitdir = tmp_path / ".actual-git"
+    info_dir = gitdir / "info"
+    info_dir.mkdir(parents=True)
+    exclude_path = info_dir / "exclude"
+    exclude_path.write_text("# existing\n")
+    (repo / ".git").write_text(f"gitdir: {gitdir}\n")
+
+    result = ensure_devboard_excluded(repo)
+
+    assert result == exclude_path
+    assert ".devboard/" in exclude_path.read_text().splitlines()
+
+
+def test_devboard_directory_resolves_relative_gitdir_for_worktree_layouts(tmp_path):
+    worktree = tmp_path / "worktrees" / "feature-x"
+    nested_repo = worktree / "packages" / "plugin"
+    nested_repo.mkdir(parents=True)
+    gitdir = tmp_path / ".git" / "worktrees" / "feature-x"
+    info_dir = gitdir / "info"
+    info_dir.mkdir(parents=True)
+    exclude_path = info_dir / "exclude"
+    exclude_path.write_text("# existing\n")
+    (worktree / ".git").write_text("gitdir: ../../.git/worktrees/feature-x\n")
+
+    result = ensure_devboard_excluded(nested_repo)
+
+    assert result == exclude_path
+    assert ".devboard/" in exclude_path.read_text().splitlines()

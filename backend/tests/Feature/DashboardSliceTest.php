@@ -208,6 +208,7 @@ it('shows the graph view action on run detail and renders graph summary', functi
             ->component('Runs/Show')
             ->where('graphView.href', "/graph?run={$runId}")
             ->where('graphView.status', 'imported')
+            ->where('state.graph_extraction_mode', 'lightweight_fallback')
         );
 
     $this->actingAs($pm)->get("/graph?run={$runId}")
@@ -218,6 +219,8 @@ it('shows the graph view action on run detail and renders graph summary', functi
             ->where('graph.artifact_status', 'imported')
             ->where('graph.node_count', 3)
             ->where('graph.relationship_count', 2)
+            ->where('graph.extraction_mode', 'lightweight_fallback')
+            ->where('graph.parser', 'regex')
             ->where('graph.labels.0.name', 'File')
             ->where('graph.labels.0.count', 2)
             ->where('sourceLabel', 'local_plugin_snapshot')
@@ -405,7 +408,9 @@ it('lets Admin rotate a plugin token and invalidates the old secret', function (
     $oldPlainToken = $created['plain_token'];
     $token = $created['token'];
 
-    $response = $this->actingAs($admin)->postJson("/admin/plugin-tokens/{$token['id']}/rotate")
+    $response = $this->actingAs($admin)->postJson("/admin/plugin-tokens/{$token['id']}/rotate", [
+        'confirm_rotate' => true,
+    ])
         ->assertOk()
         ->assertJsonStructure(['plain_token', 'token']);
 
@@ -466,6 +471,12 @@ it('lets Admin revoke a registered plugin device from the Admin area', function 
     $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], pluginAuthHeaders($device['plain_token']))
         ->assertUnauthorized()
         ->assertJsonPath('error.code', 'device_required');
+
+    expect(DB::table('audit_logs')
+        ->where('action', 'device.revoked')
+        ->where('target_type', 'device')
+        ->where('target_id', $device['device_id'])
+        ->exists())->toBeTrue();
 });
 
 it('blocks PM from revoking a registered plugin device', function () {
@@ -768,7 +779,12 @@ function createDashboardGraphViewRun(): string
         'schema_version' => 'v1',
         'status' => 'imported',
         'producer' => 'devboard-python-plugin',
-        'metadata' => json_encode(['source_type' => 'local_plugin_snapshot'], JSON_THROW_ON_ERROR),
+        'metadata' => json_encode([
+            'source_type' => 'local_plugin_snapshot',
+            'graph_extraction_mode' => 'lightweight_fallback',
+            'graph_parser' => 'regex',
+            'graph_analyzer' => 'lightweight_fallback',
+        ], JSON_THROW_ON_ERROR),
         'created_at' => $now,
         'updated_at' => $now,
     ]);

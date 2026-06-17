@@ -7,7 +7,7 @@ from typing import Any
 from devboard_analyzer.code_graph import build_code_graph, relation_index_from_graph, symbol_index_from_graph
 from devboard_analyzer.file_hashes import hash_file
 from devboard_analyzer.file_inventory import iter_repository_files
-from devboard_analyzer.genesis_bundle import _artifact_record, _write_json
+from devboard_analyzer.genesis_bundle import _artifact_record, _graph_artifact_metadata, _write_json
 from devboard_analyzer.safety import scan_safety
 
 
@@ -49,7 +49,10 @@ def build_delta_bundle(root: Path | str, output_dir: Path | str, context: dict[s
         "analysis-quality-report.json",
         "security-report.json",
     ]
-    artifact_records = [_artifact_record(output / filename) for filename in artifact_filenames]
+    artifact_records = [
+        _artifact_record(output / filename, _graph_artifact_metadata(graph) if filename == "graph-snapshot.json" else None)
+        for filename in artifact_filenames
+    ]
     artifact_records[0]["artifact_type"] = "delta_manifest"
     manifest = {**payload, "artifacts": artifact_records}
     _write_json(output / "delta-manifest.json", manifest)

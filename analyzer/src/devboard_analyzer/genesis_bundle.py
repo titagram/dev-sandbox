@@ -44,7 +44,10 @@ def build_genesis_bundle(root: Path | str, output_dir: Path | str, context: dict
         "analysis-quality-report.json",
         "security-report.json",
     ]
-    artifact_records = [_artifact_record(output / filename) for filename in artifact_filenames]
+    artifact_records = [
+        _artifact_record(output / filename, _graph_artifact_metadata(graph) if filename == "graph-snapshot.json" else None)
+        for filename in artifact_filenames
+    ]
     manifest = {
         "protocol_version": "v1",
         "bundle_type": "genesis",
@@ -132,10 +135,10 @@ def _security_report(safety_report: Any) -> dict[str, Any]:
     }
 
 
-def _artifact_record(path: Path) -> dict[str, Any]:
+def _artifact_record(path: Path, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     size_bytes = path.stat().st_size
 
-    return {
+    record = {
         "artifact_id": _ulid(),
         "filename": path.name,
         "artifact_type": path.stem.replace("-", "_"),
@@ -147,6 +150,18 @@ def _artifact_record(path: Path) -> dict[str, Any]:
         "producer": "devboard-python-plugin",
         "source_type": "local_analyzer",
         "source_status": "verified_from_code",
+    }
+    if extra:
+        record.update(extra)
+
+    return record
+
+
+def _graph_artifact_metadata(graph: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "graph_extraction_mode": graph.get("graph_extraction_mode", "file_only"),
+        "graph_parser": graph.get("parser", "none"),
+        "graph_analyzer": graph.get("analyzer", "file_inventory"),
     }
 
 
