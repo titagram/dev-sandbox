@@ -379,6 +379,31 @@ python3 -m venv /tmp/devboard-e2e-venv
 /tmp/devboard-e2e-venv/bin/python -m pytest tests/e2e/test_onboarding_genesis.py -q
 ```
 
+### Queue retry fault harness
+
+```bash
+/tmp/devboard-plugin-venv/bin/python -m pytest tests/e2e/test_queue_retry_fault.py -q
+scripts/devboard_queue_fault_harness.sh
+```
+
+The harness:
+
+- seeds the Docker stack;
+- queues a real `ImportGenesisGraphToNeo4j` job;
+- stops Neo4j;
+- verifies phase 1 (`active`, retry pending);
+- exhausts retries with zero backoff;
+- verifies final failure (`graph.import_failed`).
+
+### Ubuntu x64 acceptance
+
+```bash
+DEVBOARD_RUNTIME_ACCEPTANCE=1 /tmp/devboard-plugin-venv/bin/python -m pytest tests/e2e/test_runtime_acceptance.py -q
+scripts/devboard_runtime_acceptance.sh
+```
+
+Use this only on a real Linux x64 host. It is the acceptance path that closes the remaining runtime validation gap left by local macOS Docker checks.
+
 Bootstrap manuale equivalente:
 
 ```bash
