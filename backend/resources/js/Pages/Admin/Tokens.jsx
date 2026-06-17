@@ -5,7 +5,7 @@ import AppLayout from '../../Layouts/AppLayout';
 
 const defaultScopes = ['projects.read', 'repositories.read', 'runs.write', 'artifacts.write', 'wiki.write'];
 
-export default function Tokens({ tokens, dashboard }) {
+export default function Tokens({ tokens, devices, dashboard }) {
   const [name, setName] = useState('Gabriele local plugin');
   const [expiresInDays, setExpiresInDays] = useState(90);
   const [plainToken, setPlainToken] = useState(null);
@@ -43,11 +43,54 @@ export default function Tokens({ tokens, dashboard }) {
     router.reload({ only: ['tokens'] });
   }
 
-  function revokeToken(tokenId) {
-    router.delete(`/admin/plugin-tokens/${tokenId}`, {
-      preserveScroll: true,
-      only: ['tokens'],
+  async function revokeToken(tokenId) {
+    setSubmitting(true);
+    setError(null);
+
+    const response = await fetch(`/admin/plugin-tokens/${tokenId}`, {
+      method: 'DELETE',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
     });
+
+    setSubmitting(false);
+
+    if (!response.ok) {
+      setError('Token revocation failed.');
+      return;
+    }
+
+    router.reload({ only: ['tokens', 'devices'] });
+  }
+
+  async function revokeDevice(deviceId) {
+    if (!window.confirm('Revoke this device and invalidate its current bound plugin tokens?')) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    const response = await fetch(`/admin/devices/${deviceId}`, {
+      method: 'DELETE',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
+    });
+
+    setSubmitting(false);
+
+    if (!response.ok) {
+      setError('Device revocation failed.');
+      return;
+    }
+
+    router.reload({ only: ['tokens', 'devices'] });
   }
 
   async function rotateToken(tokenId) {
@@ -151,10 +194,58 @@ export default function Tokens({ tokens, dashboard }) {
                       </button>
                       <button
                         type="button"
-                        disabled={Boolean(token.revoked_at)}
+                        disabled={Boolean(token.revoked_at) || submitting}
                         className="inline-flex h-8 w-8 items-center justify-center rounded border border-zinc-200 text-zinc-600 disabled:opacity-40"
                         onClick={() => revokeToken(token.id)}
                         title="Revoke token"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="mt-4 overflow-hidden rounded border border-zinc-200 bg-white">
+        <div className="border-b border-zinc-200 px-4 py-3 text-sm font-semibold">Registered Devices</div>
+        <div className="overflow-x-auto">
+          <table className="min-w-[920px] w-full text-left text-sm">
+            <thead className="bg-zinc-50 text-xs text-zinc-500">
+              <tr>
+                <th className="p-3">device</th>
+                <th>user</th>
+                <th>platform</th>
+                <th>plugin</th>
+                <th>last seen</th>
+                <th>bound tokens</th>
+                <th>state</th>
+                <th>actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {devices.map((device) => (
+                <tr key={device.id} className="border-t border-zinc-100">
+                  <td className="p-3">
+                    <div className="font-medium">{device.name}</div>
+                  </td>
+                  <td>{device.user_email}</td>
+                  <td>{device.platform_os} / {device.platform_arch}</td>
+                  <td>{device.plugin_version}</td>
+                  <td>{device.last_seen_at ?? 'never'}</td>
+                  <td>{device.bound_token_count}</td>
+                  <td>{device.status}</td>
+                  <td>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={device.status === 'revoked' || submitting}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded border border-zinc-200 text-zinc-600 disabled:opacity-40"
+                        onClick={() => revokeDevice(device.id)}
+                        title="Revoke device"
                       >
                         <Trash2 size={14} />
                       </button>

@@ -429,6 +429,64 @@ it('lets Admin rotate a plugin token and invalidates the old secret', function (
         ->exists())->toBeTrue();
 });
 
+it('shows registered plugin devices on the Admin token page', function () {
+    $admin = dashboardUserWithRole('Admin');
+    $device = createAdminDeviceRecord();
+
+    $this->actingAs($admin)->get('/admin/plugin-tokens')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Admin/Tokens')
+            ->where('devices', function ($devices) use ($device) {
+                $items = collect($devices);
+                $row = $items->firstWhere('id', $device['device_id']);
+
+                expect($row['name'] ?? null)->toBe('Test Device');
+                expect($row['user_email'] ?? null)->toBe($device['user_email']);
+                expect($row['status'] ?? null)->toBe('active');
+                expect($row['bound_token_count'] ?? null)->toBe(1);
+                expect($row['revoke_href'] ?? null)->toBe("/admin/devices/{$device['device_id']}");
+
+                return true;
+            })
+        );
+});
+
+it('lets Admin revoke a registered plugin device from the Admin area', function () {
+    $admin = dashboardUserWithRole('Admin');
+    $device = createAdminDeviceRecord();
+
+    $this->actingAs($admin)
+        ->deleteJson("/admin/devices/{$device['device_id']}")
+        ->assertOk()
+        ->assertJson(['revoked' => true]);
+
+    expect(DB::table('devices')->where('id', $device['device_id'])->value('status'))->toBe('revoked');
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], pluginAuthHeaders($device['plain_token']))
+        ->assertUnauthorized()
+        ->assertJsonPath('error.code', 'device_required');
+});
+
+it('blocks PM from revoking a registered plugin device', function () {
+    $pm = dashboardUserWithRole('PM');
+    $device = createAdminDeviceRecord();
+
+    $this->actingAs($pm)
+        ->deleteJson("/admin/devices/{$device['device_id']}")
+        ->assertForbidden();
+
+    expect(DB::table('devices')->where('id', $device['device_id'])->value('status'))->toBe('active');
+});
+
+it('returns 404 when Admin revokes an unknown plugin device', function () {
+    $admin = dashboardUserWithRole('Admin');
+
+    $this->actingAs($admin)
+        ->deleteJson('/admin/devices/'.Str::ulid())
+        ->assertNotFound();
+});
+
 function dashboardUserWithRole(string $roleName): User
 {
     $user = User::factory()->create();
@@ -450,6 +508,54 @@ function pluginAuthHeaders(string $plainToken): array
         'Authorization' => 'Bearer '.$plainToken,
         'X-DevBoard-Protocol' => 'v1',
         'X-DevBoard-Plugin-Version' => '0.1.0',
+    ];
+}
+
+/**
+ * @return array{device_id: string, plain_token: string, user_email: string}
+ */
+function createAdminDeviceRecord(): array
+{
+    $user = User::factory()->create(['status' => 'active']);
+    $deviceId = (string) Str::ulid();
+    $tokenId = (string) Str::ulid();
+    $secret = 'device-admin-secret';
+    $prefix = 'devb_live_'.$tokenId;
+    $now = now();
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $user->id,
+        'name' => 'Test Device',
+        'fingerprint_hash' => 'sha256:test-admin-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('api_tokens')->insert([
+        'id' => $tokenId,
+        'token_prefix' => $prefix,
+        'token_hash' => hash('sha256', $secret),
+        'user_id' => $user->id,
+        'device_id' => $deviceId,
+        'name' => 'Device-bound token',
+        'scopes' => json_encode(['projects.read', 'repositories.read', 'runs.write'], JSON_THROW_ON_ERROR),
+        'expires_at' => $now->copy()->addMonth(),
+        'revoked_at' => null,
+        'last_used_at' => null,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return [
+        'device_id' => $deviceId,
+        'plain_token' => $prefix.'|'.$secret,
+        'user_email' => $user->email,
     ];
 }
 

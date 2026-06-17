@@ -40,6 +40,44 @@ class PluginTokenController extends Controller
                 ])
                 ->orderByDesc('api_tokens.created_at')
                 ->get(),
+            'devices' => DB::table('devices')
+                ->join('users', 'users.id', '=', 'devices.user_id')
+                ->leftJoin('api_tokens', 'api_tokens.device_id', '=', 'devices.id')
+                ->select([
+                    'devices.id',
+                    'devices.name',
+                    'devices.platform_os',
+                    'devices.platform_arch',
+                    'devices.plugin_version',
+                    'devices.last_seen_at',
+                    'devices.status',
+                    'users.email as user_email',
+                    DB::raw('count(api_tokens.id) as bound_token_count'),
+                ])
+                ->groupBy([
+                    'devices.id',
+                    'devices.name',
+                    'devices.platform_os',
+                    'devices.platform_arch',
+                    'devices.plugin_version',
+                    'devices.last_seen_at',
+                    'devices.status',
+                    'users.email',
+                ])
+                ->orderByDesc('devices.created_at')
+                ->get()
+                ->map(fn (object $device): array => [
+                    'id' => $device->id,
+                    'name' => $device->name,
+                    'platform_os' => $device->platform_os,
+                    'platform_arch' => $device->platform_arch,
+                    'plugin_version' => $device->plugin_version,
+                    'last_seen_at' => $device->last_seen_at,
+                    'status' => $device->status,
+                    'user_email' => $device->user_email,
+                    'bound_token_count' => (int) $device->bound_token_count,
+                    'revoke_href' => "/admin/devices/{$device->id}",
+                ]),
         ]);
     }
 
@@ -150,5 +188,22 @@ class PluginTokenController extends Controller
                 'scopes' => json_decode($tokenRow->scopes, true, 512, JSON_THROW_ON_ERROR),
             ],
         ]);
+    }
+
+    public function revokeDevice(Request $request, string $device): JsonResponse
+    {
+        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+
+        abort_unless(DB::table('devices')->where('id', $device)->exists(), 404);
+
+        DB::table('devices')
+            ->where('id', $device)
+            ->where('status', '!=', 'revoked')
+            ->update([
+                'status' => 'revoked',
+                'updated_at' => now(),
+            ]);
+
+        return response()->json(['revoked' => true]);
     }
 }
