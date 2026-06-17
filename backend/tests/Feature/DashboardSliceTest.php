@@ -3,6 +3,7 @@
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
 
@@ -64,6 +65,29 @@ it('shows artifacts risk and source labels on run detail', function () {
             ->where('risk.triggers.0', 'secret_scan_blocked')
             ->where('safety.blocked.0.path', '.env')
             ->where('state.source_truth', 'local plugin state, not remote Git truth')
+        );
+});
+
+it('shows delta summary, device, and risk report details on delta run detail', function () {
+    Storage::fake('local');
+
+    $pm = dashboardUserWithRole('PM');
+    $runId = createDashboardDeltaRun();
+
+    $this->actingAs($pm)->get("/runs/{$runId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Runs/Show')
+            ->where('runContext.kind', 'delta_sync')
+            ->where('runContext.device_name', 'Delta Dashboard Device')
+            ->where('summary.diff.changed_file_count', 37)
+            ->where('summary.diff.additions', 840)
+            ->where('summary.diff.deletions', 120)
+            ->where('summary.tests.status', 'failed')
+            ->where('summary.tests.summary', '2 passed, 1 failed')
+            ->where('risk.report.summary', 'Large multi-file delta with failing tests.')
+            ->where('risk.report.triggers.0', 'large_multi_file_diff')
+            ->where('risk.report.triggers.1', 'test_failures')
         );
 });
 
@@ -251,6 +275,180 @@ function createDashboardRun(): string
         'severity' => 'critical',
         'message' => 'Blocked secret upload.',
         'payload' => json_encode(['risk_triggers' => ['secret_scan_blocked']], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+    ]);
+
+    return $runId;
+}
+
+function createDashboardDeltaRun(): string
+{
+    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
+    $deviceId = (string) Str::ulid();
+    $workspaceId = (string) Str::ulid();
+    $runId = (string) Str::ulid();
+    $deltaId = (string) Str::ulid();
+    $diffArtifactId = (string) Str::ulid();
+    $riskArtifactId = (string) Str::ulid();
+    $testArtifactId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $userId,
+        'name' => 'Delta Dashboard Device',
+        'fingerprint_hash' => 'sha256:delta-dashboard-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('local_workspaces')->insert([
+        'id' => $workspaceId,
+        'repository_id' => $repositoryId,
+        'device_id' => $deviceId,
+        'local_root_hash' => 'sha256:delta-dashboard-workspace',
+        'display_path' => '/Users/gabriele/Dev/ai-sandbox-framework',
+        'current_branch' => 'feature/delta-audit',
+        'last_head_sha' => 'def456',
+        'dirty_status' => 'dirty',
+        'last_snapshot_id' => null,
+        'last_seen_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('runs')->insert([
+        'id' => $runId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'task_id' => null,
+        'device_id' => $deviceId,
+        'started_by_user_id' => $userId,
+        'runtime_profile' => 'agent_plugin',
+        'status' => 'failed',
+        'branch' => 'feature/delta-audit',
+        'base_branch' => 'main',
+        'base_sha' => 'abc123',
+        'head_sha' => 'def456',
+        'summary' => 'Delta sync failed after test failures.',
+        'risk_level' => 'high',
+        'started_at' => $now->copy()->subMinutes(5),
+        'finished_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('delta_syncs')->insert([
+        'id' => $deltaId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'run_id' => $runId,
+        'base_snapshot_id' => null,
+        'new_snapshot_id' => null,
+        'status' => 'failed',
+        'branch' => 'feature/delta-audit',
+        'base_sha' => 'abc123',
+        'head_sha' => 'def456',
+        'dirty_status' => 'dirty',
+        'changed_file_count' => 37,
+        'risk_level' => 'high',
+        'started_at' => $now->copy()->subMinutes(5),
+        'finished_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    Storage::disk('local')->put('devboard/test/diff-summary.json', json_encode([
+        'changed_file_count' => 37,
+        'additions' => 840,
+        'deletions' => 120,
+    ], JSON_THROW_ON_ERROR));
+    Storage::disk('local')->put('devboard/test/risk-report.json', json_encode([
+        'summary' => 'Large multi-file delta with failing tests.',
+        'triggers' => ['large_multi_file_diff', 'test_failures'],
+        'risk_level' => 'high',
+    ], JSON_THROW_ON_ERROR));
+    Storage::disk('local')->put('devboard/test/test-map.json', json_encode([
+        'status' => 'failed',
+        'summary' => '2 passed, 1 failed',
+    ], JSON_THROW_ON_ERROR));
+
+    DB::table('artifacts')->insert([
+        [
+            'id' => $diffArtifactId,
+            'project_id' => $projectId,
+            'repository_id' => $repositoryId,
+            'run_id' => $runId,
+            'artifact_type' => 'diff_summary',
+            'storage_path' => 'devboard/test/diff-summary.json',
+            'sha256' => hash('sha256', Storage::disk('local')->get('devboard/test/diff-summary.json')),
+            'size_bytes' => Storage::disk('local')->size('devboard/test/diff-summary.json'),
+            'mime_type' => 'application/json',
+            'schema_version' => 'v1',
+            'status' => 'validated',
+            'producer' => 'devboard-python-plugin',
+            'metadata' => json_encode(['source_type' => 'local_plugin_snapshot'], JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+        [
+            'id' => $riskArtifactId,
+            'project_id' => $projectId,
+            'repository_id' => $repositoryId,
+            'run_id' => $runId,
+            'artifact_type' => 'risk_report',
+            'storage_path' => 'devboard/test/risk-report.json',
+            'sha256' => hash('sha256', Storage::disk('local')->get('devboard/test/risk-report.json')),
+            'size_bytes' => Storage::disk('local')->size('devboard/test/risk-report.json'),
+            'mime_type' => 'application/json',
+            'schema_version' => 'v1',
+            'status' => 'validated',
+            'producer' => 'devboard-python-plugin',
+            'metadata' => json_encode(['source_type' => 'local_plugin_snapshot'], JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+        [
+            'id' => $testArtifactId,
+            'project_id' => $projectId,
+            'repository_id' => $repositoryId,
+            'run_id' => $runId,
+            'artifact_type' => 'test_map',
+            'storage_path' => 'devboard/test/test-map.json',
+            'sha256' => hash('sha256', Storage::disk('local')->get('devboard/test/test-map.json')),
+            'size_bytes' => Storage::disk('local')->size('devboard/test/test-map.json'),
+            'mime_type' => 'application/json',
+            'schema_version' => 'v1',
+            'status' => 'validated',
+            'producer' => 'devboard-python-plugin',
+            'metadata' => json_encode(['source_type' => 'local_plugin_snapshot'], JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+    ]);
+
+    DB::table('run_events')->insert([
+        'id' => (string) Str::ulid(),
+        'run_id' => $runId,
+        'event_type' => 'run.finished',
+        'severity' => 'error',
+        'message' => 'Delta sync failed after tests.',
+        'payload' => json_encode([
+            'risk_report' => [
+                'summary' => 'Large multi-file delta with failing tests.',
+                'triggers' => ['large_multi_file_diff', 'test_failures'],
+                'risk_level' => 'high',
+            ],
+        ], JSON_THROW_ON_ERROR),
         'created_at' => $now,
     ]);
 

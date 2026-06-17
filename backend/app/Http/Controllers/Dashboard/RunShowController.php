@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -19,10 +20,20 @@ class RunShowController extends Controller
         $events = DB::table('run_events')->where('run_id', $run)->orderBy('created_at')->get();
         $artifacts = DB::table('artifacts')->where('run_id', $run)->orderByDesc('created_at')->get();
         $securityReport = $artifacts->firstWhere('artifact_type', 'security_report');
+        $diffSummary = $this->artifactPayload($artifacts->firstWhere('artifact_type', 'diff_summary'));
+        $testSummary = $this->artifactPayload($artifacts->firstWhere('artifact_type', 'test_map'))
+            ?: $this->artifactPayload($artifacts->firstWhere('artifact_type', 'command_output'));
         $risk = $this->riskSummary($events, $artifacts);
+        $device = $runRow->device_id ? DB::table('devices')->where('id', $runRow->device_id)->first() : null;
 
         return Inertia::render('Runs/Show', [
             'run' => $runRow,
+            'runContext' => [
+                'kind' => $this->runKind($run),
+                'device_name' => $device?->name ?? 'unknown',
+                'started_at' => $runRow->started_at,
+                'finished_at' => $runRow->finished_at,
+            ],
             'sourceLabel' => 'local_plugin_snapshot',
             'project' => DB::table('projects')->where('id', $runRow->project_id)->first(),
             'repository' => $runRow->repository_id ? DB::table('repositories')->where('id', $runRow->repository_id)->first() : null,
@@ -39,10 +50,23 @@ class RunShowController extends Controller
                 'user' => $this->dashboardUser($request->user()),
                 'navigation' => $this->dashboardNavigation($request->user(), $runRow->project_id),
             ],
-            'risk' => $risk,
+            'risk' => array_merge($risk, [
+                'report' => $this->riskReport($events, $artifacts, $runRow),
+            ]),
             'safety' => [
                 'blocked' => $this->artifactMetadataList($securityReport, 'blocked'),
                 'warnings' => $this->artifactMetadataList($securityReport, 'warnings'),
+            ],
+            'summary' => [
+                'diff' => [
+                    'changed_file_count' => $diffSummary['changed_file_count'] ?? null,
+                    'additions' => $diffSummary['additions'] ?? null,
+                    'deletions' => $diffSummary['deletions'] ?? null,
+                ],
+                'tests' => [
+                    'status' => $testSummary['status'] ?? null,
+                    'summary' => $testSummary['summary'] ?? null,
+                ],
             ],
             'state' => [
                 'graph_status' => $artifacts->firstWhere('artifact_type', 'graph_snapshot')?->status ?? 'not_promoted',
@@ -53,6 +77,19 @@ class RunShowController extends Controller
                 'source_truth' => 'local plugin state, not remote Git truth',
             ],
         ]);
+    }
+
+    private function runKind(string $runId): string
+    {
+        if (DB::table('delta_syncs')->where('run_id', $runId)->exists()) {
+            return 'delta_sync';
+        }
+
+        if (DB::table('genesis_imports')->where('run_id', $runId)->exists()) {
+            return 'genesis_import';
+        }
+
+        return 'run';
     }
 
     /**
@@ -88,6 +125,48 @@ class RunShowController extends Controller
     }
 
     /**
+     * @param iterable<object> $events
+     * @param iterable<object> $artifacts
+     * @return array{summary: ?string, triggers: list<string>, risk_level: string}
+     */
+    private function riskReport(iterable $events, iterable $artifacts, object $runRow): array
+    {
+        foreach ($events as $event) {
+            $payload = $this->decodeJson($event->payload);
+
+            if (isset($payload['risk_report']) && is_array($payload['risk_report'])) {
+                return [
+                    'summary' => $payload['risk_report']['summary'] ?? $runRow->summary,
+                    'triggers' => is_array($payload['risk_report']['triggers'] ?? null) ? $payload['risk_report']['triggers'] : [],
+                    'risk_level' => $payload['risk_report']['risk_level'] ?? $runRow->risk_level,
+                ];
+            }
+        }
+
+        foreach ($artifacts as $artifact) {
+            if ($artifact->artifact_type !== 'risk_report') {
+                continue;
+            }
+
+            $payload = $this->artifactPayload($artifact);
+
+            if ($payload !== []) {
+                return [
+                    'summary' => $payload['summary'] ?? $runRow->summary,
+                    'triggers' => is_array($payload['triggers'] ?? null) ? $payload['triggers'] : [],
+                    'risk_level' => $payload['risk_level'] ?? $runRow->risk_level,
+                ];
+            }
+        }
+
+        return [
+            'summary' => $runRow->summary,
+            'triggers' => [],
+            'risk_level' => $runRow->risk_level,
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function decodeJson(?string $payload): array
@@ -99,6 +178,18 @@ class RunShowController extends Controller
         $decoded = json_decode($payload, true);
 
         return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function artifactPayload(?object $artifact): array
+    {
+        if (! $artifact || ! $artifact->storage_path || ! Storage::disk('local')->exists($artifact->storage_path)) {
+            return [];
+        }
+
+        return $this->decodeJson(Storage::disk('local')->get($artifact->storage_path));
     }
 
     /**

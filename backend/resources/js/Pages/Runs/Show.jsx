@@ -1,7 +1,7 @@
 import { AlertTriangle, CheckCircle2, FileJson, GitBranch, RadioTower } from 'lucide-react';
 import AppLayout from '../../Layouts/AppLayout';
 
-export default function RunShow({ run, project, repository, events, artifacts, sourceLabel, risk, safety, state, dashboard }) {
+export default function RunShow({ run, runContext, project, repository, events, artifacts, sourceLabel, risk, safety, summary, state, dashboard }) {
   return (
     <AppLayout title={`Run ${run.id}`} dashboard={dashboard}>
       <header className="rounded border border-zinc-200 bg-white p-4">
@@ -13,7 +13,13 @@ export default function RunShow({ run, project, repository, events, artifacts, s
           <span>Project: {project.name}</span>
           <span>Repo: {repository?.name ?? 'none'}</span>
           <span>Branch: {run.branch}</span>
+          <span>Type: {runContext.kind}</span>
+          <span>Device: {runContext.device_name}</span>
           <span>Source: {sourceLabel}</span>
+        </div>
+        <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+          <span>Started: {runContext.started_at ?? 'n/a'}</span>
+          <span>Finished: {runContext.finished_at ?? 'n/a'}</span>
         </div>
         <div className="mt-3 inline-flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
           <RadioTower size={14} />
@@ -45,6 +51,15 @@ export default function RunShow({ run, project, repository, events, artifacts, s
             <StatusTile label="Wiki" value={state.wiki_status} />
             <StatusTile label="Risk review" value={risk.severity} />
           </div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
+            <StatusTile label="Changed files" value={summary.diff.changed_file_count ?? 'n/a'} />
+            <StatusTile label="Additions" value={summary.diff.additions ?? 'n/a'} />
+            <StatusTile label="Deletions" value={summary.diff.deletions ?? 'n/a'} />
+          </div>
+          <div className="mt-4 rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700">
+            <div><span className="font-medium">Tests:</span> {summary.tests.status ?? 'not reported'}</div>
+            <div className="mt-1 text-xs text-zinc-500">{summary.tests.summary ?? 'No test summary artifact.'}</div>
+          </div>
           <div className="mt-4 text-sm font-semibold">Artifacts</div>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             {artifacts.map((artifact) => (
@@ -63,8 +78,9 @@ export default function RunShow({ run, project, repository, events, artifacts, s
             <AlertTriangle size={16} />
             Risk Triggers
           </div>
+          <div className="mt-2 text-sm text-zinc-600">{risk.report.summary ?? 'No structured risk report.'}</div>
           <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-600">
-            {risk.triggers.length === 0 ? 'none' : risk.triggers.map((trigger) => <span key={trigger} className="rounded bg-zinc-100 px-2 py-1">{trigger}</span>)}
+            {risk.report.triggers.length === 0 ? 'none' : risk.report.triggers.map((trigger) => <span key={trigger} className="rounded bg-zinc-100 px-2 py-1">{trigger}</span>)}
           </div>
         </div>
         <div className="rounded border border-zinc-200 bg-white p-4">
