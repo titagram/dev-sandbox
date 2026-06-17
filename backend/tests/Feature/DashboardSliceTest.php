@@ -119,6 +119,22 @@ it('lets a Developer mark a run as reviewed', function () {
         ->count())->toBe(1);
 });
 
+it('lets a Developer retry a failed graph import from run detail', function () {
+    Storage::fake('local');
+    config(['services.devboard.graph_import_mode' => 'fake']);
+
+    $developer = dashboardUserWithRole('Developer');
+    $runId = createDashboardRetryableImportRun();
+
+    $this->actingAs($developer)
+        ->postJson("/runs/{$runId}/retry-import")
+        ->assertOk()
+        ->assertJson(['retried' => true]);
+
+    expect(DB::table('genesis_imports')->where('run_id', $runId)->value('status'))->toBe('active');
+    expect(DB::table('run_events')->where('run_id', $runId)->where('event_type', 'graph.imported')->exists())->toBeTrue();
+});
+
 it('blocks PM access to Admin token page', function () {
     $pm = dashboardUserWithRole('PM');
 
@@ -476,6 +492,147 @@ function createDashboardDeltaRun(): string
                 'triggers' => ['large_multi_file_diff', 'test_failures'],
                 'risk_level' => 'high',
             ],
+        ], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+    ]);
+
+    return $runId;
+}
+
+function createDashboardRetryableImportRun(): string
+{
+    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
+    $deviceId = (string) Str::ulid();
+    $workspaceId = (string) Str::ulid();
+    $runId = (string) Str::ulid();
+    $artifactId = (string) Str::ulid();
+    $snapshotId = (string) Str::ulid();
+    $importId = (string) Str::ulid();
+    $now = now();
+    $storagePath = "devboard/artifacts/genesis/{$importId}/{$artifactId}/artifact";
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $userId,
+        'name' => 'Retryable Import Device',
+        'fingerprint_hash' => 'sha256:retryable-import-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('local_workspaces')->insert([
+        'id' => $workspaceId,
+        'repository_id' => $repositoryId,
+        'device_id' => $deviceId,
+        'local_root_hash' => 'sha256:retryable-import-workspace',
+        'display_path' => '/Users/gabriele/Dev/ai-sandbox-framework',
+        'current_branch' => 'feature/retry-import',
+        'last_head_sha' => 'def456',
+        'dirty_status' => 'clean',
+        'last_snapshot_id' => null,
+        'last_seen_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('runs')->insert([
+        'id' => $runId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'task_id' => null,
+        'device_id' => $deviceId,
+        'started_by_user_id' => $userId,
+        'runtime_profile' => 'agent_plugin',
+        'status' => 'failed',
+        'branch' => 'feature/retry-import',
+        'base_branch' => 'main',
+        'base_sha' => 'abc123',
+        'head_sha' => 'def456',
+        'summary' => 'Graph import failed.',
+        'risk_level' => 'medium',
+        'started_at' => $now->copy()->subMinutes(5),
+        'finished_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    Storage::disk('local')->put($storagePath, json_encode([
+        'nodes' => [
+            ['id' => 'file:app.py', 'labels' => ['File'], 'properties' => ['path' => 'app.py']],
+        ],
+        'relationships' => [],
+    ], JSON_THROW_ON_ERROR));
+
+    DB::table('artifacts')->insert([
+        'id' => $artifactId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'run_id' => $runId,
+        'artifact_type' => 'graph_snapshot',
+        'storage_path' => $storagePath,
+        'sha256' => str_repeat('a', 64),
+        'size_bytes' => 1,
+        'mime_type' => 'application/json',
+        'schema_version' => 'v1',
+        'status' => 'validated',
+        'producer' => 'devboard-python-plugin',
+        'metadata' => json_encode(['source_type' => 'local_plugin_snapshot'], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('snapshots')->insert([
+        'id' => $snapshotId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'source_type' => 'local_plugin_snapshot',
+        'branch' => 'main',
+        'base_sha' => 'abc123',
+        'head_sha' => 'def456',
+        'dirty_status' => 'clean',
+        'file_inventory_artifact_id' => null,
+        'graph_snapshot_artifact_id' => $artifactId,
+        'created_by_run_id' => $runId,
+        'created_at' => $now,
+    ]);
+
+    DB::table('genesis_imports')->insert([
+        'id' => $importId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'run_id' => $runId,
+        'status' => 'failed',
+        'manifest_artifact_id' => null,
+        'snapshot_id' => $snapshotId,
+        'base_branch' => 'main',
+        'base_sha' => 'abc123',
+        'head_sha' => 'def456',
+        'started_at' => $now->copy()->subMinutes(5),
+        'finished_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('run_events')->insert([
+        'id' => (string) Str::ulid(),
+        'run_id' => $runId,
+        'event_type' => 'graph.import_failed',
+        'severity' => 'error',
+        'message' => 'Genesis graph import failed after queue retries.',
+        'payload' => json_encode([
+            'genesis_import_id' => $importId,
+            'tries' => 3,
+            'backoff' => [10, 60, 300],
         ], JSON_THROW_ON_ERROR),
         'created_at' => $now,
     ]);

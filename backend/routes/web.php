@@ -5,6 +5,7 @@ use App\Http\Controllers\Dashboard\ArtifactDownloadController;
 use App\Http\Controllers\Dashboard\KanbanController;
 use App\Http\Controllers\Dashboard\PluginTokenController;
 use App\Http\Controllers\Dashboard\ProjectShowController;
+use App\Http\Controllers\Dashboard\RunRetryImportController;
 use App\Http\Controllers\Dashboard\RunReviewController;
 use App\Http\Controllers\Dashboard\RunShowController;
 use Illuminate\Support\Facades\Route;
@@ -20,6 +21,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/kanban', KanbanController::class);
     Route::get('/projects/{project}', ProjectShowController::class);
     Route::get('/runs/{run}', RunShowController::class);
+    Route::post('/runs/{run}/retry-import', RunRetryImportController::class);
     Route::post('/runs/{run}/review', RunReviewController::class);
     Route::get('/runs/{run}/artifacts/{artifact}/download', ArtifactDownloadController::class);
     Route::get('/admin/plugin-tokens', [PluginTokenController::class, 'index']);

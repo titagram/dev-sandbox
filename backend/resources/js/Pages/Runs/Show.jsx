@@ -27,6 +27,15 @@ export default function RunShow({ run, runContext, project, repository, events, 
           {state.source_truth}
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
+          {state.retryable_import && canRetryImport(dashboard) ? (
+            <button
+              type="button"
+              onClick={() => router.post(`/runs/${run.id}/retry-import`, {}, { preserveScroll: true })}
+              className="inline-flex items-center rounded border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100"
+            >
+              retry failed import
+            </button>
+          ) : null}
           {state.reviewed ? (
             <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs text-emerald-900">
               reviewed
@@ -150,4 +159,10 @@ function canReviewRun(dashboard) {
   const roles = dashboard?.user?.roles ?? [];
 
   return roles.includes('PM') || roles.includes('Developer') || roles.includes('Sysadmin') || roles.includes('Admin');
+}
+
+function canRetryImport(dashboard) {
+  const roles = dashboard?.user?.roles ?? [];
+
+  return roles.includes('Developer') || roles.includes('Admin');
 }

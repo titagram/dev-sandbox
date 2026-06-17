@@ -74,6 +74,7 @@ class RunShowController extends Controller
                     ->whereIn('wiki_page_id', DB::table('wiki_pages')->where('project_id', $runRow->project_id)->pluck('id'))
                     ->where('producer', 'devboard-python-plugin')
                     ->exists() ? 'updated_from_local_analyzer' : 'not_updated',
+                'retryable_import' => $this->retryableImport($run),
                 'reviewed' => $events->contains(fn (object $event): bool => $event->event_type === 'run.reviewed'),
                 'source_truth' => 'local plugin state, not remote Git truth',
             ],
@@ -91,6 +92,25 @@ class RunShowController extends Controller
         }
 
         return 'run';
+    }
+
+    private function retryableImport(string $runId): bool
+    {
+        $genesis = DB::table('genesis_imports')->where('run_id', $runId)->first();
+        if ($genesis && $genesis->status === 'failed' && $genesis->snapshot_id) {
+            $snapshot = DB::table('snapshots')->where('id', $genesis->snapshot_id)->first();
+
+            return $snapshot?->graph_snapshot_artifact_id !== null;
+        }
+
+        $delta = DB::table('delta_syncs')->where('run_id', $runId)->first();
+        if ($delta && $delta->status === 'failed' && $delta->new_snapshot_id) {
+            $snapshot = DB::table('snapshots')->where('id', $delta->new_snapshot_id)->first();
+
+            return $snapshot?->graph_snapshot_artifact_id !== null;
+        }
+
+        return false;
     }
 
     /**
