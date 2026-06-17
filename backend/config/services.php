@@ -45,6 +45,14 @@ return [
 
     'devboard' => [
         'graph_import_mode' => env('DEVBOARD_GRAPH_IMPORT_MODE', 'neo4j'),
+        'graph_import_job_tries' => env('DEVBOARD_GRAPH_IMPORT_JOB_TRIES', 3),
+        'graph_import_job_backoff_seconds' => array_map(
+            static fn (string $value): int => max(0, (int) trim($value)),
+            array_filter(
+                explode(',', (string) env('DEVBOARD_GRAPH_IMPORT_JOB_BACKOFF_SECONDS', '10,60,300')),
+                static fn (string $value): bool => trim($value) !== ''
+            )
+        ),
         'plugin_rate_limit_per_minute' => env('DEVBOARD_PLUGIN_RATE_LIMIT_PER_MINUTE', 120),
         'plugin_light_rate_limit_per_minute' => env('DEVBOARD_PLUGIN_LIGHT_RATE_LIMIT_PER_MINUTE', env('DEVBOARD_PLUGIN_RATE_LIMIT_PER_MINUTE', 240)),
         'plugin_heavy_rate_limit_per_minute' => env('DEVBOARD_PLUGIN_HEAVY_RATE_LIMIT_PER_MINUTE', env('DEVBOARD_PLUGIN_RATE_LIMIT_PER_MINUTE', 30)),

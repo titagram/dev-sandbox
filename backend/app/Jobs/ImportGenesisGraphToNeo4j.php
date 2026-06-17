@@ -13,14 +13,16 @@ class ImportGenesisGraphToNeo4j implements ShouldQueue
 {
     use Queueable;
 
-    public int $tries = 3;
+    public int $tries;
 
-    public int $maxExceptions = 3;
+    public int $maxExceptions;
 
     public int $timeout = 120;
 
     public function __construct(public readonly string $genesisImportId)
     {
+        $this->tries = max(1, (int) config('services.devboard.graph_import_job_tries', 3));
+        $this->maxExceptions = $this->tries;
     }
 
     /**
@@ -28,7 +30,16 @@ class ImportGenesisGraphToNeo4j implements ShouldQueue
      */
     public function backoff(): array
     {
-        return [10, 60, 300];
+        $configured = config('services.devboard.graph_import_job_backoff_seconds', [10, 60, 300]);
+
+        if (! is_array($configured) || $configured === []) {
+            return [10, 60, 300];
+        }
+
+        return array_map(
+            static fn (mixed $value): int => max(0, (int) $value),
+            $configured,
+        );
     }
 
     public function handle(GenesisGraphImportService $service): void

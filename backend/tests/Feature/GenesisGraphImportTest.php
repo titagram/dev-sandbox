@@ -132,6 +132,18 @@ it('rebuilds a Neo4j projection from stored graph artifacts', function () {
         ->exists())->toBeTrue();
 });
 
+it('uses config-driven retry and backoff values for queued graph imports', function () {
+    config([
+        'services.devboard.graph_import_job_tries' => 4,
+        'services.devboard.graph_import_job_backoff_seconds' => [0, 1, 2],
+    ]);
+
+    $job = new ImportGenesisGraphToNeo4j('import_123');
+
+    expect($job->tries)->toBe(4);
+    expect($job->backoff())->toBe([0, 1, 2]);
+});
+
 it('exposes an artisan command to rebuild Neo4j projection by snapshot', function () {
     $context = createGraphImportContext();
 
