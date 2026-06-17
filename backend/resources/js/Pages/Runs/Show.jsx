@@ -2,7 +2,7 @@ import { Link, router } from '@inertiajs/react';
 import { AlertTriangle, CheckCircle2, FileJson, GitBranch, RadioTower } from 'lucide-react';
 import AppLayout from '../../Layouts/AppLayout';
 
-export default function RunShow({ run, linkedTask, runContext, project, repository, events, artifacts, affectedWikiPages, sourceLabel, risk, safety, summary, state, dashboard }) {
+export default function RunShow({ run, linkedTask, graphView, runContext, project, repository, events, artifacts, affectedWikiPages, sourceLabel, risk, safety, summary, state, dashboard }) {
   return (
     <AppLayout title={`Run ${run.id}`} dashboard={dashboard}>
       <header className="rounded border border-zinc-200 bg-white p-4">
@@ -33,6 +33,14 @@ export default function RunShow({ run, linkedTask, runContext, project, reposito
               className="inline-flex items-center rounded border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100"
             >
               open linked task
+            </Link>
+          ) : null}
+          {graphView ? (
+            <Link
+              href={graphView.href}
+              className="inline-flex items-center rounded border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100"
+            >
+              open graph view
             </Link>
           ) : null}
           {state.retryable_import && canRetryImport(dashboard) ? (

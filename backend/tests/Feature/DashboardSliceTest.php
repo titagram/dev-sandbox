@@ -24,7 +24,10 @@ it('lets an authenticated PM see the Kanban home', function () {
             ->where('project.slug', 'demo-project')
             ->where('columns.0.name', 'Backlog')
             ->where('dashboard.navigation', function ($navigation) {
-                expect(collect($navigation)->pluck('label')->all())->not->toContain('Admin');
+                $items = collect($navigation);
+
+                expect($items->pluck('label')->all())->not->toContain('Admin');
+                expect($items->firstWhere('key', 'graph')['href'] ?? null)->toBe('/graph');
 
                 return true;
             })
@@ -106,6 +109,34 @@ it('shows the linked task action on run detail when the run belongs to a task', 
             ->where('linkedTask.id', $taskId)
             ->where('linkedTask.title', 'Stabilize onboarding dashboard')
             ->where('linkedTask.href', "/tasks/{$taskId}")
+        );
+});
+
+it('shows the graph view action on run detail and renders graph summary', function () {
+    Storage::fake('local');
+
+    $pm = dashboardUserWithRole('PM');
+    $runId = createDashboardGraphViewRun();
+
+    $this->actingAs($pm)->get("/runs/{$runId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Runs/Show')
+            ->where('graphView.href', "/graph?run={$runId}")
+            ->where('graphView.status', 'imported')
+        );
+
+    $this->actingAs($pm)->get("/graph?run={$runId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Graph/Show')
+            ->where('snapshot.run_id', $runId)
+            ->where('graph.artifact_status', 'imported')
+            ->where('graph.node_count', 3)
+            ->where('graph.relationship_count', 2)
+            ->where('graph.labels.0.name', 'File')
+            ->where('graph.labels.0.count', 2)
+            ->where('sourceLabel', 'local_plugin_snapshot')
         );
 });
 
@@ -432,6 +463,119 @@ function createDashboardTaskWithLinkedRun(): array
     ]);
 
     return [$taskId, $runId];
+}
+
+function createDashboardGraphViewRun(): string
+{
+    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
+    $deviceId = (string) Str::ulid();
+    $workspaceId = (string) Str::ulid();
+    $runId = (string) Str::ulid();
+    $artifactId = (string) Str::ulid();
+    $snapshotId = (string) Str::ulid();
+    $now = now();
+    $storagePath = "devboard/test/graph-view-{$artifactId}.json";
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $userId,
+        'name' => 'Graph View Device',
+        'fingerprint_hash' => 'sha256:graph-view-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('local_workspaces')->insert([
+        'id' => $workspaceId,
+        'repository_id' => $repositoryId,
+        'device_id' => $deviceId,
+        'local_root_hash' => 'sha256:graph-view-workspace',
+        'display_path' => '/Users/gabriele/Dev/ai-sandbox-framework',
+        'current_branch' => 'feature/graph-view',
+        'last_head_sha' => 'def456',
+        'dirty_status' => 'clean',
+        'last_snapshot_id' => null,
+        'last_seen_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('runs')->insert([
+        'id' => $runId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'task_id' => null,
+        'device_id' => $deviceId,
+        'started_by_user_id' => $userId,
+        'runtime_profile' => 'agent_plugin',
+        'status' => 'finished',
+        'branch' => 'feature/graph-view',
+        'base_branch' => 'main',
+        'base_sha' => 'abc123',
+        'head_sha' => 'def456',
+        'summary' => 'Graph snapshot imported successfully.',
+        'risk_level' => 'low',
+        'started_at' => $now->copy()->subMinutes(3),
+        'finished_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    Storage::disk('local')->put($storagePath, json_encode([
+        'nodes' => [
+            ['id' => 'file:app.py', 'labels' => ['File'], 'properties' => ['path' => 'app.py']],
+            ['id' => 'file:routes.py', 'labels' => ['File'], 'properties' => ['path' => 'routes.py']],
+            ['id' => 'class:TaskShowController', 'labels' => ['Class'], 'properties' => ['name' => 'TaskShowController']],
+        ],
+        'relationships' => [
+            ['type' => 'DECLARES', 'from' => 'file:app.py', 'to' => 'class:TaskShowController'],
+            ['type' => 'REFERENCES', 'from' => 'file:routes.py', 'to' => 'class:TaskShowController'],
+        ],
+    ], JSON_THROW_ON_ERROR));
+
+    DB::table('artifacts')->insert([
+        'id' => $artifactId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'run_id' => $runId,
+        'artifact_type' => 'graph_snapshot',
+        'storage_path' => $storagePath,
+        'sha256' => hash('sha256', Storage::disk('local')->get($storagePath)),
+        'size_bytes' => Storage::disk('local')->size($storagePath),
+        'mime_type' => 'application/json',
+        'schema_version' => 'v1',
+        'status' => 'imported',
+        'producer' => 'devboard-python-plugin',
+        'metadata' => json_encode(['source_type' => 'local_plugin_snapshot'], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('snapshots')->insert([
+        'id' => $snapshotId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'source_type' => 'local_plugin_snapshot',
+        'branch' => 'feature/graph-view',
+        'base_sha' => 'abc123',
+        'head_sha' => 'def456',
+        'dirty_status' => 'clean',
+        'file_inventory_artifact_id' => null,
+        'graph_snapshot_artifact_id' => $artifactId,
+        'created_by_run_id' => $runId,
+        'created_at' => $now,
+    ]);
+
+    return $runId;
 }
 
 function createDashboardDeltaRun(): string

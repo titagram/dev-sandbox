@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\Dashboard\ArtifactDownloadController;
+use App\Http\Controllers\Dashboard\GraphShowController;
 use App\Http\Controllers\Dashboard\KanbanController;
 use App\Http\Controllers\Dashboard\PluginTokenController;
 use App\Http\Controllers\Dashboard\ProjectShowController;
@@ -21,6 +22,7 @@ Route::middleware('guest')->group(function () {
 
 Route::middleware('auth')->group(function () {
     Route::get('/kanban', KanbanController::class);
+    Route::get('/graph', GraphShowController::class);
     Route::get('/projects/{project}', ProjectShowController::class);
     Route::get('/runs/{run}', RunShowController::class);
     Route::get('/tasks/{task}', TaskShowController::class);

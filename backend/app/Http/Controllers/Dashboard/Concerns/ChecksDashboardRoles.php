@@ -57,7 +57,7 @@ trait ChecksDashboardRoles
             ['label' => 'Kanban', 'href' => '/kanban', 'key' => 'kanban'],
             ['label' => 'Runs', 'href' => '/kanban', 'key' => 'runs'],
             ['label' => 'Wiki', 'href' => '/kanban', 'key' => 'wiki'],
-            ['label' => 'Graph', 'href' => '/kanban', 'key' => 'graph'],
+            ['label' => 'Graph', 'href' => '/graph', 'key' => 'graph'],
             ['label' => 'Artifacts', 'href' => '/kanban', 'key' => 'artifacts'],
         ];
 

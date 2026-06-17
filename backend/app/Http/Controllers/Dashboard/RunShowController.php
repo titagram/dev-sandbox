@@ -25,6 +25,11 @@ class RunShowController extends Controller
             ?: $this->artifactPayload($artifacts->firstWhere('artifact_type', 'command_output'));
         $risk = $this->riskSummary($events, $artifacts);
         $device = $runRow->device_id ? DB::table('devices')->where('id', $runRow->device_id)->first() : null;
+        $graphArtifact = $artifacts->firstWhere('artifact_type', 'graph_snapshot');
+        $graphSnapshot = DB::table('snapshots')
+            ->where('created_by_run_id', $run)
+            ->orderByDesc('created_at')
+            ->first();
         $linkedTask = $runRow->task_id
             ? DB::table('tasks')
                 ->leftJoin('kanban_columns', 'kanban_columns.id', '=', 'tasks.status_column_id')
@@ -44,6 +49,11 @@ class RunShowController extends Controller
                 'title' => $linkedTask->title,
                 'status_name' => $linkedTask->status_name,
                 'href' => "/tasks/{$linkedTask->id}",
+            ] : null,
+            'graphView' => $graphSnapshot && $graphArtifact ? [
+                'href' => "/graph?run={$run}",
+                'status' => $graphArtifact->status,
+                'snapshot_id' => $graphSnapshot->id,
             ] : null,
             'runContext' => [
                 'kind' => $this->runKind($run),
@@ -87,7 +97,7 @@ class RunShowController extends Controller
                 ],
             ],
             'state' => [
-                'graph_status' => $artifacts->firstWhere('artifact_type', 'graph_snapshot')?->status ?? 'not_promoted',
+                'graph_status' => $graphArtifact?->status ?? 'not_promoted',
                 'wiki_status' => DB::table('wiki_revisions')
                     ->whereIn('wiki_page_id', DB::table('wiki_pages')->where('project_id', $runRow->project_id)->pluck('id'))
                     ->where('producer', 'devboard-python-plugin')
