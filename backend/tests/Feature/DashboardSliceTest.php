@@ -28,10 +28,38 @@ it('lets an authenticated PM see the Kanban home', function () {
 
                 expect($items->pluck('label')->all())->not->toContain('Admin');
                 expect($items->firstWhere('key', 'graph')['href'] ?? null)->toBe('/graph');
+                expect($items->firstWhere('key', 'runs')['href'] ?? null)->toBe('/runs');
 
                 return true;
             })
             ->has('recentRuns')
+        );
+});
+
+it('shows a runs index with detail, task, and graph links when available', function () {
+    Storage::fake('local');
+
+    $pm = dashboardUserWithRole('PM');
+    [$taskId, $taskRunId] = createDashboardTaskWithLinkedRun();
+    $graphRunId = createDashboardGraphViewRun();
+
+    $this->actingAs($pm)->get('/runs')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Runs/Index')
+            ->where('runs', function ($runs) use ($graphRunId, $taskId, $taskRunId) {
+                $items = collect($runs);
+                $graphRun = $items->firstWhere('id', $graphRunId);
+                $taskRun = $items->firstWhere('id', $taskRunId);
+
+                expect($graphRun['graph_href'] ?? null)->toBe("/graph?run={$graphRunId}");
+                expect($graphRun['detail_href'] ?? null)->toBe("/runs/{$graphRunId}");
+                expect($taskRun['task']['id'] ?? null)->toBe($taskId);
+                expect($taskRun['task']['href'] ?? null)->toBe("/tasks/{$taskId}");
+                expect($taskRun['source_label'] ?? null)->toBe('local_plugin_snapshot');
+
+                return true;
+            })
         );
 });
 

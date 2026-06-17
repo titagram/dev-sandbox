@@ -6,6 +6,7 @@ use App\Http\Controllers\Dashboard\GraphShowController;
 use App\Http\Controllers\Dashboard\KanbanController;
 use App\Http\Controllers\Dashboard\PluginTokenController;
 use App\Http\Controllers\Dashboard\ProjectShowController;
+use App\Http\Controllers\Dashboard\RunsIndexController;
 use App\Http\Controllers\Dashboard\RunRetryImportController;
 use App\Http\Controllers\Dashboard\RunReviewController;
 use App\Http\Controllers\Dashboard\RunShowController;
@@ -24,6 +25,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/kanban', KanbanController::class);
     Route::get('/graph', GraphShowController::class);
     Route::get('/projects/{project}', ProjectShowController::class);
+    Route::get('/runs', RunsIndexController::class);
     Route::get('/runs/{run}', RunShowController::class);
     Route::get('/tasks/{task}', TaskShowController::class);
     Route::get('/wiki/pages/{page}', WikiShowController::class);

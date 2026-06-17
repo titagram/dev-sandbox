@@ -55,7 +55,7 @@ trait ChecksDashboardRoles
         $items = [
             ['label' => 'Projects', 'href' => $projectId ? "/projects/{$projectId}" : '/kanban', 'key' => 'projects'],
             ['label' => 'Kanban', 'href' => '/kanban', 'key' => 'kanban'],
-            ['label' => 'Runs', 'href' => '/kanban', 'key' => 'runs'],
+            ['label' => 'Runs', 'href' => '/runs', 'key' => 'runs'],
             ['label' => 'Wiki', 'href' => '/kanban', 'key' => 'wiki'],
             ['label' => 'Graph', 'href' => '/graph', 'key' => 'graph'],
             ['label' => 'Artifacts', 'href' => '/kanban', 'key' => 'artifacts'],
@@ -72,7 +72,7 @@ trait ChecksDashboardRoles
         if (in_array('Sysadmin', $roles, true)) {
             return [
                 ['label' => 'Projects', 'href' => $projectId ? "/projects/{$projectId}" : '/kanban', 'key' => 'projects'],
-                ['label' => 'Runs', 'href' => '/kanban', 'key' => 'runs'],
+                ['label' => 'Runs', 'href' => '/runs', 'key' => 'runs'],
                 ['label' => 'Artifacts', 'href' => '/kanban', 'key' => 'artifacts'],
                 ['label' => 'System', 'href' => '/kanban', 'key' => 'system'],
             ];
