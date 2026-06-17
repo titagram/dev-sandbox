@@ -29,10 +29,37 @@ it('lets an authenticated PM see the Kanban home', function () {
                 expect($items->pluck('label')->all())->not->toContain('Admin');
                 expect($items->firstWhere('key', 'graph')['href'] ?? null)->toBe('/graph');
                 expect($items->firstWhere('key', 'runs')['href'] ?? null)->toBe('/runs');
+                expect($items->firstWhere('key', 'wiki')['href'] ?? null)->toBe('/wiki');
 
                 return true;
             })
             ->has('recentRuns')
+        );
+});
+
+it('shows a wiki index with source status and page links', function () {
+    Storage::fake('local');
+
+    $pm = dashboardUserWithRole('PM');
+    createDashboardGenesisState();
+    [, $pageId] = createDashboardRunWithAffectedWikiPage();
+
+    $this->actingAs($pm)->get('/wiki')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Wiki/Index')
+            ->where('pages', function ($pages) use ($pageId) {
+                $items = collect($pages);
+                $routesPage = $items->firstWhere('id', $pageId);
+
+                expect($routesPage['slug'] ?? null)->toBe('technical/routes');
+                expect($routesPage['source_status'] ?? null)->toBe('verified_from_code');
+                expect($routesPage['source_type'] ?? null)->toBe('local_analyzer');
+                expect($routesPage['evidence_count'] ?? null)->toBe(2);
+                expect($routesPage['href'] ?? null)->toBe("/wiki/pages/{$pageId}");
+
+                return true;
+            })
         );
 });
 

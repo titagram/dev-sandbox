@@ -56,7 +56,7 @@ trait ChecksDashboardRoles
             ['label' => 'Projects', 'href' => $projectId ? "/projects/{$projectId}" : '/kanban', 'key' => 'projects'],
             ['label' => 'Kanban', 'href' => '/kanban', 'key' => 'kanban'],
             ['label' => 'Runs', 'href' => '/runs', 'key' => 'runs'],
-            ['label' => 'Wiki', 'href' => '/kanban', 'key' => 'wiki'],
+            ['label' => 'Wiki', 'href' => '/wiki', 'key' => 'wiki'],
             ['label' => 'Graph', 'href' => '/graph', 'key' => 'graph'],
             ['label' => 'Artifacts', 'href' => '/kanban', 'key' => 'artifacts'],
         ];
