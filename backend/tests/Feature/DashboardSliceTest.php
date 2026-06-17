@@ -135,6 +135,39 @@ it('lets a Developer retry a failed graph import from run detail', function () {
     expect(DB::table('run_events')->where('run_id', $runId)->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
+it('shows affected wiki pages on run detail when evidence points to run artifacts', function () {
+    Storage::fake('local');
+
+    $pm = dashboardUserWithRole('PM');
+    [$runId, $pageId] = createDashboardRunWithAffectedWikiPage();
+
+    $this->actingAs($pm)->get("/runs/{$runId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Runs/Show')
+            ->where('affectedWikiPages.0.id', $pageId)
+            ->where('affectedWikiPages.0.slug', 'technical/routes')
+            ->where('affectedWikiPages.0.href', "/wiki/pages/{$pageId}")
+        );
+});
+
+it('renders a wiki page with source banner and evidence details', function () {
+    Storage::fake('local');
+
+    $pm = dashboardUserWithRole('PM');
+    [, $pageId] = createDashboardRunWithAffectedWikiPage();
+
+    $this->actingAs($pm)->get("/wiki/pages/{$pageId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Wiki/Show')
+            ->where('page.slug', 'technical/routes')
+            ->where('page.source_status', 'verified_from_code')
+            ->where('revision.source_type', 'local_analyzer')
+            ->where('revision.evidence_refs.0.artifact_id', 'wiki-artifact-123')
+        );
+});
+
 it('blocks PM access to Admin token page', function () {
     $pm = dashboardUserWithRole('PM');
 
@@ -638,6 +671,57 @@ function createDashboardRetryableImportRun(): string
     ]);
 
     return $runId;
+}
+
+/**
+ * @return array{0: string, 1: string}
+ */
+function createDashboardRunWithAffectedWikiPage(): array
+{
+    $runId = createDashboardRun();
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
+    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $deviceId = DB::table('runs')->where('id', $runId)->value('device_id');
+    $pageId = (string) Str::ulid();
+    $revisionId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('wiki_pages')->insert([
+        'id' => $pageId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'slug' => 'technical/routes',
+        'title' => 'Routes',
+        'page_type' => 'technical',
+        'current_revision_id' => null,
+        'source_status' => 'verified_from_code',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('wiki_revisions')->insert([
+        'id' => $revisionId,
+        'wiki_page_id' => $pageId,
+        'author_user_id' => $userId,
+        'author_device_id' => $deviceId,
+        'producer' => 'devboard-python-plugin',
+        'source_type' => 'local_analyzer',
+        'source_status' => 'verified_from_code',
+        'content_markdown' => "# Routes\n\nGenerated from analyzer evidence.",
+        'evidence_refs' => json_encode([
+            ['type' => 'artifact', 'artifact_id' => 'wiki-artifact-123', 'description' => 'route-index.json'],
+            ['type' => 'artifact', 'artifact_id' => DB::table('artifacts')->where('run_id', $runId)->value('id')],
+        ], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+    ]);
+
+    DB::table('wiki_pages')->where('id', $pageId)->update([
+        'current_revision_id' => $revisionId,
+        'updated_at' => $now,
+    ]);
+
+    return [$runId, $pageId];
 }
 
 function createDashboardGenesisState(): void

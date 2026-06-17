@@ -46,6 +46,7 @@ class RunShowController extends Controller
                 'created_at' => $event->created_at,
             ]),
             'artifacts' => $artifacts,
+            'affectedWikiPages' => $this->affectedWikiPages($runRow, $artifacts),
             'dashboard' => [
                 'user' => $this->dashboardUser($request->user()),
                 'navigation' => $this->dashboardNavigation($request->user(), $runRow->project_id),
@@ -111,6 +112,49 @@ class RunShowController extends Controller
         }
 
         return false;
+    }
+
+    /**
+     * @param \Illuminate\Support\Collection<int, object> $artifacts
+     * @return list<array{id: string, slug: string, title: string, href: string}>
+     */
+    private function affectedWikiPages(object $runRow, object $artifacts): array
+    {
+        $artifactIds = $artifacts->pluck('id')->all();
+        if ($artifactIds === []) {
+            return [];
+        }
+
+        return DB::table('wiki_pages')
+            ->leftJoin('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
+            ->where('wiki_pages.project_id', $runRow->project_id)
+            ->select([
+                'wiki_pages.id',
+                'wiki_pages.slug',
+                'wiki_pages.title',
+                'wiki_revisions.evidence_refs',
+            ])
+            ->orderBy('wiki_pages.title')
+            ->get()
+            ->filter(function (object $page) use ($artifactIds): bool {
+                $refs = $page->evidence_refs ? json_decode($page->evidence_refs, true, 512, JSON_THROW_ON_ERROR) : [];
+
+                foreach ($refs as $ref) {
+                    if (in_array($ref['artifact_id'] ?? null, $artifactIds, true)) {
+                        return true;
+                    }
+                }
+
+                return false;
+            })
+            ->map(fn (object $page): array => [
+                'id' => $page->id,
+                'slug' => $page->slug,
+                'title' => $page->title,
+                'href' => "/wiki/pages/{$page->id}",
+            ])
+            ->values()
+            ->all();
     }
 
     /**

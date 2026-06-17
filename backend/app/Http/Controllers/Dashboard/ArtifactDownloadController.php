@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Dashboard;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -26,7 +27,15 @@ class ArtifactDownloadController extends Controller
         abort_if(! in_array($artifactRow->status, ['validated', 'imported'], true), 409, 'Artifact is not downloadable yet.');
         abort_unless(Storage::disk('local')->exists($artifactRow->storage_path), 404);
 
-        return Storage::disk('local')->download($artifactRow->storage_path, basename($artifactRow->storage_path));
+        $contents = Storage::disk('local')->get($artifactRow->storage_path);
+
+        return Response::streamDownload(
+            static function () use ($contents): void {
+                echo $contents;
+            },
+            basename($artifactRow->storage_path),
+            ['Content-Type' => $artifactRow->mime_type ?? 'application/octet-stream'],
+        );
     }
 
     private function canDownloadArtifacts(Request $request): bool

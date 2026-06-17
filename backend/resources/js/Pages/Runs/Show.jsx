@@ -2,7 +2,7 @@ import { router } from '@inertiajs/react';
 import { AlertTriangle, CheckCircle2, FileJson, GitBranch, RadioTower } from 'lucide-react';
 import AppLayout from '../../Layouts/AppLayout';
 
-export default function RunShow({ run, runContext, project, repository, events, artifacts, sourceLabel, risk, safety, summary, state, dashboard }) {
+export default function RunShow({ run, runContext, project, repository, events, artifacts, affectedWikiPages, sourceLabel, risk, safety, summary, state, dashboard }) {
   return (
     <AppLayout title={`Run ${run.id}`} dashboard={dashboard}>
       <header className="rounded border border-zinc-200 bg-white p-4">
@@ -128,6 +128,18 @@ export default function RunShow({ run, runContext, project, repository, events, 
           Evidence
         </div>
         <div className="mt-2 text-zinc-600">file hashes · command output · graph nodes · wiki revisions</div>
+        {affectedWikiPages.length > 0 ? (
+          <div className="mt-4">
+            <div className="text-sm font-semibold">Affected Wiki Pages</div>
+            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+              {affectedWikiPages.map((page) => (
+                <a key={page.id} href={page.href} className="rounded bg-zinc-100 px-2 py-1 text-zinc-700 hover:bg-zinc-200">
+                  {page.slug}
+                </a>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </section>
     </AppLayout>
   );
