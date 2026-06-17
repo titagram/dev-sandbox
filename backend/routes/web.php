@@ -8,6 +8,7 @@ use App\Http\Controllers\Dashboard\ProjectShowController;
 use App\Http\Controllers\Dashboard\RunRetryImportController;
 use App\Http\Controllers\Dashboard\RunReviewController;
 use App\Http\Controllers\Dashboard\RunShowController;
+use App\Http\Controllers\Dashboard\TaskShowController;
 use App\Http\Controllers\Dashboard\WikiShowController;
 use Illuminate\Support\Facades\Route;
 
@@ -22,6 +23,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/kanban', KanbanController::class);
     Route::get('/projects/{project}', ProjectShowController::class);
     Route::get('/runs/{run}', RunShowController::class);
+    Route::get('/tasks/{task}', TaskShowController::class);
     Route::get('/wiki/pages/{page}', WikiShowController::class);
     Route::post('/runs/{run}/retry-import', RunRetryImportController::class);
     Route::post('/runs/{run}/review', RunReviewController::class);

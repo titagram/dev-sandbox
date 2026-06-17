@@ -33,7 +33,9 @@ export default function KanbanIndex({ project, columns, recentRuns, health, dash
                 ) : column.tasks.map((task) => (
                   <article key={task.id} className="rounded border border-zinc-200 bg-zinc-50 p-3 text-xs">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="font-medium text-zinc-950">{task.title}</div>
+                      <Link href={task.href} className="font-medium text-zinc-950 underline-offset-2 hover:underline">
+                        {task.title}
+                      </Link>
                       {task.blocked ? <CircleAlert className="shrink-0 text-red-700" size={15} /> : null}
                     </div>
                     <div className="mt-2 text-zinc-500">owner: {task.owner}</div>
@@ -49,7 +51,7 @@ export default function KanbanIndex({ project, columns, recentRuns, health, dash
                     <div className="mt-2 text-zinc-500">
                       run:{' '}
                       {task.linked_run ? (
-                        <Link href={`/runs/${task.linked_run.id}`} className="font-medium text-zinc-900 underline-offset-2 hover:underline">
+                        <Link href={task.linked_run.href ?? `/runs/${task.linked_run.id}`} className="font-medium text-zinc-900 underline-offset-2 hover:underline">
                           {task.linked_run.status}
                         </Link>
                       ) : 'none'}

@@ -1,8 +1,8 @@
-import { router } from '@inertiajs/react';
+import { Link, router } from '@inertiajs/react';
 import { AlertTriangle, CheckCircle2, FileJson, GitBranch, RadioTower } from 'lucide-react';
 import AppLayout from '../../Layouts/AppLayout';
 
-export default function RunShow({ run, runContext, project, repository, events, artifacts, affectedWikiPages, sourceLabel, risk, safety, summary, state, dashboard }) {
+export default function RunShow({ run, linkedTask, runContext, project, repository, events, artifacts, affectedWikiPages, sourceLabel, risk, safety, summary, state, dashboard }) {
   return (
     <AppLayout title={`Run ${run.id}`} dashboard={dashboard}>
       <header className="rounded border border-zinc-200 bg-white p-4">
@@ -27,6 +27,14 @@ export default function RunShow({ run, runContext, project, repository, events, 
           {state.source_truth}
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
+          {linkedTask ? (
+            <Link
+              href={linkedTask.href}
+              className="inline-flex items-center rounded border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100"
+            >
+              open linked task
+            </Link>
+          ) : null}
           {state.retryable_import && canRetryImport(dashboard) ? (
             <button
               type="button"
@@ -71,6 +79,12 @@ export default function RunShow({ run, runContext, project, repository, events, 
         <div className="rounded border border-zinc-200 bg-white p-4">
           <div className="font-semibold">Summary</div>
           <p className="mt-2 text-sm text-zinc-600">{run.summary ?? 'No summary yet.'}</p>
+          {linkedTask ? (
+            <div className="mt-4 rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700">
+              <div><span className="font-medium">Task:</span> <a href={linkedTask.href} className="underline-offset-2 hover:underline">{linkedTask.title}</a></div>
+              <div className="mt-1 text-xs text-zinc-500">status: {linkedTask.status_name ?? 'n/a'}</div>
+            </div>
+          ) : null}
           <div className="mt-4 grid gap-3 lg:grid-cols-3">
             <StatusTile label="Graph" value={state.graph_status} />
             <StatusTile label="Wiki" value={state.wiki_status} />

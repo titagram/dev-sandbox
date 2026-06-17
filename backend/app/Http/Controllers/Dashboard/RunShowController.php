@@ -25,9 +25,26 @@ class RunShowController extends Controller
             ?: $this->artifactPayload($artifacts->firstWhere('artifact_type', 'command_output'));
         $risk = $this->riskSummary($events, $artifacts);
         $device = $runRow->device_id ? DB::table('devices')->where('id', $runRow->device_id)->first() : null;
+        $linkedTask = $runRow->task_id
+            ? DB::table('tasks')
+                ->leftJoin('kanban_columns', 'kanban_columns.id', '=', 'tasks.status_column_id')
+                ->select([
+                    'tasks.id',
+                    'tasks.title',
+                    'kanban_columns.name as status_name',
+                ])
+                ->where('tasks.id', $runRow->task_id)
+                ->first()
+            : null;
 
         return Inertia::render('Runs/Show', [
             'run' => $runRow,
+            'linkedTask' => $linkedTask ? [
+                'id' => $linkedTask->id,
+                'title' => $linkedTask->title,
+                'status_name' => $linkedTask->status_name,
+                'href' => "/tasks/{$linkedTask->id}",
+            ] : null,
             'runContext' => [
                 'kind' => $this->runKind($run),
                 'device_name' => $device?->name ?? 'unknown',

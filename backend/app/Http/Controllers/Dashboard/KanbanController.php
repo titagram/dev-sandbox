@@ -117,6 +117,7 @@ class KanbanController extends Controller
                 return [
                     'id' => $task->id,
                     'title' => $task->title,
+                    'href' => "/tasks/{$task->id}",
                     'owner' => $task->owner_name ?? 'Unassigned',
                     'priority' => $task->priority,
                     'risk_level' => $task->risk_level,
@@ -124,6 +125,7 @@ class KanbanController extends Controller
                     'linked_run' => $latestRun ? [
                         'id' => $latestRun->id,
                         'status' => $latestRun->status,
+                        'href' => "/runs/{$latestRun->id}",
                     ] : null,
                     'wiki_source_status' => $wikiStatus,
                     'blocked' => $task->risk_level === 'high',

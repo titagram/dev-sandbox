@@ -32,6 +32,33 @@ it('lets an authenticated PM see the Kanban home', function () {
         );
 });
 
+it('shows task detail links on Kanban and renders the task detail page', function () {
+    $pm = dashboardUserWithRole('PM');
+    [$taskId, $runId] = createDashboardTaskWithLinkedRun();
+
+    $this->actingAs($pm)->get('/kanban')
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Kanban/Index')
+            ->where('columns.1.tasks.0.id', $taskId)
+            ->where('columns.1.tasks.0.href', "/tasks/{$taskId}")
+            ->where('columns.1.tasks.0.linked_run.id', $runId)
+        );
+
+    $this->actingAs($pm)->get("/tasks/{$taskId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Tasks/Show')
+            ->where('task.id', $taskId)
+            ->where('task.title', 'Stabilize onboarding dashboard')
+            ->where('task.status.name', 'Ready')
+            ->where('task.owner.name', 'DevBoard Admin')
+            ->where('task.linked_run.id', $runId)
+            ->where('task.linked_run.href', "/runs/{$runId}")
+            ->where('task.source_label', 'local_plugin_snapshot')
+        );
+});
+
 it('shows repositories and Genesis status on project detail', function () {
     $pm = dashboardUserWithRole('PM');
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
@@ -65,6 +92,20 @@ it('shows artifacts risk and source labels on run detail', function () {
             ->where('risk.triggers.0', 'secret_scan_blocked')
             ->where('safety.blocked.0.path', '.env')
             ->where('state.source_truth', 'local plugin state, not remote Git truth')
+        );
+});
+
+it('shows the linked task action on run detail when the run belongs to a task', function () {
+    $pm = dashboardUserWithRole('PM');
+    [$taskId, $runId] = createDashboardTaskWithLinkedRun();
+
+    $this->actingAs($pm)->get("/runs/{$runId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Runs/Show')
+            ->where('linkedTask.id', $taskId)
+            ->where('linkedTask.title', 'Stabilize onboarding dashboard')
+            ->where('linkedTask.href', "/tasks/{$taskId}")
         );
 });
 
@@ -356,6 +397,41 @@ function createDashboardRun(): string
     ]);
 
     return $runId;
+}
+
+/**
+ * @return array{0: string, 1: string}
+ */
+function createDashboardTaskWithLinkedRun(): array
+{
+    $runId = createDashboardRun();
+    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $readyColumnId = DB::table('kanban_columns')->where('status_key', 'ready')->value('id');
+    $taskId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('tasks')->insert([
+        'id' => $taskId,
+        'project_id' => $projectId,
+        'title' => 'Stabilize onboarding dashboard',
+        'description' => 'Close the last dashboard navigation gaps for onboarding and Genesis import.',
+        'status_column_id' => $readyColumnId,
+        'priority' => 'high',
+        'risk_level' => 'medium',
+        'owner_user_id' => $userId,
+        'created_by_user_id' => $userId,
+        'due_at' => $now->copy()->addDay(),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('runs')->where('id', $runId)->update([
+        'task_id' => $taskId,
+        'updated_at' => $now,
+    ]);
+
+    return [$taskId, $runId];
 }
 
 function createDashboardDeltaRun(): string
