@@ -74,6 +74,7 @@ class RunShowController extends Controller
                     ->whereIn('wiki_page_id', DB::table('wiki_pages')->where('project_id', $runRow->project_id)->pluck('id'))
                     ->where('producer', 'devboard-python-plugin')
                     ->exists() ? 'updated_from_local_analyzer' : 'not_updated',
+                'reviewed' => $events->contains(fn (object $event): bool => $event->event_type === 'run.reviewed'),
                 'source_truth' => 'local plugin state, not remote Git truth',
             ],
         ]);

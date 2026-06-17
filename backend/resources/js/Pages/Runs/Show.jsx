@@ -1,3 +1,4 @@
+import { router } from '@inertiajs/react';
 import { AlertTriangle, CheckCircle2, FileJson, GitBranch, RadioTower } from 'lucide-react';
 import AppLayout from '../../Layouts/AppLayout';
 
@@ -24,6 +25,21 @@ export default function RunShow({ run, runContext, project, repository, events, 
         <div className="mt-3 inline-flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
           <RadioTower size={14} />
           {state.source_truth}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {state.reviewed ? (
+            <span className="inline-flex items-center rounded border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs text-emerald-900">
+              reviewed
+            </span>
+          ) : canReviewRun(dashboard) ? (
+            <button
+              type="button"
+              onClick={() => router.post(`/runs/${run.id}/review`, {}, { preserveScroll: true })}
+              className="inline-flex items-center rounded border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700 hover:bg-zinc-100"
+            >
+              mark reviewed
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -63,10 +79,14 @@ export default function RunShow({ run, runContext, project, repository, events, 
           <div className="mt-4 text-sm font-semibold">Artifacts</div>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             {artifacts.map((artifact) => (
-              <span key={artifact.id} className="inline-flex items-center gap-1 rounded bg-zinc-100 px-2 py-1">
+              <a
+                key={artifact.id}
+                href={downloadableArtifact(artifact) ? `/runs/${run.id}/artifacts/${artifact.id}/download` : undefined}
+                className="inline-flex items-center gap-1 rounded bg-zinc-100 px-2 py-1 hover:bg-zinc-200"
+              >
                 <FileJson size={12} />
                 {artifact.artifact_type} · {artifact.status}
-              </span>
+              </a>
             ))}
           </div>
         </div>
@@ -120,4 +140,14 @@ function SafetyList({ title, items }) {
       {items.length === 0 ? 'none' : items.map((item) => `${item.path ?? item.pattern ?? 'item'}:${item.reason ?? 'flag'}`).join(', ')}
     </div>
   );
+}
+
+function downloadableArtifact(artifact) {
+  return artifact.status === 'validated' || artifact.status === 'imported';
+}
+
+function canReviewRun(dashboard) {
+  const roles = dashboard?.user?.roles ?? [];
+
+  return roles.includes('PM') || roles.includes('Developer') || roles.includes('Sysadmin') || roles.includes('Admin');
 }

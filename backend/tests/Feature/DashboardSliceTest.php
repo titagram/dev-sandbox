@@ -91,6 +91,34 @@ it('shows delta summary, device, and risk report details on delta run detail', f
         );
 });
 
+it('lets a PM download a validated run artifact', function () {
+    Storage::fake('local');
+
+    $pm = dashboardUserWithRole('PM');
+    $runId = createDashboardDeltaRun();
+    $artifactId = DB::table('artifacts')->where('run_id', $runId)->where('artifact_type', 'diff_summary')->value('id');
+
+    $this->actingAs($pm)
+        ->get("/runs/{$runId}/artifacts/{$artifactId}/download")
+        ->assertOk()
+        ->assertDownload('diff-summary.json');
+});
+
+it('lets a Developer mark a run as reviewed', function () {
+    $developer = dashboardUserWithRole('Developer');
+    $runId = createDashboardRun();
+
+    $this->actingAs($developer)
+        ->postJson("/runs/{$runId}/review")
+        ->assertOk()
+        ->assertJson(['reviewed' => true]);
+
+    expect(DB::table('run_events')
+        ->where('run_id', $runId)
+        ->where('event_type', 'run.reviewed')
+        ->count())->toBe(1);
+});
+
 it('blocks PM access to Admin token page', function () {
     $pm = dashboardUserWithRole('PM');
 
