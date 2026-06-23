@@ -7,6 +7,26 @@ Per la guida completa usa prima `README.md` alla root.
 
 - base: `docker-compose.devboard.yaml`
 - override target x64: `docker-compose.devboard.amd64.yaml`
+- override Traefik: `docker-compose.devboard.traefik.yaml`
+
+## Esposizione Traefik
+
+L'override `docker-compose.devboard.traefik.yaml` pubblica solo `app` su `home-sweet-home.cloud` attraverso la rete esterna `traefik_default`.
+
+Richiede `DEVBOARD_APP_KEY` a runtime, per evitare di salvare la chiave Laravel nel repository. Prima dell'avvio pubblico compila gli asset Inertia/Vite con il servizio Node del compose, cosi la build usa la versione Node prevista dal progetto.
+
+Esempio:
+
+```bash
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml run --rm node sh -lc "npm install && npm run build"
+
+DEVBOARD_APP_KEY='base64:...' \
+DEVBOARD_APP_PORT=127.0.0.1:18000 \
+DEVBOARD_POSTGRES_PORT=127.0.0.1:15432 \
+DEVBOARD_NEO4J_HTTP_PORT=127.0.0.1:17474 \
+DEVBOARD_NEO4J_BOLT_PORT=127.0.0.1:17687 \
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml -f docker-compose.devboard.traefik.yaml up -d app postgres neo4j
+```
 
 ## Servizi
 

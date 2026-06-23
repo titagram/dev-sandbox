@@ -92,6 +92,23 @@ docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.
 
 Nota: questo verifica la configurazione Docker `amd64`, ma **non sostituisce** una vera validazione su host Ubuntu x64.
 
+### Esposizione Traefik
+
+Su host con Traefik gia` attivo sulla rete Docker esterna `traefik_default`, compila prima gli asset frontend e poi avvia lo stack con l'override dedicato:
+
+```bash
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml run --rm node sh -lc "npm install && npm run build"
+
+DEVBOARD_APP_KEY='base64:...' \
+DEVBOARD_APP_PORT=127.0.0.1:18000 \
+DEVBOARD_POSTGRES_PORT=127.0.0.1:15432 \
+DEVBOARD_NEO4J_HTTP_PORT=127.0.0.1:17474 \
+DEVBOARD_NEO4J_BOLT_PORT=127.0.0.1:17687 \
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml -f docker-compose.devboard.traefik.yaml up -d app postgres neo4j
+```
+
+Il dominio pubblico configurato e` `https://home-sweet-home.cloud`. Traefik inoltra solo al container `app` sulla porta `8000`; PostgreSQL e Neo4j non hanno router Traefik. Nell'esempio i binding host restano su `127.0.0.1` per evitare ingressi pubblici fuori da Traefik.
+
 ### 2. Inizializza database e seed
 
 ```bash

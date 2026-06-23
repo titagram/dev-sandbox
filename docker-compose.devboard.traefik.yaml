@@ -1,0 +1,33 @@
+name: devboard
+
+services:
+  app:
+    environment:
+      APP_NAME: DevBoard
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_KEY: ${DEVBOARD_APP_KEY:?Set DEVBOARD_APP_KEY before exposing DevBoard}
+      APP_URL: https://home-sweet-home.cloud
+      ASSET_URL: https://home-sweet-home.cloud
+      SESSION_DOMAIN: home-sweet-home.cloud
+      SESSION_SECURE_COOKIE: "true"
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik_default
+      traefik.http.middlewares.devboard-https-redirect.redirectscheme.scheme: https
+      traefik.http.middlewares.devboard-https-redirect.redirectscheme.permanent: "true"
+      traefik.http.routers.devboard-http.entrypoints: web
+      traefik.http.routers.devboard-http.rule: Host(`home-sweet-home.cloud`)
+      traefik.http.routers.devboard-http.middlewares: devboard-https-redirect
+      traefik.http.routers.devboard-web.entrypoints: websecure
+      traefik.http.routers.devboard-web.rule: Host(`home-sweet-home.cloud`)
+      traefik.http.routers.devboard-web.tls.certresolver: le
+      traefik.http.services.devboard-web.loadbalancer.server.port: "8000"
+    networks:
+      - default
+      - traefik
+
+networks:
+  traefik:
+    external: true
+    name: traefik_default
