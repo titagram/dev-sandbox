@@ -2,6 +2,36 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-06-23 - Emergent frontend source intake note
+
+- Request: add that the generated frontend must be pulled from `https://github.com/titagram/emergent_devboard_frontend.git` and that its `app/README_LLM.md` must be read before integration.
+- Context read: `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, policy files under `ai-sandbox/instructions/policies/`, `ai-sandbox/config/project.yaml`, and `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`.
+- Intended write paths: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added the GitHub source as developer-provided context, expanded dependency verification for the generated frontend to include clone/pull and `app/README_LLM.md`, added a new Task 0 for external frontend intake, and added an acceptance criterion requiring the frontend source and README handoff to be checked before integration.
+- Files changed: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `rg -n "emergent_devboard_frontend|README_LLM|Task 0|titagram" docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` confirmed the source repo, README handoff, Task 0, and logbook entry are present; `git diff --check` exited 0.
+- Residual risks: this records the intended source and process only; the external repository has not been cloned or verified in this step.
+
+## 2026-06-23 - Frontend quality plan dependency ownership
+
+- Request: record that future AI workers are responsible for pulling/installing/testing required dependencies, and review whether the frontend/quality implementation steps are functionally distributed and aggregated.
+- Context read: `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, policy files under `ai-sandbox/instructions/policies/`, and `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`.
+- Intended write paths: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added an explicit AI dependency responsibility section, updated the emergent.sh prompt addendum to require dependency install/build/test reporting, added a functional task distribution review, and expanded the tooling tasks so backend/browser dependencies are inspected, pulled, and verified before scripts or tests depend on them.
+- Files changed: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `rg -n "^## |^### |^- \\[ \\] \\*\\*Step" docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md` confirmed 9 task groups with ordered steps; `rg -n "TODO|TBD|manual|dependency|dependencies|composer require|npm install|quality:all|destructive" docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md` confirmed dependency ownership and destructive-scan safety language are explicit; `git diff --check` exited 0.
+- Residual risks: this remains planning/documentation only. Dependency installation, emergent.sh output validation, Laravel quality commands, and scanner wiring are not implemented yet.
+
+## 2026-06-23 - Frontend refresh and quality control planning note
+
+- Request: capture the planned emergent.sh frontend prompt extension and future AI-assisted Quality & Test Control Layer requirements in an implementation plan, after adapting the developer-provided Symfony-oriented draft to the actual DevBoard Laravel codebase.
+- Context read: `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, all policy files under `ai-sandbox/instructions/policies/`, `ai-sandbox/config/project.yaml`, `backend/composer.json`, `backend/package.json`, `backend/tests/**`, current route output, and existing DevBoard plans.
+- Intended write paths: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: created a dedicated plan for the frontend refresh plus future quality control workstream. The plan keeps emergent.sh scoped to UI/API-adapter/mock-data work, adds a Quality Center prompt addendum, and records that the backend quality layer must be implemented later as Laravel Artisan commands, Laravel-local config, Pest/PHPUnit tests, report writers, safe route inventory/smoke checks, and quality gates.
+- Files changed: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Verification: `git diff --check` exited 0; `rg -n "bin/console|Symfony|firewall|voter|TODO|TBD" docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md` showed only intentional Laravel-vs-Symfony adaptation notes and no unresolved TODO/TBD placeholders.
+- Residual risks: this is a planning artifact only. The quality backend, emergent.sh frontend, dashboard API endpoints, and scanner integrations are not implemented yet.
+
 ## 2026-06-17 - README completeness refresh
 
 - Request: update the main README so local setup, Docker services, seeded test credentials, dashboard access, plugin token flow, and remaining work are explicit before continuing with further implementation.
