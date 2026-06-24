@@ -58,9 +58,79 @@ final class DashboardApiReader
     /**
      * @return array<string, mixed>
      */
-    public function kanban(): array
+    public function overview(): array
     {
-        $project = DB::table('projects')->orderBy('created_at')->first();
+        $taskStateCounts = DB::table('tasks')
+            ->join('kanban_columns', 'kanban_columns.id', '=', 'tasks.status_column_id')
+            ->select('kanban_columns.status_key', DB::raw('count(*) as aggregate'))
+            ->groupBy('kanban_columns.status_key')
+            ->pluck('aggregate', 'kanban_columns.status_key')
+            ->map(fn (mixed $count): int => (int) $count)
+            ->all();
+
+        $taskRiskCounts = DB::table('tasks')
+            ->select('risk_level', DB::raw('count(*) as aggregate'))
+            ->groupBy('risk_level')
+            ->pluck('aggregate', 'risk_level')
+            ->map(fn (mixed $count): int => (int) $count)
+            ->all();
+
+        $repositoryIdsWithGenesis = DB::table('genesis_imports')
+            ->whereIn('status', ['active', 'finished', 'imported', 'complete'])
+            ->distinct()
+            ->pluck('repository_id')
+            ->all();
+
+        return [
+            'summary' => [
+                'active_projects' => DB::table('projects')->where('status', 'active')->count(),
+                'repositories_awaiting_genesis' => DB::table('repositories')
+                    ->when($repositoryIdsWithGenesis !== [], fn ($query) => $query->whereNotIn('id', $repositoryIdsWithGenesis))
+                    ->count(),
+            ],
+            'tasks' => [
+                'total' => DB::table('tasks')->count(),
+                'blocked' => (int) ($taskStateCounts['blocked'] ?? 0),
+                'by_state' => $this->countsWithDefaults($taskStateCounts, ['backlog', 'ready', 'in_progress', 'blocked', 'review', 'done']),
+                'by_risk' => $this->countsWithDefaults($taskRiskCounts, ['low', 'medium', 'high', 'critical']),
+            ],
+            'runs' => [
+                'failed' => DB::table('runs')->where('status', 'failed')->count(),
+                'running' => DB::table('runs')->whereIn('status', [
+                    'created',
+                    'queued',
+                    'started',
+                    'context_pulled',
+                    'local_snapshot_received',
+                    'working',
+                    'heartbeat',
+                    'artifact_uploaded',
+                    'active',
+                    'running',
+                ])->count(),
+            ],
+            'wiki' => [
+                'stale_pages' => DB::table('wiki_pages')->whereIn('source_status', ['stale', 'conflict_with_code'])->count(),
+            ],
+            'agents' => [
+                'online' => DB::table('devices')->where('status', 'active')->where('last_seen_at', '>=', now()->subMinutes(10))->count(),
+                'offline' => DB::table('devices')
+                    ->where('status', 'active')
+                    ->where(function ($query): void {
+                        $query->whereNull('last_seen_at')->orWhere('last_seen_at', '<', now()->subMinutes(10));
+                    })
+                    ->count(),
+            ],
+            'projects' => $this->projects(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function kanban(?string $projectId = null): array
+    {
+        $project = $this->resolveProject($projectId);
         $board = $project
             ? DB::table('kanban_boards')->where('project_id', $project->id)->where('is_default', true)->first()
             : null;
@@ -121,9 +191,12 @@ final class DashboardApiReader
     /**
      * @return list<array<string, mixed>>
      */
-    public function runs(): array
+    public function runs(?string $projectId = null): array
     {
+        $this->abortUnlessProjectExists($projectId);
+
         return DB::table('runs')
+            ->when($projectId !== null, fn ($query) => $query->where('project_id', $projectId))
             ->orderByDesc('created_at')
             ->limit(100)
             ->get()
@@ -192,8 +265,10 @@ final class DashboardApiReader
     /**
      * @return list<array<string, mixed>>
      */
-    public function wiki(): array
+    public function wiki(?string $projectId = null): array
     {
+        $this->abortUnlessProjectExists($projectId);
+
         return DB::table('wiki_pages')
             ->leftJoin('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
             ->select([
@@ -208,6 +283,7 @@ final class DashboardApiReader
                 'wiki_revisions.evidence_refs',
                 'wiki_revisions.created_at as revision_created_at',
             ])
+            ->when($projectId !== null, fn ($query) => $query->where('wiki_pages.project_id', $projectId))
             ->orderBy('wiki_pages.title')
             ->get()
             ->map(fn (object $page): array => $this->wikiSummary($page))
@@ -305,9 +381,12 @@ final class DashboardApiReader
     /**
      * @return list<array<string, mixed>>
      */
-    public function artifacts(): array
+    public function artifacts(?string $projectId = null): array
     {
+        $this->abortUnlessProjectExists($projectId);
+
         return DB::table('artifacts')
+            ->when($projectId !== null, fn ($query) => $query->where('project_id', $projectId))
             ->orderByDesc('created_at')
             ->limit(100)
             ->get()
@@ -481,6 +560,43 @@ final class DashboardApiReader
             'graph_status' => DB::table('artifacts')->where('project_id', $projectId)->where('artifact_type', 'graph_snapshot')->exists() ? 'complete' : 'not_started',
             'updated_at' => (string) $project->updated_at,
         ];
+    }
+
+    private function resolveProject(?string $projectId): ?object
+    {
+        if ($projectId === null) {
+            return DB::table('projects')->orderBy('created_at')->first();
+        }
+
+        $project = DB::table('projects')->where('id', $projectId)->first();
+        abort_unless($project, 404);
+
+        return $project;
+    }
+
+    private function abortUnlessProjectExists(?string $projectId): void
+    {
+        if ($projectId === null) {
+            return;
+        }
+
+        abort_unless(DB::table('projects')->where('id', $projectId)->exists(), 404);
+    }
+
+    /**
+     * @param array<string, int> $counts
+     * @param list<string> $keys
+     * @return array<string, int>
+     */
+    private function countsWithDefaults(array $counts, array $keys): array
+    {
+        $normalized = [];
+
+        foreach ($keys as $key) {
+            $normalized[$key] = (int) ($counts[$key] ?? 0);
+        }
+
+        return $normalized;
     }
 
     /**

@@ -8,106 +8,16 @@
 
 **Tech Stack:** Laravel 13, Inertia/React current backend, future standalone React/Vite frontend from emergent.sh, Pest/PHPUnit, Composer audit, Laravel Pint, optional PHPStan, Playwright, ZAP/Semgrep/Trivy/Nuclei as opt-in scanners.
 
-## Local Agent Direction And Repository Boundaries
+## Related Roadmap Files
 
-- `developer_provided`: the preferred local execution direction is a thin Node application over the existing Python plugin/analyzer path, not an immediate rewrite of scanner/analyzer logic in Node.
-- `developer_provided`: the first local agent slice should use polling/job leases against DevBoard, not WebSocket server push.
-- `developer_provided`: token keychain storage is out of scope for now because the intended operating environment is VPN-protected. Revisit OS keychain or equivalent secure storage before broader distribution.
-- `verified_from_code`: `/api/plugin/v1` is the integration channel for local CLI/MCP/plugin/agent clients. Browser UI code must use `/api/dashboard/...`.
-- `inferred`: a future Node local agent should live in a distinct top-level `agent/` directory so the repository keeps clear ownership boundaries.
+This file is intentionally limited to frontend intake and Quality Center work.
 
-Repository ownership must remain explicit:
-
-- `backend/`: Laravel DevBoard control plane. Owns orchestration, auth, registry, report ingestion, report normalization, gates, dashboard APIs, and server-side persistence. It must not assume target project source code is present on the server.
-- external/generated frontend or future frontend app path: browser UI and Quality Center surface. It consumes dashboard APIs and must not call `/api/plugin/v1`.
-- `plugin/`: existing Python CLI/MCP integration surface. It remains useful for Codex/MCP flows and can either call DevBoard directly for existing flows or delegate local target checks to the Node agent once that exists.
-- `analyzer/`: existing Python analyzer/report producer. The Node agent should call it as a local worker/subprocess in the first implementation slice.
-- future `agent/`: Node local execution app. Owns the local web UI on loopback, token entry, repository selection, local scheduling, local tool/profile orchestration, polling/job lease handling, uploads to DevBoard, and a localhost API that Codex can call to launch approved check profiles.
-
-The server may request checks by creating allowlisted jobs, but the local agent remains the enforcement boundary: it decides what is executable on that machine, applies local configuration, and must not expose arbitrary shell execution as a remote server capability.
-
-## Project Kickstart And Git State Direction
-
-- `developer_provided`: DevBoard must not require direct server-side access to the target source repository during project kickstart.
-- `developer_provided`: repository linking during kickstart is the responsibility of the local plugin or future Node agent, not a server-side Git clone.
-- `developer_provided`: the local agent must be precise during kickstart, preferably by using deterministic probe scripts/checks instead of loose LLM inference.
-- `developer_provided`: after each push or relevant local Git state change, the local agent/plugin should update Git state on the DevBoard server.
-- `verified_from_code`: the current schema already separates server-side logical `repositories` from device-bound `local_workspaces`.
-- `verified_from_code`: `local_workspaces` currently store `display_path`, `current_branch`, `last_head_sha`, `dirty_status`, and `last_seen_at`, making them the right place for device-reported local Git state.
-- `inferred`: kickstart state names should avoid implying server-side repository access. Prefer `awaiting_repository_declaration` for missing logical repository records and `awaiting_local_workspace_link` for missing device-folder bindings.
-
-Kickstart responsibility split:
-
-- DevBoard server owns project records, logical repository records, kickstart checklist state, policy, dashboard visibility, and validation of received facts.
-- PM/Admin owns business/product answers and may declare logical repositories when known.
-- Local plugin/agent owns local folder selection, `.git` validation, branch/head/dirty-state probes, stack detection, command detection, protected/excluded path discovery, and registration of `local_workspaces`.
-- Analyzer owns deterministic Genesis/Delta artifacts once the local workspace is linked.
-
-Local agent precision requirements:
-
-- use explicit scripts/probes for Git, runtime, package manager, build/test command, stack, and filesystem checks;
-- label probe results as verified local facts only when produced by deterministic checks;
-- label LLM-assisted guesses as inferred and require human confirmation before they affect policy or project status;
-- keep probe output structured so DevBoard can validate and diff it over time.
-
-Git-state synchronization:
-
-- server state should be updated whenever the local agent observes a new `HEAD`, branch change, dirty-state change, or completed push;
-- the first implementation can use agent polling plus explicit refresh actions;
-- a later implementation may install an opt-in local `post-commit`, `post-checkout`, `post-merge`, or `post-push` hook that notifies the local agent, which then updates DevBoard;
-- DevBoard should treat pushed/remote state as device-reported unless a future read-only remote Git integration verifies it independently.
-
-## Server-Side Intelligence Assistants Direction
-
-- `developer_provided`: DevBoard should include configurable server-side predictive assistants that provide intelligence, questions, explanations, and suggestions, not autonomous domain mutations.
-- `developer_provided`: the first assistant set is Task Clarifier, Backlog Triage Assistant, Wiki Query, and Socrate.
-- `developer_provided`: Task Clarifier must always require explicit PM approval before updating task or Kanban data.
-- `developer_provided`: Wiki Query is the project wiki chat surface and also includes the Wiki Freshness Assistant behavior.
-- `developer_provided`: Socrate is the generic project chat assistant with access to project context, including wiki, AST/code graph data, test results, reports, runs, and related DevBoard evidence.
-- `verified_from_code`: DevBoard already stores project-scoped tasks, wiki pages/revisions, runs, artifacts, repositories, snapshots, and graph import state, so server-side assistants should be project-scoped by default.
-- `inferred`: assistants should be configured through a future Admin/System intelligence panel backed by model/runtime/agent registries rather than hardcoded to a single LLM provider. Candidate adapters include OpenAI-compatible HTTP providers, local or CLI providers, and a future opencode-style connector if it exposes a stable integration surface.
-- `inferred`: assistant outputs should be persisted as suggestions, drafts, messages, or analysis records first. Applying a suggestion to tasks, wiki, project metadata, or Kanban state should be a separate audited human approval action.
-
-Initial assistant responsibilities:
-
-- Task Clarifier: reads a task draft and project context, asks the PM targeted follow-up questions, then proposes a refined title, description, acceptance criteria, risks, dependencies, labels, and test hints. It does not update the task until the PM explicitly approves the proposed changes.
-- Backlog Triage Assistant: reviews a project backlog for vague tasks, duplicates, oversized work, missing owners, stale blocked work, inconsistent priorities, and missing acceptance criteria. It emits recommendations and grouping suggestions only.
-- Wiki Query: provides chat over the project wiki with source-aware answers, references, and freshness warnings. It can propose wiki updates or identify stale/conflicting pages, but does not write wiki revisions without human approval.
-- Socrate: provides a broader project-level chat over all DevBoard-held project intelligence, including wiki, tasks, runs, quality reports, test results, artifacts metadata, AST/code graph data, and analyzer outputs. Socrate remains read-only by default and must honor project code exposure policies; it must not imply the server has source code beyond uploaded/normalized artifacts and evidence.
-
-Safety and audit rules:
-
-- assistants are project-scoped unless explicitly designed as cross-project overview assistants;
-- all assistant reads must respect role permissions and project policy;
-- all LLM/provider configuration must be Admin/System managed;
-- all assistant runs should record prompt context metadata, selected model/runtime profile, actor, project, target entity, output, and approval state;
-- rejected, accepted, and superseded suggestions should remain auditable;
-- no assistant may execute local scans, mutate code, or trigger risky operations directly.
-
-## Project Logbook And Watchman Direction
-
-- `developer_provided`: DevBoard Server should expose a Logbook section in the frontend.
-- `developer_provided`: the local plugin/agent should update the project logbook as work happens and should be able to fetch previous logbook entries for context.
-- `developer_provided`: the server-side assistant that correlates logbook changes with code state and suggests problems or improvements is named Watchman.
-- `verified_from_code`: DevBoard currently has `run_events` for run timelines and `audit_logs` for security/compliance records, but no dedicated frontend Project Logbook product surface.
-- `inferred`: Project Logbook should be a first-class product timeline distinct from `audit_logs`, `run_events`, and workspace Markdown logbooks under `ai-sandbox/logbooks`.
-
-Project Logbook responsibilities:
-
-- provide global and project-scoped frontend views, such as `/logbook` and `/projects/{project}/logbook`;
-- expose contextual logbook slices from tasks, runs, repositories, wiki pages, and artifacts;
-- store append-only entries with project, optional repository, optional task, optional run, actor, source, entry type, title, Markdown body, structured payload, evidence references, risk/severity, and timestamp;
-- support plugin/local agent append and fetch operations through `/api/plugin/v1/...`;
-- support browser reads through `/api/dashboard/...`;
-- keep browser UI code off `/api/plugin/v1`.
-
-Watchman responsibilities:
-
-- read new project logbook entries and correlate them with DevBoard-held evidence such as diff summaries, analyzer output, AST/code graph imports, test results, quality reports, run events, wiki state, and artifacts metadata;
-- infer possible issues such as missing tests, mismatched task intent versus observed changes, stale wiki pages, risky touched areas, recurrent failure patterns, or follow-up work;
-- emit suggestions, warnings, and proposed follow-up tasks or wiki updates;
-- never mutate tasks, wiki, project state, code, or local agent operations without explicit human approval;
-- avoid implying server access to source code beyond uploaded artifacts, normalized reports, graph data, and evidence already held by DevBoard.
+- DevBoard masterplan: `docs/superpowers/plans/2026-06-24-devboard-masterplan.md`
+- Multiproject dashboard and CRUD: `docs/superpowers/plans/2026-06-24-devboard-multiproject-dashboard.md`
+- Local Node agent: `docs/superpowers/plans/2026-06-24-devboard-local-agent.md`
+- Project kickstart and Git state: `docs/superpowers/plans/2026-06-24-devboard-project-kickstart.md`
+- Server-side intelligence assistants: `docs/superpowers/plans/2026-06-24-devboard-server-side-intelligence-agents.md`
+- Project Logbook and Watchman: `docs/superpowers/plans/2026-06-24-devboard-project-logbook-watchman.md`
 
 ---
 
@@ -243,6 +153,10 @@ The UI must clearly separate:
 - warnings;
 - blocking gate failures;
 - operations requiring human approval.
+
+Generated frontend branding:
+- remove generated-builder watermarks and labels such as "Made with Emergent" before production deployment or final integration into DevBoard;
+- do not expose emergent.sh branding in the DevBoard Server UI unless explicitly reintroduced as internal implementation metadata.
 
 Do not invent business rules. If showing truth registry examples, mark them as examples or inferred. The final Laravel backend will own the real registries and report generation.
 ```
@@ -759,3 +673,4 @@ Operations that can mutate state, crawl authenticated areas, or run scanners mus
 - JSON and Markdown reports are generated under ignored report paths.
 - No active security scan or destructive route scan runs by default.
 - emergent.sh frontend includes a Quality Center surface using mock API data but does not implement backend scanners.
+- DevBoard Server frontend does not show generated-builder branding such as "Made with Emergent".

@@ -40,6 +40,20 @@ routes:
       enabled: false
       reason: "Logout invalidates the dashboard session and must not run in default route smoke."
 
+  - id: dashboard.api.overview
+    method: GET
+    uri: /api/dashboard/overview
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
   - id: dashboard.api.kanban
     method: GET
     uri: /api/dashboard/kanban
@@ -97,9 +111,97 @@ routes:
       enabled: true
       reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
 
+  - id: dashboard.api.projects.store
+    method: POST
+    uri: /api/dashboard/projects
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    smoke:
+      enabled: false
+      reason: "Creates a project and default Kanban board; must not run in default route smoke."
+
   - id: dashboard.api.projects.show
     method: GET
     uri: /api/dashboard/projects/{project}
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.projects.update
+    method: PATCH
+    uri: /api/dashboard/projects/{project}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Updates project identity fields and must not run in default route smoke."
+
+  - id: dashboard.api.projects.kanban
+    method: GET
+    uri: /api/dashboard/projects/{project}/kanban
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.projects.runs
+    method: GET
+    uri: /api/dashboard/projects/{project}/runs
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.projects.wiki
+    method: GET
+    uri: /api/dashboard/projects/{project}/wiki
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.projects.artifacts
+    method: GET
+    uri: /api/dashboard/projects/{project}/artifacts
     source_status: verified_from_code
     classification: SAFE_READ
     classification_status: inferred

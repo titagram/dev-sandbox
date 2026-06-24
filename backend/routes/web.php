@@ -39,11 +39,18 @@ Route::middleware('auth')->group(function () {
     Route::prefix('/api/dashboard')->group(function () {
         Route::get('/me', [DashboardAuthController::class, 'me']);
         Route::post('/logout', [DashboardAuthController::class, 'logout']);
+        Route::get('/overview', [DashboardResourceController::class, 'overview']);
         Route::get('/kanban', [DashboardResourceController::class, 'kanban']);
         Route::patch('/tasks/{task}', [DashboardResourceController::class, 'updateTask']);
         Route::get('/tasks/{task}', [DashboardResourceController::class, 'task']);
         Route::get('/projects', [DashboardResourceController::class, 'projects']);
+        Route::post('/projects', [DashboardResourceController::class, 'createProject']);
         Route::get('/projects/{project}', [DashboardResourceController::class, 'project']);
+        Route::patch('/projects/{project}', [DashboardResourceController::class, 'updateProject']);
+        Route::get('/projects/{project}/kanban', [DashboardResourceController::class, 'projectKanban']);
+        Route::get('/projects/{project}/runs', [DashboardResourceController::class, 'projectRuns']);
+        Route::get('/projects/{project}/wiki', [DashboardResourceController::class, 'projectWiki']);
+        Route::get('/projects/{project}/artifacts', [DashboardResourceController::class, 'projectArtifacts']);
         Route::get('/runs', [DashboardResourceController::class, 'runs']);
         Route::get('/runs/{run}', [DashboardResourceController::class, 'run']);
         Route::post('/runs/{run}/retry-import', [DashboardResourceController::class, 'retryImport']);
