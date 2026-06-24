@@ -629,3 +629,43 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Files changed: `docs/superpowers/plans/2026-06-17-devboard-runtime-residuals.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
 - Verification: plan content reviewed against the current residual list in `README.md` and the latest runtime findings already recorded in this logbook; no executable verification required beyond file creation for this documentation task.
 - Residual risks: the plan intentionally constrains scope to runtime residuals only; audit-export download UX remains outside this document because it is product hardening, not part of the real runtime closure requested here.
+
+## 2026-06-24 - DevBoard local agent architecture note
+
+- Request: record the agreed direction for a lightweight local Node agent wrapping the existing Python plugin/analyzer execution path, with polling rather than WebSocket for the first implementation slice.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, policy files under `ai-sandbox/instructions/policies/`, `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, and current project logbook context.
+- Intended write paths: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added a local agent architecture addendum to the frontend/quality-control plan. The note records the chosen direction: future `agent/` as a distinct Node local execution app, thin wrapper over current Python plugin/analyzer behavior, loopback UI/API, polling/job leases instead of WebSocket for the first slice, no keychain storage in the current VPN-oriented scope, and explicit boundaries between `backend/`, frontend, `plugin/`, `analyzer/`, and future `agent/`.
+- Verification: `git diff --check -- docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` exited 0; no executable test was required for this documentation-only note.
+- Files changed: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: the addendum is a recorded direction, not a full implementation spec. Backend job lease endpoints, agent package structure, local token storage details, Codex-to-agent localhost API shape, and verification commands still need a dedicated spec/plan before implementation.
+
+## 2026-06-24 - DevBoard server-side intelligence assistants note
+
+- Request: record the selected first server-side predictive assistants: Task Clarifier, Backlog Triage Assistant, Wiki Query, and the project-wide chat assistant named Socrate.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, policy files under `ai-sandbox/instructions/policies/`, `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, and current project logbook context.
+- Intended write paths: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added a server-side intelligence assistants addendum to the frontend/quality-control plan. The note records Task Clarifier, Backlog Triage Assistant, Wiki Query, and Socrate as the first assistant set; requires explicit PM approval before Task Clarifier updates tasks/Kanban; folds wiki freshness behavior into Wiki Query; defines Socrate as a read-only project chat assistant over DevBoard-held project intelligence; and records project scoping, Admin/System model/provider configuration, suggestion-first persistence, and audit expectations.
+- Verification: `git diff --check -- docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` exited 0; no executable test was required for this documentation-only note.
+- Files changed: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: the addendum is a recorded product/architecture direction, not a full implementation spec. Data model tables for agent runs/suggestions/messages, provider registry schema, role rules, context packing, approval UX, and cost/rate limits still need a dedicated design spec before implementation.
+
+## 2026-06-24 - DevBoard project logbook and Watchman note
+
+- Request: record the Project Logbook product surface and rename the proposed change-correlation assistant to Watchman.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, policy files under `ai-sandbox/instructions/policies/`, `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, and current project logbook context.
+- Intended write paths: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added a Project Logbook and Watchman addendum to the frontend/quality-control plan. The note records Logbook as a first-class frontend surface distinct from `audit_logs`, `run_events`, and workspace Markdown logbooks; records plugin/local agent append and fetch needs; preserves separate `/api/dashboard/...` and `/api/plugin/v1/...` contracts; and names the change-correlation assistant Watchman.
+- Verification: `git diff --check -- docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` exited 0; no executable test was required for this documentation-only note.
+- Files changed: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: the addendum is not yet a full implementation spec. Project logbook schema, dashboard UX, plugin sync endpoints, incremental fetch semantics, Watchman context packing, suggestion persistence, and approval flows still need detailed design before implementation.
+
+## 2026-06-24 - DevBoard kickstart and Git state note
+
+- Request: record the local-agent responsibility for precise project kickstart probing and server Git-state synchronization after pushes or local Git changes.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, policy files under `ai-sandbox/instructions/policies/`, `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, and current project logbook context.
+- Intended write paths: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added a Project Kickstart and Git State addendum to the frontend/quality-control plan. The note records that DevBoard must not require server-side source repository access; repository linking is handled by the local plugin/agent through `local_workspaces`; the agent should use deterministic probes/scripts for Git, runtime, package manager, stack, command, and filesystem detection; LLM guesses must remain inferred until confirmed; and Git state should be updated on the server after observed `HEAD`, branch, dirty-state, or completed push changes.
+- Verification: `git diff --check -- docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` exited 0; no executable test was required for this documentation-only note.
+- Files changed: `docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: this is a recorded architecture direction, not a full implementation spec. Hook strategy, polling interval, exact Git-state payload, endpoint names, concurrency behavior across multiple workspaces, and validation rules still need detailed design before implementation.
