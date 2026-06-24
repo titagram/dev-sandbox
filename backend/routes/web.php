@@ -5,10 +5,15 @@ use App\Http\Controllers\Dashboard\ArtifactDownloadController;
 use App\Http\Controllers\Dashboard\ArtifactRetentionRunController;
 use App\Http\Controllers\Dashboard\ArtifactsIndexController;
 use App\Http\Controllers\Dashboard\AuditExportStoreController;
+use App\Http\Controllers\Dashboard\Api\DashboardAdminController;
+use App\Http\Controllers\Dashboard\Api\DashboardResourceController;
+use App\Http\Controllers\Dashboard\Api\DashboardSystemController;
+use App\Http\Controllers\Dashboard\AuthController as DashboardAuthController;
 use App\Http\Controllers\Dashboard\GraphShowController;
 use App\Http\Controllers\Dashboard\KanbanController;
 use App\Http\Controllers\Dashboard\PluginTokenController;
 use App\Http\Controllers\Dashboard\ProjectShowController;
+use App\Http\Controllers\Dashboard\Quality\QualityController;
 use App\Http\Controllers\Dashboard\RunsIndexController;
 use App\Http\Controllers\Dashboard\RunRetryImportController;
 use App\Http\Controllers\Dashboard\RunReviewController;
@@ -26,7 +31,38 @@ Route::middleware('guest')->group(function () {
     Route::post('/login', [AuthenticatedSessionController::class, 'store']);
 });
 
+Route::prefix('/api/dashboard')->group(function () {
+    Route::post('/login', [DashboardAuthController::class, 'login']);
+});
+
 Route::middleware('auth')->group(function () {
+    Route::prefix('/api/dashboard')->group(function () {
+        Route::get('/me', [DashboardAuthController::class, 'me']);
+        Route::post('/logout', [DashboardAuthController::class, 'logout']);
+        Route::get('/kanban', [DashboardResourceController::class, 'kanban']);
+        Route::patch('/tasks/{task}', [DashboardResourceController::class, 'updateTask']);
+        Route::get('/tasks/{task}', [DashboardResourceController::class, 'task']);
+        Route::get('/projects', [DashboardResourceController::class, 'projects']);
+        Route::get('/projects/{project}', [DashboardResourceController::class, 'project']);
+        Route::get('/runs', [DashboardResourceController::class, 'runs']);
+        Route::get('/runs/{run}', [DashboardResourceController::class, 'run']);
+        Route::post('/runs/{run}/retry-import', [DashboardResourceController::class, 'retryImport']);
+        Route::post('/runs/{run}/review', [DashboardResourceController::class, 'review']);
+        Route::get('/wiki', [DashboardResourceController::class, 'wiki']);
+        Route::get('/wiki/pages/{page}', [DashboardResourceController::class, 'wikiPage']);
+        Route::get('/graph', [DashboardResourceController::class, 'graph']);
+        Route::get('/artifacts', [DashboardResourceController::class, 'artifacts']);
+        Route::get('/runs/{run}/artifacts/{artifact}/download', [DashboardResourceController::class, 'downloadArtifact']);
+        Route::get('/admin/plugin-tokens', [DashboardAdminController::class, 'tokens']);
+        Route::post('/admin/plugin-tokens', [DashboardAdminController::class, 'createToken']);
+        Route::post('/admin/plugin-tokens/{token}/rotate', [DashboardAdminController::class, 'rotateToken']);
+        Route::delete('/admin/plugin-tokens/{token}', [DashboardAdminController::class, 'revokeToken']);
+        Route::get('/admin/devices', [DashboardAdminController::class, 'devices']);
+        Route::delete('/admin/devices/{device}', [DashboardAdminController::class, 'revokeDevice']);
+        Route::get('/system', [DashboardSystemController::class, 'show']);
+        Route::post('/system/artifact-retention', [DashboardSystemController::class, 'retention']);
+        Route::post('/system/audit-exports', [DashboardSystemController::class, 'auditExport']);
+    });
     Route::get('/kanban', KanbanController::class);
     Route::get('/artifacts', ArtifactsIndexController::class);
     Route::get('/graph', GraphShowController::class);
@@ -42,6 +78,16 @@ Route::middleware('auth')->group(function () {
     Route::post('/runs/{run}/retry-import', RunRetryImportController::class);
     Route::post('/runs/{run}/review', RunReviewController::class);
     Route::get('/runs/{run}/artifacts/{artifact}/download', ArtifactDownloadController::class);
+    Route::prefix('/api/dashboard/quality')->group(function () {
+        Route::get('/overview', [QualityController::class, 'overview']);
+        Route::get('/current-state', [QualityController::class, 'currentState']);
+        Route::get('/reports', [QualityController::class, 'reports']);
+        Route::get('/route-inventory', [QualityController::class, 'routeInventory']);
+        Route::get('/route-smoke', [QualityController::class, 'routeSmoke']);
+        Route::get('/gates/{gate}', [QualityController::class, 'gate']);
+        Route::get('/roadmap', [QualityController::class, 'roadmap']);
+        Route::post('/runs', [QualityController::class, 'run']);
+    });
     Route::get('/admin/plugin-tokens', [PluginTokenController::class, 'index']);
     Route::post('/admin/plugin-tokens', [PluginTokenController::class, 'store']);
     Route::post('/admin/plugin-tokens/{token}/rotate', [PluginTokenController::class, 'rotate']);

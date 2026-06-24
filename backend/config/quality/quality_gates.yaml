@@ -1,0 +1,71 @@
+version: 1
+metadata:
+  source_status: inferred
+  description: "Initial executable gate policy for normalized quality reports."
+
+gates:
+  pull_request:
+    source_status: inferred
+    required_reports:
+      - route-inventory
+      - route-smoke
+    fail_on:
+      - type: route_5xx
+        severity_at_least: low
+      - type: unexpected_status
+        severity_at_least: high
+      - type: critical_security_finding
+        severity_at_least: high
+      - type: composer_audit_advisory
+        severity_at_least: high
+      - type: secret_detected
+        severity_at_least: low
+    warn_on:
+      - type: missing_config
+      - type: missing_parameter_provider
+      - type: missing_setup
+
+  nightly:
+    source_status: inferred
+    required_reports:
+      - route-inventory
+      - route-smoke
+      - composer-audit
+    fail_on:
+      - type: route_5xx
+        severity_at_least: low
+      - type: unexpected_status
+        severity_at_least: medium
+      - type: critical_security_finding
+        severity_at_least: medium
+      - type: composer_audit_advisory
+        severity_at_least: medium
+      - type: secret_detected
+        severity_at_least: low
+    warn_on:
+      - type: missing_config
+      - type: missing_parameter_provider
+      - type: missing_setup
+
+  release:
+    source_status: inferred
+    required_reports:
+      - route-inventory
+      - route-smoke
+      - composer-audit
+      - browser-smoke
+    fail_on:
+      - type: route_5xx
+        severity_at_least: low
+      - type: unexpected_status
+        severity_at_least: low
+      - type: critical_security_finding
+        severity_at_least: low
+      - type: composer_audit_advisory
+        severity_at_least: low
+      - type: secret_detected
+        severity_at_least: low
+    warn_on:
+      - type: missing_config
+      - type: missing_parameter_provider
+      - type: missing_setup

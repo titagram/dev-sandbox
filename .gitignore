@@ -15,3 +15,7 @@ ai-sandbox/graph/*.cypher
 ai-sandbox/graph/*.html
 ai-sandbox/docs/discovery.json
 ai-sandbox/docs/discovery.md
+/backend/var/quality/reports/
+/backend/var/quality/tmp/
+/backend/test-results/
+/backend/playwright-report/

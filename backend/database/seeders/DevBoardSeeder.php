@@ -54,22 +54,16 @@ class DevBoardSeeder extends Seeder
             ]);
         }
 
-        $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
-        if (! $userId) {
-            $userId = DB::table('users')->insertGetId([
-                'name' => 'DevBoard Admin',
-                'email' => 'admin@example.com',
-                'password' => Hash::make('password'),
-                'status' => 'active',
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-        }
+        $userId = $this->seedUser('DevBoard Admin', 'admin@example.com', 'password', 'Admin', $roleIds, $now);
 
-        DB::table('role_user')->updateOrInsert(
-            ['user_id' => $userId, 'role_id' => $roleIds['Admin']],
-            ['updated_at' => $now, 'created_at' => $now],
-        );
+        foreach ([
+            ['DevBoard Admin', 'admin@devboard.local', 'devboard', 'Admin'],
+            ['DevBoard PM', 'pm@devboard.local', 'devboard', 'PM'],
+            ['DevBoard Developer', 'dev@devboard.local', 'devboard', 'Developer'],
+            ['DevBoard Sysadmin', 'sysadmin@devboard.local', 'devboard', 'Sysadmin'],
+        ] as [$name, $email, $password, $role]) {
+            $this->seedUser($name, $email, $password, $role, $roleIds, $now);
+        }
 
         $projectId = $this->upsertUlid('projects', ['slug' => 'demo-project'], [
             'name' => 'Demo Project',
@@ -195,6 +189,36 @@ class DevBoardSeeder extends Seeder
             ['name' => 'Review', 'status_key' => 'review'],
             ['name' => 'Done', 'status_key' => 'done'],
         ];
+    }
+
+    /**
+     * @param array<string, string> $roleIds
+     */
+    private function seedUser(string $name, string $email, string $password, string $role, array $roleIds, mixed $now): string
+    {
+        $userId = DB::table('users')->where('email', $email)->value('id');
+        $values = [
+            'name' => $name,
+            'password' => Hash::make($password),
+            'status' => 'active',
+            'updated_at' => $now,
+        ];
+
+        if ($userId) {
+            DB::table('users')->where('id', $userId)->update($values);
+        } else {
+            $userId = DB::table('users')->insertGetId(array_merge($values, [
+                'email' => $email,
+                'created_at' => $now,
+            ]));
+        }
+
+        DB::table('role_user')->updateOrInsert(
+            ['user_id' => $userId, 'role_id' => $roleIds[$role]],
+            ['updated_at' => $now, 'created_at' => $now],
+        );
+
+        return (string) $userId;
     }
 
     /**

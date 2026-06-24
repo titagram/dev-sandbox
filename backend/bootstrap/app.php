@@ -1,5 +1,8 @@
 <?php
 
+use App\Console\Commands\Quality\CheckGatesCommand;
+use App\Console\Commands\Quality\RouteInventoryCommand;
+use App\Console\Commands\Quality\RouteSmokeCommand;
 use App\Http\Middleware\AuthenticatePluginToken;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
@@ -14,6 +17,11 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
+    ->withCommands([
+        CheckGatesCommand::class,
+        RouteInventoryCommand::class,
+        RouteSmokeCommand::class,
+    ])
     ->withSchedule(function (Schedule $schedule): void {
         $schedule
             ->command('devboard:artifacts-retain', ['--days' => (int) config('services.devboard.artifact_retention_days', 90)])

@@ -9,8 +9,11 @@ services:
       APP_KEY: ${DEVBOARD_APP_KEY:?Set DEVBOARD_APP_KEY before exposing DevBoard}
       APP_URL: https://home-sweet-home.cloud
       ASSET_URL: https://home-sweet-home.cloud
+      DEVBOARD_DASHBOARD_ORIGINS: https://home-sweet-home.cloud
+      SANCTUM_STATEFUL_DOMAINS: home-sweet-home.cloud
       SESSION_DOMAIN: home-sweet-home.cloud
       SESSION_SECURE_COOKIE: "true"
+      SESSION_SAME_SITE: lax
     labels:
       traefik.enable: "true"
       traefik.docker.network: traefik_default
@@ -20,11 +23,30 @@ services:
       traefik.http.routers.devboard-http.rule: Host(`home-sweet-home.cloud`)
       traefik.http.routers.devboard-http.middlewares: devboard-https-redirect
       traefik.http.routers.devboard-web.entrypoints: websecure
-      traefik.http.routers.devboard-web.rule: Host(`home-sweet-home.cloud`)
+      traefik.http.routers.devboard-web.rule: Host(`home-sweet-home.cloud`) && (PathPrefix(`/api`) || PathPrefix(`/sanctum`) || PathPrefix(`/storage`))
+      traefik.http.routers.devboard-web.priority: "100"
       traefik.http.routers.devboard-web.tls.certresolver: le
       traefik.http.services.devboard-web.loadbalancer.server.port: "8000"
     networks:
       - default
+      - traefik
+
+  frontend:
+    build:
+      context: ../emergent_devboard_frontend/frontend
+      args:
+        REACT_APP_USE_MOCK: "false"
+        REACT_APP_API_BASE_URL: https://home-sweet-home.cloud
+        TSC_COMPILE_ON_ERROR: "true"
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik_default
+      traefik.http.routers.devboard-frontend.entrypoints: websecure
+      traefik.http.routers.devboard-frontend.rule: Host(`home-sweet-home.cloud`)
+      traefik.http.routers.devboard-frontend.priority: "1"
+      traefik.http.routers.devboard-frontend.tls.certresolver: le
+      traefik.http.services.devboard-frontend.loadbalancer.server.port: "80"
+    networks:
       - traefik
 
 networks:
