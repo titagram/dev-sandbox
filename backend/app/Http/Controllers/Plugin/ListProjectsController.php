@@ -11,6 +11,7 @@ class ListProjectsController extends Controller
     public function __invoke(): JsonResponse
     {
         $projects = DB::table('projects')
+            ->where('status', 'active')
             ->orderBy('name')
             ->get()
             ->map(fn (object $project): array => [

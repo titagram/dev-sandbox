@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -11,7 +12,10 @@ use Illuminate\Support\Str;
 
 class GenesisStartController extends Controller
 {
-    public function __construct(private readonly ArtifactStorageService $storage)
+    public function __construct(
+        private readonly ArtifactStorageService $storage,
+        private readonly ProjectLifecycleService $lifecycle,
+    )
     {
     }
 
@@ -19,6 +23,10 @@ class GenesisStartController extends Controller
     {
         $repositoryRow = DB::table('repositories')->where('id', $repository)->first();
         abort_unless($repositoryRow, 404);
+
+        if ($error = $this->lifecycle->pluginRepositoryWriteGuard($repository)) {
+            return $error;
+        }
 
         $validated = $request->validate([
             'run_id' => ['required', 'string', 'exists:runs,id'],

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageException;
 use App\Services\DeltaFinalizeService;
 use Illuminate\Http\JsonResponse;
@@ -10,12 +11,19 @@ use Symfony\Component\HttpFoundation\Response;
 
 class DeltaFinalizeController extends Controller
 {
-    public function __construct(private readonly DeltaFinalizeService $finalize)
+    public function __construct(
+        private readonly DeltaFinalizeService $finalize,
+        private readonly ProjectLifecycleService $lifecycle,
+    )
     {
     }
 
     public function __invoke(string $deltaSync): JsonResponse
     {
+        if ($error = $this->lifecycle->pluginDeltaWriteGuard($deltaSync)) {
+            return $error;
+        }
+
         try {
             return response()->json($this->finalize->finalize($deltaSync));
         } catch (ArtifactStorageException $exception) {

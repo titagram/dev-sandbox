@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -11,7 +12,10 @@ use Illuminate\Support\Str;
 
 class DeltaStartController extends Controller
 {
-    public function __construct(private readonly ArtifactStorageService $storage)
+    public function __construct(
+        private readonly ArtifactStorageService $storage,
+        private readonly ProjectLifecycleService $lifecycle,
+    )
     {
     }
 
@@ -19,6 +23,10 @@ class DeltaStartController extends Controller
     {
         $runRow = DB::table('runs')->where('id', $run)->first();
         abort_unless($runRow && $runRow->repository_id, 404);
+
+        if ($error = $this->lifecycle->pluginRunWriteGuard($run)) {
+            return $error;
+        }
 
         $validated = $request->validate([
             'local_workspace_id' => ['required', 'string', 'exists:local_workspaces,id'],

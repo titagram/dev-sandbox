@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Plugin\Concerns\HandlesRunResponses;
+use App\Projects\ProjectLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,6 +13,10 @@ use Illuminate\Support\Str;
 class RunStartController extends Controller
 {
     use HandlesRunResponses;
+
+    public function __construct(private readonly ProjectLifecycleService $lifecycle)
+    {
+    }
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -28,6 +33,10 @@ class RunStartController extends Controller
             'head_sha' => ['nullable', 'string', 'max:255'],
             'dirty_status' => ['required', 'string', 'max:64'],
         ]);
+
+        if ($error = $this->lifecycle->pluginProjectWriteGuard($validated['project_id'])) {
+            return $error;
+        }
 
         $auth = $request->attributes->get('plugin_auth');
         $now = now();

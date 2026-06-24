@@ -11,9 +11,10 @@ final class DashboardApiReader
     /**
      * @return list<array<string, mixed>>
      */
-    public function projects(): array
+    public function projects(string $status = 'active'): array
     {
         return DB::table('projects')
+            ->where('status', $status)
             ->orderBy('name')
             ->get()
             ->map(fn (object $project): array => $this->projectSummary($project))
@@ -26,7 +27,7 @@ final class DashboardApiReader
     public function project(string $projectId): array
     {
         $project = DB::table('projects')->where('id', $projectId)->first();
-        abort_unless($project, 404);
+        abort_unless($project && $project->status !== 'deleted', 404);
 
         return [
             ...$this->projectSummary($project),
@@ -58,10 +59,23 @@ final class DashboardApiReader
     /**
      * @return array<string, mixed>
      */
+    public function projectLifecycle(string $projectId): array
+    {
+        $project = DB::table('projects')->where('id', $projectId)->first();
+        abort_unless($project, 404);
+
+        return $this->projectSummary($project);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function overview(): array
     {
         $taskStateCounts = DB::table('tasks')
+            ->join('projects', 'projects.id', '=', 'tasks.project_id')
             ->join('kanban_columns', 'kanban_columns.id', '=', 'tasks.status_column_id')
+            ->where('projects.status', 'active')
             ->select('kanban_columns.status_key', DB::raw('count(*) as aggregate'))
             ->groupBy('kanban_columns.status_key')
             ->pluck('aggregate', 'kanban_columns.status_key')
@@ -69,6 +83,8 @@ final class DashboardApiReader
             ->all();
 
         $taskRiskCounts = DB::table('tasks')
+            ->join('projects', 'projects.id', '=', 'tasks.project_id')
+            ->where('projects.status', 'active')
             ->select('risk_level', DB::raw('count(*) as aggregate'))
             ->groupBy('risk_level')
             ->pluck('aggregate', 'risk_level')
@@ -85,32 +101,49 @@ final class DashboardApiReader
             'summary' => [
                 'active_projects' => DB::table('projects')->where('status', 'active')->count(),
                 'repositories_awaiting_genesis' => DB::table('repositories')
-                    ->when($repositoryIdsWithGenesis !== [], fn ($query) => $query->whereNotIn('id', $repositoryIdsWithGenesis))
+                    ->join('projects', 'projects.id', '=', 'repositories.project_id')
+                    ->where('projects.status', 'active')
+                    ->when($repositoryIdsWithGenesis !== [], fn ($query) => $query->whereNotIn('repositories.id', $repositoryIdsWithGenesis))
                     ->count(),
             ],
             'tasks' => [
-                'total' => DB::table('tasks')->count(),
+                'total' => DB::table('tasks')
+                    ->join('projects', 'projects.id', '=', 'tasks.project_id')
+                    ->where('projects.status', 'active')
+                    ->count(),
                 'blocked' => (int) ($taskStateCounts['blocked'] ?? 0),
                 'by_state' => $this->countsWithDefaults($taskStateCounts, ['backlog', 'ready', 'in_progress', 'blocked', 'review', 'done']),
                 'by_risk' => $this->countsWithDefaults($taskRiskCounts, ['low', 'medium', 'high', 'critical']),
             ],
             'runs' => [
-                'failed' => DB::table('runs')->where('status', 'failed')->count(),
-                'running' => DB::table('runs')->whereIn('status', [
-                    'created',
-                    'queued',
-                    'started',
-                    'context_pulled',
-                    'local_snapshot_received',
-                    'working',
-                    'heartbeat',
-                    'artifact_uploaded',
-                    'active',
-                    'running',
-                ])->count(),
+                'failed' => DB::table('runs')
+                    ->join('projects', 'projects.id', '=', 'runs.project_id')
+                    ->where('projects.status', 'active')
+                    ->where('runs.status', 'failed')
+                    ->count(),
+                'running' => DB::table('runs')
+                    ->join('projects', 'projects.id', '=', 'runs.project_id')
+                    ->where('projects.status', 'active')
+                    ->whereIn('runs.status', [
+                        'created',
+                        'queued',
+                        'started',
+                        'context_pulled',
+                        'local_snapshot_received',
+                        'working',
+                        'heartbeat',
+                        'artifact_uploaded',
+                        'active',
+                        'running',
+                    ])
+                    ->count(),
             ],
             'wiki' => [
-                'stale_pages' => DB::table('wiki_pages')->whereIn('source_status', ['stale', 'conflict_with_code'])->count(),
+                'stale_pages' => DB::table('wiki_pages')
+                    ->join('projects', 'projects.id', '=', 'wiki_pages.project_id')
+                    ->where('projects.status', 'active')
+                    ->whereIn('wiki_pages.source_status', ['stale', 'conflict_with_code'])
+                    ->count(),
             ],
             'agents' => [
                 'online' => DB::table('devices')->where('status', 'active')->where('last_seen_at', '>=', now()->subMinutes(10))->count(),
@@ -121,7 +154,7 @@ final class DashboardApiReader
                     })
                     ->count(),
             ],
-            'projects' => $this->projects(),
+            'projects' => $this->projects('active'),
         ];
     }
 
@@ -172,6 +205,7 @@ final class DashboardApiReader
     {
         $task = DB::table('tasks')->where('id', $taskId)->first();
         abort_unless($task, 404);
+        $this->abortUnlessProjectReadable((string) $task->project_id);
 
         return [
             ...$this->taskCard($task),
@@ -196,8 +230,11 @@ final class DashboardApiReader
         $this->abortUnlessProjectExists($projectId);
 
         return DB::table('runs')
-            ->when($projectId !== null, fn ($query) => $query->where('project_id', $projectId))
-            ->orderByDesc('created_at')
+            ->join('projects', 'projects.id', '=', 'runs.project_id')
+            ->where('projects.status', '!=', 'deleted')
+            ->when($projectId !== null, fn ($query) => $query->where('runs.project_id', $projectId))
+            ->select('runs.*')
+            ->orderByDesc('runs.created_at')
             ->limit(100)
             ->get()
             ->map(fn (object $run): array => $this->runSummary($run))
@@ -211,6 +248,7 @@ final class DashboardApiReader
     {
         $run = DB::table('runs')->where('id', $runId)->first();
         abort_unless($run, 404);
+        $this->abortUnlessProjectReadable((string) $run->project_id);
 
         $events = DB::table('run_events')->where('run_id', $runId)->orderBy('created_at')->get();
         $artifacts = DB::table('artifacts')->where('run_id', $runId)->orderByDesc('created_at')->get();
@@ -270,7 +308,9 @@ final class DashboardApiReader
         $this->abortUnlessProjectExists($projectId);
 
         return DB::table('wiki_pages')
+            ->join('projects', 'projects.id', '=', 'wiki_pages.project_id')
             ->leftJoin('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
+            ->where('projects.status', '!=', 'deleted')
             ->select([
                 'wiki_pages.id',
                 'wiki_pages.title',
@@ -313,6 +353,7 @@ final class DashboardApiReader
             ->where('wiki_pages.id', $pageId)
             ->first();
         abort_unless($page, 404);
+        $this->abortUnlessProjectReadable((string) $page->project_id);
 
         return [
             ...$this->wikiSummary($page),
@@ -386,8 +427,11 @@ final class DashboardApiReader
         $this->abortUnlessProjectExists($projectId);
 
         return DB::table('artifacts')
-            ->when($projectId !== null, fn ($query) => $query->where('project_id', $projectId))
-            ->orderByDesc('created_at')
+            ->join('projects', 'projects.id', '=', 'artifacts.project_id')
+            ->where('projects.status', '!=', 'deleted')
+            ->when($projectId !== null, fn ($query) => $query->where('artifacts.project_id', $projectId))
+            ->select('artifacts.*')
+            ->orderByDesc('artifacts.created_at')
             ->limit(100)
             ->get()
             ->map(fn (object $artifact): array => $this->artifact($artifact))
@@ -404,6 +448,7 @@ final class DashboardApiReader
             ->where('run_id', $runId)
             ->first();
         abort_unless($artifact, 404);
+        $this->abortUnlessProjectReadable((string) $artifact->project_id);
         abort_unless(in_array($artifact->status, ['validated', 'imported'], true), 409);
 
         return [
@@ -558,6 +603,10 @@ final class DashboardApiReader
             'genesis_status' => $this->pipelineStatus(DB::table('genesis_imports')->where('project_id', $projectId)->orderByDesc('created_at')->value('status')),
             'delta_status' => $this->pipelineStatus(DB::table('delta_syncs')->where('project_id', $projectId)->orderByDesc('created_at')->value('status')),
             'graph_status' => DB::table('artifacts')->where('project_id', $projectId)->where('artifact_type', 'graph_snapshot')->exists() ? 'complete' : 'not_started',
+            'status' => (string) $project->status,
+            'archived_at' => $project->archived_at ? (string) $project->archived_at : null,
+            'deleted_at' => $project->deleted_at ? (string) $project->deleted_at : null,
+            'restored_at' => $project->restored_at ? (string) $project->restored_at : null,
             'updated_at' => (string) $project->updated_at,
         ];
     }
@@ -565,11 +614,11 @@ final class DashboardApiReader
     private function resolveProject(?string $projectId): ?object
     {
         if ($projectId === null) {
-            return DB::table('projects')->orderBy('created_at')->first();
+            return DB::table('projects')->where('status', 'active')->orderBy('created_at')->first();
         }
 
         $project = DB::table('projects')->where('id', $projectId)->first();
-        abort_unless($project, 404);
+        abort_unless($project && $project->status !== 'deleted', 404);
 
         return $project;
     }
@@ -580,7 +629,15 @@ final class DashboardApiReader
             return;
         }
 
-        abort_unless(DB::table('projects')->where('id', $projectId)->exists(), 404);
+        $this->abortUnlessProjectReadable($projectId);
+    }
+
+    private function abortUnlessProjectReadable(string $projectId): void
+    {
+        abort_unless(
+            DB::table('projects')->where('id', $projectId)->where('status', '!=', 'deleted')->exists(),
+            404,
+        );
     }
 
     /**

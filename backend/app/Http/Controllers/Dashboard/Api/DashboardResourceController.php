@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Dashboard\Api;
 use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
+use App\Projects\ProjectLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -36,9 +37,13 @@ final class DashboardResourceController extends Controller
         return response()->json($reader->kanban($project));
     }
 
-    public function updateTask(Request $request, DashboardApiReader $reader, string $task): JsonResponse
+    public function updateTask(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, string $task): JsonResponse
     {
         $this->abortUnlessDashboardMutator($request);
+
+        if ($error = $lifecycle->assertTaskProjectActive($task)) {
+            return $error;
+        }
 
         $validated = $request->validate([
             'column' => ['nullable', 'string', 'in:backlog,ready,in_progress,blocked,review,done'],
@@ -70,7 +75,21 @@ final class DashboardResourceController extends Controller
     {
         $this->abortUnlessDashboardReader($request);
 
-        return response()->json($reader->projects());
+        $status = (string) $request->query('status', ProjectLifecycleService::ACTIVE);
+        abort_unless(in_array($status, [
+            ProjectLifecycleService::ACTIVE,
+            ProjectLifecycleService::ARCHIVED,
+            ProjectLifecycleService::DELETED,
+        ], true), 422, 'Unknown project status filter.');
+
+        if ($status === ProjectLifecycleService::DELETED) {
+            abort_unless(
+                $this->userHasRole($request->user(), 'Admin') || $this->userHasRole($request->user(), 'PM'),
+                403,
+            );
+        }
+
+        return response()->json($reader->projects($status));
     }
 
     public function createProject(Request $request, DashboardApiReader $reader): JsonResponse
@@ -128,12 +147,16 @@ final class DashboardResourceController extends Controller
         return response()->json($reader->project($project));
     }
 
-    public function updateProject(Request $request, DashboardApiReader $reader, string $project): JsonResponse
+    public function updateProject(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, string $project): JsonResponse
     {
         $this->abortUnlessProjectMutator($request);
 
         $existing = DB::table('projects')->where('id', $project)->first();
         abort_unless($existing, 404);
+
+        if ($error = $lifecycle->assertProjectActiveForDashboard($project)) {
+            return $error;
+        }
 
         $payload = $this->validatedProjectPayload($request, $project, $existing);
 
@@ -168,12 +191,16 @@ final class DashboardResourceController extends Controller
         return response()->json($reader->run($run));
     }
 
-    public function retryImport(Request $request, DashboardApiReader $reader, string $run): JsonResponse
+    public function retryImport(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, string $run): JsonResponse
     {
         abort_unless($this->userHasRole($request->user(), 'Developer') || $this->userHasRole($request->user(), 'Admin'), 403);
 
         $runRow = DB::table('runs')->where('id', $run)->first();
         abort_unless($runRow, 404);
+
+        if ($error = $lifecycle->assertRunProjectActive($run)) {
+            return $error;
+        }
 
         $target = DB::table('genesis_imports')->where('run_id', $run)->first()
             ?? DB::table('delta_syncs')->where('run_id', $run)->first();
@@ -203,7 +230,7 @@ final class DashboardResourceController extends Controller
         return response()->json($reader->run($run));
     }
 
-    public function review(Request $request, DashboardApiReader $reader, string $run): JsonResponse
+    public function review(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, string $run): JsonResponse
     {
         abort_unless(
             $this->userHasRole($request->user(), 'PM')
@@ -214,6 +241,10 @@ final class DashboardResourceController extends Controller
         );
 
         abort_unless(DB::table('runs')->where('id', $run)->exists(), 404);
+
+        if ($error = $lifecycle->assertRunProjectActive($run)) {
+            return $error;
+        }
 
         if (! DB::table('run_events')->where('run_id', $run)->where('event_type', 'run.reviewed')->exists()) {
             DB::table('run_events')->insert([

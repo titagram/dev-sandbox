@@ -151,6 +151,45 @@ routes:
       enabled: false
       reason: "Updates project identity fields and must not run in default route smoke."
 
+  - id: dashboard.api.projects.archive
+    method: POST
+    uri: /api/dashboard/projects/{project}/archive
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: project_lifecycle_mutator
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Archives a project and must not run in default route smoke."
+
+  - id: dashboard.api.projects.restore
+    method: POST
+    uri: /api/dashboard/projects/{project}/restore
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: project_lifecycle_mutator
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Restores project lifecycle state and must not run in default route smoke."
+
+  - id: dashboard.api.projects.delete
+    method: POST
+    uri: /api/dashboard/projects/{project}/delete
+    source_status: verified_from_code
+    classification: DESTRUCTIVE
+    classification_status: inferred
+    actor: project_lifecycle_mutator
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Soft-deletes a project into trash and must not run in default route smoke."
+
   - id: dashboard.api.projects.kanban
     method: GET
     uri: /api/dashboard/projects/{project}/kanban

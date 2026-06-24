@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageException;
 use App\Services\GenesisFinalizeService;
 use Illuminate\Http\JsonResponse;
@@ -10,12 +11,19 @@ use Symfony\Component\HttpFoundation\Response;
 
 class GenesisFinalizeController extends Controller
 {
-    public function __construct(private readonly GenesisFinalizeService $finalize)
+    public function __construct(
+        private readonly GenesisFinalizeService $finalize,
+        private readonly ProjectLifecycleService $lifecycle,
+    )
     {
     }
 
     public function __invoke(string $genesisImport): JsonResponse
     {
+        if ($error = $this->lifecycle->pluginGenesisWriteGuard($genesisImport)) {
+            return $error;
+        }
+
         try {
             return response()->json($this->finalize->finalize($genesisImport));
         } catch (ArtifactStorageException $exception) {

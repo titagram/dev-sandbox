@@ -3,11 +3,16 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 
 class RepositoryInstructionsController extends Controller
 {
+    public function __construct(private readonly ProjectLifecycleService $lifecycle)
+    {
+    }
+
     public function __invoke(string $repository): JsonResponse
     {
         $repositoryRow = DB::table('repositories')
@@ -28,6 +33,10 @@ class RepositoryInstructionsController extends Controller
             ->first();
 
         abort_unless($repositoryRow, 404);
+
+        if ($error = $this->lifecycle->pluginProjectWriteGuard((string) $repositoryRow->project_id)) {
+            return $error;
+        }
 
         return response()->json([
             'protocol_version' => 'v1',

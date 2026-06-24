@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -10,9 +11,15 @@ use Illuminate\Support\Str;
 
 class DeltaLocalSnapshotController extends Controller
 {
+    public function __construct(private readonly ProjectLifecycleService $lifecycle)
+    {
+    }
+
     public function __invoke(Request $request, string $run): JsonResponse
     {
-        abort_unless(DB::table('runs')->where('id', $run)->exists(), 404);
+        if ($error = $this->lifecycle->pluginRunWriteGuard($run)) {
+            return $error;
+        }
 
         $validated = $request->validate([
             'local_workspace_id' => ['required', 'string', 'exists:local_workspaces,id'],

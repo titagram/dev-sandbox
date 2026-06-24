@@ -6,6 +6,7 @@ use App\Http\Controllers\Dashboard\ArtifactRetentionRunController;
 use App\Http\Controllers\Dashboard\ArtifactsIndexController;
 use App\Http\Controllers\Dashboard\AuditExportStoreController;
 use App\Http\Controllers\Dashboard\Api\DashboardAdminController;
+use App\Http\Controllers\Dashboard\Api\DashboardProjectLifecycleController;
 use App\Http\Controllers\Dashboard\Api\DashboardResourceController;
 use App\Http\Controllers\Dashboard\Api\DashboardSystemController;
 use App\Http\Controllers\Dashboard\AuthController as DashboardAuthController;
@@ -47,6 +48,9 @@ Route::middleware('auth')->group(function () {
         Route::post('/projects', [DashboardResourceController::class, 'createProject']);
         Route::get('/projects/{project}', [DashboardResourceController::class, 'project']);
         Route::patch('/projects/{project}', [DashboardResourceController::class, 'updateProject']);
+        Route::post('/projects/{project}/archive', [DashboardProjectLifecycleController::class, 'archive']);
+        Route::post('/projects/{project}/restore', [DashboardProjectLifecycleController::class, 'restore']);
+        Route::post('/projects/{project}/delete', [DashboardProjectLifecycleController::class, 'delete']);
         Route::get('/projects/{project}/kanban', [DashboardResourceController::class, 'projectKanban']);
         Route::get('/projects/{project}/runs', [DashboardResourceController::class, 'projectRuns']);
         Route::get('/projects/{project}/wiki', [DashboardResourceController::class, 'projectWiki']);

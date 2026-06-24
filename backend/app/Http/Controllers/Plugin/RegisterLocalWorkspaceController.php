@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -11,9 +12,15 @@ use Symfony\Component\HttpFoundation\Response;
 
 class RegisterLocalWorkspaceController extends Controller
 {
+    public function __construct(private readonly ProjectLifecycleService $lifecycle)
+    {
+    }
+
     public function __invoke(Request $request, string $repository): JsonResponse
     {
-        abort_unless(DB::table('repositories')->where('id', $repository)->exists(), 404);
+        if ($error = $this->lifecycle->pluginRepositoryWriteGuard($repository)) {
+            return $error;
+        }
 
         $auth = $request->attributes->get('plugin_auth');
         $device = $auth['device'];

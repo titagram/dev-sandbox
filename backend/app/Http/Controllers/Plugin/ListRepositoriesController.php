@@ -3,14 +3,21 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 
 class ListRepositoriesController extends Controller
 {
+    public function __construct(private readonly ProjectLifecycleService $lifecycle)
+    {
+    }
+
     public function __invoke(string $project): JsonResponse
     {
-        abort_unless(DB::table('projects')->where('id', $project)->exists(), 404);
+        if ($error = $this->lifecycle->pluginProjectWriteGuard($project)) {
+            return $error;
+        }
 
         $repositories = DB::table('repositories')
             ->where('project_id', $project)

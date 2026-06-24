@@ -3,22 +3,27 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Projects\ProjectLifecycleService;
 use App\Services\WikiRevisionException;
 use App\Services\WikiRevisionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\Response;
 
 class WikiRevisionController extends Controller
 {
-    public function __construct(private readonly WikiRevisionService $wiki)
+    public function __construct(
+        private readonly WikiRevisionService $wiki,
+        private readonly ProjectLifecycleService $lifecycle,
+    )
     {
     }
 
     public function __invoke(Request $request, string $run): JsonResponse
     {
-        abort_unless(DB::table('runs')->where('id', $run)->exists(), 404);
+        if ($error = $this->lifecycle->pluginRunWriteGuard($run)) {
+            return $error;
+        }
 
         $validated = $request->validate([
             'project_id' => ['required', 'string', 'exists:projects,id'],
@@ -32,6 +37,10 @@ class WikiRevisionController extends Controller
             'content_markdown' => ['required', 'string'],
             'evidence_refs' => ['nullable', 'array'],
         ]);
+
+        if ($error = $this->lifecycle->pluginProjectWriteGuard($validated['project_id'])) {
+            return $error;
+        }
 
         $auth = $request->attributes->get('plugin_auth');
 
