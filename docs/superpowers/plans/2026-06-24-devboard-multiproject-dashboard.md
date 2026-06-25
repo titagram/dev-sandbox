@@ -41,7 +41,7 @@
 - Keep cross-project views read-optimized and avoid mixing all project tasks into a single Kanban.
 - Store Kanban task attachments as project/task-scoped product files, distinct from analyzer artifacts and source-code evidence artifacts.
 - Support image previews in task detail and compact attachment indicators on Kanban cards.
-- Apply upload validation, size limits, permission checks, retention/export policy, and optional malware/content scanning before broad rollout.
+- Apply upload validation, size limits, permission checks, and retention/export policy before broad rollout.
 - Use `/api/dashboard/...` for browser UI only.
 - Keep `/api/plugin/v1` reserved for plugin/local agent clients.
 

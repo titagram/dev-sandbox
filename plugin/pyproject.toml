@@ -13,6 +13,11 @@ dependencies = [
   "typer>=0.12",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=8,<10",
+]
+
 [project.scripts]
 devboard = "devboard_plugin.cli:app"
 devboard-mcp = "devboard_plugin.mcp_server:main"

@@ -211,6 +211,7 @@ final class DashboardApiReader
             ...$this->taskCard($task),
             'description' => (string) ($task->description ?? ''),
             'acceptance_criteria' => [],
+            'attachments' => $this->taskAttachments($taskId),
             'audit_ids' => DB::table('audit_logs')
                 ->where('target_type', 'task')
                 ->where('target_id', $taskId)
@@ -220,6 +221,18 @@ final class DashboardApiReader
             'graph_node_ids' => [],
             'source' => $this->sourceMeta(ref: $taskId),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function taskAttachment(string $attachmentId): array
+    {
+        $attachment = DB::table('task_attachments')->where('id', $attachmentId)->whereNull('deleted_at')->first();
+        abort_unless($attachment, 404);
+        $this->abortUnlessProjectReadable((string) $attachment->project_id);
+
+        return $this->taskAttachmentRow($attachment);
     }
 
     /**
@@ -701,6 +714,15 @@ final class DashboardApiReader
             ? DB::table('repositories')->where('id', $latestRun->repository_id)->pluck('name')->map(fn (mixed $name): string => (string) $name)->all()
             : [];
         $wikiPageId = $this->latestWikiPageId((string) $task->project_id);
+        $attachmentCount = DB::table('task_attachments')
+            ->where('task_id', $task->id)
+            ->whereNull('deleted_at')
+            ->count();
+        $imageAttachmentCount = DB::table('task_attachments')
+            ->where('task_id', $task->id)
+            ->where('kind', 'image')
+            ->whereNull('deleted_at')
+            ->count();
 
         return [
             'id' => (string) $task->id,
@@ -714,10 +736,52 @@ final class DashboardApiReader
             'linked_run_id' => $latestRun?->id ? (string) $latestRun->id : null,
             'linked_run_status' => $latestRun ? $this->runStatus((string) $latestRun->status) : null,
             'wiki_page_id' => $wikiPageId,
+            'attachment_count' => (int) $attachmentCount,
+            'image_attachment_count' => (int) $imageAttachmentCount,
             'source_status' => 'verified_from_code',
             'blocked' => $task->risk_level === 'high',
             'blocked_reason' => $task->risk_level === 'high' ? 'High risk task requires review.' : null,
             'updated_at' => (string) $task->updated_at,
+        ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function taskAttachments(string $taskId): array
+    {
+        return DB::table('task_attachments')
+            ->where('task_id', $taskId)
+            ->whereNull('deleted_at')
+            ->orderByDesc('created_at')
+            ->get()
+            ->map(fn (object $attachment): array => $this->taskAttachmentRow($attachment))
+            ->all();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function taskAttachmentRow(object $attachment): array
+    {
+        $taskId = (string) $attachment->task_id;
+        $attachmentId = (string) $attachment->id;
+        $downloadUrl = "/api/dashboard/tasks/{$taskId}/attachments/{$attachmentId}/download";
+
+        return [
+            'id' => $attachmentId,
+            'task_id' => $taskId,
+            'project_id' => (string) $attachment->project_id,
+            'name' => (string) $attachment->original_name,
+            'mime_type' => (string) $attachment->mime_type,
+            'kind' => (string) $attachment->kind,
+            'status' => (string) $attachment->status,
+            'scan_status' => (string) $attachment->scan_status,
+            'size_bytes' => (int) $attachment->size_bytes,
+            'uploaded_at' => (string) $attachment->created_at,
+            'uploaded_by' => $this->userName($attachment->uploaded_by_user_id),
+            'download_url' => $downloadUrl,
+            'preview_url' => $attachment->kind === 'image' ? $downloadUrl : null,
         ];
     }
 

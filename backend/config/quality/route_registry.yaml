@@ -97,6 +97,50 @@ routes:
       enabled: false
       reason: "Parameterized dashboard API route. Requires explicit task parameter provider execution."
 
+  - id: dashboard.api.task_attachments.store
+    method: POST
+    uri: /api/dashboard/tasks/{task}/attachments
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: dashboard_task_mutator
+    parameter_provider:
+      task: seeded_task
+    smoke:
+      enabled: false
+      reason: "Uploads private task attachment bytes and must not run in default route smoke."
+
+  - id: dashboard.api.task_attachments.destroy
+    method: DELETE
+    uri: /api/dashboard/tasks/{task}/attachments/{attachment}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: dashboard_task_mutator
+    parameter_providers:
+      task: seeded_task
+      attachment: seeded_task_attachment
+    smoke:
+      enabled: false
+      reason: "Soft-deletes private task attachment metadata and must not run in default route smoke."
+
+  - id: dashboard.api.task_attachments.download
+    method: GET
+    uri: /api/dashboard/tasks/{task}/attachments/{attachment}/download
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_providers:
+      task: seeded_task
+      attachment: seeded_task_attachment
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized private attachment download. Requires explicit task and attachment providers."
+
   - id: dashboard.api.projects.index
     method: GET
     uri: /api/dashboard/projects

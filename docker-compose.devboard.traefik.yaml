@@ -37,7 +37,6 @@ services:
       args:
         REACT_APP_USE_MOCK: "false"
         REACT_APP_API_BASE_URL: https://home-sweet-home.cloud
-        TSC_COMPILE_ON_ERROR: "true"
     labels:
       traefik.enable: "true"
       traefik.docker.network: traefik_default

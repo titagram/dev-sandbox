@@ -251,7 +251,7 @@ Azioni disponibili:
 
 ```bash
 python3 -m venv /tmp/devboard-plugin-venv
-/tmp/devboard-plugin-venv/bin/python -m pip install -e analyzer -e plugin pytest
+/tmp/devboard-plugin-venv/bin/python -m pip install -e 'analyzer[test]' -e 'plugin[test]'
 /tmp/devboard-plugin-venv/bin/devboard version
 ```
 
@@ -379,12 +379,16 @@ cd backend && npm run build
 ### Plugin
 
 ```bash
+python3 -m venv /tmp/devboard-plugin-venv
+/tmp/devboard-plugin-venv/bin/python -m pip install -e 'analyzer[test]' -e 'plugin[test]'
 cd plugin && /tmp/devboard-plugin-venv/bin/python -m pytest -q
 ```
 
 ### Analyzer
 
 ```bash
+python3 -m venv /tmp/devboard-plugin-venv
+/tmp/devboard-plugin-venv/bin/python -m pip install -e 'analyzer[test]' -e 'plugin[test]'
 cd analyzer && /tmp/devboard-plugin-venv/bin/python -m pytest -q
 ```
 

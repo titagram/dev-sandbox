@@ -9,6 +9,7 @@ use App\Http\Controllers\Dashboard\Api\DashboardAdminController;
 use App\Http\Controllers\Dashboard\Api\DashboardProjectLifecycleController;
 use App\Http\Controllers\Dashboard\Api\DashboardResourceController;
 use App\Http\Controllers\Dashboard\Api\DashboardSystemController;
+use App\Http\Controllers\Dashboard\Api\DashboardTaskAttachmentController;
 use App\Http\Controllers\Dashboard\AuthController as DashboardAuthController;
 use App\Http\Controllers\Dashboard\GraphShowController;
 use App\Http\Controllers\Dashboard\KanbanController;
@@ -43,6 +44,9 @@ Route::middleware('auth')->group(function () {
         Route::get('/overview', [DashboardResourceController::class, 'overview']);
         Route::get('/kanban', [DashboardResourceController::class, 'kanban']);
         Route::patch('/tasks/{task}', [DashboardResourceController::class, 'updateTask']);
+        Route::post('/tasks/{task}/attachments', [DashboardTaskAttachmentController::class, 'store']);
+        Route::delete('/tasks/{task}/attachments/{attachment}', [DashboardTaskAttachmentController::class, 'destroy']);
+        Route::get('/tasks/{task}/attachments/{attachment}/download', [DashboardTaskAttachmentController::class, 'download']);
         Route::get('/tasks/{task}', [DashboardResourceController::class, 'task']);
         Route::get('/projects', [DashboardResourceController::class, 'projects']);
         Route::post('/projects', [DashboardResourceController::class, 'createProject']);

@@ -82,6 +82,7 @@ Required manifest fields:
 - PostgreSQL dump metadata;
 - Neo4j dump metadata;
 - filesystem storage roots included;
+- task attachment metadata and storage summary;
 - checksum algorithm;
 - backup actor;
 - source host label;
@@ -100,12 +101,22 @@ The export flow must capture:
 
 - PostgreSQL logical dump;
 - Neo4j dump or export;
-- Laravel filesystem storage for DevBoard artifacts, reports, uploads, and future Kanban attachments;
+- Laravel filesystem storage for DevBoard artifacts, reports, uploads, and Kanban task attachments;
+- `task_attachments` metadata rows, including active and soft-deleted attachments;
+- private task attachment bytes under `devboard/task-attachments/`;
 - quality reports under `backend/var/quality/reports`;
 - migration state and app version metadata;
 - frontend deployment metadata, including generated frontend source/build provenance;
 - route/API health summary;
 - audit summary for the export action.
+
+Attachment backup contract:
+
+- include active and soft-deleted rows from `task_attachments`;
+- preserve `status`, `deleted_at`, `deleted_by_user_id`, `scan_status`, `metadata`, and all ownership/project/task references;
+- include storage paths and SHA-256 entries in the checksum manifest;
+- validate that every non-purged attachment row has matching bytes, and that restored bytes match `task_attachments.sha256`;
+- report orphaned files under `devboard/task-attachments/` during dry-run instead of silently importing them.
 
 It must not capture target source repositories directly. DevBoard backs up only its control-plane data, uploaded artifacts, normalized reports, graph state, evidence, attachments, and product metadata.
 
@@ -120,6 +131,7 @@ The restore flow must support:
 - PostgreSQL restore;
 - Neo4j restore, with optional graph rebuild from validated artifacts when needed;
 - filesystem storage restore;
+- task attachment metadata and storage restore, preserving active versus soft-deleted state;
 - migration replay if the restored bundle is older than the running code;
 - cache/session cleanup;
 - post-restore smoke checks for login, `/api/dashboard/...`, `/api/plugin/v1/...`, artifact reads, and graph reads.
@@ -183,4 +195,3 @@ Minimum tests before considering the feature usable:
 - restore rollback strategy;
 - compatibility policy across DevBoard versions;
 - UI copy and destructive confirmation flow.
-
