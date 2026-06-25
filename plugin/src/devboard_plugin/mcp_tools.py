@@ -103,6 +103,7 @@ def devboard_genesis_import(
     repo_path: str = ".",
     output_path: str | None = None,
     run_id: str | None = None,
+    allow_blocked_security_findings: bool = False,
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """Build a local Genesis bundle and record its state for upload."""
@@ -162,6 +163,7 @@ def devboard_delta_sync(
     repo_path: str = ".",
     output_path: str | None = None,
     run_id: str | None = None,
+    allow_blocked_security_findings: bool = False,
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """Build, upload, and finalize a Delta Sync bundle."""
@@ -212,6 +214,7 @@ def devboard_delta_sync(
         local_workspace_id=local_workspace_id,
         base_snapshot_id=base_snapshot_id,
         bundle_path=output_dir,
+        allow_blocked_security_findings=allow_blocked_security_findings,
     )
     write_repo_state(
         repo,
@@ -235,6 +238,7 @@ def devboard_upload_artifact(
     run_id: str | None = None,
     local_workspace_id: str | None = None,
     bundle_path: str | None = None,
+    allow_blocked_security_findings: bool = False,
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """Upload a Genesis artifact bundle using manifest/chunk/finalize."""
@@ -257,6 +261,7 @@ def devboard_upload_artifact(
         run_id=resolved_run_id,
         local_workspace_id=resolved_workspace_id,
         bundle_path=resolve_state_path(repo, resolved_bundle_path),
+        allow_blocked_security_findings=allow_blocked_security_findings,
     )
 
 

@@ -170,6 +170,35 @@ it('blocks finalize when security report contains blocked findings', function ()
         ->assertJsonPath('error.code', 'secret_scan_blocked');
 });
 
+it('allows finalize with blocked findings only when explicitly approved', function () {
+    $context = createGenesisUploadContext();
+    $artifacts = [
+        genesisArtifact('file_inventory', 'file-inventory.json', '{"files":[]}'),
+        genesisArtifact('security_report', 'security-report.json', '{"blocked":[{"path":".env","reason":"env_file"}]}'),
+    ];
+    $importId = genesisStart($context, genesisManifest($artifacts))->json('import_id');
+
+    foreach ($artifacts as $artifact) {
+        genesisChunk($context, $importId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+    }
+
+    genesisFinalize($context, $importId, ['allow_blocked_security_findings' => true])
+        ->assertOk()
+        ->assertJsonPath('status', 'active')
+        ->assertJsonStructure(['snapshot_id']);
+
+    expect(DB::table('genesis_imports')->where('id', $importId)->value('status'))->toBe('active');
+    expect(DB::table('run_events')
+        ->where('run_id', $context['run_id'])
+        ->where('event_type', 'security.blocked_upload_approved')
+        ->exists())->toBeTrue();
+    expect(DB::table('audit_logs')
+        ->where('action', 'security.blocked_upload_approved')
+        ->where('target_type', 'genesis_import')
+        ->where('target_id', $importId)
+        ->exists())->toBeTrue();
+});
+
 /**
  * @return array<string, string>
  */
@@ -331,11 +360,11 @@ function genesisChunk(
     );
 }
 
-function genesisFinalize(array $context, ?string $importId): Illuminate\Testing\TestResponse
+function genesisFinalize(array $context, ?string $importId, array $payload = []): Illuminate\Testing\TestResponse
 {
-    return test()->postJson("/api/plugin/v1/genesis-imports/{$importId}/finalize", [
+    return test()->postJson("/api/plugin/v1/genesis-imports/{$importId}/finalize", array_merge([
         'protocol_version' => 'v1',
-    ], genesisUploadHeaders($context));
+    ], $payload), genesisUploadHeaders($context));
 }
 
 /**

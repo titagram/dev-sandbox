@@ -297,9 +297,11 @@ Default attuale della UI Admin:
 - scopes:
   - `projects.read`
   - `repositories.read`
+  - `policies.read`
   - `runs.write`
   - `artifacts.write`
   - `wiki.write`
+  - `graph.write`
 
 Azioni disponibili:
 
@@ -361,23 +363,45 @@ Il plugin DevBoard in questo repository e` un bundle locale, non un plugin pubbl
 
 Prerequisito: crea un token plugin dalla UI Admin (`/admin/plugin-tokens`) e copia subito il `plain_token`, perche` viene mostrato una sola volta.
 
+Scope consigliati per il test completo:
+
+- `projects.read`
+- `repositories.read`
+- `policies.read`
+- `runs.write`
+- `artifacts.write`
+- `wiki.write`
+- `graph.write`
+
+I vecchi scope `snapshot:write`, `run:create`, `diff:write`, `analyze:read` sono legacy UI/mock e non sono sufficienti per le route `/api/plugin/v1` correnti.
+
 Installa il plugin Python e l'analyzer in un virtualenv locale:
 
 ```bash
-cd /home/ubuntu/dev-sandbox
+cd /path/al/clone/ai-sandbox-framework
 python3 -m venv /tmp/devboard-plugin-venv
-/tmp/devboard-plugin-venv/bin/python -m pip install -e 'analyzer[test]' -e 'plugin[test]'
-/tmp/devboard-plugin-venv/bin/devboard version
+source /tmp/devboard-plugin-venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -e './analyzer[test]' -e './plugin[test]'
+which devboard
+devboard version
+```
+
+Se `/tmp/devboard-plugin-venv/bin/devboard` non esiste, il passo `python -m pip install -e './plugin[test]'` non e` stato eseguito oppure e` fallito. Verifica con:
+
+```bash
+python -m pip show devboard-plugin
+python -m pip install -e './analyzer[test]' -e './plugin[test]'
 ```
 
 Registra il device e salva le credenziali locali:
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard auth check \
+devboard auth check \
   --server-url https://home-sweet-home.cloud \
   --token 'devb_live_<token_id>|<secret>'
 
-/tmp/devboard-plugin-venv/bin/devboard auth register-device "Local Dev Machine" sha256:local-dev linux x64 \
+devboard auth register-device "Local Dev Machine" sha256:local-dev "$(uname -s)" "$(uname -m)" \
   --server-url https://home-sweet-home.cloud \
   --token 'devb_live_<token_id>|<secret>'
 ```
@@ -400,13 +424,13 @@ Check my DevBoard plugin status.
 Per test manuale da terminale, prima recupera `project_id` e `repository_id`:
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard projects list
+devboard projects list
 ```
 
 Poi linka la workspace Git locale:
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard repos link <project_id> <repository_id> --repo-path /absolute/path/to/repo
+devboard repos link <project_id> <repository_id> --repo-path /absolute/path/to/repo
 ```
 
 Se il link va a buon fine, nel dettaglio progetto la workspace deve risultare `linked` e Kickstart deve avanzare verso `awaiting_genesis`.
@@ -427,38 +451,49 @@ Per ora, usa il plugin Python/MCP quando vuoi testare Codex e Genesis. Usa la CL
 
 ## Flusso CLI reale consigliato
 
+Imposta prima il server da usare. Per il test live temporaneo:
+
+```bash
+export DEVBOARD_SERVER_URL="https://home-sweet-home.cloud"
+export DEVBOARD_TOKEN='devb_live_<token_id>|<secret>'
+```
+
+Per un backend locale usa invece `http://127.0.0.1:8000`.
+
 ### 1. Check token
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard auth check \
-  --server-url http://127.0.0.1:8000 \
-  --token 'devb_live_<token_id>|<secret>'
+devboard auth check \
+  --server-url "$DEVBOARD_SERVER_URL" \
+  --token "$DEVBOARD_TOKEN"
 ```
 
 ### 2. Registra il device
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard auth register-device "Local Dev Machine" sha256:local-dev darwin arm64 \
-  --server-url http://127.0.0.1:8000 \
-  --token 'devb_live_<token_id>|<secret>'
+devboard auth register-device "Local Dev Machine" sha256:local-dev "$(uname -s)" "$(uname -m)" \
+  --server-url "$DEVBOARD_SERVER_URL" \
+  --token "$DEVBOARD_TOKEN"
 ```
+
+Da questo punto il plugin usa le credenziali salvate in `~/.config/devboard/credentials.json`.
 
 ### 3. Lista i progetti
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard projects list
+devboard projects list
 ```
 
 ### 4. Linka un repository locale
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard repos link <project_id> <repository_id> --repo-path /absolute/path/to/repo
+devboard repos link <project_id> <repository_id> --repo-path /absolute/path/to/repo
 ```
 
 ### 5. Esegui Genesis
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard genesis run \
+devboard genesis run \
   --project-id <project_id> \
   --repository-id <repository_id> \
   --local-workspace-id <local_workspace_id> \
@@ -468,18 +503,38 @@ Per ora, usa il plugin Python/MCP quando vuoi testare Codex e Genesis. Usa la CL
 ### 6. Carica gli artifact Genesis
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard artifacts upload --genesis --repo-path /absolute/path/to/repo
+devboard artifacts upload --genesis --repo-path /absolute/path/to/repo
 ```
+
+Se il bundle contiene finding bloccanti nel `security-report.json`, per esempio un `.env` locale che hai verificato non contenere segreti rilevanti, l'upload si ferma prima di inviare artifact e restituisce `requires_security_approval`. Dopo approvazione esplicita puoi ripetere:
+
+```bash
+devboard artifacts upload --genesis --repo-path /absolute/path/to/repo --allow-blocked-security-findings
+```
+
+Lo stesso parametro esiste nel tool MCP `devboard_upload_artifact` come `allow_blocked_security_findings: true`.
 
 ### 7. Esegui Delta
 
 ```bash
-/tmp/devboard-plugin-venv/bin/devboard delta run \
+devboard delta run \
   --project-id <project_id> \
   --repository-id <repository_id> \
   --local-workspace-id <local_workspace_id> \
   --base-snapshot-id <snapshot_id> \
   --repo-path /absolute/path/to/repo
+```
+
+Per Delta vale la stessa policy: default bloccante, retry esplicito solo dopo verifica locale:
+
+```bash
+devboard delta run \
+  --project-id <project_id> \
+  --repository-id <repository_id> \
+  --local-workspace-id <local_workspace_id> \
+  --base-snapshot-id <snapshot_id> \
+  --repo-path /absolute/path/to/repo \
+  --allow-blocked-security-findings
 ```
 
 I file locali del plugin vengono salvati in:

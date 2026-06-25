@@ -256,6 +256,7 @@ Finalize must validate:
 - repository policy version used by plugin;
 - changed file paths remain inside repository scope;
 - blocked files are not uploaded;
+- blocked findings require explicit local approval through `allow_blocked_security_findings`;
 - artifact hashes;
 - chunk completeness;
 - graph schema;
@@ -265,7 +266,8 @@ Finalize must validate:
 Failure handling:
 
 - invalid base snapshot returns `schema_validation_failed`;
-- blocked secret content returns `secret_scan_blocked`;
+- blocked findings without explicit approval return `secret_scan_blocked`;
+- approved blocked findings append `security.blocked_upload_approved` run/audit records and do not include raw secret values in audit payloads;
 - missing artifact chunks return `artifact_chunk_missing`;
 - mismatch hashes return `artifact_hash_mismatch`;
 - graph import failure marks Delta Sync failed and leaves previous active snapshot unchanged.
@@ -295,4 +297,3 @@ Delta Sync is accepted when:
 - Neo4j reflects the changed graph projection;
 - wiki pages are updated or marked stale with evidence;
 - run detail shows diff summary, risk report, tests, artifacts, and graph update status.
-

@@ -19,7 +19,7 @@ class DeltaFinalizeService
     /**
      * @return array{status: string, snapshot_id: string}
      */
-    public function finalize(string $deltaId): array
+    public function finalize(string $deltaId, bool $allowBlockedSecurityFindings = false): array
     {
         $delta = DB::table('delta_syncs')->where('id', $deltaId)->first();
         if (! $delta) {
@@ -38,13 +38,23 @@ class DeltaFinalizeService
         $securityReport = $artifacts->firstWhere('artifact_type', 'security_report');
         if ($securityReport) {
             $report = json_decode($this->storage->artifactContents($securityReport), true, 512, JSON_THROW_ON_ERROR);
-            if (($report['blocked'] ?? []) !== []) {
+            $blocked = $this->blockedFindings($report);
+            if ($blocked !== [] && ! $allowBlockedSecurityFindings) {
                 DB::table('delta_syncs')->where('id', $deltaId)->update([
                     'status' => 'failed',
                     'updated_at' => now(),
                 ]);
 
                 throw new ArtifactStorageException('secret_scan_blocked', 'Security report contains blocked findings.');
+            }
+
+            if ($blocked !== []) {
+                $this->recordBlockedSecurityApproval(
+                    runId: $delta->run_id,
+                    targetType: 'delta_sync',
+                    targetId: $deltaId,
+                    blocked: $blocked,
+                );
             }
         }
 
@@ -139,6 +149,71 @@ class DeltaFinalizeService
         ]);
 
         return ['status' => 'active', 'snapshot_id' => $snapshotId];
+    }
+
+    /**
+     * @return list<array<string, string>>
+     */
+    private function blockedFindings(array $report): array
+    {
+        $blocked = $report['blocked'] ?? [];
+        if (! is_array($blocked)) {
+            return [];
+        }
+
+        $findings = [];
+        foreach ($blocked as $item) {
+            if (is_array($item)) {
+                $findings[] = [
+                    'path' => (string) ($item['path'] ?? 'unknown'),
+                    'reason' => (string) ($item['reason'] ?? 'unknown'),
+                ];
+            } else {
+                $findings[] = [
+                    'path' => (string) $item,
+                    'reason' => 'unknown',
+                ];
+            }
+        }
+
+        return $findings;
+    }
+
+    /**
+     * @param list<array<string, string>> $blocked
+     */
+    private function recordBlockedSecurityApproval(string $runId, string $targetType, string $targetId, array $blocked): void
+    {
+        $run = DB::table('runs')->where('id', $runId)->first();
+        $payload = [
+            'approval' => 'plugin_explicit_override',
+            'blocked_count' => count($blocked),
+            'blocked' => array_slice($blocked, 0, 50),
+        ];
+
+        DB::table('run_events')->insert([
+            'id' => (string) Str::ulid(),
+            'run_id' => $runId,
+            'event_type' => 'security.blocked_upload_approved',
+            'severity' => 'warning',
+            'message' => 'Blocked security findings were explicitly approved by the local plugin user.',
+            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+        ]);
+
+        DB::table('audit_logs')->insert([
+            'id' => (string) Str::ulid(),
+            'actor_user_id' => null,
+            'actor_device_id' => $run?->device_id,
+            'actor_type' => 'plugin',
+            'action' => 'security.blocked_upload_approved',
+            'target_type' => $targetType,
+            'target_id' => $targetId,
+            'ip_address' => null,
+            'user_agent' => null,
+            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+        ]);
     }
 
     private function importGraph(string $snapshotId, object $delta, string $artifactId): void

@@ -7,6 +7,7 @@ use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageException;
 use App\Services\GenesisFinalizeService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 class GenesisFinalizeController extends Controller
@@ -18,14 +19,17 @@ class GenesisFinalizeController extends Controller
     {
     }
 
-    public function __invoke(string $genesisImport): JsonResponse
+    public function __invoke(Request $request, string $genesisImport): JsonResponse
     {
         if ($error = $this->lifecycle->pluginGenesisWriteGuard($genesisImport)) {
             return $error;
         }
 
         try {
-            return response()->json($this->finalize->finalize($genesisImport));
+            return response()->json($this->finalize->finalize(
+                $genesisImport,
+                $request->boolean('allow_blocked_security_findings'),
+            ));
         } catch (ArtifactStorageException $exception) {
             $status = match ($exception->errorCode) {
                 'secret_scan_blocked' => Response::HTTP_FORBIDDEN,

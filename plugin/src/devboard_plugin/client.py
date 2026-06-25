@@ -137,8 +137,16 @@ class DevBoardClient:
             },
         )
 
-    def finalize_genesis_import(self, import_id: str) -> dict[str, Any]:
-        return self.post(f"/api/plugin/v1/genesis-imports/{import_id}/finalize")
+    def finalize_genesis_import(
+        self,
+        import_id: str,
+        allow_blocked_security_findings: bool = False,
+    ) -> dict[str, Any]:
+        payload = {}
+        if allow_blocked_security_findings:
+            payload["allow_blocked_security_findings"] = True
+
+        return self.post(f"/api/plugin/v1/genesis-imports/{import_id}/finalize", payload)
 
     def record_local_snapshot(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post(f"/api/plugin/v1/runs/{run_id}/local-snapshots", payload)
@@ -175,8 +183,16 @@ class DevBoardClient:
             },
         )
 
-    def finalize_delta_sync(self, delta_id: str) -> dict[str, Any]:
-        return self.post(f"/api/plugin/v1/delta-syncs/{delta_id}/finalize")
+    def finalize_delta_sync(
+        self,
+        delta_id: str,
+        allow_blocked_security_findings: bool = False,
+    ) -> dict[str, Any]:
+        payload = {}
+        if allow_blocked_security_findings:
+            payload["allow_blocked_security_findings"] = True
+
+        return self.post(f"/api/plugin/v1/delta-syncs/{delta_id}/finalize", payload)
 
     def _raise_api_error(self, response: httpx.Response) -> None:
         try:

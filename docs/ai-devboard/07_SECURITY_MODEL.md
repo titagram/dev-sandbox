@@ -207,7 +207,9 @@ uploads/storage directories
 Rules:
 
 - hard-blocked content must not be uploaded;
-- if hard-blocked content is required for a complete bundle, finalize fails;
+- blocked findings stop upload/finalize by default;
+- CLI/MCP callers can continue only with explicit local approval through `allow_blocked_security_findings`;
+- approved blocked findings are recorded as `security.blocked_upload_approved` with path/reason metadata only;
 - warned content can be excluded and recorded;
 - every block and warning appears in `security-report.json`;
 - dashboard run detail shows blocked and warned categories.
@@ -316,6 +318,7 @@ delta.finalized
 wiki.updated
 graph.imported
 security.blocked_upload
+security.blocked_upload_approved
 permission.denied
 ```
 
@@ -332,9 +335,10 @@ Token revoked:
 Secret scan hard-block:
 
 - plugin excludes blocked file content;
-- finalize fails if bundle completeness is compromised;
+- upload/finalize is blocked by default when `security-report.json` has blocked findings;
+- explicit local approval can continue and must be audited as `security.blocked_upload_approved`;
 - dashboard shows blocked category and path pattern;
-- audit records `security.blocked_upload`.
+- audit records blocked or approved-blocked outcomes without raw secret values.
 
 Hash mismatch:
 
@@ -372,4 +376,3 @@ Required tests:
 - LLM-facing MCP response never contains token text;
 - wiki `verified_from_code` revision without evidence is rejected;
 - graph import cannot run from unvalidated artifact.
-

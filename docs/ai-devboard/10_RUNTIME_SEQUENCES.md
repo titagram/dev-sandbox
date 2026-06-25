@@ -139,19 +139,21 @@ sequenceDiagram
     Plugin->>LocalRepo: Scan repository
     Plugin->>Plugin: Detect .env or private key
     Plugin->>Plugin: Exclude blocked content
-    Plugin->>Backend: POST run event security.blocked_upload
-    Backend->>PostgreSQL: Append run event and audit log
+    Plugin-->>Plugin: Return requires_security_approval before upload
+    Plugin->>Plugin: User explicitly approves local false positive
+    Plugin->>Backend: Upload artifacts with allow_blocked_security_findings
     Plugin->>Backend: POST finalize
-    Backend-->>Plugin: secret_scan_blocked
-    Backend->>PostgreSQL: Mark GenesisImport failed
+    Backend->>PostgreSQL: Append security.blocked_upload_approved event and audit log
+    Backend-->>Plugin: Finalized snapshot
     Dashboard->>Backend: Load run detail
-    Backend-->>Dashboard: Failed import with blocked safety result
+    Backend-->>Dashboard: Active import with approved blocked safety result
 ```
 
 Rules:
 
 - hard-blocked content is never uploaded;
-- finalize fails when completeness is compromised;
+- upload/finalize stops by default when blocked findings exist;
+- explicit local approval can continue and is audited;
 - run detail shows blocked category and evidence without exposing secret content.
 
 ## Sequence 5 - Delta Sync
@@ -357,4 +359,3 @@ Runtime behavior is accepted when:
 - dashboard can explain why a run failed;
 - source status is visible wherever technical knowledge appears;
 - backend never requires direct source code access in V1.
-

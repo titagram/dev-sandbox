@@ -267,6 +267,7 @@ def artifacts_upload(
     base_snapshot_id: str | None = typer.Option(None, "--base-snapshot-id"),
     bundle_path: Path | None = typer.Option(None, "--bundle-path"),
     repo_path: Path = typer.Option(Path("."), "--repo-path"),
+    allow_blocked_security_findings: bool = typer.Option(False, "--allow-blocked-security-findings"),
     server_url: str | None = typer.Option(None, "--server-url"),
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
@@ -290,6 +291,7 @@ def artifacts_upload(
             run_id=run_id,
             local_workspace_id=local_workspace_id,
             bundle_path=bundle_path,
+            allow_blocked_security_findings=allow_blocked_security_findings,
         )
     else:
         base_snapshot_id = base_snapshot_id or state.get("base_snapshot_id") or state.get("snapshot_id")
@@ -304,6 +306,7 @@ def artifacts_upload(
             local_workspace_id=local_workspace_id,
             base_snapshot_id=base_snapshot_id,
             bundle_path=bundle_path,
+            allow_blocked_security_findings=allow_blocked_security_findings,
         )
 
     echo_json(response)
@@ -318,6 +321,7 @@ def delta_run(
     repo_path: Path = typer.Option(Path("."), "--repo-path"),
     run_id: str | None = typer.Option(None, "--run-id"),
     output: Path | None = typer.Option(None, "--output"),
+    allow_blocked_security_findings: bool = typer.Option(False, "--allow-blocked-security-findings"),
     server_url: str | None = typer.Option(None, "--server-url"),
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
@@ -367,6 +371,7 @@ def delta_run(
         local_workspace_id=local_workspace_id,
         base_snapshot_id=base_snapshot_id,
         bundle_path=output_dir,
+        allow_blocked_security_findings=allow_blocked_security_findings,
     )
     write_repo_state(
         repo_path,

@@ -425,7 +425,9 @@ uploads/storage directories
 Rules:
 
 - hard-blocked content is not uploaded;
-- if hard-blocked content is required to satisfy `full_code_artifacts`, finalize fails with `secret_scan_blocked`;
+- if `security-report.json` contains blocked findings, plugin upload/finalize is blocked by default;
+- a CLI/MCP caller may retry only with explicit local approval via `allow_blocked_security_findings`;
+- approved blocked findings finalize successfully and append `security.blocked_upload_approved` run/audit records without raw secret values;
 - warning content may be excluded and recorded in `analysis-quality-report.json`;
 - every exclusion must be visible in the dashboard.
 
@@ -448,7 +450,7 @@ Failure handling:
 
 - missing chunk returns `artifact_chunk_missing`;
 - hash mismatch returns `artifact_hash_mismatch`;
-- hard-block violation returns `secret_scan_blocked`;
+- hard-block violation without explicit approval returns `secret_scan_blocked`;
 - schema failure returns `schema_validation_failed`;
 - Neo4j import failure marks Genesis Import `failed` but preserves uploaded artifacts for audit.
 
@@ -514,4 +516,3 @@ The first implementation slice is accepted when:
 - Neo4j contains graph nodes and relationships for the snapshot;
 - dashboard shows repository initialized, run detail, artifact list, and graph status;
 - hard-block secret detection prevents unsafe upload.
-

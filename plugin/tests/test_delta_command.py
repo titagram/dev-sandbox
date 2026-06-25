@@ -72,6 +72,44 @@ def test_delta_run_builds_uploads_and_records_delta_state(monkeypatch, tmp_path)
     assert "devb_live_" not in json.dumps(state)
 
 
+def test_delta_run_forwards_explicit_security_approval(monkeypatch, tmp_path):
+    fake = FakeDeltaClient()
+    uploads = []
+    monkeypatch.setattr(cli, "client_from_options", lambda server_url, token: fake)
+    monkeypatch.setattr(cli, "build_delta_bundle", fake_build_delta_bundle)
+    monkeypatch.setattr(
+        cli,
+        "upload_delta_bundle",
+        lambda client, **kwargs: uploads.append(kwargs) or {"status": "active", "snapshot_id": "snap_new"},
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "delta",
+            "run",
+            "--project-id",
+            "proj_123",
+            "--repository-id",
+            "repo_123",
+            "--local-workspace-id",
+            "lw_123",
+            "--base-snapshot-id",
+            "snap_base",
+            "--repo-path",
+            str(tmp_path),
+            "--server-url",
+            "https://devboard.test",
+            "--token",
+            "devb_live_token|secret",
+            "--allow-blocked-security-findings",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert uploads[0]["allow_blocked_security_findings"] is True
+
+
 def fake_build_delta_bundle(repo_path: Path, output_dir: Path, context: dict):
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "delta-manifest.json").write_text("{}")

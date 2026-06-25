@@ -146,6 +146,35 @@ it('blocks delta finalize when security report contains blocked findings', funct
     expect(DB::table('delta_syncs')->where('id', $deltaId)->value('status'))->toBe('failed');
 });
 
+it('allows delta finalize with blocked findings only when explicitly approved', function () {
+    $context = createDeltaContext();
+    $artifacts = [
+        deltaArtifact('diff_summary', 'diff-summary.json', '{"changed_file_count":1}'),
+        deltaArtifact('security_report', 'security-report.json', '{"blocked":[{"path":".env","reason":"env_file"}]}'),
+    ];
+    $deltaId = deltaStart($context, deltaManifest($artifacts))->json('delta_id');
+
+    foreach ($artifacts as $artifact) {
+        deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+    }
+
+    deltaFinalize($context, $deltaId, ['allow_blocked_security_findings' => true])
+        ->assertOk()
+        ->assertJsonPath('status', 'active')
+        ->assertJsonStructure(['snapshot_id']);
+
+    expect(DB::table('delta_syncs')->where('id', $deltaId)->value('status'))->toBe('active');
+    expect(DB::table('run_events')
+        ->where('run_id', $context['run_id'])
+        ->where('event_type', 'security.blocked_upload_approved')
+        ->exists())->toBeTrue();
+    expect(DB::table('audit_logs')
+        ->where('action', 'security.blocked_upload_approved')
+        ->where('target_type', 'delta_sync')
+        ->where('target_id', $deltaId)
+        ->exists())->toBeTrue();
+});
+
 /**
  * @return array<string, string>
  */
@@ -338,11 +367,11 @@ function deltaChunk(
     );
 }
 
-function deltaFinalize(array $context, ?string $deltaId): Illuminate\Testing\TestResponse
+function deltaFinalize(array $context, ?string $deltaId, array $payload = []): Illuminate\Testing\TestResponse
 {
-    return test()->postJson("/api/plugin/v1/delta-syncs/{$deltaId}/finalize", [
+    return test()->postJson("/api/plugin/v1/delta-syncs/{$deltaId}/finalize", array_merge([
         'protocol_version' => 'v1',
-    ], deltaHeaders($context));
+    ], $payload), deltaHeaders($context));
 }
 
 /**

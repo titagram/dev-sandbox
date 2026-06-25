@@ -26,8 +26,9 @@ class FakeArtifactClient:
         self.chunks.append((import_id, artifact_id, chunk_index, content))
         return {"status": "received"}
 
-    def finalize_genesis_import(self, import_id):
+    def finalize_genesis_import(self, import_id, allow_blocked_security_findings=False):
         self.finalized = import_id
+        self.finalize_allow_blocked_security_findings = allow_blocked_security_findings
         return {"status": "active"}
 
     def start_delta_sync(self, run_id, manifest, local_workspace_id, base_snapshot_id):
@@ -45,8 +46,9 @@ class FakeArtifactClient:
         self.delta_chunks.append((delta_id, artifact_id, chunk_index, content))
         return {"status": "received"}
 
-    def finalize_delta_sync(self, delta_id):
+    def finalize_delta_sync(self, delta_id, allow_blocked_security_findings=False):
         self.finalized_delta = delta_id
+        self.finalize_delta_allow_blocked_security_findings = allow_blocked_security_findings
         return {"status": "active"}
 
     def finish_run(self, run_id, payload):
@@ -94,6 +96,56 @@ def test_upload_genesis_bundle_finishes_run_after_successful_finalize(tmp_path):
     )
 
 
+def test_upload_genesis_bundle_requires_approval_before_uploading_blocked_security_report(tmp_path):
+    bundle = _write_bundle(tmp_path, b'{"files":[]}')
+    _add_security_report(
+        bundle,
+        "genesis-manifest.json",
+        "security_art_123",
+        [{"path": ".env", "reason": "env_file", "secret": "not returned"}],
+    )
+    fake = FakeArtifactClient()
+
+    result = upload_genesis_bundle(
+        fake,
+        repository_id="repo_123",
+        run_id="run_123",
+        local_workspace_id="lw_123",
+        bundle_path=bundle,
+    )
+
+    assert result["status"] == "requires_security_approval"
+    assert result["blocked_count"] == 1
+    assert result["blocked_findings"] == [{"path": ".env", "reason": "env_file"}]
+    assert fake.started is None
+    assert fake.finalized is None
+    assert fake.finished is None
+
+
+def test_upload_genesis_bundle_forwards_explicit_security_approval_to_finalize(tmp_path):
+    bundle = _write_bundle(tmp_path, b'{"files":[]}')
+    _add_security_report(
+        bundle,
+        "genesis-manifest.json",
+        "security_art_123",
+        [{"path": ".env", "reason": "env_file"}],
+    )
+    fake = FakeArtifactClient()
+
+    result = upload_genesis_bundle(
+        fake,
+        repository_id="repo_123",
+        run_id="run_123",
+        local_workspace_id="lw_123",
+        bundle_path=bundle,
+        allow_blocked_security_findings=True,
+    )
+
+    assert result["status"] == "active"
+    assert fake.finalized == "gen_123"
+    assert fake.finalize_allow_blocked_security_findings is True
+
+
 def test_upload_delta_bundle_uses_delta_endpoints_and_finishes_run(tmp_path):
     artifact_content = b'{"changed_file_count":1}'
     bundle = _write_delta_bundle(tmp_path, artifact_content)
@@ -116,6 +168,55 @@ def test_upload_delta_bundle_uses_delta_endpoints_and_finishes_run(tmp_path):
         "run_123",
         {"status": "finished", "summary": "Delta sync completed."},
     )
+
+
+def test_upload_delta_bundle_requires_approval_before_uploading_blocked_security_report(tmp_path):
+    bundle = _write_delta_bundle(tmp_path, b'{"changed_file_count":1}')
+    _add_security_report(
+        bundle,
+        "delta-manifest.json",
+        "security_delta",
+        [{"path": ".env", "reason": "env_file"}],
+    )
+    fake = FakeArtifactClient()
+
+    result = upload_delta_bundle(
+        fake,
+        run_id="run_123",
+        local_workspace_id="lw_123",
+        base_snapshot_id="snap_base",
+        bundle_path=bundle,
+    )
+
+    assert result["status"] == "requires_security_approval"
+    assert result["blocked_findings"] == [{"path": ".env", "reason": "env_file"}]
+    assert fake.started_delta is None
+    assert fake.finalized_delta is None
+    assert fake.finished is None
+
+
+def test_upload_delta_bundle_forwards_explicit_security_approval_to_finalize(tmp_path):
+    bundle = _write_delta_bundle(tmp_path, b'{"changed_file_count":1}')
+    _add_security_report(
+        bundle,
+        "delta-manifest.json",
+        "security_delta",
+        [{"path": ".env", "reason": "env_file"}],
+    )
+    fake = FakeArtifactClient()
+
+    result = upload_delta_bundle(
+        fake,
+        run_id="run_123",
+        local_workspace_id="lw_123",
+        base_snapshot_id="snap_base",
+        bundle_path=bundle,
+        allow_blocked_security_findings=True,
+    )
+
+    assert result["status"] == "active"
+    assert fake.finalized_delta == "delta_123"
+    assert fake.finalize_delta_allow_blocked_security_findings is True
 
 
 def test_client_upload_chunk_sends_chunk_hash_headers():
@@ -201,3 +302,23 @@ def _write_delta_bundle(tmp_path: Path, artifact_content: bytes) -> Path:
     (bundle / "delta-manifest.json").write_text(json.dumps(manifest))
 
     return bundle
+
+
+def _add_security_report(bundle: Path, manifest_filename: str, artifact_id: str, blocked: list[dict]) -> None:
+    report = {"blocked": blocked, "warnings": []}
+    report_content = json.dumps(report).encode()
+    (bundle / "security-report.json").write_bytes(report_content)
+
+    manifest_path = bundle / manifest_filename
+    manifest = json.loads(manifest_path.read_text())
+    manifest["artifacts"].append(
+        {
+            "artifact_id": artifact_id,
+            "artifact_type": "security_report",
+            "filename": "security-report.json",
+            "sha256": "sha256:" + hashlib.sha256(report_content).hexdigest(),
+            "size_bytes": len(report_content),
+            "chunk_count": 1,
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest))
