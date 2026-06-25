@@ -6,7 +6,9 @@ use App\Http\Controllers\Dashboard\ArtifactRetentionRunController;
 use App\Http\Controllers\Dashboard\ArtifactsIndexController;
 use App\Http\Controllers\Dashboard\AuditExportStoreController;
 use App\Http\Controllers\Dashboard\Api\DashboardAdminController;
+use App\Http\Controllers\Dashboard\Api\DashboardBackupController;
 use App\Http\Controllers\Dashboard\Api\DashboardProjectLifecycleController;
+use App\Http\Controllers\Dashboard\Api\DashboardProjectRepositoryController;
 use App\Http\Controllers\Dashboard\Api\DashboardResourceController;
 use App\Http\Controllers\Dashboard\Api\DashboardSystemController;
 use App\Http\Controllers\Dashboard\Api\DashboardTaskAttachmentController;
@@ -52,6 +54,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/projects', [DashboardResourceController::class, 'createProject']);
         Route::get('/projects/{project}', [DashboardResourceController::class, 'project']);
         Route::patch('/projects/{project}', [DashboardResourceController::class, 'updateProject']);
+        Route::post('/projects/{project}/repositories', [DashboardProjectRepositoryController::class, 'store']);
         Route::post('/projects/{project}/archive', [DashboardProjectLifecycleController::class, 'archive']);
         Route::post('/projects/{project}/restore', [DashboardProjectLifecycleController::class, 'restore']);
         Route::post('/projects/{project}/delete', [DashboardProjectLifecycleController::class, 'delete']);
@@ -77,6 +80,10 @@ Route::middleware('auth')->group(function () {
         Route::get('/system', [DashboardSystemController::class, 'show']);
         Route::post('/system/artifact-retention', [DashboardSystemController::class, 'retention']);
         Route::post('/system/audit-exports', [DashboardSystemController::class, 'auditExport']);
+        Route::get('/system/backups/readiness', [DashboardBackupController::class, 'readiness']);
+        Route::post('/system/backups/export', [DashboardBackupController::class, 'export']);
+        Route::get('/system/backups/{backup}/download', [DashboardBackupController::class, 'download']);
+        Route::post('/system/backups/validate', [DashboardBackupController::class, 'validateBundle']);
     });
     Route::get('/kanban', KanbanController::class);
     Route::get('/artifacts', ArtifactsIndexController::class);

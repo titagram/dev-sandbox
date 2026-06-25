@@ -29,9 +29,12 @@ final class DashboardApiReader
         $project = DB::table('projects')->where('id', $projectId)->first();
         abort_unless($project && $project->status !== 'deleted', 404);
 
+        $repositories = $this->repositories($projectId);
+
         return [
             ...$this->projectSummary($project),
-            'repositories' => $this->repositories($projectId),
+            'repositories' => $repositories,
+            'kickstart' => $this->kickstart($projectId),
             'policy' => [
                 'code_write_allowed' => true,
                 'destructive_scans_allowed' => false,
@@ -681,13 +684,16 @@ final class DashboardApiReader
             ->map(function (object $repository): array {
                 $latestRun = DB::table('runs')->where('repository_id', $repository->id)->orderByDesc('created_at')->first();
                 $latestSnapshot = DB::table('snapshots')->where('repository_id', $repository->id)->orderByDesc('created_at')->first();
+                $localWorkspace = $this->latestLocalWorkspace((string) $repository->id);
 
                 return [
                     'id' => (string) $repository->id,
                     'project_id' => (string) $repository->project_id,
+                    'key' => (string) $repository->slug,
                     'name' => (string) $repository->name,
                     'default_branch' => (string) $repository->default_branch,
                     'git_mode' => 'local_clone',
+                    'local_workspace' => $this->localWorkspaceState($localWorkspace),
                     'last_local_snapshot' => $latestSnapshot?->created_at ? (string) $latestSnapshot->created_at : null,
                     'genesis_status' => $this->pipelineStatus(DB::table('genesis_imports')->where('repository_id', $repository->id)->orderByDesc('created_at')->value('status')),
                     'delta_status' => $this->pipelineStatus(DB::table('delta_syncs')->where('repository_id', $repository->id)->orderByDesc('created_at')->value('status')),
@@ -700,6 +706,106 @@ final class DashboardApiReader
                 ];
             })
             ->all();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function kickstart(string $projectId): array
+    {
+        $repositoryCount = (int) DB::table('repositories')
+            ->where('project_id', $projectId)
+            ->count();
+        $linkedWorkspaceCount = (int) DB::table('local_workspaces')
+            ->join('repositories', 'repositories.id', '=', 'local_workspaces.repository_id')
+            ->where('repositories.project_id', $projectId)
+            ->count();
+        $genesisExists = DB::table('genesis_imports')
+            ->where('project_id', $projectId)
+            ->exists();
+        $genesisActive = DB::table('genesis_imports')
+            ->where('project_id', $projectId)
+            ->whereIn('status', ['active', 'started', 'queued', 'running', 'uploading'])
+            ->exists();
+
+        $repositoryDeclared = $repositoryCount > 0;
+        $workspaceLinked = $linkedWorkspaceCount > 0;
+
+        $state = match (true) {
+            ! $repositoryDeclared => 'awaiting_repository_declaration',
+            ! $workspaceLinked => 'awaiting_local_workspace_link',
+            ! $genesisExists => 'awaiting_genesis',
+            $genesisActive => 'analyzing',
+            default => 'active',
+        };
+
+        return [
+            'state' => $state,
+            'steps' => [
+                [
+                    'key' => 'project_intake',
+                    'label' => 'Project intake',
+                    'status' => 'complete',
+                ],
+                [
+                    'key' => 'repository_declaration',
+                    'label' => 'Repository declaration',
+                    'status' => $repositoryDeclared ? 'complete' : 'current',
+                ],
+                [
+                    'key' => 'local_workspace_link',
+                    'label' => 'Local workspace link',
+                    'status' => ! $repositoryDeclared ? 'pending' : ($workspaceLinked ? 'complete' : 'current'),
+                ],
+                [
+                    'key' => 'genesis',
+                    'label' => 'Genesis import',
+                    'status' => ! $workspaceLinked ? 'pending' : ($genesisExists ? 'complete' : 'current'),
+                ],
+            ],
+            'pairing' => [
+                'api_base' => '/api/plugin/v1',
+                'local_workspace_endpoint' => '/api/plugin/v1/repositories/{repository}/local-workspaces',
+            ],
+        ];
+    }
+
+    private function latestLocalWorkspace(string $repositoryId): ?object
+    {
+        return DB::table('local_workspaces')
+            ->where('repository_id', $repositoryId)
+            ->orderByDesc('last_seen_at')
+            ->orderByDesc('updated_at')
+            ->first();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function localWorkspaceState(?object $workspace): array
+    {
+        if (! $workspace) {
+            return [
+                'status' => 'missing',
+                'id' => null,
+                'display_path' => null,
+                'current_branch' => null,
+                'last_head_sha' => null,
+                'dirty_status' => null,
+                'last_seen_at' => null,
+            ];
+        }
+
+        return [
+            'status' => 'linked',
+            'id' => (string) $workspace->id,
+            'device_id' => (string) $workspace->device_id,
+            'display_path' => (string) $workspace->display_path,
+            'current_branch' => (string) $workspace->current_branch,
+            'last_head_sha' => $workspace->last_head_sha ? (string) $workspace->last_head_sha : null,
+            'dirty_status' => (string) $workspace->dirty_status,
+            'last_seen_at' => $workspace->last_seen_at ? (string) $workspace->last_seen_at : null,
+        ];
     }
 
     /**

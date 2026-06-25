@@ -195,6 +195,19 @@ routes:
       enabled: false
       reason: "Updates project identity fields and must not run in default route smoke."
 
+  - id: dashboard.api.projects.repositories.store
+    method: POST
+    uri: /api/dashboard/projects/{project}/repositories
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: project_repository_declarer
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Declares logical repository metadata and must not run in default route smoke."
+
   - id: dashboard.api.projects.archive
     method: POST
     uri: /api/dashboard/projects/{project}/archive
@@ -542,6 +555,58 @@ routes:
     smoke:
       enabled: false
       reason: "Creates audit export artifacts and must not run in default route smoke."
+
+  - id: dashboard.api.system.backups.readiness
+    method: GET
+    uri: /api/dashboard/system/backups/readiness
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only backup readiness smoke expects JSON authentication failure."
+
+  - id: dashboard.api.system.backups.export
+    method: POST
+    uri: /api/dashboard/system/backups/export
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    smoke:
+      enabled: false
+      reason: "Creates a downloadable DevBoard backup bundle and must not run in default route smoke."
+
+  - id: dashboard.api.system.backups.download
+    method: GET
+    uri: /api/dashboard/system/backups/{backup}/download
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    parameter_provider:
+      backup: seeded_backup_bundle
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized private backup download. Requires an explicit backup bundle fixture."
+
+  - id: dashboard.api.system.backups.validate
+    method: POST
+    uri: /api/dashboard/system/backups/validate
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    smoke:
+      enabled: false
+      reason: "Uploads and validates a backup bundle dry-run; must not run in default route smoke."
 
   - id: dashboard.kanban.index
     method: GET

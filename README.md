@@ -41,6 +41,66 @@ La slice principale gia` verificata end-to-end in locale e`:
 
 Le verifiche live piu` recenti sono state fatte su Docker locale con `app + postgres + neo4j`, usando il plugin reale contro l'API reale.
 
+## Guida rapida al test live
+
+Questa sezione raccoglie le definizioni pratiche emerse durante il test live della nuova UI React su `https://home-sweet-home.cloud`.
+
+### Project key
+
+La `key` di un progetto e` lo slug stabile del progetto, non una chiave segreta.
+
+Serve a identificare il progetto in modo breve e leggibile nelle API, nella UI e nei futuri script. Deve essere unica tra i progetti e puo` contenere solo lettere minuscole, numeri e trattini.
+
+Esempi validi:
+
+- `test-live-01`
+- `crm-rewrite`
+- `home-sweet-home`
+
+Esempi da evitare:
+
+- `Test Live 01`
+- `crm_rewrite`
+- `cliente/app`
+
+Per un test manuale puoi scegliere un valore arbitrario ma stabile, per esempio `test-live-01`.
+
+### Declare Repository
+
+`Declare Repository` registra nel control plane DevBoard un repository logico appartenente al progetto.
+
+Non clona repository, non legge codice sorgente e non carica file del repository target nel backend. Serve solo a dichiarare metadata operativi:
+
+- nome del repository, per esempio `Target App`;
+- repository key, per esempio `target-app`;
+- branch di default, per esempio `main`;
+- percorsi protetti, per esempio `.env` e `*.pem`;
+- percorsi esclusi, per esempio `node_modules/` e `vendor/`;
+- stack hints, per esempio `react`, `laravel`, `node`.
+
+Dopo la dichiarazione, DevBoard crea un `repository_id`. Il local agent usa quel `repository_id` per collegare una cartella Git reale tramite `/api/plugin/v1/repositories/{repository}/local-workspaces`.
+
+### Default branch
+
+Il `default_branch` e` il branch canonico atteso per quel repository.
+
+Serve a DevBoard per sapere quale branch usare come baseline logica per Genesis, Delta, wiki, graph e controlli futuri. L'agent locale rileva anche il branch corrente della workspace collegata; in futuro DevBoard potra` evidenziare se il branch corrente non coincide con quello atteso.
+
+Per un test live usa quasi sempre `main`. Usa `master` se il repository locale e` vecchio e usa ancora quel branch, oppure `develop` se quello e` davvero il branch operativo del progetto.
+
+### Flusso corrente
+
+Il flusso live oggi e`:
+
+1. Creare un progetto dalla UI.
+2. Dichiarare uno o piu` repository logici nel progetto.
+3. Creare/ottenere un token plugin.
+4. Eseguire il local agent vicino al repository target.
+5. Collegare la workspace Git locale al `repository_id`.
+6. Verificare nel dettaglio progetto che Kickstart passi a `awaiting_genesis` e che la workspace risulti `linked`.
+
+La UI browser deve continuare a usare solo `/api/dashboard/...`. Gli endpoint `/api/plugin/v1/...` sono riservati a CLI, MCP e agent locale.
+
 ## Struttura repo
 
 ```text
@@ -294,6 +354,76 @@ Prompt iniziali dichiarati nel plugin:
 - `Check my DevBoard plugin status.`
 - `Run Genesis Import for this repo.`
 - `Upload the current Genesis bundle.`
+
+### Installazione locale in Codex
+
+Il plugin DevBoard in questo repository e` un bundle locale, non un plugin pubblicato in un marketplace Codex. Per provarlo subito in Codex, registralo come server MCP locale.
+
+Prerequisito: crea un token plugin dalla UI Admin (`/admin/plugin-tokens`) e copia subito il `plain_token`, perche` viene mostrato una sola volta.
+
+Installa il plugin Python e l'analyzer in un virtualenv locale:
+
+```bash
+cd /home/ubuntu/dev-sandbox
+python3 -m venv /tmp/devboard-plugin-venv
+/tmp/devboard-plugin-venv/bin/python -m pip install -e 'analyzer[test]' -e 'plugin[test]'
+/tmp/devboard-plugin-venv/bin/devboard version
+```
+
+Registra il device e salva le credenziali locali:
+
+```bash
+/tmp/devboard-plugin-venv/bin/devboard auth check \
+  --server-url https://home-sweet-home.cloud \
+  --token 'devb_live_<token_id>|<secret>'
+
+/tmp/devboard-plugin-venv/bin/devboard auth register-device "Local Dev Machine" sha256:local-dev linux x64 \
+  --server-url https://home-sweet-home.cloud \
+  --token 'devb_live_<token_id>|<secret>'
+```
+
+Questo scrive `~/.config/devboard/credentials.json` con permessi `0600`. Non salvare il token nel repository target.
+
+Registra l'MCP server in Codex:
+
+```bash
+codex mcp add devboard -- /tmp/devboard-plugin-venv/bin/devboard-mcp
+codex mcp list
+```
+
+Apri una nuova sessione Codex nel repository target o in `dev-sandbox` e chiedi:
+
+```text
+Check my DevBoard plugin status.
+```
+
+Per test manuale da terminale, prima recupera `project_id` e `repository_id`:
+
+```bash
+/tmp/devboard-plugin-venv/bin/devboard projects list
+```
+
+Poi linka la workspace Git locale:
+
+```bash
+/tmp/devboard-plugin-venv/bin/devboard repos link <project_id> <repository_id> --repo-path /absolute/path/to/repo
+```
+
+Se il link va a buon fine, nel dettaglio progetto la workspace deve risultare `linked` e Kickstart deve avanzare verso `awaiting_genesis`.
+
+### CLI agent minima Node
+
+Lo slice live piu` recente ha anche una CLI agent minima in `agent/`. Serve per testare solo auth/device/link workspace, non ancora Genesis/Delta:
+
+```bash
+cd /home/ubuntu/dev-sandbox/agent
+npm test
+node bin/devboard-agent.js auth-check --server https://home-sweet-home.cloud --token 'devb_live_<token_id>|<secret>'
+node bin/devboard-agent.js register-device --server https://home-sweet-home.cloud --token 'devb_live_<token_id>|<secret>' --name "Local Dev Machine"
+node bin/devboard-agent.js link-workspace --server https://home-sweet-home.cloud --token 'devb_live_<token_id>|<secret>' --device-id <device_id> --repository-id <repository_id> --path /absolute/path/to/repo
+```
+
+Per ora, usa il plugin Python/MCP quando vuoi testare Codex e Genesis. Usa la CLI Node solo per validare il primo pairing live.
 
 ## Flusso CLI reale consigliato
 
