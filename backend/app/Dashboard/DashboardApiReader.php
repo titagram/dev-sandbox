@@ -8,6 +8,10 @@ use Illuminate\Support\Facades\Storage;
 
 final class DashboardApiReader
 {
+    private const GRAPH_PREVIEW_NODE_LIMIT = 200;
+
+    private const GRAPH_PREVIEW_EDGE_LIMIT = 300;
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -402,21 +406,32 @@ final class DashboardApiReader
         $nodes = is_array($payload['nodes'] ?? null) ? $payload['nodes'] : [];
         $relationships = is_array($payload['relationships'] ?? null) ? $payload['relationships'] : [];
         $repository = DB::table('repositories')->where('id', $snapshot->repository_id)->first();
+        $validNodes = array_values(array_filter($nodes, 'is_array'));
+        $normalizedRelationships = $this->graphRelationships($relationships);
+        $degreeByNode = $this->graphDegrees($normalizedRelationships);
+        $nodeStats = $this->graphNodeStats($validNodes);
+        $previewNodes = $this->graphPreviewNodes($validNodes, $normalizedRelationships);
 
         $graphNodes = array_map(
-            fn (array $node): array => $this->graphNode($node, (string) ($repository->name ?? 'unknown'), $relationships),
-            array_filter($nodes, 'is_array'),
+            fn (array $node): array => $this->graphNode($node, (string) ($repository->name ?? 'unknown'), $degreeByNode),
+            $previewNodes,
         );
+        $previewNodeIds = array_fill_keys(array_column($graphNodes, 'id'), true);
+        $previewEdges = array_values(array_filter(
+            $normalizedRelationships,
+            static fn (array $edge): bool => isset($previewNodeIds[$edge['from']], $previewNodeIds[$edge['to']]),
+        ));
+        $previewEdges = array_slice($previewEdges, 0, self::GRAPH_PREVIEW_EDGE_LIMIT);
 
         $graphEdges = array_map(
             fn (array $edge, int $index): array => [
                 'id' => (string) ($edge['id'] ?? 'edge-'.$index),
-                'from' => (string) ($edge['from'] ?? ''),
-                'to' => (string) ($edge['to'] ?? ''),
+                'from' => $edge['from'],
+                'to' => $edge['to'],
                 'kind' => $this->graphEdgeKind((string) ($edge['type'] ?? 'uses')),
             ],
-            array_filter($relationships, 'is_array'),
-            array_keys(array_filter($relationships, 'is_array')),
+            $previewEdges,
+            array_keys($previewEdges),
         );
 
         return [
@@ -425,10 +440,10 @@ final class DashboardApiReader
             'generated_at' => (string) $snapshot->created_at,
             'source' => $this->sourceMeta(type: 'local_analyzer', ref: (string) $snapshot->id),
             'stats' => [
-                'nodes' => count($graphNodes),
-                'edges' => count($graphEdges),
-                'modules' => count(array_filter($graphNodes, fn (array $node): bool => $node['kind'] === 'module')),
-                'routes' => count(array_filter($graphNodes, fn (array $node): bool => $node['kind'] === 'route')),
+                'nodes' => count($validNodes),
+                'edges' => count($normalizedRelationships),
+                'modules' => $nodeStats['modules'],
+                'routes' => $nodeStats['routes'],
             ],
             'nodes' => array_values($graphNodes),
             'edges' => array_values($graphEdges),
@@ -793,6 +808,14 @@ final class DashboardApiReader
                 'last_head_sha' => null,
                 'dirty_status' => null,
                 'last_seen_at' => null,
+                'remote_name' => null,
+                'remote_url_host' => null,
+                'remote_url_hash' => null,
+                'upstream_branch' => null,
+                'ahead_count' => null,
+                'behind_count' => null,
+                'git_state_observed_at' => null,
+                'source_truth' => 'local_agent_reported',
             ];
         }
 
@@ -805,6 +828,14 @@ final class DashboardApiReader
             'last_head_sha' => $workspace->last_head_sha ? (string) $workspace->last_head_sha : null,
             'dirty_status' => (string) $workspace->dirty_status,
             'last_seen_at' => $workspace->last_seen_at ? (string) $workspace->last_seen_at : null,
+            'remote_name' => $workspace->remote_name ? (string) $workspace->remote_name : null,
+            'remote_url_host' => $workspace->remote_url_host ? (string) $workspace->remote_url_host : null,
+            'remote_url_hash' => $workspace->remote_url_hash ? (string) $workspace->remote_url_hash : null,
+            'upstream_branch' => $workspace->upstream_branch ? (string) $workspace->upstream_branch : null,
+            'ahead_count' => $workspace->ahead_count === null ? null : (int) $workspace->ahead_count,
+            'behind_count' => $workspace->behind_count === null ? null : (int) $workspace->behind_count,
+            'git_state_observed_at' => $workspace->git_state_observed_at ? (string) $workspace->git_state_observed_at : null,
+            'source_truth' => 'local_agent_reported',
         ];
     }
 
@@ -1106,24 +1137,154 @@ final class DashboardApiReader
 
     /**
      * @param array<string, mixed> $node
-     * @param list<array<string, mixed>> $relationships
+     * @param array<string, int> $degreeByNode
      * @return array<string, mixed>
      */
-    private function graphNode(array $node, string $repository, array $relationships): array
+    private function graphNode(array $node, string $repository, array $degreeByNode): array
     {
         $labels = is_array($node['labels'] ?? null) ? $node['labels'] : [];
         $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
-        $id = (string) ($node['id'] ?? $properties['id'] ?? 'node');
+        $id = $this->graphNodeId($node);
 
         return [
             'id' => $id,
             'label' => (string) ($properties['name'] ?? $properties['path'] ?? $id),
             'kind' => $this->graphNodeKind($labels),
             'repository' => $repository,
-            'degree' => count(array_filter($relationships, fn (array $edge): bool => ($edge['from'] ?? null) === $id || ($edge['to'] ?? null) === $id)),
+            'degree' => $degreeByNode[$id] ?? 0,
             'risk' => 'medium',
             'source' => $this->sourceMeta(type: 'local_analyzer', ref: $id),
         ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $nodes
+     * @param list<array{from: string, to: string}> $relationships
+     * @return list<array<string, mixed>>
+     */
+    private function graphPreviewNodes(array $nodes, array $relationships): array
+    {
+        $nodeById = [];
+        foreach ($nodes as $node) {
+            $id = $this->graphNodeId($node);
+            if ($id !== '' && ! isset($nodeById[$id])) {
+                $nodeById[$id] = $node;
+            }
+        }
+
+        $previewNodeIds = [];
+        foreach ($relationships as $relationship) {
+            foreach ([$relationship['from'], $relationship['to']] as $id) {
+                if (count($previewNodeIds) >= self::GRAPH_PREVIEW_NODE_LIMIT) {
+                    break 2;
+                }
+
+                if (isset($nodeById[$id]) && ! isset($previewNodeIds[$id])) {
+                    $previewNodeIds[$id] = true;
+                }
+            }
+        }
+
+        foreach ($nodes as $node) {
+            if (count($previewNodeIds) >= self::GRAPH_PREVIEW_NODE_LIMIT) {
+                break;
+            }
+
+            $id = $this->graphNodeId($node);
+            if ($id !== '' && ! isset($previewNodeIds[$id])) {
+                $previewNodeIds[$id] = true;
+            }
+        }
+
+        $previewNodes = [];
+        foreach (array_keys($previewNodeIds) as $id) {
+            $previewNodes[] = $nodeById[$id];
+        }
+
+        return $previewNodes;
+    }
+
+    /**
+     * @param array<string, mixed> $node
+     */
+    private function graphNodeId(array $node): string
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+
+        return (string) ($node['id'] ?? $properties['id'] ?? 'node');
+    }
+
+    /**
+     * @param list<mixed> $relationships
+     * @return list<array{id: string|null, from: string, to: string, type: string|null}>
+     */
+    private function graphRelationships(array $relationships): array
+    {
+        $normalized = [];
+
+        foreach ($relationships as $relationship) {
+            if (! is_array($relationship)) {
+                continue;
+            }
+
+            $from = $relationship['from'] ?? $relationship['source_id'] ?? $relationship['source_symbol_id'] ?? null;
+            $to = $relationship['to'] ?? $relationship['target_id'] ?? $relationship['target_symbol_id'] ?? null;
+
+            if (! is_string($from) || ! is_string($to) || $from === '' || $to === '') {
+                continue;
+            }
+
+            $normalized[] = [
+                'id' => isset($relationship['id']) ? (string) $relationship['id'] : null,
+                'from' => $from,
+                'to' => $to,
+                'type' => isset($relationship['type']) ? (string) $relationship['type'] : null,
+            ];
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param list<array{from: string, to: string}> $relationships
+     * @return array<string, int>
+     */
+    private function graphDegrees(array $relationships): array
+    {
+        $degreeByNode = [];
+
+        foreach ($relationships as $relationship) {
+            $degreeByNode[$relationship['from']] = ($degreeByNode[$relationship['from']] ?? 0) + 1;
+            $degreeByNode[$relationship['to']] = ($degreeByNode[$relationship['to']] ?? 0) + 1;
+        }
+
+        return $degreeByNode;
+    }
+
+    /**
+     * @param list<mixed> $nodes
+     * @return array{modules: int, routes: int}
+     */
+    private function graphNodeStats(array $nodes): array
+    {
+        $stats = ['modules' => 0, 'routes' => 0];
+
+        foreach ($nodes as $node) {
+            if (! is_array($node)) {
+                continue;
+            }
+
+            $kind = $this->graphNodeKind(is_array($node['labels'] ?? null) ? $node['labels'] : []);
+            if ($kind === 'module') {
+                $stats['modules']++;
+            }
+
+            if ($kind === 'route') {
+                $stats['routes']++;
+            }
+        }
+
+        return $stats;
     }
 
     /**

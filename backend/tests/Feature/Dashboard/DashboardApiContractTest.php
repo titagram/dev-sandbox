@@ -183,6 +183,58 @@ it('serves dashboard run, admin, and system operations through the adapter contr
         ->assertJsonPath('last_operation.status', 'ok');
 });
 
+it('serves a bounded graph preview with total stats and analyzer relationship keys', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    $nodes = [];
+    $relationships = [];
+
+    for ($index = 0; $index < 50; $index++) {
+        $nodes[] = [
+            'id' => "module:unconnected{$index}",
+            'labels' => ['Module'],
+            'properties' => ['name' => "unconnected{$index}"],
+        ];
+    }
+
+    for ($index = 0; $index < 250; $index++) {
+        $nodes[] = [
+            'id' => "function:handler{$index}",
+            'labels' => ['Function'],
+            'properties' => ['name' => "handler{$index}"],
+        ];
+    }
+
+    for ($index = 0; $index < 249; $index++) {
+        $relationships[] = [
+            'id' => "rel-{$index}",
+            'type' => 'CALLS',
+            'source_id' => "function:handler{$index}",
+            'target_id' => 'function:handler'.($index + 1),
+        ];
+    }
+
+    $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
+    Storage::disk('local')->put($storagePath, json_encode([
+        'nodes' => $nodes,
+        'relationships' => $relationships,
+    ], JSON_THROW_ON_ERROR));
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->assertJsonPath('stats.nodes', 300)
+        ->assertJsonPath('stats.edges', 249)
+        ->assertJsonPath('edges.0.from', 'function:handler0')
+        ->assertJsonPath('edges.0.to', 'function:handler1')
+        ->json();
+
+    expect($response['nodes'])->toHaveCount(200);
+    expect($response['edges'])->toHaveCount(199);
+    expect($response['nodes'][0]['id'])->toBe('function:handler0');
+    expect($response['nodes'][0]['degree'])->toBeGreaterThan(0);
+});
+
 function dashboardApiContractUserWithRole(string $roleName): User
 {
     $user = User::factory()->create(['status' => 'active']);

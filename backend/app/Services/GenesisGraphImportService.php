@@ -9,6 +9,29 @@ use RuntimeException;
 
 class GenesisGraphImportService
 {
+    private const BATCH_SIZE = 500;
+
+    /**
+     * @return list<array{cypher: string, params: array<string, mixed>}>
+     */
+    public static function indexCommands(): array
+    {
+        return [
+            [
+                'cypher' => 'CREATE INDEX code_node_snapshot_external IF NOT EXISTS FOR (n:CodeNode) ON (n.snapshot_id, n.external_id)',
+                'params' => [],
+            ],
+            [
+                'cypher' => 'CREATE INDEX devboard_snapshot_snapshot_id IF NOT EXISTS FOR (s:DevBoardSnapshot) ON (s.snapshot_id)',
+                'params' => [],
+            ],
+            [
+                'cypher' => 'CALL db.awaitIndexes(300)',
+                'params' => [],
+            ],
+        ];
+    }
+
     /**
      * @return array{cypher: string, params: array<string, mixed>}
      */
@@ -72,6 +95,60 @@ class GenesisGraphImportService
         ];
     }
 
+    /**
+     * @param list<array<string, mixed>> $nodes
+     * @return array{cypher: string, params: array<string, mixed>}
+     */
+    public static function nodeBatchCommand(array $nodes, string $snapshotId, string $runId, string $repositoryId): array
+    {
+        return [
+            'cypher' => 'UNWIND $nodes AS node MERGE (n:CodeNode {external_id: node.id, snapshot_id: $snapshot_id}) SET n += node.properties, n.labels = node.labels',
+            'params' => [
+                'snapshot_id' => $snapshotId,
+                'nodes' => array_map(
+                    static fn (array $node): array => [
+                        'id' => $node['id'],
+                        'labels' => $node['labels'] ?? [],
+                        'properties' => array_merge($node['properties'] ?? [], [
+                            'snapshot_id' => $snapshotId,
+                            'run_id' => $runId,
+                            'repository_id' => $repositoryId,
+                        ]),
+                    ],
+                    $nodes,
+                ),
+            ],
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $relationships
+     * @return array{cypher: string, params: array<string, mixed>}
+     */
+    public static function relationshipBatchCommand(array $relationships, string $snapshotId, string $runId, string $repositoryId): array
+    {
+        return [
+            'cypher' => 'UNWIND $relationships AS relationship MATCH (source:CodeNode {external_id: relationship.source_id, snapshot_id: $snapshot_id}) MATCH (target:CodeNode {external_id: relationship.target_id, snapshot_id: $snapshot_id}) MERGE (source)-[r:RELATED {external_id: relationship.id, snapshot_id: $snapshot_id}]->(target) SET r.type = relationship.type, r += relationship.properties',
+            'params' => [
+                'snapshot_id' => $snapshotId,
+                'relationships' => array_map(
+                    static fn (array $relationship): array => [
+                        'id' => $relationship['id'] ?? (string) Str::ulid(),
+                        'source_id' => $relationship['source_id'] ?? $relationship['source_symbol_id'],
+                        'target_id' => $relationship['target_id'] ?? $relationship['target_symbol_id'],
+                        'type' => $relationship['type'],
+                        'properties' => array_merge($relationship['properties'] ?? [], [
+                            'snapshot_id' => $snapshotId,
+                            'run_id' => $runId,
+                            'repository_id' => $repositoryId,
+                        ]),
+                    ],
+                    $relationships,
+                ),
+            ],
+        ];
+    }
+
     public function importGenesis(
         string $importId,
         ?object $client = null,
@@ -131,14 +208,19 @@ class GenesisGraphImportService
 
         $graph = json_decode(Storage::disk('local')->get($artifact->storage_path), true, 512, JSON_THROW_ON_ERROR);
 
+        $this->ensureIndexes($client);
         $this->runCommand($client, self::devBoardSnapshotCommand($snapshotId, $repositoryId, $runId));
 
-        foreach ($graph['nodes'] ?? [] as $node) {
-            $this->runCommand($client, self::nodeCommand($node, $snapshotId, $runId, $repositoryId));
+        foreach (array_chunk($graph['nodes'] ?? [], self::BATCH_SIZE) as $nodes) {
+            if ($nodes !== []) {
+                $this->runCommand($client, self::nodeBatchCommand($nodes, $snapshotId, $runId, $repositoryId));
+            }
         }
 
-        foreach ($graph['relationships'] ?? [] as $relationship) {
-            $this->runCommand($client, self::relationshipCommand($relationship, $snapshotId, $runId, $repositoryId));
+        foreach (array_chunk($graph['relationships'] ?? [], self::BATCH_SIZE) as $relationships) {
+            if ($relationships !== []) {
+                $this->runCommand($client, self::relationshipBatchCommand($relationships, $snapshotId, $runId, $repositoryId));
+            }
         }
 
         DB::table('artifacts')->where('id', $artifactId)->update([
@@ -163,5 +245,12 @@ class GenesisGraphImportService
     private function runCommand(object $client, array $command): void
     {
         $client->run($command['cypher'], $command['params']);
+    }
+
+    private function ensureIndexes(object $client): void
+    {
+        foreach (self::indexCommands() as $command) {
+            $this->runCommand($client, $command);
+        }
     }
 }

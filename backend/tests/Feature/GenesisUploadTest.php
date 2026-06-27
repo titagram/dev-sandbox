@@ -10,7 +10,10 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    config(['services.devboard.graph_import_mode' => 'fake']);
+    config([
+        'queue.default' => 'sync',
+        'services.devboard.graph_import_mode' => 'fake',
+    ]);
     $this->seed(\Database\Seeders\DevBoardSeeder::class);
 });
 
@@ -29,6 +32,53 @@ it('starts Genesis import and creates artifact rows', function () {
         ->assertJsonStructure(['import_id', 'artifacts']);
 
     expect(DB::table('genesis_imports')->where('id', $response->json('import_id'))->value('status'))->toBe('uploading');
+    expect(DB::table('artifacts')->where('run_id', $context['run_id'])->count())->toBe(2);
+});
+
+it('returns the existing Genesis import when retrying start with the same run manifest', function () {
+    $context = createGenesisUploadContext();
+    $manifest = genesisManifest([
+        genesisArtifact('file_inventory', 'file-inventory.json', '{"files":[]}'),
+        genesisArtifact('security_report', 'security-report.json', '{"blocked":[{"path":".env","reason":"env_file"}]}'),
+    ]);
+
+    $first = genesisStart($context, $manifest)
+        ->assertOk()
+        ->assertJsonPath('status', 'uploading');
+
+    $second = genesisStart($context, $manifest)
+        ->assertOk()
+        ->assertJsonPath('status', 'uploading');
+
+    expect($second->json('import_id'))->toBe($first->json('import_id'));
+    expect(DB::table('genesis_imports')->where('run_id', $context['run_id'])->count())->toBe(1);
+    expect(DB::table('artifacts')->where('run_id', $context['run_id'])->count())->toBe(2);
+});
+
+it('resets a failed Genesis import to uploading when retrying start with the same run manifest', function () {
+    $context = createGenesisUploadContext();
+    $manifest = genesisManifest([
+        genesisArtifact('file_inventory', 'file-inventory.json', '{"files":[]}'),
+        genesisArtifact('security_report', 'security-report.json', '{"blocked":[{"path":".env","reason":"env_file"}]}'),
+    ]);
+    $importId = genesisStart($context, $manifest)->json('import_id');
+
+    DB::table('genesis_imports')->where('id', $importId)->update([
+        'status' => 'failed',
+        'finished_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    genesisStart($context, $manifest)
+        ->assertOk()
+        ->assertJsonPath('import_id', $importId)
+        ->assertJsonPath('status', 'uploading');
+
+    $import = DB::table('genesis_imports')->where('id', $importId)->first();
+
+    expect($import->status)->toBe('uploading');
+    expect($import->finished_at)->toBeNull();
+    expect(DB::table('genesis_imports')->where('run_id', $context['run_id'])->count())->toBe(1);
     expect(DB::table('artifacts')->where('run_id', $context['run_id'])->count())->toBe(2);
 });
 

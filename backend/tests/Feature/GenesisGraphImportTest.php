@@ -23,9 +23,24 @@ it('imports a valid graph snapshot with a DevBoardSnapshot command first', funct
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
-    expect($client->commands[0]['cypher'])->toContain('DevBoardSnapshot');
-    expect($client->commands[0]['params']['snapshot_id'])->toBe($context['snapshot_id']);
+    $snapshotCommand = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'MERGE (s:DevBoardSnapshot'),
+    );
+
+    expect($snapshotCommand)->not->toBeNull();
+    expect($snapshotCommand['params']['snapshot_id'])->toBe($context['snapshot_id']);
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
+});
+
+it('creates Neo4j lookup indexes before importing graph batches', function () {
+    $context = createGraphImportContext();
+    $client = new FakeNeo4jClient();
+
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
+
+    expect($client->commands[0]['cypher'])->toContain('CREATE INDEX code_node_snapshot_external');
+    expect($client->commands[1]['cypher'])->toContain('CREATE INDEX devboard_snapshot_snapshot_id');
+    expect($client->commands[2]['cypher'])->toContain('CALL db.awaitIndexes');
 });
 
 it('imports file and function nodes with snapshot metadata', function () {
@@ -34,14 +49,14 @@ it('imports file and function nodes with snapshot metadata', function () {
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
-    $nodeCommands = array_values(array_filter(
+    $nodeCommand = array_values(array_filter(
         $client->commands,
-        fn (array $command): bool => str_starts_with($command['cypher'], 'MERGE (n:CodeNode'),
-    ));
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes'),
+    ))[0];
 
-    expect($nodeCommands)->toHaveCount(2);
-    expect($nodeCommands[0]['params']['properties']['snapshot_id'])->toBe($context['snapshot_id']);
-    expect($nodeCommands[1]['params']['properties']['repository_id'])->toBe($context['repository_id']);
+    expect($nodeCommand['params']['nodes'])->toHaveCount(2);
+    expect($nodeCommand['params']['nodes'][0]['properties']['snapshot_id'])->toBe($context['snapshot_id']);
+    expect($nodeCommand['params']['nodes'][1]['properties']['repository_id'])->toBe($context['repository_id']);
 });
 
 it('imports relationships with run and repository metadata', function () {
@@ -52,10 +67,42 @@ it('imports relationships with run and repository metadata', function () {
 
     $relationshipCommand = array_values(array_filter(
         $client->commands,
-        fn (array $command): bool => str_contains($command['cypher'], 'RELATED'),
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $relationships'),
     ))[0];
 
-    expect($relationshipCommand['params']['properties'])->toMatchArray([
+    expect($relationshipCommand['params']['relationships'][0]['properties'])->toMatchArray([
+        'run_id' => $context['run_id'],
+        'repository_id' => $context['repository_id'],
+    ]);
+});
+
+it('imports nodes and relationships with batched Cypher commands', function () {
+    $context = createGraphImportContext();
+    $client = new FakeNeo4jClient();
+
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
+
+    $nodeBatchCommands = array_values(array_filter(
+        $client->commands,
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes'),
+    ));
+    $relationshipBatchCommands = array_values(array_filter(
+        $client->commands,
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $relationships'),
+    ));
+
+    expect($nodeBatchCommands)->toHaveCount(1);
+    expect($nodeBatchCommands[0]['params']['nodes'])->toHaveCount(2);
+    expect($nodeBatchCommands[0]['params']['nodes'][0]['properties'])->toMatchArray([
+        'snapshot_id' => $context['snapshot_id'],
+        'run_id' => $context['run_id'],
+        'repository_id' => $context['repository_id'],
+    ]);
+
+    expect($relationshipBatchCommands)->toHaveCount(1);
+    expect($relationshipBatchCommands[0]['params']['relationships'])->toHaveCount(1);
+    expect($relationshipBatchCommands[0]['params']['relationships'][0]['properties'])->toMatchArray([
+        'snapshot_id' => $context['snapshot_id'],
         'run_id' => $context['run_id'],
         'repository_id' => $context['repository_id'],
     ]);

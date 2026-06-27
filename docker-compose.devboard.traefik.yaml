@@ -19,12 +19,19 @@ services:
       traefik.docker.network: traefik_default
       traefik.http.middlewares.devboard-https-redirect.redirectscheme.scheme: https
       traefik.http.middlewares.devboard-https-redirect.redirectscheme.permanent: "true"
+      traefik.http.middlewares.devboard-basic-auth.basicauth.users: devboard:{SHA}H+mfT02kxLMycA/N3Rd1THEy8NE=
+      traefik.http.middlewares.devboard-basic-auth.basicauth.removeheader: "true"
       traefik.http.routers.devboard-http.entrypoints: web
       traefik.http.routers.devboard-http.rule: Host(`home-sweet-home.cloud`)
       traefik.http.routers.devboard-http.middlewares: devboard-https-redirect
+      traefik.http.routers.devboard-plugin.entrypoints: websecure
+      traefik.http.routers.devboard-plugin.rule: Host(`home-sweet-home.cloud`) && PathPrefix(`/api/plugin/v1`)
+      traefik.http.routers.devboard-plugin.priority: "120"
+      traefik.http.routers.devboard-plugin.tls.certresolver: le
       traefik.http.routers.devboard-web.entrypoints: websecure
       traefik.http.routers.devboard-web.rule: Host(`home-sweet-home.cloud`) && (PathPrefix(`/api`) || PathPrefix(`/sanctum`) || PathPrefix(`/storage`))
       traefik.http.routers.devboard-web.priority: "100"
+      traefik.http.routers.devboard-web.middlewares: devboard-basic-auth
       traefik.http.routers.devboard-web.tls.certresolver: le
       traefik.http.services.devboard-web.loadbalancer.server.port: "8000"
     networks:
@@ -43,6 +50,7 @@ services:
       traefik.http.routers.devboard-frontend.entrypoints: websecure
       traefik.http.routers.devboard-frontend.rule: Host(`home-sweet-home.cloud`)
       traefik.http.routers.devboard-frontend.priority: "1"
+      traefik.http.routers.devboard-frontend.middlewares: devboard-basic-auth
       traefik.http.routers.devboard-frontend.tls.certresolver: le
       traefik.http.services.devboard-frontend.loadbalancer.server.port: "80"
     networks:

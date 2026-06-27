@@ -1,8 +1,9 @@
 import json
 
 import httpx
+import pytest
 
-from devboard_plugin.client import DevBoardClient
+from devboard_plugin.client import DevBoardApiError, DevBoardClient
 
 
 def test_client_sends_protocol_v1_header():
@@ -70,3 +71,20 @@ def test_client_finalize_delta_sync_can_send_security_override():
         "protocol_version": "v1",
         "allow_blocked_security_findings": True,
     }
+
+
+def test_client_wraps_non_devboard_error_responses():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "Server Error"})
+
+    client = DevBoardClient(
+        base_url="https://devboard.test",
+        token="devb_live_token|secret",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(DevBoardApiError) as error:
+        client.post("/api/plugin/v1/repositories/repo_123/genesis-imports", {})
+
+    assert error.value.code == "http_500"
+    assert "500 Internal Server Error" in str(error.value)

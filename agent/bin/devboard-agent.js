@@ -52,7 +52,8 @@ function usage() {
     "Usage:",
     "  devboard-agent auth-check --server URL --token TOKEN",
     "  devboard-agent register-device --server URL --token TOKEN --name NAME",
-    "  devboard-agent link-workspace --server URL --token TOKEN --device-id ID --repository-id ID --path PATH"
+    "  devboard-agent link-workspace --server URL --token TOKEN --device-id ID --repository-id ID --path PATH",
+    "  devboard-agent refresh-workspace --server URL --token TOKEN --device-id ID --repository-id ID --path PATH"
   ].join("\n");
 }
 
@@ -75,6 +76,18 @@ async function main(argv) {
   }
 
   if (command === "link-workspace") {
+    const workspace = probeGitWorkspace(requireOption(options, "path"));
+
+    return linkWorkspace({
+      server: requireOption(options, "server"),
+      token: requireOption(options, "token"),
+      deviceId: requireOption(options, "device-id"),
+      repositoryId: requireOption(options, "repository-id"),
+      workspace
+    });
+  }
+
+  if (command === "refresh-workspace") {
     const workspace = probeGitWorkspace(requireOption(options, "path"));
 
     return linkWorkspace({

@@ -198,7 +198,11 @@ class DevBoardClient:
         try:
             error = response.json()["error"]
         except (ValueError, KeyError, TypeError):
-            response.raise_for_status()
+            raise DevBoardApiError(
+                code=f"http_{response.status_code}",
+                message=f"{response.status_code} {response.reason_phrase}: DevBoard API request failed.",
+                details={"url": str(response.request.url)},
+            ) from None
 
         raise DevBoardApiError(
             code=error.get("code", "server_error"),

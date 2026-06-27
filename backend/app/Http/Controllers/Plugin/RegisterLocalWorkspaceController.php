@@ -40,9 +40,26 @@ class RegisterLocalWorkspaceController extends Controller
             'current_branch' => ['required', 'string', 'max:255'],
             'last_head_sha' => ['nullable', 'string', 'max:255'],
             'dirty_status' => ['required', 'string', 'max:64'],
+            'remote_name' => ['nullable', 'string', 'max:255'],
+            'remote_url_host' => ['nullable', 'string', 'max:255'],
+            'remote_url_hash' => ['nullable', 'string', 'max:255', 'regex:/^sha256:[a-f0-9]{64}$/'],
+            'upstream_branch' => ['nullable', 'string', 'max:255'],
+            'ahead_count' => ['nullable', 'integer', 'min:0'],
+            'behind_count' => ['nullable', 'integer', 'min:0'],
+            'git_state_observed_at' => ['nullable', 'date'],
         ]);
 
         $now = now();
+        $gitState = [
+            'remote_name' => $validated['remote_name'] ?? null,
+            'remote_url_host' => $validated['remote_url_host'] ?? null,
+            'remote_url_hash' => $validated['remote_url_hash'] ?? null,
+            'upstream_branch' => $validated['upstream_branch'] ?? null,
+            'ahead_count' => $validated['ahead_count'] ?? null,
+            'behind_count' => $validated['behind_count'] ?? null,
+            'git_state_observed_at' => $validated['git_state_observed_at'] ?? null,
+        ];
+
         $workspace = DB::table('local_workspaces')
             ->where('repository_id', $repository)
             ->where('device_id', $device->id)
@@ -55,6 +72,7 @@ class RegisterLocalWorkspaceController extends Controller
                 'current_branch' => $validated['current_branch'],
                 'last_head_sha' => $validated['last_head_sha'] ?? null,
                 'dirty_status' => $validated['dirty_status'],
+                ...$gitState,
                 'last_seen_at' => $now,
                 'updated_at' => $now,
             ]);
@@ -72,6 +90,7 @@ class RegisterLocalWorkspaceController extends Controller
                 'current_branch' => $validated['current_branch'],
                 'last_head_sha' => $validated['last_head_sha'] ?? null,
                 'dirty_status' => $validated['dirty_status'],
+                ...$gitState,
                 'last_snapshot_id' => null,
                 'last_seen_at' => $now,
                 'created_at' => $now,

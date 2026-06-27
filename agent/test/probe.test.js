@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { probeGitWorkspace } from "../src/probe.js";
+import { probeGitWorkspace, sanitizeRemoteUrl } from "../src/probe.js";
 
 function gitAvailable() {
   try {
@@ -18,6 +18,13 @@ function gitAvailable() {
 
 function git(root, args) {
   return execFileSync("git", ["-C", root, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  }).trim();
+}
+
+function gitRaw(args) {
+  return execFileSync("git", args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   }).trim();
@@ -50,6 +57,44 @@ test("probeGitWorkspace reports clean committed workspaces", { skip: !gitAvailab
     assert.ok(result.current_branch.length > 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sanitizeRemoteUrl keeps host and hash without leaking credentials", () => {
+  const sanitized = sanitizeRemoteUrl("https://token@example.test/org/repo.git");
+
+  assert.equal(sanitized.host, "example.test");
+  assert.equal(sanitized.hash.startsWith("sha256:"), true);
+  assert.equal(JSON.stringify(sanitized).includes("token"), false);
+});
+
+test("probeGitWorkspace reports local remote metadata and ahead behind counts", { skip: !gitAvailable() }, () => {
+  const root = createCommittedRepository();
+  const remote = mkdtempSync(path.join(tmpdir(), "devboard-agent-remote-"));
+
+  try {
+    gitRaw(["init", "--bare", remote]);
+    git(root, ["remote", "add", "origin", remote]);
+    git(root, ["push", "-u", "origin", "HEAD"]);
+
+    writeFileSync(path.join(root, "README.md"), "ahead fixture\n");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "-m", "ahead commit"]);
+
+    const result = probeGitWorkspace(root);
+    const branch = git(root, ["branch", "--show-current"]);
+
+    assert.equal(result.remote_name, "origin");
+    assert.equal(result.remote_url_host, "local");
+    assert.equal(result.remote_url_hash.startsWith("sha256:"), true);
+    assert.equal(result.upstream_branch, `origin/${branch}`);
+    assert.equal(result.ahead_count, 1);
+    assert.equal(result.behind_count, 0);
+    assert.match(result.git_state_observed_at, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal("remote_url" in result, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(remote, { recursive: true, force: true });
   }
 });
 
