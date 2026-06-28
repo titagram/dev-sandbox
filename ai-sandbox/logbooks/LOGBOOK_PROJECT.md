@@ -2,6 +2,17 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-06-28 - Laravel AI SDK agent evaluation documentation start
+
+- Request: read the official Laravel 13 AI SDK documentation at `https://laravel.com/docs/13.x/ai-sdk` and create a Markdown document for future DevBoard agent use.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, policy files under `ai-sandbox/instructions/policies/`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/workflows/WIKI.md`, current project logbook tail, existing `docs/ai-devboard/*` file list, and the official Laravel AI SDK documentation.
+- Intended write paths: `docs/ai-devboard/11_LARAVEL_AI_SDK_AGENT_EVALUATION.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Planned scope: documentation-only technical note. Capture the Laravel AI SDK concepts relevant to DevBoard server-side agents, MCP tooling, sub-agents, RAG, failover, testing, events, and adoption boundaries. No Composer package installation, Laravel code, migrations, provider credentials, or runtime changes.
+- Work performed: created `docs/ai-devboard/11_LARAVEL_AI_SDK_AGENT_EVALUATION.md`. The note records Laravel AI SDK installation/adoption considerations, agent classes, structured output, tools, MCP tools, provider tools, sub-agents, middleware, queueing/streaming, embeddings/vector search, failover, testing, events/observability, DevBoard fit, a recommended first safe adoption slice, and open decisions. It explicitly distinguishes Laravel AI SDK from unverified LangChain/LangGraph support and preserves DevBoard's local-agent/plugin execution boundary.
+- Verification: `git diff --check -- docs/ai-devboard/11_LARAVEL_AI_SDK_AGENT_EVALUATION.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` exited 0; targeted placeholder scan on the new document returned no matches; targeted `rg` confirmed the new document covers Laravel AI SDK, LangChain/LangGraph boundary, `make:agent`, `make:tool`, MCP, sub-agents, pgvector/RAG, failover, testing, events, and first safe adoption guidance.
+- Files changed: `docs/ai-devboard/11_LARAVEL_AI_SDK_AGENT_EVALUATION.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: no Laravel package was installed and no code was run against `laravel/ai`; all SDK behavior is documented from official external docs and marked `needs_verification` until validated inside this repository. External LangChain/LangGraph packages were not evaluated in this pass.
+
 ## Current Handoff
 
 `developer_provided`: a fresh Codex session must be able to resume DevBoard work without relying on chat context.
