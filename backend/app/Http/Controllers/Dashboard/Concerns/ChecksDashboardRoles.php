@@ -65,6 +65,7 @@ trait ChecksDashboardRoles
             return [
                 ...$items,
                 ['label' => 'Admin', 'href' => '/admin/plugin-tokens', 'key' => 'admin'],
+                ['label' => 'AI Agents', 'href' => '/admin/ai-agents', 'key' => 'ai-agents'],
                 ['label' => 'System', 'href' => '/system', 'key' => 'system'],
             ];
         }

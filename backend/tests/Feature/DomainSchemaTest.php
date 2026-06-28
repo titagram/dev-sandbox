@@ -26,6 +26,12 @@ it('creates the devboard core tables', function () {
         'delta_syncs',
         'wiki_pages',
         'wiki_revisions',
+        'ai_model_providers',
+        'ai_model_profiles',
+        'ai_agent_profiles',
+        'assistant_runs',
+        'assistant_messages',
+        'assistant_suggestions',
         'audit_logs',
     ];
 
@@ -44,4 +50,19 @@ it('seeds the required role names and default kanban columns', function () {
 
     expect(DB::table('kanban_columns')->pluck('name')->all())
         ->toEqualCanonicalizing(['Backlog', 'Ready', 'In Progress', 'Blocked', 'Review', 'Done']);
+
+    expect(DB::table('ai_agent_profiles')->pluck('agent_key')->all())
+        ->toEqualCanonicalizing([
+            'socrate_supervisor',
+            'task_clarifier',
+            'backlog_triage',
+            'wiki_query',
+            'watchman',
+        ]);
+
+    expect(DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('model_name'))
+        ->toBe('gpt-5.4');
+
+    expect(DB::table('ai_agent_profiles')->where('agent_key', 'task_clarifier')->value('default_model_profile_id'))
+        ->not->toBeNull();
 });

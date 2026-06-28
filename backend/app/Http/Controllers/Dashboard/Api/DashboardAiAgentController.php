@@ -1,0 +1,155 @@
+<?php
+
+namespace App\Http\Controllers\Dashboard\Api;
+
+use App\Assistants\AiAgentRegistry;
+use App\Http\Controllers\Controller;
+use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use InvalidArgumentException;
+
+final class DashboardAiAgentController extends Controller
+{
+    use ChecksDashboardRoles;
+
+    public function index(Request $request, AiAgentRegistry $registry): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        return response()->json($registry->snapshot());
+    }
+
+    public function updateProvider(Request $request, AiAgentRegistry $registry, string $provider): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        $validated = $request->validate([
+            'display_name' => ['required', 'string', 'max:120'],
+            'base_url' => ['nullable', 'url', 'max:2048'],
+            'api_key' => ['nullable', 'string', 'max:4096'],
+            'clear_api_key' => ['sometimes', 'boolean'],
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        try {
+            $payload = $registry->updateProvider($provider, $validated, $request->user()->id);
+        } catch (InvalidArgumentException) {
+            abort(404);
+        }
+
+        DB::table('audit_logs')->insert([
+            'id' => (string) Str::ulid(),
+            'actor_user_id' => $request->user()->id,
+            'actor_device_id' => null,
+            'actor_type' => 'user',
+            'action' => 'ai_model_provider.updated',
+            'target_type' => 'ai_model_provider',
+            'target_id' => $payload['id'],
+            'ip_address' => $request->ip(),
+            'user_agent' => (string) $request->userAgent(),
+            'payload' => json_encode([
+                'provider_key' => $payload['provider_key'],
+                'display_name' => $payload['display_name'],
+                'base_url' => $payload['base_url'],
+                'enabled' => $payload['enabled'],
+                'api_key_configured' => $payload['api_key_configured'],
+            ], JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+        ]);
+
+        return response()->json(['provider' => $payload]);
+    }
+
+    public function updateModelProfile(Request $request, AiAgentRegistry $registry, string $profile): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        $validated = $request->validate([
+            'display_name' => ['required', 'string', 'max:120'],
+            'model_name' => ['required', 'string', 'max:180'],
+            'runtime_profile' => ['required', 'string', 'max:80', 'regex:/^[a-z0-9][a-z0-9_.-]*$/'],
+            'max_context' => ['nullable', 'integer', 'min:1', 'max:2000000'],
+            'max_output_tokens' => ['required', 'integer', 'min:1', 'max:200000'],
+            'temperature' => ['required', 'numeric', 'min:0', 'max:2'],
+            'timeout_seconds' => ['required', 'integer', 'min:1', 'max:300'],
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        try {
+            $payload = $registry->updateModelProfile($profile, $validated);
+        } catch (InvalidArgumentException) {
+            abort(404);
+        }
+
+        DB::table('audit_logs')->insert([
+            'id' => (string) Str::ulid(),
+            'actor_user_id' => $request->user()->id,
+            'actor_device_id' => null,
+            'actor_type' => 'user',
+            'action' => 'ai_model_profile.updated',
+            'target_type' => 'ai_model_profile',
+            'target_id' => $payload['id'],
+            'ip_address' => $request->ip(),
+            'user_agent' => (string) $request->userAgent(),
+            'payload' => json_encode([
+                'profile_key' => $payload['profile_key'],
+                'display_name' => $payload['display_name'],
+                'provider_key' => $payload['provider_key'],
+                'model_name' => $payload['model_name'],
+                'runtime_profile' => $payload['runtime_profile'],
+                'max_context' => $payload['max_context'],
+                'max_output_tokens' => $payload['max_output_tokens'],
+                'temperature' => $payload['temperature'],
+                'timeout_seconds' => $payload['timeout_seconds'],
+                'enabled' => $payload['enabled'],
+            ], JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+        ]);
+
+        return response()->json(['model_profile' => $payload]);
+    }
+
+    public function updateAgentProfile(Request $request, AiAgentRegistry $registry, string $agent): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        $validated = $request->validate([
+            'default_model_profile_id' => ['nullable', 'string', 'exists:ai_model_profiles,id'],
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        try {
+            $payload = $registry->updateAgentProfile($agent, $validated);
+        } catch (InvalidArgumentException) {
+            abort(404);
+        }
+
+        DB::table('audit_logs')->insert([
+            'id' => (string) Str::ulid(),
+            'actor_user_id' => $request->user()->id,
+            'actor_device_id' => null,
+            'actor_type' => 'user',
+            'action' => 'ai_agent_profile.updated',
+            'target_type' => 'ai_agent_profile',
+            'target_id' => $payload['id'],
+            'ip_address' => $request->ip(),
+            'user_agent' => (string) $request->userAgent(),
+            'payload' => json_encode([
+                'agent_key' => $payload['agent_key'],
+                'default_model_profile_id' => $payload['default_model_profile_id'],
+                'enabled' => $payload['enabled'],
+            ], JSON_THROW_ON_ERROR),
+            'created_at' => now(),
+        ]);
+
+        return response()->json(['agent_profile' => $payload]);
+    }
+
+    private function abortUnlessAdmin(Request $request): void
+    {
+        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+    }
+}

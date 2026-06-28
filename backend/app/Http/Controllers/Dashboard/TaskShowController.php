@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Dashboard;
 
+use App\Assistants\TaskClarifierService;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use Illuminate\Http\Request;
@@ -13,7 +14,7 @@ class TaskShowController extends Controller
 {
     use ChecksDashboardRoles;
 
-    public function __invoke(Request $request, string $task): Response
+    public function __invoke(Request $request, TaskClarifierService $clarifier, string $task): Response
     {
         $taskRow = DB::table('tasks')
             ->leftJoin('users as owners', 'owners.id', '=', 'tasks.owner_user_id')
@@ -84,6 +85,12 @@ class TaskShowController extends Controller
                 'source_label' => 'local_plugin_snapshot',
                 'wiki_source_status' => $staleWikiExists ? 'needs_review' : 'current',
                 'blocked' => $taskRow->risk_level === 'high',
+            ],
+            'assistant' => [
+                'clarify_href' => "/api/dashboard/tasks/{$taskRow->id}/assistant/clarify",
+                'resolve_suggestion_href' => '/api/dashboard/assistant-suggestions',
+                'can_clarify' => $this->userHasRole($request->user(), 'Admin') || $this->userHasRole($request->user(), 'PM'),
+                'latest_suggestion' => $clarifier->latestSuggestionForTask((string) $taskRow->id),
             ],
             'dashboard' => [
                 'user' => $this->dashboardUser($request->user()),

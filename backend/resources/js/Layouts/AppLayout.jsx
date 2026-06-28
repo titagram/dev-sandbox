@@ -1,6 +1,7 @@
 import { Link } from '@inertiajs/react';
 import {
   Activity,
+  Bot,
   Boxes,
   GitBranch,
   KanbanSquare,
@@ -19,6 +20,7 @@ const icons = {
   graph: Network,
   artifacts: GitBranch,
   admin: KeyRound,
+  'ai-agents': Bot,
   system: Server,
 };
 

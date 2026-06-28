@@ -219,6 +219,11 @@ final class DashboardApiReader
             'description' => (string) ($task->description ?? ''),
             'acceptance_criteria' => [],
             'attachments' => $this->taskAttachments($taskId),
+            'assistant' => [
+                'clarify_href' => "/api/dashboard/tasks/{$taskId}/assistant/clarify",
+                'resolve_suggestion_href' => '/api/dashboard/assistant-suggestions',
+                'latest_suggestion' => $this->latestTaskClarificationSuggestion($taskId),
+            ],
             'audit_ids' => DB::table('audit_logs')
                 ->where('target_type', 'task')
                 ->where('target_id', $taskId)
@@ -240,6 +245,39 @@ final class DashboardApiReader
         $this->abortUnlessProjectReadable((string) $attachment->project_id);
 
         return $this->taskAttachmentRow($attachment);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function latestTaskClarificationSuggestion(string $taskId): ?array
+    {
+        $suggestion = DB::table('assistant_suggestions')
+            ->where('target_type', 'task')
+            ->where('target_id', $taskId)
+            ->where('suggestion_type', 'task_clarification')
+            ->orderByDesc('created_at')
+            ->first();
+
+        if (! $suggestion) {
+            return null;
+        }
+
+        return [
+            'id' => (string) $suggestion->id,
+            'assistant_run_id' => (string) $suggestion->assistant_run_id,
+            'suggestion_type' => (string) $suggestion->suggestion_type,
+            'title' => (string) $suggestion->title,
+            'body_markdown' => (string) $suggestion->body_markdown,
+            'structured_payload' => json_decode((string) $suggestion->structured_payload, true, flags: JSON_THROW_ON_ERROR),
+            'evidence_refs' => json_decode((string) $suggestion->evidence_refs, true, flags: JSON_THROW_ON_ERROR),
+            'confidence' => (float) $suggestion->confidence,
+            'approval_required' => (bool) $suggestion->approval_required,
+            'status' => (string) $suggestion->status,
+            'resolved_by_user_id' => $suggestion->resolved_by_user_id ? (string) $suggestion->resolved_by_user_id : null,
+            'resolved_at' => $suggestion->resolved_at ? (string) $suggestion->resolved_at : null,
+            'created_at' => (string) $suggestion->created_at,
+        ];
     }
 
     /**

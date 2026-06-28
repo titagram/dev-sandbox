@@ -97,6 +97,32 @@ routes:
       enabled: false
       reason: "Parameterized dashboard API route. Requires explicit task parameter provider execution."
 
+  - id: dashboard.api.task.assistant.clarify
+    method: POST
+    uri: /api/dashboard/tasks/{task}/assistant/clarify
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_pm
+    parameter_provider:
+      task: seeded_task
+    smoke:
+      enabled: false
+      reason: "Creates assistant run and suggestion records; must not run in default route smoke."
+
+  - id: dashboard.api.assistant_suggestions.update
+    method: PATCH
+    uri: /api/dashboard/assistant-suggestions/{suggestion}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_pm
+    parameter_provider:
+      suggestion: seeded_assistant_suggestion
+    smoke:
+      enabled: false
+      reason: "Resolves assistant suggestion records; must not run in default route smoke."
+
   - id: dashboard.api.task_attachments.store
     method: POST
     uri: /api/dashboard/tasks/{task}/attachments
@@ -520,6 +546,59 @@ routes:
       enabled: false
       reason: "Revokes plugin device trust and must not run in default route smoke."
 
+  - id: dashboard.api.admin.ai_agents.index
+    method: GET
+    uri: /api/dashboard/admin/ai-agents
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only AI agent registry API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.admin.ai_model_providers.update
+    method: PUT
+    uri: /api/dashboard/admin/ai-model-providers/{provider}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      provider: seeded_ai_model_provider
+    smoke:
+      enabled: false
+      reason: "Stores encrypted model provider credentials and must not run in default route smoke."
+
+  - id: dashboard.api.admin.ai_model_profiles.update
+    method: PUT
+    uri: /api/dashboard/admin/ai-model-profiles/{profile}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      profile: seeded_ai_model_profile
+    smoke:
+      enabled: false
+      reason: "Updates model runtime profile settings and must not run in default route smoke."
+
+  - id: dashboard.api.admin.ai_agent_profiles.update
+    method: PATCH
+    uri: /api/dashboard/admin/ai-agent-profiles/{agent}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      agent: seeded_ai_agent_profile
+    smoke:
+      enabled: false
+      reason: "Updates controlled agent model selection and must not run in default route smoke."
+
   - id: dashboard.api.system.show
     method: GET
     uri: /api/dashboard/system
@@ -660,6 +739,20 @@ routes:
     smoke:
       enabled: false
       reason: "Mutating dashboard route. Requires explicit configured test run id and approval."
+
+  - id: dashboard.admin.ai_agents
+    method: GET
+    uri: /admin/ai-agents
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin
+    expected_status:
+      authenticated: 200
+      guest: 302
+    smoke:
+      enabled: true
+      reason: "Guest-safe GET smoke expects redirect to login."
 
   - id: dashboard.system.artifact_retention
     method: POST

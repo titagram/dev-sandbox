@@ -1,8 +1,65 @@
 import { Link } from '@inertiajs/react';
-import { AlertTriangle, ArrowUpRight, RadioTower, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, RadioTower, ShieldCheck, XCircle } from 'lucide-react';
 import AppLayout from '../../Layouts/AppLayout';
 
-export default function TaskShow({ task, dashboard }) {
+export default function TaskShow({ task, assistant, dashboard }) {
+  const [suggestion, setSuggestion] = useState(assistant?.latest_suggestion ?? null);
+  const [clarifying, setClarifying] = useState(false);
+  const [resolving, setResolving] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function clarifyTask() {
+    setClarifying(true);
+    setError(null);
+
+    const response = await fetch(assistant.clarify_href, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+    setClarifying(false);
+
+    if (!response.ok) {
+      setError(payload.message ?? 'Task clarification failed.');
+      return;
+    }
+
+    setSuggestion(payload.suggestion);
+  }
+
+  async function resolveSuggestion(status) {
+    if (!suggestion?.id) {
+      return;
+    }
+
+    setResolving(status);
+    setError(null);
+
+    const response = await fetch(`${assistant.resolve_suggestion_href}/${suggestion.id}`, {
+      method: 'PATCH',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
+      body: JSON.stringify({ status }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    setResolving(null);
+
+    if (!response.ok) {
+      setError(payload.message ?? 'Suggestion update failed.');
+      return;
+    }
+
+    setSuggestion(payload.suggestion);
+  }
+
   return (
     <AppLayout title={`Task ${task.title}`} dashboard={dashboard}>
       <header className="rounded border border-zinc-200 bg-white p-4">
@@ -45,6 +102,72 @@ export default function TaskShow({ task, dashboard }) {
       </section>
 
       <section className="mt-5 rounded border border-zinc-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Bot size={16} />
+            Task Clarifier
+          </div>
+          {assistant?.can_clarify ? (
+            <button
+              className="inline-flex h-9 items-center gap-2 rounded bg-zinc-950 px-3 text-sm font-medium text-white disabled:opacity-60"
+              disabled={clarifying}
+              type="button"
+              onClick={clarifyTask}
+            >
+              <Bot size={14} />
+              {clarifying ? 'Clarifying' : 'Clarify task'}
+            </button>
+          ) : null}
+        </div>
+
+        {error ? <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-xs text-red-800">{error}</div> : null}
+
+        {suggestion ? (
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <SuggestionList title="Questions" items={suggestion.structured_payload?.questions ?? []} />
+            <SuggestionList title="Acceptance criteria" items={suggestion.structured_payload?.acceptance_criteria ?? []} />
+            <SuggestionList title="Risks" items={suggestion.structured_payload?.risks ?? []} />
+            <SuggestionList title="Missing context" items={suggestion.structured_payload?.missing_context ?? []} />
+            <div className="rounded border border-zinc-200 bg-zinc-50 p-3 text-sm xl:col-span-2">
+              <div className="text-xs text-zinc-500">Suggestion state</div>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-700">
+                  <span>Status: {suggestion.status}</span>
+                  <span>Confidence: {Math.round(Number(suggestion.confidence ?? 0) * 100)}%</span>
+                  <span>Approval: {suggestion.approval_required ? 'required' : 'not required'}</span>
+                  {suggestion.resolved_at ? <span>Resolved: {suggestion.resolved_at}</span> : null}
+                </div>
+                {assistant?.can_clarify && suggestion.status === 'pending' ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      className="inline-flex h-8 items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-800 disabled:opacity-60"
+                      disabled={Boolean(resolving)}
+                      type="button"
+                      onClick={() => resolveSuggestion('accepted')}
+                    >
+                      <CheckCircle2 size={14} />
+                      {resolving === 'accepted' ? 'Accepting' : 'Accept'}
+                    </button>
+                    <button
+                      className="inline-flex h-8 items-center gap-2 rounded border border-red-200 bg-red-50 px-3 text-xs font-medium text-red-800 disabled:opacity-60"
+                      disabled={Boolean(resolving)}
+                      type="button"
+                      onClick={() => resolveSuggestion('rejected')}
+                    >
+                      <XCircle size={14} />
+                      {resolving === 'rejected' ? 'Rejecting' : 'Reject'}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-3 text-sm text-zinc-500">No clarification suggestion yet.</div>
+        )}
+      </section>
+
+      <section className="mt-5 rounded border border-zinc-200 bg-white p-4">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <ArrowUpRight size={16} />
           Linked Run
@@ -77,6 +200,23 @@ export default function TaskShow({ task, dashboard }) {
         <div className="mt-2 text-zinc-600">Wiki/source status: {task.wiki_source_status}</div>
       </section>
     </AppLayout>
+  );
+}
+
+function SuggestionList({ title, items }) {
+  return (
+    <div className="rounded border border-zinc-200 bg-zinc-50 p-3">
+      <div className="text-sm font-medium">{title}</div>
+      {items.length ? (
+        <ul className="mt-2 space-y-1 text-sm text-zinc-600">
+          {items.map((item) => (
+            <li key={item} className="leading-6">{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-2 text-sm text-zinc-500">None.</div>
+      )}
+    </div>
   );
 }
 
