@@ -110,6 +110,37 @@ final class DashboardApiReader
     }
 
     /**
+     * @return array{items: list<array<string, mixed>>}
+     */
+    public function projectAgentWork(string $projectId): array
+    {
+        $this->abortUnlessProjectReadable($projectId);
+
+        $items = DB::table('agent_work_items')
+            ->where('project_id', $projectId)
+            ->orderByRaw("case priority when 'urgent' then 1 when 'high' then 2 when 'normal' then 3 else 4 end")
+            ->orderByDesc('created_at')
+            ->limit(100)
+            ->get()
+            ->map(fn (object $item): array => $this->agentWorkItem($item))
+            ->all();
+
+        return ['items' => $items];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function agentWorkItemById(string $workItemId): array
+    {
+        $item = DB::table('agent_work_items')->where('id', $workItemId)->first();
+        abort_unless($item, 404);
+        $this->abortUnlessProjectReadable((string) $item->project_id);
+
+        return $this->agentWorkItem($item);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function overview(): array
@@ -769,6 +800,37 @@ final class DashboardApiReader
             'payload' => json_decode((string) $entry->payload, true, flags: JSON_THROW_ON_ERROR),
             'occurred_at' => (string) $entry->occurred_at,
             'created_at' => (string) $entry->created_at,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function agentWorkItem(object $item): array
+    {
+        return [
+            'id' => (string) $item->id,
+            'project_id' => (string) $item->project_id,
+            'repository_id' => $item->repository_id ? (string) $item->repository_id : null,
+            'task_id' => $item->task_id ? (string) $item->task_id : null,
+            'requested_by_user_id' => $item->requested_by_user_id === null ? null : (int) $item->requested_by_user_id,
+            'assigned_agent_key' => (string) $item->assigned_agent_key,
+            'status' => (string) $item->status,
+            'priority' => (string) $item->priority,
+            'title' => (string) $item->title,
+            'prompt' => (string) $item->prompt,
+            'payload' => json_decode((string) $item->payload, true, flags: JSON_THROW_ON_ERROR),
+            'requires_memory_entry' => (bool) $item->requires_memory_entry,
+            'result_memory_entry_id' => $item->result_memory_entry_id ? (string) $item->result_memory_entry_id : null,
+            'claimed_by_device_id' => $item->claimed_by_device_id ? (string) $item->claimed_by_device_id : null,
+            'claimed_at' => $item->claimed_at ? (string) $item->claimed_at : null,
+            'heartbeat_at' => $item->heartbeat_at ? (string) $item->heartbeat_at : null,
+            'completed_at' => $item->completed_at ? (string) $item->completed_at : null,
+            'failed_at' => $item->failed_at ? (string) $item->failed_at : null,
+            'canceled_at' => $item->canceled_at ? (string) $item->canceled_at : null,
+            'failure_reason' => $item->failure_reason ? (string) $item->failure_reason : null,
+            'created_at' => (string) $item->created_at,
+            'updated_at' => (string) $item->updated_at,
         ];
     }
 
