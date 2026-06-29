@@ -47,6 +47,7 @@ class AgentWorkItemController extends Controller
 
         $projectId = $validated['project_id'] ?? null;
         $repositoryId = $validated['repository_id'] ?? null;
+        $repository = null;
 
         if ($projectId !== null && $error = $this->lifecycle->pluginProjectWriteGuard($projectId)) {
             return $error;
@@ -66,16 +67,28 @@ class AgentWorkItemController extends Controller
         }
 
         $items = DB::table('agent_work_items')
-            ->where('assigned_agent_key', 'local_agent')
-            ->whereIn('status', self::ACTIVE_STATUSES)
+            ->join('projects', 'projects.id', '=', 'agent_work_items.project_id')
+            ->select('agent_work_items.*')
+            ->where('projects.status', 'active')
+            ->whereNull('projects.deleted_at')
+            ->where('agent_work_items.assigned_agent_key', 'local_agent')
+            ->whereIn('agent_work_items.status', self::ACTIVE_STATUSES)
             ->where(function ($query) use ($device): void {
-                $query->whereNull('claimed_by_device_id')
-                    ->orWhere('claimed_by_device_id', $device->id);
+                $query->whereNull('agent_work_items.claimed_by_device_id')
+                    ->orWhere('agent_work_items.claimed_by_device_id', $device->id);
             })
-            ->when($projectId !== null, fn ($query) => $query->where('project_id', $projectId))
-            ->when($repositoryId !== null, fn ($query) => $query->where('repository_id', $repositoryId))
+            ->when($projectId !== null, fn ($query) => $query->where('agent_work_items.project_id', $projectId))
+            ->when($repositoryId !== null, function ($query) use ($repositoryId, $repository): void {
+                $query->where(function ($query) use ($repositoryId, $repository): void {
+                    $query->where('agent_work_items.repository_id', $repositoryId)
+                        ->orWhere(function ($query) use ($repository): void {
+                            $query->whereNull('agent_work_items.repository_id')
+                                ->where('agent_work_items.project_id', (string) $repository->project_id);
+                        });
+                });
+            })
             ->orderByRaw("case priority when 'urgent' then 0 when 'high' then 1 when 'normal' then 2 when 'low' then 3 else 4 end")
-            ->orderBy('created_at')
+            ->orderBy('agent_work_items.created_at')
             ->limit(50)
             ->get()
             ->map(fn (object $item): array => $this->item($item))
@@ -100,8 +113,10 @@ class AgentWorkItemController extends Controller
         ]);
 
         $workspace = DB::table('local_workspaces')
-            ->where('id', $validated['local_workspace_id'])
-            ->where('device_id', $device->id)
+            ->join('repositories', 'repositories.id', '=', 'local_workspaces.repository_id')
+            ->select('local_workspaces.*', 'repositories.project_id as workspace_project_id')
+            ->where('local_workspaces.id', $validated['local_workspace_id'])
+            ->where('local_workspaces.device_id', $device->id)
             ->first();
 
         if (! $workspace) {
@@ -125,6 +140,10 @@ class AgentWorkItemController extends Controller
                 abort(Response::HTTP_UNPROCESSABLE_ENTITY, 'Local workspace does not match the work item repository.');
             }
 
+            if ($item->repository_id === null && (string) $workspace->workspace_project_id !== (string) $item->project_id) {
+                throw new HttpResponseException($this->error('workspace_project_mismatch', 'Local workspace project does not match the work item project.', Response::HTTP_UNPROCESSABLE_ENTITY));
+            }
+
             if (in_array((string) $item->status, self::TERMINAL_STATUSES, true)) {
                 abort(Response::HTTP_CONFLICT, 'Work item is already terminal.');
             }
@@ -146,7 +165,7 @@ class AgentWorkItemController extends Controller
 
                 abort_if($updated === 0, Response::HTTP_CONFLICT, 'Work item could not be claimed.');
             } elseif (in_array((string) $item->status, ['claimed', 'running'], true) && (string) $item->claimed_by_device_id === (string) $device->id) {
-                DB::table('agent_work_items')
+                $updated = DB::table('agent_work_items')
                     ->where('id', $workItem)
                     ->where('claimed_by_device_id', $device->id)
                     ->whereIn('status', ['claimed', 'running'])
@@ -154,6 +173,10 @@ class AgentWorkItemController extends Controller
                         'heartbeat_at' => $now,
                         'updated_at' => $now,
                     ]);
+
+                if ($updated === 0) {
+                    throw new HttpResponseException($this->error('work_item_claim_conflict', 'Work item could not be claimed.', Response::HTTP_CONFLICT));
+                }
             } else {
                 abort(Response::HTTP_CONFLICT, 'Work item is already claimed.');
             }
@@ -214,6 +237,7 @@ class AgentWorkItemController extends Controller
 
             abort_if($updated === 0, Response::HTTP_CONFLICT, 'Work item heartbeat was rejected.');
 
+            $this->renewLease($workItem, (string) $device->id, $validated['lease_token'], $now);
             $this->recordEvent($workItem, 'heartbeat', null, (string) $device->id, 'Local agent heartbeat.', [], $now);
 
             return $this->workItemOrFail($workItem);
@@ -239,6 +263,11 @@ class AgentWorkItemController extends Controller
             'memory_entry.kind' => ['required_with:memory_entry', 'string', Rule::in(self::MEMORY_KINDS)],
             'memory_entry.summary' => ['required_with:memory_entry', 'string', 'min:8', 'max:240'],
             'memory_entry.payload' => ['present_with:memory_entry', 'array'],
+            'memory_entry.payload.why' => ['required_with:memory_entry', 'string'],
+            'memory_entry.payload.changed' => ['present_with:memory_entry', 'array'],
+            'memory_entry.payload.tests' => ['present_with:memory_entry', 'array'],
+            'memory_entry.payload.skipped_checks' => ['present_with:memory_entry', 'array'],
+            'memory_entry.payload.risks' => ['present_with:memory_entry', 'array'],
         ]);
 
         $result = DB::transaction(function () use ($workItem, $device, $validated): array {
@@ -435,6 +464,23 @@ class AgentWorkItemController extends Controller
             'created_at' => $now,
             'updated_at' => $now,
         ]);
+    }
+
+    private function renewLease(string $workItem, string $deviceId, string $leaseToken, mixed $now): void
+    {
+        $updated = DB::table('agent_work_item_leases')
+            ->where('agent_work_item_id', $workItem)
+            ->where('device_id', $deviceId)
+            ->where('lease_token_hash', hash('sha256', $leaseToken))
+            ->whereNull('released_at')
+            ->update([
+                'expires_at' => $now->copy()->addMinutes(30),
+                'updated_at' => $now,
+            ]);
+
+        if ($updated === 0) {
+            throw new HttpResponseException($this->error('lease_renewal_conflict', 'Active lease could not be renewed.', Response::HTTP_CONFLICT));
+        }
     }
 
     private function releaseActiveLeases(string $workItem, mixed $now): void

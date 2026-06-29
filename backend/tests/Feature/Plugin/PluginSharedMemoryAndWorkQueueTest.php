@@ -81,7 +81,7 @@ it('lets the local agent list, claim, heartbeat, and complete work with memory',
         'memory_entry' => [
             'kind' => 'implementation',
             'summary' => 'Implemented local agent requested changes.',
-            'payload' => ['files' => ['app/Foo.php']],
+            'payload' => pluginSharedMemoryCompletionPayload(),
         ],
     ], pluginSharedMemoryHeaders($token))
         ->assertOk()
@@ -95,6 +95,51 @@ it('lets the local agent list, claim, heartbeat, and complete work with memory',
         ->and($item->result_memory_entry_id)->not->toBeNull()
         ->and(DB::table('project_memory_entries')->where('id', $item->result_memory_entry_id)->value('source'))->toBe('local_agent')
         ->and(DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->whereNull('released_at')->exists())->toBeFalse();
+});
+
+it('renews the active lease on heartbeat so completion works after the original expiry', function () {
+    $start = now()->startOfSecond();
+    $this->travelTo($start);
+
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $workspaceId = pluginSharedMemoryWorkspace($repositoryId, $token['device_id']);
+    $workItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId);
+    $leaseToken = pluginSharedMemoryClaim($this, $token, $workItemId, $workspaceId);
+
+    $this->travelTo($start->copy()->addMinutes(20));
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/heartbeat", [
+        'protocol_version' => 'v1',
+        'lease_token' => $leaseToken,
+    ], pluginSharedMemoryHeaders($token))
+        ->assertOk()
+        ->assertJsonPath('item.status', 'running');
+
+    $leaseExpiry = DB::table('agent_work_item_leases')
+        ->where('agent_work_item_id', $workItemId)
+        ->whereNull('released_at')
+        ->value('expires_at');
+
+    expect($leaseExpiry)->not->toBeNull()
+        ->and(\Illuminate\Support\Carbon::parse($leaseExpiry)->equalTo($start->copy()->addMinutes(50)))->toBeTrue();
+
+    $this->travelTo($start->copy()->addMinutes(35));
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/complete", [
+        'protocol_version' => 'v1',
+        'lease_token' => $leaseToken,
+        'memory_entry' => [
+            'kind' => 'implementation',
+            'summary' => 'Completed after the original lease expiry.',
+            'payload' => pluginSharedMemoryCompletionPayload(),
+        ],
+    ], pluginSharedMemoryHeaders($token))
+        ->assertOk()
+        ->assertJsonPath('item.status', 'completed');
+
+    $this->travelBack();
 });
 
 it('marks required-memory completion incomplete when no memory entry is supplied', function () {
@@ -160,10 +205,166 @@ it('prevents a second device from claiming or completing another device claim', 
         'memory_entry' => [
             'kind' => 'verification',
             'summary' => 'Second device should not complete.',
-            'payload' => [],
+            'payload' => pluginSharedMemoryCompletionPayload(),
         ],
     ], pluginSharedMemoryHeaders($secondToken))
         ->assertConflict();
+});
+
+it('does not create a replacement lease when same-device reclaim loses the conditional update', function () {
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $workspaceId = pluginSharedMemoryWorkspace($repositoryId, $token['device_id']);
+    $workItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId);
+    pluginSharedMemoryClaim($this, $token, $workItemId, $workspaceId);
+
+    $initialLeaseCount = DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->count();
+    $initialClaimedEventCount = DB::table('agent_work_item_events')
+        ->where('agent_work_item_id', $workItemId)
+        ->where('event_type', 'claimed')
+        ->count();
+    $completedDuringClaim = false;
+
+    DB::listen(function (Illuminate\Database\Events\QueryExecuted $query) use (&$completedDuringClaim, $workItemId): void {
+        if ($completedDuringClaim || ! str_contains($query->sql, 'from "agent_work_items"')) {
+            return;
+        }
+
+        if (($query->bindings[0] ?? null) !== $workItemId) {
+            return;
+        }
+
+        $completedDuringClaim = true;
+
+        DB::table('agent_work_items')->where('id', $workItemId)->update([
+            'status' => 'completed',
+            'completed_at' => now(),
+            'updated_at' => now(),
+        ]);
+    });
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/claim", [
+        'protocol_version' => 'v1',
+        'local_workspace_id' => $workspaceId,
+    ], pluginSharedMemoryHeaders($token))
+        ->assertConflict();
+
+    expect($completedDuringClaim)->toBeTrue()
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('claimed')
+        ->and(DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->count())->toBe($initialLeaseCount)
+        ->and(DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->whereNull('released_at')->count())->toBe(1)
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'claimed')->count())->toBe($initialClaimedEventCount);
+});
+
+it('rejects claiming project-scoped work from a workspace in another project', function () {
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $otherProjectId = pluginSharedMemoryProject('Other Workspace Project', 'other-workspace-project');
+    $otherRepositoryId = pluginSharedMemoryRepository($otherProjectId, 'Other Workspace Repository', 'other-workspace-repository');
+    $workspaceId = pluginSharedMemoryWorkspace($otherRepositoryId, $token['device_id']);
+    $workItemId = pluginSharedMemoryWorkItem($projectId, null);
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/claim", [
+        'protocol_version' => 'v1',
+        'local_workspace_id' => $workspaceId,
+    ], pluginSharedMemoryHeaders($token))
+        ->assertUnprocessable();
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('queued')
+        ->and(DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->exists())->toBeFalse();
+});
+
+it('includes project-scoped work when listing with a repository filter', function () {
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $otherRepositoryId = pluginSharedMemoryRepository($projectId, 'Other Queue Repository', 'other-queue-repository');
+    $otherProjectId = pluginSharedMemoryProject('Other Queue Project', 'other-queue-project');
+
+    $projectWorkItemId = pluginSharedMemoryWorkItem($projectId, null, ['title' => 'Project-scoped queue work']);
+    $repositoryWorkItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId, ['title' => 'Repository queue work']);
+    $otherRepositoryWorkItemId = pluginSharedMemoryWorkItem($projectId, $otherRepositoryId, ['title' => 'Other repository work']);
+    $otherProjectWorkItemId = pluginSharedMemoryWorkItem($otherProjectId, null, ['title' => 'Other project work']);
+
+    $items = $this->getJson("/api/plugin/v1/agent-work-items?repository_id={$repositoryId}", pluginSharedMemoryHeaders($token))
+        ->assertOk()
+        ->json('items');
+
+    expect(collect($items)->pluck('id')->all())->toContain($projectWorkItemId, $repositoryWorkItemId)
+        ->and(collect($items)->pluck('id')->all())->not->toContain($otherRepositoryWorkItemId, $otherProjectWorkItemId);
+});
+
+it('hides archived and deleted project work from the unfiltered queue listing', function () {
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $activeWorkItemId = pluginSharedMemoryWorkItem($projectId, null, ['title' => 'Active project work']);
+    $archivedProjectId = pluginSharedMemoryProject('Archived Queue Project', 'archived-queue-project', 'archived');
+    $deletedProjectId = pluginSharedMemoryProject('Deleted Queue Project', 'deleted-queue-project', 'deleted');
+    $archivedWorkItemId = pluginSharedMemoryWorkItem($archivedProjectId, null, ['title' => 'Archived project work']);
+    $deletedWorkItemId = pluginSharedMemoryWorkItem($deletedProjectId, null, ['title' => 'Deleted project work']);
+
+    $items = $this->getJson('/api/plugin/v1/agent-work-items', pluginSharedMemoryHeaders($token))
+        ->assertOk()
+        ->json('items');
+
+    expect(collect($items)->pluck('id')->all())->toContain($activeWorkItemId)
+        ->and(collect($items)->pluck('id')->all())->not->toContain($archivedWorkItemId, $deletedWorkItemId);
+});
+
+it('rejects memory completion with an empty payload', function () {
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $workspaceId = pluginSharedMemoryWorkspace($repositoryId, $token['device_id']);
+    $workItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId);
+    $leaseToken = pluginSharedMemoryClaim($this, $token, $workItemId, $workspaceId);
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/complete", [
+        'protocol_version' => 'v1',
+        'lease_token' => $leaseToken,
+        'memory_entry' => [
+            'kind' => 'implementation',
+            'summary' => 'Payload shape should be validated.',
+            'payload' => [],
+        ],
+    ], pluginSharedMemoryHeaders($token))
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors([
+            'memory_entry.payload.why',
+            'memory_entry.payload.changed',
+            'memory_entry.payload.tests',
+            'memory_entry.payload.skipped_checks',
+            'memory_entry.payload.risks',
+        ]);
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('claimed')
+        ->and(DB::table('project_memory_entries')->where('project_id', $projectId)->where('source', 'local_agent')->exists())->toBeFalse();
+});
+
+it('accepts memory completion with the required payload summary fields', function () {
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $workspaceId = pluginSharedMemoryWorkspace($repositoryId, $token['device_id']);
+    $workItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId);
+    $leaseToken = pluginSharedMemoryClaim($this, $token, $workItemId, $workspaceId);
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/complete", [
+        'protocol_version' => 'v1',
+        'lease_token' => $leaseToken,
+        'memory_entry' => [
+            'kind' => 'implementation',
+            'summary' => 'Payload shape includes required fields.',
+            'payload' => pluginSharedMemoryCompletionPayload([
+                'changed' => [['path' => 'app/Foo.php']],
+                'tests' => [['command' => 'php artisan test']],
+            ]),
+        ],
+    ], pluginSharedMemoryHeaders($token))
+        ->assertOk()
+        ->assertJsonPath('item.status', 'completed')
+        ->assertJsonPath('memory_entry.payload.why', 'Completed the requested local-agent work.');
 });
 
 it('rejects plugin tokens without required scopes', function () {
@@ -433,4 +634,19 @@ function pluginSharedMemoryClaim(mixed $test, array $token, string $workItemId, 
     ], pluginSharedMemoryHeaders($token))
         ->assertOk()
         ->json('lease_token');
+}
+
+/**
+ * @param array<string, mixed> $overrides
+ * @return array{why: string, changed: array<int, mixed>, tests: array<int, mixed>, skipped_checks: array<int, mixed>, risks: array<int, mixed>}
+ */
+function pluginSharedMemoryCompletionPayload(array $overrides = []): array
+{
+    return array_merge([
+        'why' => 'Completed the requested local-agent work.',
+        'changed' => ['app/Foo.php'],
+        'tests' => ['php artisan test'],
+        'skipped_checks' => [],
+        'risks' => [],
+    ], $overrides);
 }
