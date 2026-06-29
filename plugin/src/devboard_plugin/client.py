@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -100,6 +101,52 @@ class DevBoardClient:
     def repository_instructions(self, repository_id: str) -> dict[str, Any]:
         return self.get(f"/api/plugin/v1/repositories/{repository_id}/instructions")
 
+    def shared_memory_pack(self, project_id: str, repository_id: str | None = None) -> dict[str, Any]:
+        return self.get(
+            self._path_with_query(
+                f"/api/plugin/v1/projects/{project_id}/shared-memory-pack",
+                {"repository_id": repository_id},
+            )
+        )
+
+    def list_work_items(self, project_id: str | None = None, repository_id: str | None = None) -> dict[str, Any]:
+        return self.get(
+            self._path_with_query(
+                "/api/plugin/v1/agent-work-items",
+                {"project_id": project_id, "repository_id": repository_id},
+            )
+        )
+
+    def claim_work_item(self, work_item_id: str, local_workspace_id: str) -> dict[str, Any]:
+        return self.post(
+            f"/api/plugin/v1/agent-work-items/{work_item_id}/claim",
+            {"local_workspace_id": local_workspace_id},
+        )
+
+    def heartbeat_work_item(self, work_item_id: str, lease_token: str) -> dict[str, Any]:
+        return self.post(
+            f"/api/plugin/v1/agent-work-items/{work_item_id}/heartbeat",
+            {"lease_token": lease_token},
+        )
+
+    def complete_work_item(
+        self,
+        work_item_id: str,
+        lease_token: str,
+        memory_entry: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"lease_token": lease_token}
+        if memory_entry is not None:
+            payload["memory_entry"] = memory_entry
+
+        return self.post(f"/api/plugin/v1/agent-work-items/{work_item_id}/complete", payload)
+
+    def fail_work_item(self, work_item_id: str, lease_token: str, failure_reason: str) -> dict[str, Any]:
+        return self.post(
+            f"/api/plugin/v1/agent-work-items/{work_item_id}/fail",
+            {"lease_token": lease_token, "failure_reason": failure_reason},
+        )
+
     def start_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/api/plugin/v1/runs", payload)
 
@@ -193,6 +240,13 @@ class DevBoardClient:
             payload["allow_blocked_security_findings"] = True
 
         return self.post(f"/api/plugin/v1/delta-syncs/{delta_id}/finalize", payload)
+
+    def _path_with_query(self, path: str, query: dict[str, str | None]) -> str:
+        params = {key: value for key, value in query.items() if value is not None}
+        if not params:
+            return path
+
+        return f"{path}?{urlencode(params)}"
 
     def _raise_api_error(self, response: httpx.Response) -> None:
         try:

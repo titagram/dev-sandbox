@@ -11,6 +11,12 @@ def test_mcp_tool_names_match_v1_contract():
     assert set(mcp_tools.TOOL_REGISTRY) == {
         "devboard_auth_check",
         "devboard_get_context",
+        "devboard_shared_memory_pack",
+        "devboard_list_work_items",
+        "devboard_claim_work_item",
+        "devboard_heartbeat_work_item",
+        "devboard_complete_work_item",
+        "devboard_fail_work_item",
         "devboard_start_run",
         "devboard_heartbeat_run",
         "devboard_finish_run",

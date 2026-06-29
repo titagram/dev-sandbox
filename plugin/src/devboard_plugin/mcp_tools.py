@@ -36,6 +36,62 @@ def devboard_get_context(repository_id: str, server_url: str | None = None) -> d
     return client_from_options(server_url).repository_instructions(repository_id)
 
 
+def devboard_shared_memory_pack(
+    project_id: str,
+    repository_id: str | None = None,
+    server_url: str | None = None,
+) -> dict[str, Any]:
+    """Fetch shared memory for a project, optionally scoped to a repository."""
+    return client_from_options(server_url).shared_memory_pack(project_id, repository_id)
+
+
+def devboard_list_work_items(
+    project_id: str | None = None,
+    repository_id: str | None = None,
+    server_url: str | None = None,
+) -> dict[str, Any]:
+    """List claimable DevBoard work items."""
+    return client_from_options(server_url).list_work_items(project_id, repository_id)
+
+
+def devboard_claim_work_item(
+    work_item_id: str,
+    local_workspace_id: str,
+    server_url: str | None = None,
+) -> dict[str, Any]:
+    """Claim a DevBoard work item for a local workspace."""
+    return client_from_options(server_url).claim_work_item(work_item_id, local_workspace_id)
+
+
+def devboard_heartbeat_work_item(
+    work_item_id: str,
+    lease_token: str,
+    server_url: str | None = None,
+) -> dict[str, Any]:
+    """Send a heartbeat for a claimed DevBoard work item."""
+    return client_from_options(server_url).heartbeat_work_item(work_item_id, lease_token)
+
+
+def devboard_complete_work_item(
+    work_item_id: str,
+    lease_token: str,
+    memory_entry: dict[str, Any],
+    server_url: str | None = None,
+) -> dict[str, Any]:
+    """Complete a DevBoard work item and attach a memory entry."""
+    return client_from_options(server_url).complete_work_item(work_item_id, lease_token, memory_entry)
+
+
+def devboard_fail_work_item(
+    work_item_id: str,
+    lease_token: str,
+    failure_reason: str,
+    server_url: str | None = None,
+) -> dict[str, Any]:
+    """Mark a DevBoard work item as failed."""
+    return client_from_options(server_url).fail_work_item(work_item_id, lease_token, failure_reason)
+
+
 def devboard_start_run(
     project_id: str,
     repository_id: str,
@@ -338,6 +394,12 @@ def resolve_state_path(repo_path: Path, value: str) -> Path:
 TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "devboard_auth_check": devboard_auth_check,
     "devboard_get_context": devboard_get_context,
+    "devboard_shared_memory_pack": devboard_shared_memory_pack,
+    "devboard_list_work_items": devboard_list_work_items,
+    "devboard_claim_work_item": devboard_claim_work_item,
+    "devboard_heartbeat_work_item": devboard_heartbeat_work_item,
+    "devboard_complete_work_item": devboard_complete_work_item,
+    "devboard_fail_work_item": devboard_fail_work_item,
     "devboard_start_run": devboard_start_run,
     "devboard_heartbeat_run": devboard_heartbeat_run,
     "devboard_finish_run": devboard_finish_run,

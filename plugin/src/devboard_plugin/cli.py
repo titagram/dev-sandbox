@@ -20,6 +20,7 @@ runs_app = typer.Typer(help="Manage plugin run lifecycle")
 genesis_app = typer.Typer(help="Build and upload Genesis artifacts")
 delta_app = typer.Typer(help="Build and upload Delta Sync artifacts")
 artifacts_app = typer.Typer(help="Upload generated artifacts")
+work_app = typer.Typer(help="Manage agent work items")
 
 app.add_typer(auth_app, name="auth")
 app.add_typer(projects_app, name="projects")
@@ -29,6 +30,7 @@ app.add_typer(runs_app, name="runs")
 app.add_typer(genesis_app, name="genesis")
 app.add_typer(delta_app, name="delta")
 app.add_typer(artifacts_app, name="artifacts")
+app.add_typer(work_app, name="work")
 
 
 @app.callback()
@@ -198,6 +200,80 @@ def runs_finish(
         payload["risk_report"] = {"risk_level": risk_level}
 
     echo_json(client_from_options(server_url, token).finish_run(run_id, payload))
+
+
+@work_app.command("list")
+def work_list(
+    project_id: str | None = typer.Option(None, "--project-id"),
+    repository_id: str | None = typer.Option(None, "--repository-id"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    echo_json(client_from_options(server_url, token).list_work_items(project_id, repository_id))
+
+
+@work_app.command("memory-pack")
+def work_memory_pack(
+    project_id: str,
+    repository_id: str | None = typer.Option(None, "--repository-id"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    echo_json(client_from_options(server_url, token).shared_memory_pack(project_id, repository_id))
+
+
+@work_app.command("claim")
+def work_claim(
+    work_item_id: str,
+    local_workspace_id: str,
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    echo_json(client_from_options(server_url, token).claim_work_item(work_item_id, local_workspace_id))
+
+
+@work_app.command("heartbeat")
+def work_heartbeat(
+    work_item_id: str,
+    lease_token: str,
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    echo_json(client_from_options(server_url, token).heartbeat_work_item(work_item_id, lease_token))
+
+
+@work_app.command("complete")
+def work_complete(
+    work_item_id: str,
+    lease_token: str,
+    summary: str = typer.Option(..., "--summary"),
+    kind: str = typer.Option("implementation", "--kind"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    memory_entry = {
+        "kind": kind,
+        "summary": summary,
+        "payload": {
+            "why": summary,
+            "changed": [],
+            "tests": [],
+            "skipped_checks": [],
+            "risks": [],
+        },
+    }
+    echo_json(client_from_options(server_url, token).complete_work_item(work_item_id, lease_token, memory_entry))
+
+
+@work_app.command("fail")
+def work_fail(
+    work_item_id: str,
+    lease_token: str,
+    failure_reason: str = typer.Option(..., "--failure-reason"),
+    server_url: str | None = typer.Option(None, "--server-url"),
+    token: str | None = typer.Option(None, "--token", hide_input=True),
+) -> None:
+    echo_json(client_from_options(server_url, token).fail_work_item(work_item_id, lease_token, failure_reason))
 
 
 @genesis_app.command("run")
