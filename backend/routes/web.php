@@ -8,6 +8,7 @@ use App\Http\Controllers\Dashboard\AuditExportStoreController;
 use App\Http\Controllers\Dashboard\Api\DashboardAdminController;
 use App\Http\Controllers\Dashboard\Api\DashboardAiAgentController;
 use App\Http\Controllers\Dashboard\Api\DashboardBackupController;
+use App\Http\Controllers\Dashboard\Api\DashboardMemoryController;
 use App\Http\Controllers\Dashboard\Api\DashboardProjectLifecycleController;
 use App\Http\Controllers\Dashboard\Api\DashboardProjectRepositoryController;
 use App\Http\Controllers\Dashboard\Api\DashboardResourceController;
@@ -64,6 +65,8 @@ Route::middleware('auth')->group(function () {
         Route::get('/projects/{project}', [DashboardResourceController::class, 'project']);
         Route::patch('/projects/{project}', [DashboardResourceController::class, 'updateProject']);
         Route::post('/projects/{project}/repositories', [DashboardProjectRepositoryController::class, 'store']);
+        Route::get('/projects/{project}/memory', [DashboardMemoryController::class, 'index']);
+        Route::post('/projects/{project}/memory', [DashboardMemoryController::class, 'store']);
         Route::post('/projects/{project}/assistant/backlog-triage', BacklogTriageController::class);
         Route::post('/projects/{project}/archive', [DashboardProjectLifecycleController::class, 'archive']);
         Route::post('/projects/{project}/restore', [DashboardProjectLifecycleController::class, 'restore']);

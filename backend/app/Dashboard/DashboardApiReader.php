@@ -79,6 +79,25 @@ final class DashboardApiReader
     }
 
     /**
+     * @return array{entries: list<array<string, mixed>>}
+     */
+    public function projectMemory(string $projectId): array
+    {
+        $this->abortUnlessProjectReadable($projectId);
+
+        $entries = DB::table('project_memory_entries')
+            ->where('project_id', $projectId)
+            ->orderByDesc('occurred_at')
+            ->orderByDesc('created_at')
+            ->limit(100)
+            ->get()
+            ->map(fn (object $entry): array => $this->memoryEntry($entry))
+            ->all();
+
+        return ['entries' => $entries];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function overview(): array
@@ -715,6 +734,29 @@ final class DashboardApiReader
             'deleted_at' => $project->deleted_at ? (string) $project->deleted_at : null,
             'restored_at' => $project->restored_at ? (string) $project->restored_at : null,
             'updated_at' => (string) $project->updated_at,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function memoryEntry(object $entry): array
+    {
+        return [
+            'id' => (string) $entry->id,
+            'project_id' => (string) $entry->project_id,
+            'repository_id' => $entry->repository_id ? (string) $entry->repository_id : null,
+            'task_id' => $entry->task_id ? (string) $entry->task_id : null,
+            'run_id' => $entry->run_id ? (string) $entry->run_id : null,
+            'author_user_id' => $entry->author_user_id === null ? null : (int) $entry->author_user_id,
+            'agent_key' => $entry->agent_key ? (string) $entry->agent_key : null,
+            'source' => (string) $entry->source,
+            'kind' => (string) $entry->kind,
+            'completeness' => (string) $entry->completeness,
+            'summary' => (string) $entry->summary,
+            'payload' => json_decode((string) $entry->payload, true, flags: JSON_THROW_ON_ERROR),
+            'occurred_at' => (string) $entry->occurred_at,
+            'created_at' => (string) $entry->created_at,
         ];
     }
 
