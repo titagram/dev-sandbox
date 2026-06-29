@@ -1143,3 +1143,13 @@ Operational rule: before project writes, record intended paths here, then follow
 - Verification: `rm -rf /tmp/devboard-plugin-analyzer-test-venv && python3 -m venv /tmp/devboard-plugin-analyzer-test-venv && /tmp/devboard-plugin-analyzer-test-venv/bin/python -m pip install -e 'analyzer[test]' -e 'plugin[test]'` exited 0; `cd plugin && /tmp/devboard-plugin-analyzer-test-venv/bin/python -m pytest -q` passed 28 tests; `cd analyzer && /tmp/devboard-plugin-analyzer-test-venv/bin/python -m pytest -q` passed 19 tests; `git diff --check -- plugin/pyproject.toml analyzer/pyproject.toml README.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` exited 0.
 - Files changed: `plugin/pyproject.toml`, `analyzer/pyproject.toml`, `README.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
 - Residual risks: dependency installation still needs network access unless the packages are already cached; no lockfile was added because the requested scope preferred standard pyproject optional test dependencies and avoided vendoring.
+
+## 2026-06-29 - DevBoard Project Workspace memory queue implementation plan
+
+- Request: write a persistent implementation plan after the Project Workspace/agents design spec, then proceed with subagent-driven implementation.
+- Context read: `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, sandbox policy files, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, `docs/superpowers/specs/2026-06-29-devboard-project-workspace-agents-design.md`, Laravel dashboard/plugin routes and readers, Python plugin client/MCP/CLI, and React routes/nav/API adapter files.
+- Intended write paths: `docs/superpowers/plans/2026-06-29-devboard-project-workspace-memory-queue.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: created a Superpowers implementation plan covering backend schema/API, dashboard Shared Memory, agent work queue, plugin shared-memory/work endpoints, Python plugin tools, React workspace navigation, Kanban create/edit, Ask/Memory/Agent Work pages, documentation, verification, and Docker rebuild steps.
+- Verification: `rg` self-review checked spec keywords and contract coverage; `rg` found no stale plugin helper references such as `withPluginHeaders`; `git diff --check -- docs/superpowers/plans/2026-06-29-devboard-project-workspace-memory-queue.md` exited 0.
+- Files changed: `docs/superpowers/plans/2026-06-29-devboard-project-workspace-memory-queue.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: this entry records the plan only. Code implementation, test execution, frontend build, Docker rebuild, and final documentation updates are still pending execution of the plan.
