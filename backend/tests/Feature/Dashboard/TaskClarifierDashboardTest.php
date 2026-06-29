@@ -111,6 +111,7 @@ it('shows the latest task clarification suggestion on the task page', function (
             ->where('assistant.latest_suggestion.structured_payload.questions.0', 'Which user or role needs this outcome?')
             ->where('assistant.clarify_href', "/api/dashboard/tasks/{$taskId}/assistant/clarify")
             ->where('assistant.resolve_suggestion_href', '/api/dashboard/assistant-suggestions')
+            ->where('assistant.apply_suggestion_href', '/api/dashboard/assistant-suggestions')
         );
 });
 
@@ -215,6 +216,130 @@ it('does not supersede already resolved task clarification suggestions', functio
             ->where('suggestion_type', 'task_clarification')
             ->where('status', 'pending')
             ->count())->toBe(1);
+});
+
+it('applies accepted task clarification suggestions to the task description with audit', function () {
+    $pm = taskClarifierUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $taskId = taskClarifierCreateTask($projectId, $pm, [
+        'title' => 'Clarify upload policy',
+        'description' => 'Uploads need safer wording.',
+    ]);
+
+    $suggestionId = $this->actingAs($pm)
+        ->postJson("/api/dashboard/tasks/{$taskId}/assistant/clarify")
+        ->assertCreated()
+        ->json('suggestion.id');
+
+    $this->actingAs($pm)
+        ->patchJson("/api/dashboard/assistant-suggestions/{$suggestionId}", [
+            'status' => 'accepted',
+        ])
+        ->assertOk();
+
+    $this->actingAs($pm)
+        ->postJson("/api/dashboard/assistant-suggestions/{$suggestionId}/apply")
+        ->assertOk()
+        ->assertJsonPath('suggestion.id', $suggestionId)
+        ->assertJsonPath('suggestion.status', 'applied')
+        ->assertJsonPath('task.id', $taskId)
+        ->assertJsonPath('task.assistant.latest_suggestion.status', 'applied')
+        ->assertJsonPath('task.description', fn (string $description): bool => str_contains($description, 'Uploads need safer wording.')
+            && str_contains($description, '## Assistant clarification')
+            && str_contains($description, '### Questions')
+            && str_contains($description, 'Which user or role needs this outcome?')
+            && str_contains($description, '### Acceptance criteria')
+            && str_contains($description, 'The task states the user-visible outcome in one sentence.'));
+
+    $auditPayload = json_decode(
+        (string) DB::table('audit_logs')
+            ->where('action', 'assistant.suggestion.applied')
+            ->where('target_type', 'assistant_suggestion')
+            ->where('target_id', $suggestionId)
+            ->value('payload'),
+        true,
+        flags: JSON_THROW_ON_ERROR
+    );
+
+    expect(DB::table('assistant_suggestions')->where('id', $suggestionId)->value('status'))->toBe('applied')
+        ->and(DB::table('tasks')->where('id', $taskId)->value('description'))->toContain('## Assistant clarification')
+        ->and($auditPayload['mutated_target'])->toBeTrue()
+        ->and($auditPayload['applied_fields'])->toBe(['description'])
+        ->and($auditPayload['target_type'])->toBe('task')
+        ->and($auditPayload['target_id'])->toBe($taskId);
+});
+
+it('requires task clarification suggestions to be accepted before applying and applies each suggestion once', function () {
+    $pm = taskClarifierUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $taskId = taskClarifierCreateTask($projectId, $pm, [
+        'title' => 'Clarify rollout',
+        'description' => 'Rollout needs clearer acceptance checks.',
+    ]);
+
+    $suggestionId = $this->actingAs($pm)
+        ->postJson("/api/dashboard/tasks/{$taskId}/assistant/clarify")
+        ->assertCreated()
+        ->json('suggestion.id');
+
+    $this->actingAs($pm)
+        ->postJson("/api/dashboard/assistant-suggestions/{$suggestionId}/apply")
+        ->assertStatus(409);
+
+    $this->actingAs($pm)
+        ->patchJson("/api/dashboard/assistant-suggestions/{$suggestionId}", [
+            'status' => 'accepted',
+        ])
+        ->assertOk();
+
+    $this->actingAs($pm)
+        ->postJson("/api/dashboard/assistant-suggestions/{$suggestionId}/apply")
+        ->assertOk();
+
+    $this->actingAs($pm)
+        ->postJson("/api/dashboard/assistant-suggestions/{$suggestionId}/apply")
+        ->assertStatus(409);
+
+    expect(substr_count((string) DB::table('tasks')->where('id', $taskId)->value('description'), '## Assistant clarification'))->toBe(1);
+});
+
+it('keeps applying task clarification suggestions behind PM and Admin roles and active projects', function () {
+    $pm = taskClarifierUserWithRole('PM');
+    $developer = taskClarifierUserWithRole('Developer');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $taskId = taskClarifierCreateTask($projectId, $pm, [
+        'title' => 'Clarify export flow',
+        'description' => 'Export behavior needs narrower scope.',
+    ]);
+
+    $suggestionId = $this->actingAs($pm)
+        ->postJson("/api/dashboard/tasks/{$taskId}/assistant/clarify")
+        ->assertCreated()
+        ->json('suggestion.id');
+
+    $this->actingAs($pm)
+        ->patchJson("/api/dashboard/assistant-suggestions/{$suggestionId}", [
+            'status' => 'accepted',
+        ])
+        ->assertOk();
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/assistant-suggestions/{$suggestionId}/apply")
+        ->assertForbidden();
+
+    DB::table('projects')->where('id', $projectId)->update([
+        'status' => 'archived',
+        'archived_at' => now(),
+        'archived_by_user_id' => $pm->id,
+    ]);
+
+    $this->actingAs($pm)
+        ->postJson("/api/dashboard/assistant-suggestions/{$suggestionId}/apply")
+        ->assertConflict()
+        ->assertJsonPath('error.code', 'project_not_active');
+
+    expect(DB::table('assistant_suggestions')->where('id', $suggestionId)->value('status'))->toBe('accepted')
+        ->and(DB::table('tasks')->where('id', $taskId)->value('description'))->toBe('Export behavior needs narrower scope.');
 });
 
 it('keeps task clarification suggestion resolution behind PM and Admin dashboard roles', function () {

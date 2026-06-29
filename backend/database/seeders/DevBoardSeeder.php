@@ -297,11 +297,13 @@ class DevBoardSeeder extends Seeder
                 'trigger_events' => ['manual_triage', 'scheduled_triage'],
                 'output_schema' => [
                     'type' => 'object',
-                    'required' => ['groups', 'recommendations', 'evidence_refs'],
+                    'required' => ['summary', 'groups', 'recommendations', 'risks', 'confidence'],
                     'properties' => [
+                        'summary' => ['type' => 'string'],
                         'groups' => ['type' => 'array'],
                         'recommendations' => ['type' => 'array'],
-                        'evidence_refs' => ['type' => 'array'],
+                        'risks' => ['type' => 'array'],
+                        'confidence' => ['type' => 'number'],
                     ],
                 ],
             ],

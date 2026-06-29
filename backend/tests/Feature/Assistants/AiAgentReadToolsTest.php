@@ -1,8 +1,10 @@
 <?php
 
+use App\Assistants\Agents\BacklogTriageAgent;
 use App\Assistants\Agents\TaskClarifierAgent;
 use App\Assistants\AiAgentToolRegistry;
 use App\Assistants\Tools\ReadProjectSummaryTool;
+use App\Assistants\Tools\ReadProjectTasksTool;
 use App\Assistants\Tools\ReadTaskDetailTool;
 use App\Assistants\Tools\SearchWikiRevisionsTool;
 use App\Models\User;
@@ -32,6 +34,22 @@ it('registers read-only tools matching the controlled task clarifier profile', f
         ->and(array_values(array_intersect($allowedTools, $toolNames)))->toEqualCanonicalizing($toolNames)
         ->and(TaskClarifierAgent::make())->toBeInstanceOf(HasTools::class)
         ->and(array_map(fn (Tool $tool): string => $tool->name(), [...TaskClarifierAgent::make()->tools()]))
+        ->toEqualCanonicalizing($toolNames);
+});
+
+it('registers read-only tools matching the controlled backlog triage profile', function () {
+    expect(class_exists(BacklogTriageAgent::class))->toBeTrue();
+
+    $registry = app(AiAgentToolRegistry::class);
+    $tools = $registry->forAgentKey('backlog_triage');
+    $toolNames = array_map(fn (Tool $tool): string => $tool->name(), $tools);
+    $allowedTools = json_decode((string) DB::table('ai_agent_profiles')->where('agent_key', 'backlog_triage')->value('allowed_tools'), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($tools)->toHaveCount(2)
+        ->and($toolNames)->toEqualCanonicalizing(['read_project_summary', 'read_project_tasks'])
+        ->and(array_values(array_intersect($allowedTools, $toolNames)))->toEqualCanonicalizing($toolNames)
+        ->and(BacklogTriageAgent::make())->toBeInstanceOf(HasTools::class)
+        ->and(array_map(fn (Tool $tool): string => $tool->name(), [...BacklogTriageAgent::make()->tools()]))
         ->toEqualCanonicalizing($toolNames);
 });
 
@@ -66,6 +84,41 @@ it('reads a bounded project summary from DevBoard evidence only', function () {
     DB::table('projects')->where('id', $projectId)->update(['status' => 'deleted']);
 
     expect((new ReadProjectSummaryTool)->payload(['project_id' => $projectId])['found'])->toBeFalse();
+});
+
+it('reads bounded project tasks for backlog triage without mutating tasks', function () {
+    $pm = aiAgentToolsUserWithRole('PM');
+    $developer = aiAgentToolsUserWithRole('Developer');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $taskId = aiAgentToolsCreateTask($projectId, $pm, [
+        'title' => 'Clarify payment retry state',
+        'description' => str_repeat('Payment retry state needs exact behavior. ', 12),
+        'owner_user_id' => $developer->id,
+        'priority' => 'high',
+        'risk_level' => 'high',
+    ]);
+    $updatedAt = DB::table('tasks')->where('id', $taskId)->value('updated_at');
+
+    $payload = (new ReadProjectTasksTool)->payload([
+        'project_id' => $projectId,
+        'status_keys' => ['backlog'],
+        'limit' => 5,
+    ]);
+
+    expect($payload['source_status'])->toBe('verified_from_code')
+        ->and($payload['tool'])->toBe('read_project_tasks')
+        ->and($payload['found'])->toBeTrue()
+        ->and($payload['project']['id'])->toBe($projectId)
+        ->and($payload['tasks'][0]['id'])->toBe($taskId)
+        ->and($payload['tasks'][0]['title'])->toBe('Clarify payment retry state')
+        ->and($payload['tasks'][0]['status_key'])->toBe('backlog')
+        ->and($payload['tasks'][0]['owner']['name'])->toBe($developer->name)
+        ->and(strlen($payload['tasks'][0]['description_excerpt']))->toBeLessThanOrEqual(260)
+        ->and(DB::table('tasks')->where('id', $taskId)->value('updated_at'))->toBe($updatedAt);
+
+    DB::table('projects')->where('id', $projectId)->update(['status' => 'deleted']);
+
+    expect((new ReadProjectTasksTool)->payload(['project_id' => $projectId])['found'])->toBeFalse();
 });
 
 it('reads task detail without mutating the task', function () {

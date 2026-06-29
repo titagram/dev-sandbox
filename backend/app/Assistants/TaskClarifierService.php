@@ -204,6 +204,88 @@ final class TaskClarifierService
         return $this->suggestionPayload($suggestionId);
     }
 
+    /**
+     * @return array{suggestion: array<string, mixed>, task_id: string}
+     */
+    public function applySuggestion(string $suggestionId, int $userId): array
+    {
+        $taskId = null;
+
+        DB::transaction(function () use ($suggestionId, $userId, &$taskId): void {
+            $suggestion = DB::table('assistant_suggestions')
+                ->where('id', $suggestionId)
+                ->where('suggestion_type', 'task_clarification')
+                ->where('target_type', 'task')
+                ->lockForUpdate()
+                ->first();
+
+            abort_unless($suggestion, 404);
+            abort_if($suggestion->status !== 'accepted', 409, 'Assistant suggestion must be accepted before it can be applied.');
+
+            $task = DB::table('tasks')
+                ->where('id', $suggestion->target_id)
+                ->lockForUpdate()
+                ->first();
+
+            abort_unless($task, 404);
+
+            $now = now();
+            $previousDescription = (string) ($task->description ?? '');
+            $appliedBlock = $this->appliedDescriptionBlock(
+                json_decode((string) $suggestion->structured_payload, true, flags: JSON_THROW_ON_ERROR),
+            );
+            $newDescription = trim($previousDescription) === ''
+                ? $appliedBlock
+                : trim($previousDescription)."\n\n{$appliedBlock}";
+
+            DB::table('tasks')
+                ->where('id', $task->id)
+                ->update([
+                    'description' => $newDescription,
+                    'updated_at' => $now,
+                ]);
+
+            DB::table('assistant_suggestions')
+                ->where('id', $suggestionId)
+                ->update([
+                    'status' => 'applied',
+                    'updated_at' => $now,
+                ]);
+
+            DB::table('audit_logs')->insert([
+                'id' => (string) Str::ulid(),
+                'actor_user_id' => $userId,
+                'actor_device_id' => null,
+                'actor_type' => 'user',
+                'action' => 'assistant.suggestion.applied',
+                'target_type' => 'assistant_suggestion',
+                'target_id' => $suggestionId,
+                'ip_address' => null,
+                'user_agent' => null,
+                'payload' => json_encode([
+                    'assistant_run_id' => (string) $suggestion->assistant_run_id,
+                    'project_id' => (string) $suggestion->project_id,
+                    'target_type' => 'task',
+                    'target_id' => (string) $task->id,
+                    'suggestion_type' => (string) $suggestion->suggestion_type,
+                    'status' => 'applied',
+                    'mutated_target' => true,
+                    'applied_fields' => ['description'],
+                    'previous_description_sha256' => hash('sha256', $previousDescription),
+                    'new_description_sha256' => hash('sha256', $newDescription),
+                ], JSON_THROW_ON_ERROR),
+                'created_at' => $now,
+            ]);
+
+            $taskId = (string) $task->id;
+        });
+
+        return [
+            'suggestion' => $this->suggestionPayload($suggestionId),
+            'task_id' => (string) $taskId,
+        ];
+    }
+
     private function supersedePendingTaskClarificationSuggestions(object $task, int $userId, string $runId, string $suggestionId, Carbon $now): void
     {
         $pendingSuggestions = DB::table('assistant_suggestions')
@@ -530,6 +612,35 @@ PROMPT;
         $missingContext = implode("\n", array_map(fn (string $item): string => "- {$item}", $structured['missing_context']));
 
         return "### Questions\n{$questions}\n\n### Suggested acceptance criteria\n{$criteria}\n\n### Risks\n{$risks}\n\n### Missing context\n{$missingContext}";
+    }
+
+    /**
+     * @param array<string, mixed> $structured
+     */
+    private function appliedDescriptionBlock(array $structured): string
+    {
+        $questions = $this->stringList($structured['questions'] ?? null, [], 6);
+        $criteria = $this->stringList($structured['acceptance_criteria'] ?? null, [], 8);
+        $risks = $this->stringList($structured['risks'] ?? null, [], 6);
+        $missingContext = $this->stringList($structured['missing_context'] ?? null, [], 8);
+
+        return "## Assistant clarification\n\n"
+            .'### Questions'."\n".$this->markdownList($questions)."\n\n"
+            .'### Acceptance criteria'."\n".$this->markdownList($criteria)."\n\n"
+            .'### Risks'."\n".$this->markdownList($risks)."\n\n"
+            .'### Missing context'."\n".$this->markdownList($missingContext);
+    }
+
+    /**
+     * @param list<string> $items
+     */
+    private function markdownList(array $items): string
+    {
+        if ($items === []) {
+            return '- None.';
+        }
+
+        return implode("\n", array_map(fn (string $item): string => "- {$item}", $items));
     }
 
     /**

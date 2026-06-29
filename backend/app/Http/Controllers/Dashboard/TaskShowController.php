@@ -89,6 +89,7 @@ class TaskShowController extends Controller
             'assistant' => [
                 'clarify_href' => "/api/dashboard/tasks/{$taskRow->id}/assistant/clarify",
                 'resolve_suggestion_href' => '/api/dashboard/assistant-suggestions',
+                'apply_suggestion_href' => '/api/dashboard/assistant-suggestions',
                 'can_clarify' => $this->userHasRole($request->user(), 'Admin') || $this->userHasRole($request->user(), 'PM'),
                 'latest_suggestion' => $clarifier->latestSuggestionForTask((string) $taskRow->id),
             ],

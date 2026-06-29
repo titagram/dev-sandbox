@@ -3,6 +3,7 @@
 namespace App\Assistants;
 
 use App\Assistants\Tools\ReadProjectSummaryTool;
+use App\Assistants\Tools\ReadProjectTasksTool;
 use App\Assistants\Tools\ReadTaskDetailTool;
 use App\Assistants\Tools\SearchWikiRevisionsTool;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +17,7 @@ final class AiAgentToolRegistry
      */
     private array $tools = [
         'read_project_summary' => ReadProjectSummaryTool::class,
+        'read_project_tasks' => ReadProjectTasksTool::class,
         'read_task_detail' => ReadTaskDetailTool::class,
         'search_wiki_revisions' => SearchWikiRevisionsTool::class,
     ];

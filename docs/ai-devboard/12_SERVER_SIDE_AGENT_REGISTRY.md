@@ -4,7 +4,7 @@
 
 `developer_provided`: DevBoard server-side intelligence should use predefined controlled flows, not free-form runtime delegation.
 
-This document records the first implementation slices for server-side agent hierarchy, model provider configuration, and the first SDK-backed specialist flow. DevBoard still does not execute local scans or mutate project state from assistants.
+This document records the first implementation slices for server-side agent hierarchy, model provider configuration, and the first SDK-backed specialist flows. DevBoard still does not execute local scans from server-side assistants, and assistant-driven mutations require explicit PM/Admin approval actions.
 
 ## Implemented Slice
 
@@ -17,12 +17,15 @@ This document records the first implementation slices for server-side agent hier
 - `verified_from_code`: `/api/dashboard/admin/ai-model-profiles/{profile}` updates existing model profile runtime settings.
 - `verified_from_code`: `/api/dashboard/admin/ai-agent-profiles/{agent}` assigns the default model profile and enabled state for controlled agent profiles.
 - `verified_from_code`: `assistant_runs`, `assistant_messages`, and `assistant_suggestions` persist assistant executions and outputs.
-- `verified_from_code`: `App\Assistants\Agents\TaskClarifierAgent` uses the official `laravel/ai` Agent contract with structured output.
-- `verified_from_code`: `App\Assistants\AiAgentToolRegistry` exposes controlled Laravel AI SDK tools for `read_project_summary`, `read_task_detail`, and `search_wiki_revisions` when an agent profile allows them.
-- `verified_from_code`: `App\Assistants\Tools\ReadProjectSummaryTool`, `ReadTaskDetailTool`, and `SearchWikiRevisionsTool` read only DevBoard database evidence and return bounded JSON payloads.
+- `verified_from_code`: `App\Assistants\Agents\TaskClarifierAgent` and `BacklogTriageAgent` use the official `laravel/ai` Agent contract with structured output.
+- `verified_from_code`: `App\Assistants\AiAgentToolRegistry` exposes controlled Laravel AI SDK tools for `read_project_summary`, `read_project_tasks`, `read_task_detail`, and `search_wiki_revisions` when an agent profile allows them.
+- `verified_from_code`: `App\Assistants\Tools\ReadProjectSummaryTool`, `ReadProjectTasksTool`, `ReadTaskDetailTool`, and `SearchWikiRevisionsTool` read only DevBoard database evidence and return bounded JSON payloads.
 - `verified_from_code`: `/api/dashboard/tasks/{task}/assistant/clarify` invokes the Laravel AI SDK when the agent is faked in tests or when the configured provider is enabled with a stored key; otherwise it creates a deterministic fallback suggestion.
+- `verified_from_code`: `/api/dashboard/projects/{project}/assistant/backlog-triage` invokes the Laravel AI SDK when the agent is faked in tests or when the configured provider is enabled with a stored key; otherwise it creates a deterministic fallback project-level backlog triage suggestion.
 - `verified_from_code`: `/api/dashboard/assistant-suggestions/{suggestion}` lets Admin/PM users mark pending task clarification suggestions as `accepted` or `rejected`.
-- `verified_from_code`: task detail pages render the latest task clarification suggestion and expose clarify/accept/reject actions to Admin/PM roles.
+- `verified_from_code`: `/api/dashboard/assistant-suggestions/{suggestion}/apply` lets Admin/PM users apply an already accepted task clarification suggestion to the task description.
+- `verified_from_code`: task detail pages render the latest task clarification suggestion and expose clarify/accept/reject/apply actions to Admin/PM roles.
+- `verified_from_code`: project detail pages render the latest backlog triage suggestion and expose a manual backlog triage action to Admin/PM roles.
 - `verified_from_code`: creating a newer Task Clarifier suggestion for the same task marks older pending task clarification suggestions as `superseded`, records resolver metadata, and writes `assistant.suggestion.superseded` audit logs.
 
 ## Agent Hierarchy
@@ -54,12 +57,19 @@ Server-side agents may read DevBoard-held evidence and create suggestions. They 
 
 `verified_from_code`: Task Clarifier test coverage uses `TaskClarifierAgent::fake([...])` and asserts the prompt sent to the Laravel AI SDK, so CI does not need a real model provider.
 
-`verified_from_code`: accepting, rejecting, or superseding a Task Clarifier suggestion updates only the suggestion status/resolver metadata and writes an audit log. It does not mutate the task or Kanban board.
+`verified_from_code`: accepting, rejecting, or superseding a Task Clarifier suggestion updates only the suggestion status/resolver metadata and writes an audit log. Applying an already accepted Task Clarifier suggestion appends a bounded "Assistant clarification" section to the task description, changes the suggestion status to `applied`, and writes an `assistant.suggestion.applied` audit log with `mutated_target=true`.
+
+`verified_from_code`: Task Clarifier apply actions are blocked for non-active projects through the dashboard project lifecycle guard.
+
+`verified_from_code`: Backlog Triage suggestions are project-level recommendation records. They do not mutate task fields, Kanban columns, projects, wiki, runs, or local-agent state.
+
+`verified_from_code`: Backlog Triage execution is blocked for non-active projects through the dashboard project lifecycle guard.
 
 ## Next Slice
 
 `inferred`: the next implementation should broaden the same persistence and approval boundary:
 
-1. PM approval workflow before task/Kanban mutation.
-2. Additional specialist flows for backlog triage, wiki query, and watchman summaries.
-3. Additional bounded read-only tools for run summaries, quality reports, artifacts, and agent profile registry reads.
+1. Additional specialist flows for wiki query and watchman summaries.
+2. A supervisor entrypoint that delegates to the controlled specialist flows instead of free-form runtime tools.
+3. PM/Admin approval workflows for richer task fields and Kanban mutations.
+4. Additional bounded read-only tools for run summaries, quality reports, artifacts, and agent profile registry reads.

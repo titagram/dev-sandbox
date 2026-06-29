@@ -1,8 +1,36 @@
 import { Link } from '@inertiajs/react';
-import { Database, FileText, GitBranch, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
+import { Bot, Database, FileText, GitBranch, ShieldCheck } from 'lucide-react';
 import AppLayout from '../../Layouts/AppLayout';
 
-export default function ProjectShow({ project, repositories, recentRuns, artifacts, wikiPages, policySummary, dashboard }) {
+export default function ProjectShow({ project, repositories, recentRuns, artifacts, wikiPages, policySummary, assistant, dashboard }) {
+  const [triageSuggestion, setTriageSuggestion] = useState(assistant?.latest_backlog_triage_suggestion ?? null);
+  const [triaging, setTriaging] = useState(false);
+  const [triageError, setTriageError] = useState(null);
+
+  async function runBacklogTriage() {
+    setTriaging(true);
+    setTriageError(null);
+
+    const response = await fetch(assistant.triage_href, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+    setTriaging(false);
+
+    if (!response.ok) {
+      setTriageError(payload.message ?? payload.error?.message ?? 'Backlog triage failed.');
+      return;
+    }
+
+    setTriageSuggestion(payload.suggestion);
+  }
+
   return (
     <AppLayout title={`Project: ${project.name}`} dashboard={dashboard}>
       <header className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
@@ -16,6 +44,52 @@ export default function ProjectShow({ project, repositories, recentRuns, artifac
           Policy: {policySummary.code_exposure_policy}
         </div>
       </header>
+
+      <section className="mt-5 rounded border border-zinc-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Bot size={16} />
+            Backlog Triage
+          </div>
+          {assistant?.can_triage ? (
+            <button
+              className="inline-flex h-9 items-center gap-2 rounded bg-zinc-950 px-3 text-sm font-medium text-white disabled:opacity-60"
+              disabled={triaging}
+              type="button"
+              onClick={runBacklogTriage}
+            >
+              <Bot size={14} />
+              {triaging ? 'Triaging' : 'Triage backlog'}
+            </button>
+          ) : null}
+        </div>
+
+        {triageError ? <div className="mt-3 rounded border border-red-200 bg-red-50 p-3 text-xs text-red-800">{triageError}</div> : null}
+
+        {triageSuggestion ? (
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <div className="rounded border border-zinc-200 bg-zinc-50 p-3 text-sm xl:col-span-2">
+              <div className="text-xs text-zinc-500">Summary</div>
+              <div className="mt-2 text-zinc-700">{triageSuggestion.structured_payload?.summary ?? triageSuggestion.title}</div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+                <span>Status: {triageSuggestion.status}</span>
+                <span>Confidence: {Math.round(Number(triageSuggestion.confidence ?? 0) * 100)}%</span>
+              </div>
+            </div>
+            <TriageList
+              title="Groups"
+              items={(triageSuggestion.structured_payload?.groups ?? []).map((group) => `${group.label}: ${group.reason}`)}
+            />
+            <TriageList
+              title="Recommendations"
+              items={(triageSuggestion.structured_payload?.recommendations ?? []).map((recommendation) => `${recommendation.title}: ${recommendation.body}`)}
+            />
+            <TriageList title="Risks" items={triageSuggestion.structured_payload?.risks ?? []} />
+          </div>
+        ) : (
+          <div className="mt-3 text-sm text-zinc-500">No backlog triage suggestion yet.</div>
+        )}
+      </section>
 
       <section className="mt-5 overflow-hidden rounded border border-zinc-200 bg-white">
         <div className="flex items-center gap-2 border-b border-zinc-200 px-4 py-3 text-sm font-semibold">
@@ -89,6 +163,23 @@ export default function ProjectShow({ project, repositories, recentRuns, artifac
         </div>
       </section>
     </AppLayout>
+  );
+}
+
+function TriageList({ title, items }) {
+  return (
+    <div className="rounded border border-zinc-200 bg-zinc-50 p-3">
+      <div className="text-sm font-medium">{title}</div>
+      {items.length ? (
+        <ul className="mt-2 space-y-1 text-sm text-zinc-600">
+          {items.map((item) => (
+            <li key={item} className="leading-6">{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-2 text-sm text-zinc-500">None.</div>
+      )}
+    </div>
   );
 }
 

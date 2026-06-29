@@ -5,6 +5,7 @@ import AppLayout from '../../Layouts/AppLayout';
 
 export default function TaskShow({ task, assistant, dashboard }) {
   const [suggestion, setSuggestion] = useState(assistant?.latest_suggestion ?? null);
+  const [taskDescription, setTaskDescription] = useState(task.description ?? '');
   const [clarifying, setClarifying] = useState(false);
   const [resolving, setResolving] = useState(null);
   const [error, setError] = useState(null);
@@ -30,6 +31,36 @@ export default function TaskShow({ task, assistant, dashboard }) {
     }
 
     setSuggestion(payload.suggestion);
+  }
+
+  async function applySuggestion() {
+    if (!suggestion?.id) {
+      return;
+    }
+
+    setResolving('applied');
+    setError(null);
+
+    const response = await fetch(`${assistant.apply_suggestion_href}/${suggestion.id}/apply`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+    setResolving(null);
+
+    if (!response.ok) {
+      setError(payload.message ?? payload.error?.message ?? 'Suggestion apply failed.');
+      return;
+    }
+
+    setSuggestion(payload.suggestion);
+    if (payload.task?.description !== undefined) {
+      setTaskDescription(payload.task.description ?? '');
+    }
   }
 
   async function resolveSuggestion(status) {
@@ -89,7 +120,7 @@ export default function TaskShow({ task, assistant, dashboard }) {
       <section className="mt-5 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded border border-zinc-200 bg-white p-4">
           <div className="font-semibold">Description</div>
-          <p className="mt-2 text-sm text-zinc-600">{task.description ?? 'No description.'}</p>
+          <p className="mt-2 whitespace-pre-wrap text-sm text-zinc-600">{taskDescription || 'No description.'}</p>
         </div>
 
         <div className="rounded border border-zinc-200 bg-white p-4">
@@ -158,6 +189,17 @@ export default function TaskShow({ task, assistant, dashboard }) {
                       {resolving === 'rejected' ? 'Rejecting' : 'Reject'}
                     </button>
                   </div>
+                ) : null}
+                {assistant?.can_clarify && suggestion.status === 'accepted' ? (
+                  <button
+                    className="inline-flex h-8 items-center gap-2 rounded border border-emerald-200 bg-emerald-50 px-3 text-xs font-medium text-emerald-800 disabled:opacity-60"
+                    disabled={Boolean(resolving)}
+                    type="button"
+                    onClick={applySuggestion}
+                  >
+                    <CheckCircle2 size={14} />
+                    {resolving === 'applied' ? 'Applying' : 'Apply'}
+                  </button>
                 ) : null}
               </div>
             </div>

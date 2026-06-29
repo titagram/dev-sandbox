@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Dashboard;
 
+use App\Assistants\BacklogTriageService;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use Illuminate\Http\Request;
@@ -13,7 +14,7 @@ class ProjectShowController extends Controller
 {
     use ChecksDashboardRoles;
 
-    public function __invoke(Request $request, string $project): Response
+    public function __invoke(Request $request, BacklogTriageService $triage, string $project): Response
     {
         $projectRow = DB::table('projects')->where('id', $project)->firstOrFail();
         $repositories = DB::table('repositories')->where('project_id', $project)->orderBy('name')->get()->map(function (object $repository) {
@@ -54,6 +55,11 @@ class ProjectShowController extends Controller
             'dashboard' => [
                 'user' => $this->dashboardUser($request->user()),
                 'navigation' => $this->dashboardNavigation($request->user(), $projectRow->id),
+            ],
+            'assistant' => [
+                'triage_href' => "/api/dashboard/projects/{$projectRow->id}/assistant/backlog-triage",
+                'can_triage' => $this->userHasRole($request->user(), 'Admin') || $this->userHasRole($request->user(), 'PM'),
+                'latest_backlog_triage_suggestion' => $triage->latestSuggestionForProject((string) $projectRow->id),
             ],
             'policySummary' => [
                 'workspace' => 'implicit',

@@ -123,6 +123,19 @@ routes:
       enabled: false
       reason: "Resolves assistant suggestion records; must not run in default route smoke."
 
+  - id: dashboard.api.assistant_suggestions.apply
+    method: POST
+    uri: /api/dashboard/assistant-suggestions/{suggestion}/apply
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_pm
+    parameter_provider:
+      suggestion: seeded_accepted_assistant_suggestion
+    smoke:
+      enabled: false
+      reason: "Applies accepted assistant suggestions to task descriptions; must not run in default route smoke."
+
   - id: dashboard.api.task_attachments.store
     method: POST
     uri: /api/dashboard/tasks/{task}/attachments
@@ -233,6 +246,19 @@ routes:
     smoke:
       enabled: false
       reason: "Declares logical repository metadata and must not run in default route smoke."
+
+  - id: dashboard.api.projects.assistant.backlog_triage
+    method: POST
+    uri: /api/dashboard/projects/{project}/assistant/backlog-triage
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_pm
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Creates assistant run and backlog triage suggestion records; must not run in default route smoke."
 
   - id: dashboard.api.projects.archive
     method: POST

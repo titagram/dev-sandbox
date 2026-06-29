@@ -14,6 +14,7 @@ use App\Http\Controllers\Dashboard\Api\DashboardResourceController;
 use App\Http\Controllers\Dashboard\Api\DashboardSystemController;
 use App\Http\Controllers\Dashboard\Api\DashboardTaskAttachmentController;
 use App\Http\Controllers\Dashboard\Api\AssistantSuggestionController;
+use App\Http\Controllers\Dashboard\Api\BacklogTriageController;
 use App\Http\Controllers\Dashboard\Api\TaskClarifierController;
 use App\Http\Controllers\Dashboard\AiAgentsIndexController;
 use App\Http\Controllers\Dashboard\AuthController as DashboardAuthController;
@@ -52,6 +53,7 @@ Route::middleware('auth')->group(function () {
         Route::patch('/tasks/{task}', [DashboardResourceController::class, 'updateTask']);
         Route::post('/tasks/{task}/assistant/clarify', TaskClarifierController::class);
         Route::patch('/assistant-suggestions/{suggestion}', [AssistantSuggestionController::class, 'update']);
+        Route::post('/assistant-suggestions/{suggestion}/apply', [AssistantSuggestionController::class, 'apply']);
         Route::post('/tasks/{task}/attachments', [DashboardTaskAttachmentController::class, 'store']);
         Route::delete('/tasks/{task}/attachments/{attachment}', [DashboardTaskAttachmentController::class, 'destroy']);
         Route::get('/tasks/{task}/attachments/{attachment}/download', [DashboardTaskAttachmentController::class, 'download']);
@@ -61,6 +63,7 @@ Route::middleware('auth')->group(function () {
         Route::get('/projects/{project}', [DashboardResourceController::class, 'project']);
         Route::patch('/projects/{project}', [DashboardResourceController::class, 'updateProject']);
         Route::post('/projects/{project}/repositories', [DashboardProjectRepositoryController::class, 'store']);
+        Route::post('/projects/{project}/assistant/backlog-triage', BacklogTriageController::class);
         Route::post('/projects/{project}/archive', [DashboardProjectLifecycleController::class, 'archive']);
         Route::post('/projects/{project}/restore', [DashboardProjectLifecycleController::class, 'restore']);
         Route::post('/projects/{project}/delete', [DashboardProjectLifecycleController::class, 'delete']);
