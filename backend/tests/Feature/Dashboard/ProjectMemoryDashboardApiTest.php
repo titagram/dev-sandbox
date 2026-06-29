@@ -82,6 +82,20 @@ it('lets pm append project memory entries', function () {
         ->assertJsonPath('completeness', 'complete');
 });
 
+it('rejects memory summaries shorter than eight characters', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory", [
+            'kind' => 'decision',
+            'summary' => 'Short',
+            'payload' => ['why' => 'Summary must be meaningful enough for shared memory.'],
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['summary']);
+});
+
 it('keeps memory project scoped', function () {
     $developer = projectMemoryDashboardApiUserWithRole('Developer');
     $primaryProjectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');

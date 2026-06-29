@@ -57,7 +57,7 @@ final class DashboardMemoryController extends Controller
             'agent_key' => ['sometimes', 'nullable', 'string', Rule::in(['socrates', 'platon', 'aristoteles', 'local_agent'])],
             'kind' => ['required', 'string', Rule::in(['decision', 'implementation', 'clarification', 'risk', 'verification', 'handoff', 'incident', 'agent_note'])],
             'completeness' => ['sometimes', 'string', Rule::in(['complete', 'incomplete'])],
-            'summary' => ['required', 'string', 'min:1', 'max:240'],
+            'summary' => ['required', 'string', 'min:8', 'max:240'],
             'payload' => ['required', 'array'],
         ]);
 
