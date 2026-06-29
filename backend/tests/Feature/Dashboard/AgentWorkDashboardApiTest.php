@@ -180,6 +180,60 @@ it('does not cancel completed work', function () {
         ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'canceled')->exists())->toBeFalse();
 });
 
+it('does not cancel failed work', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $failedAt = now()->subMinute();
+    $workItemId = agentWorkDashboardApiWorkItem($projectId, [
+        'status' => 'failed',
+        'failed_at' => $failedAt,
+        'failure_reason' => 'The agent run failed.',
+    ]);
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/agent-work/{$workItemId}/cancel")
+        ->assertConflict();
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('failed')
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('failed_at'))->not->toBeNull()
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('canceled_at'))->toBeNull()
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'canceled')->exists())->toBeFalse();
+});
+
+it('does not cancel already canceled work again', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $canceledAt = now()->subMinute();
+    $workItemId = agentWorkDashboardApiWorkItem($projectId, [
+        'status' => 'canceled',
+        'canceled_at' => $canceledAt,
+    ]);
+    $storedCanceledAt = DB::table('agent_work_items')->where('id', $workItemId)->value('canceled_at');
+
+    DB::table('agent_work_item_events')->insert([
+        'id' => (string) Str::ulid(),
+        'agent_work_item_id' => $workItemId,
+        'actor_user_id' => $developer->id,
+        'actor_device_id' => null,
+        'event_type' => 'canceled',
+        'message' => 'Already canceled.',
+        'payload' => json_encode([], JSON_THROW_ON_ERROR),
+        'created_at' => $canceledAt,
+        'updated_at' => $canceledAt,
+    ]);
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/agent-work/{$workItemId}/cancel", [
+            'message' => 'Cancel again.',
+        ])
+        ->assertConflict();
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('canceled')
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('canceled_at'))->toBe($storedCanceledAt)
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'canceled')->count())->toBe(1)
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'canceled')->value('message'))->toBe('Already canceled.');
+});
+
 it('blocks cancellation after work has been claimed', function () {
     $developer = agentWorkDashboardApiUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');

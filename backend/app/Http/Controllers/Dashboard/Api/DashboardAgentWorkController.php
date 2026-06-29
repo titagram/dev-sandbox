@@ -124,14 +124,21 @@ final class DashboardAgentWorkController extends Controller
             'Claimed or running work cannot be canceled.',
         );
 
+        abort_unless(
+            (string) $item->status === 'queued' && $item->heartbeat_at === null,
+            409,
+            'Work item is no longer cancelable.',
+        );
+
         $now = now();
 
         DB::transaction(function () use ($validated, $user, $workItem, $now): void {
             $updated = DB::table('agent_work_items')
                 ->where('id', $workItem)
-                ->whereNotIn('status', ['completed', 'completed_with_incomplete_memory', 'claimed', 'running'])
+                ->where('status', 'queued')
                 ->whereNull('claimed_by_device_id')
                 ->whereNull('claimed_at')
+                ->whereNull('heartbeat_at')
                 ->update([
                     'status' => 'canceled',
                     'canceled_at' => $now,
