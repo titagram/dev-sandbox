@@ -10,6 +10,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 final class DashboardResourceController extends Controller
@@ -37,6 +38,41 @@ final class DashboardResourceController extends Controller
         return response()->json($reader->kanban($project));
     }
 
+    public function storeProjectTask(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, string $project): JsonResponse
+    {
+        $this->abortUnlessDashboardMutator($request);
+
+        if ($error = $lifecycle->assertProjectActiveForDashboard($project)) {
+            return $error;
+        }
+
+        $validated = $this->validateTaskPayload($request, $project, creating: true);
+        $taskId = (string) Str::ulid();
+        $now = now();
+
+        DB::transaction(function () use ($validated, $project, $taskId, $request, $now): void {
+            DB::table('tasks')->insert([
+                'id' => $taskId,
+                'project_id' => $project,
+                'title' => $validated['title'],
+                'description' => $validated['description'] ?? null,
+                'acceptance_criteria' => json_encode($validated['acceptance_criteria'] ?? [], JSON_THROW_ON_ERROR),
+                'status_column_id' => $this->defaultTaskColumnId($project),
+                'priority' => $validated['priority'] ?? 'normal',
+                'risk_level' => $validated['risk'] ?? 'low',
+                'owner_user_id' => $validated['owner_user_id'] ?? null,
+                'created_by_user_id' => $request->user()->id,
+                'due_at' => null,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $this->syncTaskRepositories($taskId, $project, $validated['repository_ids'] ?? []);
+        });
+
+        return response()->json($reader->task($taskId), 201);
+    }
+
     public function updateTask(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, string $task): JsonResponse
     {
         $this->abortUnlessDashboardMutator($request);
@@ -45,23 +81,126 @@ final class DashboardResourceController extends Controller
             return $error;
         }
 
-        $validated = $request->validate([
-            'column' => ['nullable', 'string', 'in:backlog,ready,in_progress,blocked,review,done'],
-        ]);
+        $row = DB::table('tasks')->where('id', $task)->first();
+        abort_unless($row, 404);
 
-        if (isset($validated['column'])) {
-            $columnId = DB::table('kanban_columns')
-                ->where('status_key', $validated['column'])
-                ->value('id');
+        $validated = $this->validateTaskPayload($request, (string) $row->project_id, creating: false);
+        $updates = [];
+
+        if (array_key_exists('column', $validated) && $validated['column'] !== null) {
+            $columnId = $this->taskColumnIdForProject((string) $row->project_id, $validated['column']);
             abort_unless($columnId, 422, 'Unknown task column.');
 
-            DB::table('tasks')->where('id', $task)->update([
-                'status_column_id' => $columnId,
-                'updated_at' => now(),
-            ]);
+            $updates['status_column_id'] = $columnId;
         }
 
+        foreach (['title', 'description', 'priority', 'owner_user_id'] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $updates[$field] = $validated[$field];
+            }
+        }
+
+        if (array_key_exists('risk', $validated)) {
+            $updates['risk_level'] = $validated['risk'];
+        }
+
+        if (array_key_exists('acceptance_criteria', $validated)) {
+            $updates['acceptance_criteria'] = json_encode($validated['acceptance_criteria'], JSON_THROW_ON_ERROR);
+        }
+
+        DB::transaction(function () use ($updates, $validated, $task, $row): void {
+            if ($updates !== [] || array_key_exists('repository_ids', $validated)) {
+                DB::table('tasks')->where('id', $task)->update([
+                    ...$updates,
+                    'updated_at' => now(),
+                ]);
+            }
+
+            if (array_key_exists('repository_ids', $validated)) {
+                $this->syncTaskRepositories($task, (string) $row->project_id, $validated['repository_ids']);
+            }
+        });
+
         return response()->json($reader->task($task));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validateTaskPayload(Request $request, string $projectId, bool $creating): array
+    {
+        $repositoryRule = Rule::exists('repositories', 'id')
+            ->where(fn ($query) => $query->where('project_id', $projectId));
+
+        return $request->validate([
+            'title' => [$creating ? 'required' : 'sometimes', 'string', 'min:3', 'max:180'],
+            'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
+            'column' => ['sometimes', 'nullable', 'string', Rule::in(['backlog', 'ready', 'in_progress', 'blocked', 'review', 'done'])],
+            'priority' => ['sometimes', 'string', Rule::in(['low', 'normal', 'high', 'urgent'])],
+            'risk' => ['sometimes', 'string', Rule::in(['low', 'medium', 'high', 'critical'])],
+            'owner_user_id' => ['sometimes', 'nullable', 'integer', Rule::exists('users', 'id')],
+            'repository_ids' => ['sometimes', 'array'],
+            'repository_ids.*' => ['string', $repositoryRule],
+            'acceptance_criteria' => ['sometimes', 'array', 'max:20'],
+            'acceptance_criteria.*' => ['string', 'min:3', 'max:500'],
+        ]);
+    }
+
+    private function defaultTaskColumnId(string $projectId): string
+    {
+        $columnId = DB::table('kanban_columns')
+            ->join('kanban_boards', 'kanban_boards.id', '=', 'kanban_columns.board_id')
+            ->where('kanban_boards.project_id', $projectId)
+            ->where('kanban_boards.is_default', true)
+            ->where('kanban_columns.status_key', 'backlog')
+            ->value('kanban_columns.id');
+
+        abort_unless($columnId, 422, 'Project kanban board has no backlog column.');
+
+        return (string) $columnId;
+    }
+
+    private function taskColumnIdForProject(string $projectId, string $statusKey): ?string
+    {
+        $columnId = DB::table('kanban_columns')
+            ->join('kanban_boards', 'kanban_boards.id', '=', 'kanban_columns.board_id')
+            ->where('kanban_boards.project_id', $projectId)
+            ->where('kanban_boards.is_default', true)
+            ->where('kanban_columns.status_key', $statusKey)
+            ->value('kanban_columns.id');
+
+        return $columnId ? (string) $columnId : null;
+    }
+
+    /**
+     * @param list<string> $repositoryIds
+     */
+    private function syncTaskRepositories(string $taskId, string $projectId, array $repositoryIds): void
+    {
+        DB::table('repository_task')->where('task_id', $taskId)->delete();
+
+        if ($repositoryIds === []) {
+            return;
+        }
+
+        $validRepositoryIds = DB::table('repositories')
+            ->where('project_id', $projectId)
+            ->whereIn('id', $repositoryIds)
+            ->pluck('id')
+            ->map(fn (mixed $id): string => (string) $id)
+            ->all();
+
+        $now = now();
+
+        foreach (array_values(array_unique($validRepositoryIds)) as $repositoryId) {
+            DB::table('repository_task')->insert([
+                'id' => (string) Str::ulid(),
+                'task_id' => $taskId,
+                'repository_id' => $repositoryId,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
     }
 
     public function task(Request $request, DashboardApiReader $reader, string $task): JsonResponse

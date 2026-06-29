@@ -221,7 +221,7 @@ final class DashboardApiReader
         return [
             ...$this->taskCard($task),
             'description' => (string) ($task->description ?? ''),
-            'acceptance_criteria' => [],
+            'acceptance_criteria' => $this->jsonList($task->acceptance_criteria ?? null),
             'attachments' => $this->taskAttachments($taskId),
             'assistant' => [
                 'clarify_href' => "/api/dashboard/tasks/{$taskId}/assistant/clarify",
@@ -923,9 +923,11 @@ final class DashboardApiReader
         $column = DB::table('kanban_columns')->where('id', $task->status_column_id)->first();
         $owner = $task->owner_user_id ? DB::table('users')->where('id', $task->owner_user_id)->first() : null;
         $latestRun = DB::table('runs')->where('task_id', $task->id)->orderByDesc('created_at')->first();
-        $repositoryNames = $latestRun?->repository_id
-            ? DB::table('repositories')->where('id', $latestRun->repository_id)->pluck('name')->map(fn (mixed $name): string => (string) $name)->all()
-            : [];
+        $repositories = $this->taskRepositories(
+            (string) $task->id,
+            (string) $task->project_id,
+            $latestRun?->repository_id ? (string) $latestRun->repository_id : null,
+        );
         $wikiPageId = $this->latestWikiPageId((string) $task->project_id);
         $attachmentCount = DB::table('task_attachments')
             ->where('task_id', $task->id)
@@ -945,7 +947,7 @@ final class DashboardApiReader
             'owner_color' => $this->avatarColor((string) ($owner->email ?? $task->id)),
             'risk' => $this->risk((string) $task->risk_level),
             'project_id' => (string) $task->project_id,
-            'repositories' => $repositoryNames,
+            'repositories' => $repositories,
             'linked_run_id' => $latestRun?->id ? (string) $latestRun->id : null,
             'linked_run_status' => $latestRun ? $this->runStatus((string) $latestRun->status) : null,
             'wiki_page_id' => $wikiPageId,
@@ -956,6 +958,58 @@ final class DashboardApiReader
             'blocked_reason' => $task->risk_level === 'high' ? 'High risk task requires review.' : null,
             'updated_at' => (string) $task->updated_at,
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function jsonList(mixed $value): array
+    {
+        if ($value === null || $value === '') {
+            return [];
+        }
+
+        $decoded = is_string($value) ? json_decode($value, true) : $value;
+
+        if (! is_array($decoded)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            fn (mixed $item): string => trim((string) $item),
+            $decoded,
+        ), fn (string $item): bool => $item !== ''));
+    }
+
+    /**
+     * @return list<array{id: string, name: string}>
+     */
+    private function taskRepositories(string $taskId, string $projectId, ?string $latestRunRepositoryId): array
+    {
+        $repositoryIds = DB::table('repository_task')
+            ->where('task_id', $taskId)
+            ->pluck('repository_id')
+            ->map(fn (mixed $id): string => (string) $id)
+            ->all();
+
+        if ($repositoryIds === [] && $latestRunRepositoryId !== null) {
+            $repositoryIds = [$latestRunRepositoryId];
+        }
+
+        if ($repositoryIds === []) {
+            return [];
+        }
+
+        return DB::table('repositories')
+            ->where('project_id', $projectId)
+            ->whereIn('id', $repositoryIds)
+            ->orderBy('name')
+            ->get(['id', 'name'])
+            ->map(fn (object $repository): array => [
+                'id' => (string) $repository->id,
+                'name' => (string) $repository->name,
+            ])
+            ->all();
     }
 
     /**

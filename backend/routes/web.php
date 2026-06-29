@@ -50,6 +50,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/logout', [DashboardAuthController::class, 'logout']);
         Route::get('/overview', [DashboardResourceController::class, 'overview']);
         Route::get('/kanban', [DashboardResourceController::class, 'kanban']);
+        Route::post('/projects/{project}/tasks', [DashboardResourceController::class, 'storeProjectTask']);
         Route::patch('/tasks/{task}', [DashboardResourceController::class, 'updateTask']);
         Route::post('/tasks/{task}/assistant/clarify', TaskClarifierController::class);
         Route::patch('/assistant-suggestions/{suggestion}', [AssistantSuggestionController::class, 'update']);
