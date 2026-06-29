@@ -198,6 +198,41 @@ it('blocks cancellation after work has been claimed', function () {
         ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'canceled')->exists())->toBeFalse();
 });
 
+it('does not cancel work that becomes claimed after the initial cancel read', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $deviceId = agentWorkDashboardApiDevice();
+    $workItemId = agentWorkDashboardApiWorkItem($projectId);
+    $claimedDuringCancel = false;
+
+    DB::listen(function (Illuminate\Database\Events\QueryExecuted $query) use (&$claimedDuringCancel, $workItemId, $deviceId): void {
+        if ($claimedDuringCancel || ! str_contains($query->sql, 'from "agent_work_items"')) {
+            return;
+        }
+
+        if (($query->bindings[0] ?? null) !== $workItemId) {
+            return;
+        }
+
+        $claimedDuringCancel = true;
+
+        DB::table('agent_work_items')->where('id', $workItemId)->update([
+            'status' => 'claimed',
+            'claimed_by_device_id' => $deviceId,
+            'claimed_at' => now(),
+            'updated_at' => now(),
+        ]);
+    });
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/agent-work/{$workItemId}/cancel")
+        ->assertConflict();
+
+    expect($claimedDuringCancel)->toBeTrue()
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('claimed')
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'canceled')->exists())->toBeFalse();
+});
+
 it('keeps agent work project scoped', function () {
     $developer = agentWorkDashboardApiUserWithRole('Developer');
     $primaryProjectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');

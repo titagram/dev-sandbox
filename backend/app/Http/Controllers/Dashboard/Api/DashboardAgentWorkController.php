@@ -99,6 +99,9 @@ final class DashboardAgentWorkController extends Controller
         string $workItem,
     ): JsonResponse {
         $user = $this->abortUnlessDashboardMutator($request);
+        $validated = $request->validate([
+            'message' => ['sometimes', 'nullable', 'string', 'max:1000'],
+        ]);
 
         $item = DB::table('agent_work_items')->where('id', $workItem)->first();
         abort_unless($item, 404);
@@ -121,17 +124,21 @@ final class DashboardAgentWorkController extends Controller
             'Claimed or running work cannot be canceled.',
         );
 
-        $validated = $request->validate([
-            'message' => ['sometimes', 'nullable', 'string', 'max:1000'],
-        ]);
         $now = now();
 
         DB::transaction(function () use ($validated, $user, $workItem, $now): void {
-            DB::table('agent_work_items')->where('id', $workItem)->update([
-                'status' => 'canceled',
-                'canceled_at' => $now,
-                'updated_at' => $now,
-            ]);
+            $updated = DB::table('agent_work_items')
+                ->where('id', $workItem)
+                ->whereNotIn('status', ['completed', 'completed_with_incomplete_memory', 'claimed', 'running'])
+                ->whereNull('claimed_by_device_id')
+                ->whereNull('claimed_at')
+                ->update([
+                    'status' => 'canceled',
+                    'canceled_at' => $now,
+                    'updated_at' => $now,
+                ]);
+
+            abort_if($updated === 0, 409, 'Work item is no longer cancelable.');
 
             $this->recordEvent(
                 workItemId: $workItem,
