@@ -2,6 +2,18 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-06-29 - Project Workspace agents shared memory design
+
+- Request: analyze why DevBoard feels confusing and unusable, then persist a design for Project Workspace, Ask/Socrates, direct agent interrogation, shared memory/logbook, server-to-local-agent work queue, server MCP, Platon, Aristoteles, and future `soul.md` contracts before implementation planning.
+- Context read: `AGENTS.md` user-provided instructions, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, policy files under `ai-sandbox/instructions/policies/`, `ai-sandbox/instructions/workflows/FEATURE.md`, `docs/ai-devboard/00_VISION.md`, `01_ARCHITECTURE_DECISIONS.md`, `03_DOMAIN_MODEL.md`, `04_PLUGIN_SERVER_CONTRACT.md`, `05_GENESIS_IMPORT.md`, `06_DELTA_SYNC.md`, `09_DASHBOARD_WIREFRAMES.md`, `10_RUNTIME_SEQUENCES.md`, `11_LARAVEL_AI_SDK_AGENT_EVALUATION.md`, `12_SERVER_SIDE_AGENT_REGISTRY.md`, focused superpowers plans for local agent, server-side agents, masterplan, and logbook/watchman, backend routes/agent registry/migrations/seeder/tool registry, plugin MCP files, and external React navigation/pages/API types for Kanban, Project detail, Task detail, Runs, Artifacts, Admin, and shell routing.
+- Intended write paths before project edits: `docs/superpowers/specs/2026-06-29-devboard-project-workspace-agents-design.md` and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Planned scope: documentation-only design. Capture the approved product/architecture direction and MVP order. No backend routes, migrations, frontend code, local agent code, MCP server implementation, Docker changes, or runtime deployment changes.
+- Work performed: added the persistent design spec defining Project Workspace, assistive Project Operating Protocol, Socrates, Platon, Aristoteles, direct agent chat, agent conversations, shared Memory/Project Logbook, Agent Work Queue, Shared Memory Pack, server MCP versus plugin MCP responsibilities, UX requirements, MVP order, first implementation plan scope, acceptance criteria, and open implementation decisions.
+- Verification plan: markdown/diff sanity check; placeholder and ambiguity scan; `git diff --check` for the new spec and logbook.
+- Verification: spec self-review scanned for unresolved `TBD`, `TODO`, `FIXME`, placeholder markers, and unresolved-choice language; no matches were found in the new spec. The open implementation decisions are intentionally listed under "Open Decisions For Implementation Planning". `git diff --check -- docs/superpowers/specs/2026-06-29-devboard-project-workspace-agents-design.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` passed.
+- Files changed: `docs/superpowers/specs/2026-06-29-devboard-project-workspace-agents-design.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: this is a design artifact only. It does not implement Project Workspace, Memory, Agent Work Queue, server MCP, Socrates, Platon, Aristoteles, or local-agent polling.
+
 ## 2026-06-28 - Task Clarifier apply suggestion start
 
 - Request: continue the server-side agents implementation by adding the PM/Admin-approved mutation step after a Task Clarifier suggestion is accepted.
