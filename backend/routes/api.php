@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Plugin\AuthCheckController;
+use App\Http\Controllers\Plugin\AgentWorkItemController;
 use App\Http\Controllers\Plugin\DeltaChunkController;
 use App\Http\Controllers\Plugin\DeltaFinalizeController;
 use App\Http\Controllers\Plugin\DeltaLocalSnapshotController;
@@ -15,6 +16,7 @@ use App\Http\Controllers\Plugin\RunEventController;
 use App\Http\Controllers\Plugin\RunFinishController;
 use App\Http\Controllers\Plugin\RunHeartbeatController;
 use App\Http\Controllers\Plugin\RunStartController;
+use App\Http\Controllers\Plugin\SharedMemoryPackController;
 use App\Http\Controllers\Plugin\GenesisChunkController;
 use App\Http\Controllers\Plugin\GenesisFinalizeController;
 use App\Http\Controllers\Plugin\GenesisStartController;
@@ -35,6 +37,30 @@ Route::prefix('plugin/v1')->group(function () {
     Route::get('/projects/{project}/repositories', ListRepositoriesController::class)
         ->middleware('throttle:plugin-api-light')
         ->middleware('plugin.token:projects.read,repositories.read');
+
+    Route::get('/projects/{project}/shared-memory-pack', SharedMemoryPackController::class)
+        ->middleware('throttle:plugin-api-light')
+        ->middleware('plugin.token:projects.read');
+
+    Route::get('/agent-work-items', [AgentWorkItemController::class, 'index'])
+        ->middleware('throttle:plugin-api-light')
+        ->middleware('plugin.token:projects.read');
+
+    Route::post('/agent-work-items/{workItem}/claim', [AgentWorkItemController::class, 'claim'])
+        ->middleware('throttle:plugin-api-light')
+        ->middleware('plugin.token:runs.write');
+
+    Route::post('/agent-work-items/{workItem}/heartbeat', [AgentWorkItemController::class, 'heartbeat'])
+        ->middleware('throttle:plugin-api-light')
+        ->middleware('plugin.token:runs.write');
+
+    Route::post('/agent-work-items/{workItem}/complete', [AgentWorkItemController::class, 'complete'])
+        ->middleware('throttle:plugin-api-light')
+        ->middleware('plugin.token:runs.write');
+
+    Route::post('/agent-work-items/{workItem}/fail', [AgentWorkItemController::class, 'fail'])
+        ->middleware('throttle:plugin-api-light')
+        ->middleware('plugin.token:runs.write');
 
     Route::post('/repositories/{repository}/local-workspaces', RegisterLocalWorkspaceController::class)
         ->middleware('throttle:plugin-api-light')
