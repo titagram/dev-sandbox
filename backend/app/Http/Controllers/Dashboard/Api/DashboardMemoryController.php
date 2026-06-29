@@ -82,10 +82,7 @@ final class DashboardMemoryController extends Controller
             'updated_at' => $now,
         ]);
 
-        $entry = collect($reader->projectMemory($project)['entries'])
-            ->firstWhere('id', $memoryId);
-
-        return response()->json($entry, 201);
+        return response()->json($reader->projectMemoryEntry($memoryId), 201);
     }
 
     private function abortUnlessDashboardReader(Request $request): void

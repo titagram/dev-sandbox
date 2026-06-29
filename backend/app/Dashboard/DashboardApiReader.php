@@ -100,6 +100,18 @@ final class DashboardApiReader
     /**
      * @return array<string, mixed>
      */
+    public function projectMemoryEntry(string $entryId): array
+    {
+        $entry = DB::table('project_memory_entries')->where('id', $entryId)->first();
+        abort_unless($entry, 404);
+        $this->abortUnlessProjectReadable((string) $entry->project_id);
+
+        return $this->memoryEntry($entry);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function overview(): array
     {
         $taskStateCounts = DB::table('tasks')

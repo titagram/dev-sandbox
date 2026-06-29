@@ -134,6 +134,47 @@ it('returns newest project memory entries first and limits the list', function (
         ->and($entries[99]['summary'])->toBe('Memory entry 2');
 });
 
+it('returns the created memory entry even when it is outside the newest list page', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $future = now()->addHour();
+
+    foreach (range(1, 100) as $index) {
+        DB::table('project_memory_entries')->insert([
+            'id' => (string) Str::ulid(),
+            'project_id' => $projectId,
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => null,
+            'source' => 'dashboard_user',
+            'kind' => 'agent_note',
+            'completeness' => 'complete',
+            'summary' => "Future memory entry {$index}",
+            'payload' => json_encode(['index' => $index], JSON_THROW_ON_ERROR),
+            'occurred_at' => $future->copy()->addMinutes($index),
+            'created_at' => $future->copy()->addMinutes($index),
+            'updated_at' => $future->copy()->addMinutes($index),
+        ]);
+    }
+
+    $created = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory", [
+            'kind' => 'verification',
+            'summary' => 'Created entry is returned by direct lookup.',
+            'payload' => ['why' => 'The created row can fall outside the newest memory page.'],
+        ])
+        ->assertCreated()
+        ->assertJsonPath('summary', 'Created entry is returned by direct lookup.')
+        ->json();
+
+    expect($created)->toBeArray()
+        ->and($created['id'] ?? null)->not->toBeNull()
+        ->and(DB::table('project_memory_entries')->where('id', $created['id'])->value('summary'))
+        ->toBe('Created entry is returned by direct lookup.');
+});
+
 it('rejects repository task and run ids from another project', function () {
     $developer = projectMemoryDashboardApiUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
