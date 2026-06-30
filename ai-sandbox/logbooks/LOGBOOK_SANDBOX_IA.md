@@ -72,3 +72,39 @@ Record sandbox framework, tooling, graph, wiki seed, and automation changes here
 - `gemini` is not visible in Codex's non-interactive PATH; set `GEMINI_CLI` if the executable is only available in your interactive shell.
 - `ollama list` returned no installed models; pass `model` to `ollama_delegate` or set `OLLAMA_DELEGATE_MODEL` after installing a model.
 - Newly installed plugin tools are normally picked up in a new Codex thread.
+
+### 2026-06-30 20:12 - Coordination Prep Discovery Refresh
+
+**Request**: Prepare for a frontend-agent coordination discussion by inspecting initialized sandbox/project state and current Markdown sources.
+**Context read**:
+- `ai-sandbox/INIT.md`
+- `ai-sandbox/instructions/INDEX.md`
+- `ai-sandbox/config/project.yaml`
+- `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`
+- `ai-sandbox/instructions/policies/LOGBOOKS.md`
+- `ai-sandbox/instructions/policies/DOCKER.md`
+- `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`
+- `ai-sandbox/instructions/workflows/DISCOVERY.md`
+- `ai-sandbox/scripts/discover_project.py`
+
+**Work performed**:
+- Ran environment detection.
+- Attempted dependency bootstrap as required by INIT.
+- Ran lightweight project discovery to refresh `ai-sandbox/docs/discovery.json` and `ai-sandbox/docs/discovery.md`.
+
+**Verification**:
+- `python3 ai-sandbox/scripts/detect_environment.py` -> passed; reported Linux/x86_64 and Docker linux/amd64.
+- `python3 ai-sandbox/scripts/bootstrap_dependencies.py` -> failed because the vendored wheel set lacks `rapidfuzz` for `graphifyy==0.8.19`.
+- `python3 ai-sandbox/scripts/discover_project.py` -> passed; wrote discovery artifacts.
+- `git check-ignore -v ai-sandbox/docs/discovery.md ai-sandbox/docs/discovery.json` -> confirmed discovery artifacts are gitignored.
+- `git diff --check -- ai-sandbox/docs/discovery.md ai-sandbox/docs/discovery.json ai-sandbox/logbooks/LOGBOOK_PROJECT.md ai-sandbox/logbooks/LOGBOOK_SANDBOX_IA.md` -> passed for tracked changes.
+- `rg -n "[ \t]+$" ai-sandbox/docs/frontend-agent-coordination-2026-06-30.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md ai-sandbox/logbooks/LOGBOOK_SANDBOX_IA.md` -> no trailing whitespace.
+
+**Files changed**:
+- `ai-sandbox/docs/discovery.json` - refreshed lightweight discovery artifact.
+- `ai-sandbox/docs/discovery.md` - refreshed lightweight discovery artifact.
+- `ai-sandbox/logbooks/LOGBOOK_SANDBOX_IA.md` - this log entry.
+
+**Residual risks**:
+- Discovery output is rough because the script includes `ai-sandbox/.venv` in sample files.
+- Dependency bootstrap remains blocked until a compatible `rapidfuzz` wheel is vendored or the bootstrap strategy changes.

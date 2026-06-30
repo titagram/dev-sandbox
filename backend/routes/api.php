@@ -1,5 +1,9 @@
 <?php
 
+use App\Http\Controllers\Hades\AgentRegisterController as HadesAgentRegisterController;
+use App\Http\Controllers\Hades\CapabilitiesController as HadesCapabilitiesController;
+use App\Http\Controllers\Hades\HealthController as HadesHealthController;
+use App\Http\Controllers\Hades\TokenVerifyController as HadesTokenVerifyController;
 use App\Http\Controllers\Plugin\AuthCheckController;
 use App\Http\Controllers\Plugin\AgentWorkItemController;
 use App\Http\Controllers\Plugin\DeltaChunkController;
@@ -125,4 +129,19 @@ Route::prefix('plugin/v1')->group(function () {
     Route::post('/runs/{run}/wiki/revisions', WikiRevisionController::class)
         ->middleware('throttle:plugin-api-light')
         ->middleware('plugin.token:wiki.write');
+});
+
+Route::prefix('hades/v1')->group(function () {
+    Route::get('/health', HadesHealthController::class)
+        ->middleware('throttle:plugin-api-light');
+
+    Route::post('/token/verify', HadesTokenVerifyController::class)
+        ->middleware('throttle:plugin-api-light');
+
+    Route::post('/agents/register', HadesAgentRegisterController::class)
+        ->middleware('throttle:plugin-api-light');
+
+    Route::get('/capabilities', HadesCapabilitiesController::class)
+        ->middleware('throttle:plugin-api-light')
+        ->middleware('hades.agent');
 });

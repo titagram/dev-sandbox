@@ -2,6 +2,7 @@
 
 use App\Console\Commands\Quality\CheckGatesCommand;
 use App\Console\Commands\Quality\RouteInventoryCommand;
+use App\Http\Middleware\AuthenticateHadesAgentToken;
 use App\Console\Commands\Quality\RouteSmokeCommand;
 use App\Http\Middleware\AuthenticatePluginToken;
 use Illuminate\Console\Scheduling\Schedule;
@@ -31,6 +32,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'plugin.token' => AuthenticatePluginToken::class,
+            'hades.agent' => AuthenticateHadesAgentToken::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
