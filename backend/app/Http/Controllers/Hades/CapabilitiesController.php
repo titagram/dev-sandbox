@@ -39,6 +39,11 @@ class CapabilitiesController extends Controller
                 'agent_jobs' => '/api/hades/v1/agent/jobs',
                 'agent_job_status' => '/api/hades/v1/agent/jobs/{job_id}/status',
                 'agent_job_result' => '/api/hades/v1/agent/jobs/{job_id}/result',
+                'artifacts' => '/api/hades/v1/artifacts',
+                'doctor_reports' => '/api/hades/v1/doctor/reports',
+                'persephone_inbox' => '/api/hades/v1/persephone/inbox',
+                'persephone_events' => '/api/hades/v1/persephone/events',
+                'persephone_messages' => '/api/hades/v1/persephone/messages',
             ],
             'server_time' => now()->toISOString(),
         ]);

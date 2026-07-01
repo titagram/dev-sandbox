@@ -18,6 +18,9 @@ class HealthController extends Controller
                 'token_verify' => '/api/hades/v1/token/verify',
                 'agents_register' => '/api/hades/v1/agents/register',
                 'capabilities' => '/api/hades/v1/capabilities',
+                'artifacts' => '/api/hades/v1/artifacts',
+                'doctor_reports' => '/api/hades/v1/doctor/reports',
+                'persephone_inbox' => '/api/hades/v1/persephone/inbox',
             ],
             'server_time' => now()->toISOString(),
         ]);

@@ -83,8 +83,8 @@ it('registers an external Hades agent and intersects capabilities with backend p
         ->assertJsonPath('capabilities.sync_git_tree', true)
         ->assertJsonPath('policy.memory', true)
         ->assertJsonPath('policy.jobs', true)
-        ->assertJsonPath('policy.artifacts', false)
-        ->assertJsonPath('policy.persephone', false);
+        ->assertJsonPath('policy.artifacts', true)
+        ->assertJsonPath('policy.persephone', true);
 
     $agentToken = $response->json('agent_token');
     $backendAgentId = $response->json('backend_agent_id');

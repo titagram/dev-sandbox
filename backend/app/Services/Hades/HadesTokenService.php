@@ -116,6 +116,41 @@ class HadesTokenService
         ];
     }
 
+
+    /**
+     * @param list<string>|null $allowedCapabilities
+     * @return array{id: string, plain_token: string, token: object}
+     */
+    public function createBootstrapToken(string $projectId, string $name, ?int $expiresInDays = 90, ?array $allowedCapabilities = null): array
+    {
+        $id = (string) Str::ulid();
+        $secret = Str::random(64);
+        $prefix = self::BOOTSTRAP_PREFIX.$id;
+        $now = now();
+        $allowed = array_values(array_filter($allowedCapabilities ?? ['read_files', 'sync_git_tree', 'populate_backend_ast'], 'is_string'));
+
+        DB::table('hades_bootstrap_tokens')->insert([
+            'id' => $id,
+            'project_id' => $projectId,
+            'token_prefix' => $prefix,
+            'token_hash' => $this->hashSecret($secret),
+            'name' => $name,
+            'scopes' => json_encode(['hades.bootstrap'], JSON_THROW_ON_ERROR),
+            'allowed_capabilities' => json_encode($allowed, JSON_THROW_ON_ERROR),
+            'expires_at' => $expiresInDays === null ? null : $now->copy()->addDays($expiresInDays),
+            'revoked_at' => null,
+            'last_used_at' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        return [
+            'id' => $id,
+            'plain_token' => $prefix.'|'.$secret,
+            'token' => DB::table('hades_bootstrap_tokens')->where('id', $id)->first(),
+        ];
+    }
+
     /**
      * @return array{id: string, plain_token: string}
      */

@@ -1,6 +1,9 @@
 <?php
 
 use App\Http\Controllers\Hades\AgentJobResultController as HadesAgentJobResultController;
+use App\Http\Controllers\Hades\PersephoneController as HadesPersephoneController;
+use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportController;
+use App\Http\Controllers\Hades\ArtifactController as HadesArtifactController;
 use App\Http\Controllers\Hades\AgentJobsController as HadesAgentJobsController;
 use App\Http\Controllers\Hades\AgentJobStatusController as HadesAgentJobStatusController;
 use App\Http\Controllers\Hades\AgentRegisterController as HadesAgentRegisterController;
@@ -171,5 +174,21 @@ Route::prefix('hades/v1')->group(function () {
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/agent/jobs/{job}/result', HadesAgentJobResultController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+
+    Route::post('/artifacts', HadesArtifactController::class)
+        ->middleware(['throttle:plugin-api-heavy', 'hades.agent']);
+
+    Route::post('/doctor/reports', HadesDoctorReportController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/persephone/inbox', [HadesPersephoneController::class, 'inbox'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/persephone/events', [HadesPersephoneController::class, 'events'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/persephone/messages', [HadesPersephoneController::class, 'store'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 });

@@ -70,8 +70,8 @@ class HadesCapabilityPolicy
             'workspace_binding_required' => true,
             'memory' => true,
             'jobs' => true,
-            'artifacts' => false,
-            'persephone' => false,
+            'artifacts' => true,
+            'persephone' => true,
         ];
     }
 
