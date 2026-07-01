@@ -67,9 +67,9 @@ class HadesCapabilityPolicy
     public function m1Policy(): array
     {
         return [
-            'workspace_binding_required' => false,
-            'memory' => false,
-            'jobs' => false,
+            'workspace_binding_required' => true,
+            'memory' => true,
+            'jobs' => true,
             'artifacts' => false,
             'persephone' => false,
         ];

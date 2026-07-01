@@ -9,9 +9,7 @@ use Illuminate\Http\Request;
 
 class CapabilitiesController extends Controller
 {
-    public function __construct(private readonly HadesCapabilityPolicy $capabilities)
-    {
-    }
+    public function __construct(private readonly HadesCapabilityPolicy $capabilities) {}
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -34,6 +32,13 @@ class CapabilitiesController extends Controller
                 'token_verify' => '/api/hades/v1/token/verify',
                 'agents_register' => '/api/hades/v1/agents/register',
                 'capabilities' => '/api/hades/v1/capabilities',
+                'workspaces_bind' => '/api/hades/v1/workspaces/bind',
+                'workspaces_unlink' => '/api/hades/v1/workspaces/{workspace_binding_id}/unlink',
+                'memory_snapshot' => '/api/hades/v1/memory/snapshot',
+                'memory_proposals' => '/api/hades/v1/memory/proposals',
+                'agent_jobs' => '/api/hades/v1/agent/jobs',
+                'agent_job_status' => '/api/hades/v1/agent/jobs/{job_id}/status',
+                'agent_job_result' => '/api/hades/v1/agent/jobs/{job_id}/result',
             ],
             'server_time' => now()->toISOString(),
         ]);

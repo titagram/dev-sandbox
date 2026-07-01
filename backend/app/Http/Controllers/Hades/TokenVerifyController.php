@@ -10,9 +10,7 @@ use Illuminate\Http\Request;
 
 class TokenVerifyController extends Controller
 {
-    public function __construct(private readonly HadesTokenService $tokens)
-    {
-    }
+    public function __construct(private readonly HadesTokenService $tokens) {}
 
     public function __invoke(Request $request): JsonResponse
     {

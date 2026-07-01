@@ -1,9 +1,16 @@
 <?php
 
+use App\Http\Controllers\Hades\AgentJobResultController as HadesAgentJobResultController;
+use App\Http\Controllers\Hades\AgentJobsController as HadesAgentJobsController;
+use App\Http\Controllers\Hades\AgentJobStatusController as HadesAgentJobStatusController;
 use App\Http\Controllers\Hades\AgentRegisterController as HadesAgentRegisterController;
 use App\Http\Controllers\Hades\CapabilitiesController as HadesCapabilitiesController;
 use App\Http\Controllers\Hades\HealthController as HadesHealthController;
+use App\Http\Controllers\Hades\MemoryProposalController as HadesMemoryProposalController;
+use App\Http\Controllers\Hades\MemorySnapshotController as HadesMemorySnapshotController;
 use App\Http\Controllers\Hades\TokenVerifyController as HadesTokenVerifyController;
+use App\Http\Controllers\Hades\WorkspaceBindController as HadesWorkspaceBindController;
+use App\Http\Controllers\Hades\WorkspaceUnlinkController as HadesWorkspaceUnlinkController;
 use App\Http\Controllers\Plugin\AuthCheckController;
 use App\Http\Controllers\Plugin\AgentWorkItemController;
 use App\Http\Controllers\Plugin\DeltaChunkController;
@@ -144,4 +151,25 @@ Route::prefix('hades/v1')->group(function () {
     Route::get('/capabilities', HadesCapabilitiesController::class)
         ->middleware('throttle:plugin-api-light')
         ->middleware('hades.agent');
+
+    Route::post('/workspaces/bind', HadesWorkspaceBindController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/workspaces/{workspaceBinding}/unlink', HadesWorkspaceUnlinkController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/memory/snapshot', HadesMemorySnapshotController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/memory/proposals', HadesMemoryProposalController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/agent/jobs', HadesAgentJobsController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/agent/jobs/{job}/status', HadesAgentJobStatusController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/agent/jobs/{job}/result', HadesAgentJobResultController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 });

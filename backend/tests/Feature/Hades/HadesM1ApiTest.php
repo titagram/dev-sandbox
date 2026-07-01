@@ -81,8 +81,8 @@ it('registers an external Hades agent and intersects capabilities with backend p
         ->assertJsonPath('external_agent_id', 'local-agent-1')
         ->assertJsonPath('capabilities.read_files', true)
         ->assertJsonPath('capabilities.sync_git_tree', true)
-        ->assertJsonPath('policy.memory', false)
-        ->assertJsonPath('policy.jobs', false)
+        ->assertJsonPath('policy.memory', true)
+        ->assertJsonPath('policy.jobs', true)
         ->assertJsonPath('policy.artifacts', false)
         ->assertJsonPath('policy.persephone', false);
 
@@ -205,7 +205,7 @@ function createHadesM1Project(): array
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{id: string, prefix: string, plain_token: string, secret: string, project_id: string}
  */
 function createHadesM1BootstrapToken(array $overrides = []): array

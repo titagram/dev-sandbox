@@ -16,8 +16,7 @@ class AgentRegisterController extends Controller
     public function __construct(
         private readonly HadesTokenService $tokens,
         private readonly HadesCapabilityPolicy $capabilities,
-    ) {
-    }
+    ) {}
 
     public function __invoke(Request $request): JsonResponse
     {
