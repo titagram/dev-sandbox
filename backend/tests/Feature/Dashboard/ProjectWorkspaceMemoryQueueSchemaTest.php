@@ -59,3 +59,8 @@ it('creates project workspace memory and work queue schema', function () {
         ->and(Schema::hasTable('agent_work_item_leases'))->toBeTrue()
         ->and(Schema::hasColumns('agent_work_item_leases', ['id', 'agent_work_item_id', 'device_id', 'lease_token_hash', 'expires_at', 'released_at', 'created_at', 'updated_at']))->toBeTrue();
 });
+
+it('stores project memory summaries as text for agent generated descriptions', function () {
+    expect(Schema::getColumnType('project_memory_entries', 'summary'))
+        ->toBe('text');
+});

@@ -22,7 +22,6 @@ use App\Http\Controllers\Dashboard\Api\TaskClarifierController;
 use App\Http\Controllers\Dashboard\AiAgentsIndexController;
 use App\Http\Controllers\Dashboard\AuthController as DashboardAuthController;
 use App\Http\Controllers\Dashboard\GraphShowController;
-use App\Http\Controllers\Dashboard\HadesAdminController;
 use App\Http\Controllers\Dashboard\KanbanController;
 use App\Http\Controllers\Dashboard\PluginTokenController;
 use App\Http\Controllers\Dashboard\ProjectShowController;
@@ -94,6 +93,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/admin/plugin-tokens', [DashboardAdminController::class, 'createToken']);
         Route::post('/admin/plugin-tokens/{token}/rotate', [DashboardAdminController::class, 'rotateToken']);
         Route::delete('/admin/plugin-tokens/{token}', [DashboardAdminController::class, 'revokeToken']);
+        Route::get('/admin/hades', [DashboardHadesController::class, 'index']);
         Route::post('/admin/hades/bootstrap-tokens', [DashboardHadesController::class, 'createBootstrapToken']);
         Route::delete('/admin/hades/bootstrap-tokens/{token}', [DashboardHadesController::class, 'revokeBootstrapToken']);
         Route::post('/admin/hades/jobs', [DashboardHadesController::class, 'createJob']);
@@ -138,7 +138,6 @@ Route::middleware('auth')->group(function () {
         Route::post('/runs', [QualityController::class, 'run']);
     });
     Route::get('/admin/plugin-tokens', [PluginTokenController::class, 'index']);
-    Route::get('/admin/hades', HadesAdminController::class);
     Route::post('/admin/plugin-tokens', [PluginTokenController::class, 'store']);
     Route::post('/admin/plugin-tokens/{token}/rotate', [PluginTokenController::class, 'rotate']);
     Route::delete('/admin/plugin-tokens/{token}', [PluginTokenController::class, 'destroy']);

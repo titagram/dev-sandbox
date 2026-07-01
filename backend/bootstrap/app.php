@@ -30,6 +30,7 @@ return Application::configure(basePath: dirname(__DIR__))
             ->withoutOverlapping();
     })
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->trustProxies(at: '*');
         $middleware->alias([
             'plugin.token' => AuthenticatePluginToken::class,
             'hades.agent' => AuthenticateHadesAgentToken::class,

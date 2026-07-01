@@ -16,6 +16,14 @@ it('lets admins provision and revoke project scoped Hades bootstrap tokens with 
     $admin = hadesM5DashboardUserWithRole('Admin');
     $project = hadesM5Project($admin);
 
+    $snapshot = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/hades')
+        ->assertOk()
+        ->assertJsonStructure(['projects', 'bootstrapTokens', 'workspaces', 'jobs', 'memoryProposals'])
+        ->json();
+
+    expect(collect($snapshot['projects'])->pluck('id')->all())->toContain($project['id']);
+
     $response = $this->actingAs($admin)
         ->postJson('/api/dashboard/admin/hades/bootstrap-tokens', [
             'project_id' => $project['id'],
@@ -38,6 +46,11 @@ it('lets admins provision and revoke project scoped Hades bootstrap tokens with 
 
     $storedHash = DB::table('hades_bootstrap_tokens')->where('id', $response->json('token.id'))->value('token_hash');
     expect($storedHash)->not->toContain($plainToken);
+
+    $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/hades')
+        ->assertOk()
+        ->assertJsonPath('bootstrapTokens.0.id', $response->json('token.id'));
 
     $this->actingAs($admin)
         ->deleteJson('/api/dashboard/admin/hades/bootstrap-tokens/'.$response->json('token.id'))

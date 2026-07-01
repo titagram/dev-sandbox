@@ -53,6 +53,11 @@ services:
       traefik.docker.network: traefik_default
       traefik.http.routers.devboard-frontend.entrypoints: websecure
       traefik.http.routers.devboard-frontend.rule: Host(`home-sweet-home.cloud`)
+      traefik.http.routers.devboard-install.entrypoints: websecure
+      traefik.http.routers.devboard-install.rule: Host(`home-sweet-home.cloud`) && (Path(`/install.sh`) || Path(`/install.ps1`))
+      traefik.http.routers.devboard-install.priority: "130"
+      traefik.http.routers.devboard-install.tls.certresolver: le
+      traefik.http.routers.devboard-install.service: devboard-frontend
       traefik.http.routers.devboard-frontend.priority: "1"
       traefik.http.routers.devboard-frontend.middlewares: devboard-basic-auth
       traefik.http.routers.devboard-frontend.tls.certresolver: le
