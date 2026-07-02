@@ -17,6 +17,16 @@ final class DashboardMemoryController extends Controller
 {
     use ChecksDashboardRoles;
 
+    private const DASHBOARD_MANUAL_KINDS = [
+        'decision',
+        'implementation',
+        'clarification',
+        'risk',
+        'verification',
+        'handoff',
+        'incident',
+    ];
+
     public function index(Request $request, DashboardApiReader $reader, string $project): JsonResponse
     {
         $this->abortUnlessDashboardReader($request);
@@ -59,8 +69,7 @@ final class DashboardMemoryController extends Controller
                 'string',
                 Rule::exists('runs', 'id')->where(fn ($query) => $query->where('project_id', $project)),
             ],
-            'agent_key' => ['sometimes', 'nullable', 'string', Rule::in(['socrates', 'platon', 'aristoteles', 'local_agent'])],
-            'kind' => ['required', 'string', Rule::in(['decision', 'implementation', 'clarification', 'risk', 'verification', 'handoff', 'incident', 'agent_note'])],
+            'kind' => ['required', 'string', Rule::in(self::DASHBOARD_MANUAL_KINDS)],
             'completeness' => ['sometimes', 'string', Rule::in(['complete', 'incomplete'])],
             'summary' => ['required', 'string', 'min:8', 'max:240'],
             'payload' => ['required', 'array'],
@@ -76,7 +85,7 @@ final class DashboardMemoryController extends Controller
             'task_id' => $validated['task_id'] ?? null,
             'run_id' => $validated['run_id'] ?? null,
             'author_user_id' => $request->user()->id,
-            'agent_key' => $validated['agent_key'] ?? null,
+            'agent_key' => null,
             'source' => 'user_inserted',
             'kind' => $validated['kind'],
             'completeness' => $validated['completeness'] ?? 'complete',
@@ -88,6 +97,88 @@ final class DashboardMemoryController extends Controller
         ]);
 
         return response()->json($reader->projectMemoryEntry($memoryId), 201);
+    }
+
+    public function update(
+        Request $request,
+        DashboardApiReader $reader,
+        ProjectLifecycleService $lifecycle,
+        string $project,
+        string $memory,
+    ): JsonResponse {
+        $this->abortUnlessDashboardMutator($request);
+
+        if ($error = $lifecycle->assertProjectActiveForDashboard($project)) {
+            return $error;
+        }
+
+        $entry = DB::table('project_memory_entries')
+            ->where('project_id', $project)
+            ->where('id', $memory)
+            ->first();
+
+        abort_unless($entry, Response::HTTP_NOT_FOUND);
+
+        $validated = $request->validate([
+            'repository_id' => [
+                'sometimes',
+                'nullable',
+                'string',
+                Rule::exists('repositories', 'id')->where(fn ($query) => $query->where('project_id', $project)),
+            ],
+            'task_id' => [
+                'sometimes',
+                'nullable',
+                'string',
+                Rule::exists('tasks', 'id')->where(fn ($query) => $query->where('project_id', $project)),
+            ],
+            'run_id' => [
+                'sometimes',
+                'nullable',
+                'string',
+                Rule::exists('runs', 'id')->where(fn ($query) => $query->where('project_id', $project)),
+            ],
+            'kind' => ['required', 'string', Rule::in($this->editableKindsFor($entry))],
+            'completeness' => ['required', 'string', Rule::in(['complete', 'incomplete'])],
+            'summary' => ['required', 'string', 'min:8', 'max:240'],
+            'payload' => ['required', 'array'],
+        ]);
+
+        DB::transaction(function () use ($request, $project, $memory, $entry, $validated): void {
+            DB::table('project_memory_entries')->where('id', $memory)->update([
+                'repository_id' => $validated['repository_id'] ?? null,
+                'task_id' => $validated['task_id'] ?? null,
+                'run_id' => $validated['run_id'] ?? null,
+                'kind' => $validated['kind'],
+                'completeness' => $validated['completeness'],
+                'summary' => $validated['summary'],
+                'payload' => json_encode($validated['payload'], JSON_THROW_ON_ERROR),
+                'updated_at' => now(),
+            ]);
+
+            DB::table('audit_logs')->insert([
+                'id' => (string) Str::ulid(),
+                'actor_user_id' => $request->user()->id,
+                'actor_device_id' => null,
+                'actor_type' => 'user',
+                'action' => 'project_memory.updated',
+                'target_type' => 'project_memory_entry',
+                'target_id' => $memory,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+                'payload' => json_encode([
+                    'project_id' => $project,
+                    'previous_summary' => (string) $entry->summary,
+                    'summary' => $validated['summary'],
+                    'previous_kind' => (string) $entry->kind,
+                    'kind' => $validated['kind'],
+                    'source' => (string) $entry->source,
+                ], JSON_THROW_ON_ERROR),
+                'created_at' => now(),
+            ]);
+        });
+
+        return response()->json($reader->projectMemoryEntry($memory));
     }
 
     public function destroy(Request $request, ProjectLifecycleService $lifecycle, string $project, string $memory): Response|JsonResponse
@@ -150,5 +241,19 @@ final class DashboardMemoryController extends Controller
             || $this->userHasRole($request->user(), 'Admin'),
             403,
         );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function editableKindsFor(object $entry): array
+    {
+        if ((string) $entry->kind === 'agent_note'
+            || in_array((string) $entry->source, ['server_agent', 'hades_agent', 'local_agent'], true)
+            || $entry->agent_key !== null) {
+            return [...self::DASHBOARD_MANUAL_KINDS, 'agent_note'];
+        }
+
+        return self::DASHBOARD_MANUAL_KINDS;
     }
 }

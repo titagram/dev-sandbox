@@ -169,6 +169,15 @@ docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.
 
 Il dominio pubblico configurato e` `https://home-sweet-home.cloud`. Traefik inoltra solo al container `app` sulla porta `8000`; PostgreSQL e Neo4j non hanno router Traefik. Nell'esempio i binding host restano su `127.0.0.1` per evitare ingressi pubblici fuori da Traefik.
 
+### Profilo production
+
+Il profilo production separato e` `docker-compose.devboard.prod.yaml`.
+Builda il backend Laravel in immagine con PHP-FPM + nginx, builda il frontend pubblico da `../emergent_devboard_frontend/frontend`, richiede segreti espliciti e non espone PostgreSQL o Neo4j su porte host.
+
+Runbook:
+
+- `docs/runbooks/devboard-production-deploy.md`
+
 ### 2. Inizializza database e seed
 
 ```bash

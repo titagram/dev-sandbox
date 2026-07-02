@@ -173,7 +173,7 @@ final class DashboardResourceController extends Controller
     }
 
     /**
-     * @param list<string> $repositoryIds
+     * @param  list<string>  $repositoryIds
      */
     private function syncTaskRepositories(string $taskId, string $projectId, array $repositoryIds): void
     {
@@ -423,11 +423,29 @@ final class DashboardResourceController extends Controller
         return response()->json($reader->wikiPage($page));
     }
 
+    public function projectWikiPage(Request $request, DashboardApiReader $reader, string $project, string $page): JsonResponse
+    {
+        $this->abortUnlessDashboardReader($request);
+
+        return response()->json($reader->wikiPage($page, $project));
+    }
+
     public function graph(Request $request, DashboardApiReader $reader): JsonResponse
     {
         $this->abortUnlessDashboardReader($request);
 
         return response()->json($reader->graph(
+            snapshotId: $request->query('snapshot_id') ? (string) $request->query('snapshot_id') : null,
+            runId: $request->query('run_id') ? (string) $request->query('run_id') : null,
+        ));
+    }
+
+    public function projectGraph(Request $request, DashboardApiReader $reader, string $project): JsonResponse
+    {
+        $this->abortUnlessDashboardReader($request);
+
+        return response()->json($reader->graph(
+            projectId: $project,
             snapshotId: $request->query('snapshot_id') ? (string) $request->query('snapshot_id') : null,
             runId: $request->query('run_id') ? (string) $request->query('run_id') : null,
         ));

@@ -246,7 +246,7 @@ it('lets an admin delete an unassigned model profile', function () {
             ->exists())->toBeTrue();
 });
 
-it('prevents deleting a model profile still assigned to an agent', function () {
+it('lets an admin delete an assigned model profile and clears agent assignments', function () {
     $admin = aiAgentRegistryUserWithRole('Admin');
     $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
 
@@ -256,10 +256,18 @@ it('prevents deleting a model profile still assigned to an agent', function () {
 
     $this->actingAs($admin)
         ->deleteJson('/api/dashboard/admin/ai-model-profiles/openai_default_text')
-        ->assertStatus(409)
-        ->assertJsonPath('message', 'Model profile is assigned to one or more controlled agents. Remove those assignments before deleting it.');
+        ->assertNoContent();
 
-    expect(DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->exists())->toBeTrue();
+    $auditPayload = json_decode((string) DB::table('audit_logs')
+        ->where('action', 'ai_model_profile.deleted')
+        ->where('target_type', 'ai_model_profile')
+        ->where('target_id', $profileId)
+        ->value('payload'), true, flags: JSON_THROW_ON_ERROR);
+
+    expect(DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->exists())->toBeFalse()
+        ->and(DB::table('ai_agent_profiles')->where('agent_key', 'task_clarifier')->value('default_model_profile_id'))
+        ->toBeNull()
+        ->and($auditPayload['unassigned_agent_keys'])->toContain('task_clarifier');
 });
 
 it('lets an admin assign a model profile to a controlled agent', function () {

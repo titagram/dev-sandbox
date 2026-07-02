@@ -82,7 +82,20 @@ it('serves the generated frontend dashboard read contract', function () {
         ->assertJsonPath('evidence.0.kind', 'artifact_ref');
 
     $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/wiki/pages/{$ids['wiki_page_id']}")
+        ->assertOk()
+        ->assertJsonPath('project_id', $ids['project_id'])
+        ->assertJsonPath('body_markdown', "# API Contract\n\nVerified from local analyzer.");
+
+    $this->actingAs($admin)
         ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->assertJsonPath('run_id', $ids['run_id'])
+        ->assertJsonPath('stats.nodes', 2)
+        ->assertJsonPath('nodes.0.source.type', 'local_analyzer');
+
+    $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph?run_id={$ids['run_id']}")
         ->assertOk()
         ->assertJsonPath('run_id', $ids['run_id'])
         ->assertJsonPath('stats.nodes', 2)

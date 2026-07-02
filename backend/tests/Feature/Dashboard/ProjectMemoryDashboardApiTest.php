@@ -49,7 +49,7 @@ it('lets a developer append and list project memory entries', function () {
         ->assertJsonPath('task_id', $taskId)
         ->assertJsonPath('run_id', $runId)
         ->assertJsonPath('author_user_id', $developer->id)
-        ->assertJsonPath('agent_key', 'local_agent')
+        ->assertJsonPath('agent_key', null)
         ->assertJsonPath('source', 'user_inserted')
         ->assertJsonPath('kind', 'implementation')
         ->assertJsonPath('completeness', 'incomplete')
@@ -66,6 +66,59 @@ it('lets a developer append and list project memory entries', function () {
         ->assertJsonPath('entries.0.id', $created['id'])
         ->assertJsonPath('entries.0.summary', 'Added employee table pagination guard.')
         ->assertJsonPath('entries.0.payload.tests.0', 'php artisan test --filter=EmployeeTableTest');
+});
+
+it('lets a developer update manual project memory entries', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $entry = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory", [
+            'kind' => 'decision',
+            'summary' => 'Original manual dashboard memory.',
+            'payload' => ['note' => 'Original note.'],
+        ])
+        ->assertCreated()
+        ->json();
+
+    $this->actingAs($developer)
+        ->patchJson("/api/dashboard/projects/{$projectId}/memory/{$entry['id']}", [
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'kind' => 'verification',
+            'completeness' => 'incomplete',
+            'summary' => 'Updated manual dashboard memory.',
+            'payload' => ['note' => 'Updated note.'],
+        ])
+        ->assertOk()
+        ->assertJsonPath('id', $entry['id'])
+        ->assertJsonPath('agent_key', null)
+        ->assertJsonPath('source', 'user_inserted')
+        ->assertJsonPath('kind', 'verification')
+        ->assertJsonPath('completeness', 'incomplete')
+        ->assertJsonPath('summary', 'Updated manual dashboard memory.')
+        ->assertJsonPath('payload.note', 'Updated note.');
+
+    expect(DB::table('project_memory_entries')->where('id', $entry['id'])->value('summary'))
+        ->toBe('Updated manual dashboard memory.')
+        ->and(DB::table('audit_logs')->where('action', 'project_memory.updated')->where('target_id', $entry['id'])->exists())
+        ->toBeTrue();
+});
+
+it('does not let manual dashboard memory be created as an agent note', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory", [
+            'agent_key' => 'local_agent',
+            'kind' => 'agent_note',
+            'summary' => 'Manual memory should not masquerade as agent output.',
+            'payload' => ['why' => 'Dashboard-created memory is user inserted.'],
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['kind']);
 });
 
 it('lets pm append project memory entries', function () {
@@ -165,6 +218,43 @@ it('keeps memory deletion project scoped', function () {
         ->assertNotFound();
 
     expect(DB::table('project_memory_entries')->where('id', $entryId)->exists())->toBeTrue();
+});
+
+it('keeps memory updates project scoped', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $primaryProjectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $secondary = projectMemoryDashboardApiProject('Memory Update Second Project', 'memory-update-second-project');
+    $entryId = (string) Str::ulid();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $entryId,
+        'project_id' => $primaryProjectId,
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => $developer->id,
+        'agent_key' => null,
+        'source' => 'user_inserted',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'Primary project update scope entry.',
+        'payload' => json_encode(['why' => 'Update route must stay project scoped.'], JSON_THROW_ON_ERROR),
+        'occurred_at' => now(),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->actingAs($developer)
+        ->patchJson("/api/dashboard/projects/{$secondary['project_id']}/memory/{$entryId}", [
+            'kind' => 'decision',
+            'completeness' => 'complete',
+            'summary' => 'Wrong project update should fail.',
+            'payload' => ['why' => 'Wrong project.'],
+        ])
+        ->assertNotFound();
+
+    expect(DB::table('project_memory_entries')->where('id', $entryId)->value('summary'))
+        ->toBe('Primary project update scope entry.');
 });
 
 it('returns newest project memory entries first and limits the list', function () {
@@ -315,6 +405,15 @@ it('allows sysadmin to read memory but not append it', function () {
 
     $this->actingAs($sysadmin)
         ->deleteJson("/api/dashboard/projects/{$projectId}/memory/{$memoryId}")
+        ->assertForbidden();
+
+    $this->actingAs($sysadmin)
+        ->patchJson("/api/dashboard/projects/{$projectId}/memory/{$memoryId}", [
+            'kind' => 'clarification',
+            'completeness' => 'complete',
+            'summary' => 'Sysadmin cannot update memory.',
+            'payload' => ['why' => 'Sysadmin is not a mutator role.'],
+        ])
         ->assertForbidden();
 });
 

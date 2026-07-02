@@ -2,7 +2,6 @@
 
 namespace App\Assistants;
 
-use DomainException;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -172,14 +171,28 @@ final class AiAgentRegistry
             throw new InvalidArgumentException('Model profile not found.');
         }
 
-        if (DB::table('ai_agent_profiles')->where('default_model_profile_id', $profile->id)->exists()) {
-            throw new DomainException('Model profile is assigned to one or more controlled agents. Remove those assignments before deleting it.');
-        }
-
         $payload = $this->modelProfileById((string) $profile->id);
-        DB::table('ai_model_profiles')->where('id', $profile->id)->delete();
+        $assignedAgentKeys = DB::table('ai_agent_profiles')
+            ->where('default_model_profile_id', $profile->id)
+            ->pluck('agent_key')
+            ->map(fn (mixed $agentKey): string => (string) $agentKey)
+            ->all();
 
-        return $payload;
+        DB::transaction(function () use ($profile): void {
+            DB::table('ai_agent_profiles')
+                ->where('default_model_profile_id', $profile->id)
+                ->update([
+                    'default_model_profile_id' => null,
+                    'updated_at' => now(),
+                ]);
+
+            DB::table('ai_model_profiles')->where('id', $profile->id)->delete();
+        });
+
+        return [
+            ...$payload,
+            'unassigned_agent_keys' => $assignedAgentKeys,
+        ];
     }
 
     /**

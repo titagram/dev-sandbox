@@ -188,6 +188,7 @@ final class DashboardAiAgentController extends Controller
                 'display_name' => $payload['display_name'],
                 'provider_key' => $payload['provider_key'],
                 'model_name' => $payload['model_name'],
+                'unassigned_agent_keys' => $payload['unassigned_agent_keys'] ?? [],
             ], JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);

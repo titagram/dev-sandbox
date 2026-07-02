@@ -74,6 +74,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/projects/{project}/repositories', [DashboardProjectRepositoryController::class, 'store']);
         Route::get('/projects/{project}/memory', [DashboardMemoryController::class, 'index']);
         Route::post('/projects/{project}/memory', [DashboardMemoryController::class, 'store']);
+        Route::patch('/projects/{project}/memory/{memory}', [DashboardMemoryController::class, 'update']);
         Route::delete('/projects/{project}/memory/{memory}', [DashboardMemoryController::class, 'destroy']);
         Route::get('/projects/{project}/workspace-bindings', DashboardWorkspaceBindingController::class);
         Route::get('/projects/{project}/memory/imports', [DashboardMemoryImportController::class, 'index']);
@@ -94,9 +95,11 @@ Route::middleware('auth')->group(function () {
         Route::get('/projects/{project}/kanban', [DashboardResourceController::class, 'projectKanban']);
         Route::get('/projects/{project}/runs', [DashboardResourceController::class, 'projectRuns']);
         Route::get('/projects/{project}/wiki', [DashboardResourceController::class, 'projectWiki']);
+        Route::get('/projects/{project}/wiki/pages/{page}', [DashboardResourceController::class, 'projectWikiPage']);
         Route::post('/projects/{project}/wiki/pages', [DashboardWikiPageController::class, 'store']);
         Route::get('/projects/{project}/wiki/refresh-requests', [DashboardWikiRefreshController::class, 'index']);
         Route::post('/projects/{project}/wiki/refresh-requests', [DashboardWikiRefreshController::class, 'store']);
+        Route::get('/projects/{project}/graph', [DashboardResourceController::class, 'projectGraph']);
         Route::get('/projects/{project}/artifacts', [DashboardResourceController::class, 'projectArtifacts']);
         Route::get('/runs', [DashboardResourceController::class, 'runs']);
         Route::get('/runs/{run}', [DashboardResourceController::class, 'run']);

@@ -577,8 +577,10 @@ final class DashboardApiReader
     /**
      * @return array<string, mixed>
      */
-    public function wikiPage(string $pageId): array
+    public function wikiPage(string $pageId, ?string $projectId = null): array
     {
+        $this->abortUnlessProjectExists($projectId);
+
         $page = DB::table('wiki_pages')
             ->leftJoin('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
             ->select([
@@ -595,6 +597,7 @@ final class DashboardApiReader
                 'wiki_revisions.created_at as revision_created_at',
             ])
             ->where('wiki_pages.id', $pageId)
+            ->when($projectId !== null, fn ($query) => $query->where('wiki_pages.project_id', $projectId))
             ->first();
         abort_unless($page, 404);
         $this->abortUnlessProjectReadable((string) $page->project_id);
@@ -611,9 +614,12 @@ final class DashboardApiReader
     /**
      * @return array<string, mixed>
      */
-    public function graph(?string $snapshotId = null, ?string $runId = null): array
+    public function graph(?string $projectId = null, ?string $snapshotId = null, ?string $runId = null): array
     {
+        $this->abortUnlessProjectExists($projectId);
+
         $snapshot = DB::table('snapshots')
+            ->when($projectId !== null, fn ($query) => $query->where('project_id', $projectId))
             ->when($snapshotId, fn ($query, string $id) => $query->where('id', $id))
             ->when(
                 ! $snapshotId && $runId !== null,
@@ -621,7 +627,13 @@ final class DashboardApiReader
             )
             ->orderByDesc('created_at')
             ->first();
+
+        if (! $snapshot && $projectId !== null) {
+            return $this->emptyGraph($projectId);
+        }
+
         abort_unless($snapshot, 404);
+        $this->abortUnlessProjectReadable((string) $snapshot->project_id);
 
         $artifact = $snapshot->graph_snapshot_artifact_id
             ? DB::table('artifacts')->where('id', $snapshot->graph_snapshot_artifact_id)->first()
@@ -671,6 +683,32 @@ final class DashboardApiReader
             ],
             'nodes' => array_values($graphNodes),
             'edges' => array_values($graphEdges),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function emptyGraph(string $projectId): array
+    {
+        return [
+            'snapshot_id' => null,
+            'run_id' => null,
+            'generated_at' => now()->toIso8601String(),
+            'source' => $this->sourceMeta(
+                type: 'local_analyzer',
+                status: 'needs_verification',
+                origin: 'DevBoard Laravel dashboard API',
+                ref: $projectId,
+            ),
+            'stats' => [
+                'nodes' => 0,
+                'edges' => 0,
+                'modules' => 0,
+                'routes' => 0,
+            ],
+            'nodes' => [],
+            'edges' => [],
         ];
     }
 
