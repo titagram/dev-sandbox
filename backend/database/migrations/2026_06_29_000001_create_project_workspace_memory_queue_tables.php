@@ -35,7 +35,7 @@ return new class extends Migration
             $table->string('source');
             $table->string('kind');
             $table->string('completeness')->default('complete');
-            $table->string('summary');
+            $table->text('summary');
             $table->json('payload');
             $table->timestamp('occurred_at');
             $table->timestamps();

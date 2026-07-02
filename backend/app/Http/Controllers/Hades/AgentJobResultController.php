@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\WikiRefreshResultService;
+use App\Services\WikiRevisionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -12,7 +14,7 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AgentJobResultController extends Controller
 {
-    public function __invoke(Request $request, string $job): JsonResponse
+    public function __invoke(Request $request, WikiRefreshResultService $wikiResults, string $job): JsonResponse
     {
         $validated = $request->validate([
             'project_id' => ['required', 'string'],
@@ -63,18 +65,28 @@ class AgentJobResultController extends Controller
             $updates['error_message'] = $validated['error'] ?? ($result['summary'] ?? null);
         }
 
-        DB::transaction(function () use ($job, $status, $updates, $result, $now): void {
-            DB::table('hades_agent_jobs')->where('id', $job)->update($updates);
-            DB::table('hades_agent_job_events')->insert([
-                'id' => (string) Str::ulid(),
-                'job_id' => $job,
-                'event_type' => 'result',
-                'status' => $status,
-                'payload' => json_encode(['result' => $result], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-        });
+        try {
+            DB::transaction(function () use ($job, $status, &$updates, &$result, $record, $wikiResults, $now): void {
+                if ($status === 'completed' && $this->shouldApplyWikiRefreshResult($record, $result)) {
+                    $result['applied'] = $wikiResults->apply($record, $result);
+                    $updates['result'] = json_encode($result, JSON_THROW_ON_ERROR);
+                    $updates['result_applied_at'] = $now;
+                }
+
+                DB::table('hades_agent_jobs')->where('id', $job)->update($updates);
+                DB::table('hades_agent_job_events')->insert([
+                    'id' => (string) Str::ulid(),
+                    'job_id' => $job,
+                    'event_type' => 'result',
+                    'status' => $status,
+                    'payload' => json_encode(['result' => $result], JSON_THROW_ON_ERROR),
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+            });
+        } catch (WikiRevisionException $exception) {
+            return $this->error($exception->errorCode, $exception->getMessage(), Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
 
         $updated = DB::table('hades_agent_jobs')->where('id', $job)->first();
 
@@ -140,7 +152,14 @@ class AgentJobResultController extends Controller
             'result' => $this->decode($job->result),
             'completed_at' => $this->toIsoString($job->completed_at),
             'failed_at' => $this->toIsoString($job->failed_at),
+            'result_applied_at' => $this->toIsoString($job->result_applied_at ?? null),
         ];
+    }
+
+    private function shouldApplyWikiRefreshResult(object $job, array $result): bool
+    {
+        return $job->capability === 'populate_project_wiki'
+            || ($result['schema'] ?? null) === 'devboard.wiki_refresh_result.v1';
     }
 
     private function decode(mixed $value): array

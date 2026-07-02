@@ -1,13 +1,16 @@
 <?php
 
+use Database\Seeders\DevBoardSeeder;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('returns project and matching repository memory without leaking other memory', function () {
@@ -97,6 +100,100 @@ it('lets the local agent list, claim, heartbeat, and complete work with memory',
         ->and(DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->whereNull('released_at')->exists())->toBeFalse();
 });
 
+it('appends local agent completion to a linked agent chat thread', function () {
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $workspaceId = pluginSharedMemoryWorkspace($repositoryId, $token['device_id']);
+    $thread = pluginSharedMemoryAgentChatThread($projectId, $repositoryId);
+    $workItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId, [
+        'payload' => [
+            'schema' => 'devboard.agent_chat_turn.v1',
+            'source' => 'agent_chat',
+            'agent_chat_thread_id' => $thread['id'],
+            'agent_chat_message_id' => $thread['user_message_id'],
+        ],
+    ]);
+    DB::table('agent_chat_messages')->where('id', $thread['user_message_id'])->update(['agent_work_item_id' => $workItemId]);
+    DB::table('agent_chat_threads')->where('id', $thread['id'])->update([
+        'status' => 'pending_local_agent',
+        'latest_agent_work_item_id' => $workItemId,
+        'updated_at' => now(),
+    ]);
+    $leaseToken = pluginSharedMemoryClaim($this, $token, $workItemId, $workspaceId);
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/complete", [
+        'protocol_version' => 'v1',
+        'lease_token' => $leaseToken,
+        'chat_message' => 'Ho completato il lavoro richiesto nel workspace locale.',
+        'memory_entry' => [
+            'kind' => 'implementation',
+            'summary' => 'Local agent completed linked chat work.',
+            'payload' => pluginSharedMemoryCompletionPayload(),
+        ],
+    ], pluginSharedMemoryHeaders($token))
+        ->assertOk()
+        ->assertJsonPath('item.status', 'completed');
+
+    $messages = DB::table('agent_chat_messages')
+        ->where('agent_chat_thread_id', $thread['id'])
+        ->orderBy('created_at')
+        ->orderBy('id')
+        ->get();
+    $storedThread = DB::table('agent_chat_threads')->where('id', $thread['id'])->first();
+    $assistantMetadata = json_decode((string) $messages[1]->metadata, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($messages)->toHaveCount(2)
+        ->and($messages[1]->role)->toBe('assistant')
+        ->and($messages[1]->agent_work_item_id)->toBe($workItemId)
+        ->and($messages[1]->content)->toBe('Ho completato il lavoro richiesto nel workspace locale.')
+        ->and($assistantMetadata['schema'])->toBe('devboard.agent_chat_local_completion.v1')
+        ->and($storedThread->status)->toBe('active')
+        ->and($storedThread->latest_agent_work_item_id)->toBe($workItemId);
+});
+
+it('appends local agent failure to a linked agent chat thread', function () {
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $workspaceId = pluginSharedMemoryWorkspace($repositoryId, $token['device_id']);
+    $thread = pluginSharedMemoryAgentChatThread($projectId, $repositoryId);
+    $workItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId, [
+        'payload' => [
+            'schema' => 'devboard.agent_chat_turn.v1',
+            'source' => 'agent_chat',
+            'agent_chat_thread_id' => $thread['id'],
+            'agent_chat_message_id' => $thread['user_message_id'],
+        ],
+    ]);
+    DB::table('agent_chat_messages')->where('id', $thread['user_message_id'])->update(['agent_work_item_id' => $workItemId]);
+    DB::table('agent_chat_threads')->where('id', $thread['id'])->update([
+        'status' => 'pending_local_agent',
+        'latest_agent_work_item_id' => $workItemId,
+        'updated_at' => now(),
+    ]);
+    $leaseToken = pluginSharedMemoryClaim($this, $token, $workItemId, $workspaceId);
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/fail", [
+        'protocol_version' => 'v1',
+        'lease_token' => $leaseToken,
+        'failure_reason' => 'Local checkout failed.',
+    ], pluginSharedMemoryHeaders($token))
+        ->assertOk()
+        ->assertJsonPath('item.status', 'failed');
+
+    $systemMessage = DB::table('agent_chat_messages')
+        ->where('agent_chat_thread_id', $thread['id'])
+        ->where('role', 'system')
+        ->first();
+    $storedThread = DB::table('agent_chat_threads')->where('id', $thread['id'])->first();
+
+    expect($systemMessage)->not->toBeNull()
+        ->and($systemMessage->content)->toBe('Local agent failed: Local checkout failed.')
+        ->and($systemMessage->agent_work_item_id)->toBe($workItemId)
+        ->and($storedThread->status)->toBe('failed');
+});
+
 it('renews the active lease on heartbeat so completion works after the original expiry', function () {
     $start = now()->startOfSecond();
     $this->travelTo($start);
@@ -123,7 +220,7 @@ it('renews the active lease on heartbeat so completion works after the original 
         ->value('expires_at');
 
     expect($leaseExpiry)->not->toBeNull()
-        ->and(\Illuminate\Support\Carbon::parse($leaseExpiry)->equalTo($start->copy()->addMinutes(50)))->toBeTrue();
+        ->and(Carbon::parse($leaseExpiry)->equalTo($start->copy()->addMinutes(50)))->toBeTrue();
 
     $this->travelTo($start->copy()->addMinutes(35));
 
@@ -226,7 +323,7 @@ it('does not create a replacement lease when same-device reclaim loses the condi
         ->count();
     $completedDuringClaim = false;
 
-    DB::listen(function (Illuminate\Database\Events\QueryExecuted $query) use (&$completedDuringClaim, $workItemId): void {
+    DB::listen(function (QueryExecuted $query) use (&$completedDuringClaim, $workItemId): void {
         if ($completedDuringClaim || ! str_contains($query->sql, 'from "agent_work_items"')) {
             return;
         }
@@ -403,7 +500,7 @@ it('rejects work queue access when the token is not bound to an active device', 
 });
 
 /**
- * @param list<string>|null $scopes
+ * @param  list<string>|null  $scopes
  * @return array{id: string, prefix: string, plain_token: string, secret: string}
  */
 function pluginSharedMemoryToken(string $secret = 'shared-memory-secret', ?array $scopes = null): array
@@ -471,7 +568,7 @@ function pluginSharedMemoryTokenWithDevice(string $secret = 'shared-memory-devic
 }
 
 /**
- * @param array{id: string, prefix: string, plain_token: string, secret: string, device_id?: string} $token
+ * @param  array{id: string, prefix: string, plain_token: string, secret: string, device_id?: string}  $token
  * @return array<string, string>
  */
 function pluginSharedMemoryHeaders(array $token): array
@@ -497,6 +594,51 @@ function pluginSharedMemoryProjectId(): string
 function pluginSharedMemoryRepositoryId(): string
 {
     return DB::table('repositories')->where('slug', 'demo-repository')->value('id');
+}
+
+/**
+ * @return array{id: string, user_message_id: string}
+ */
+function pluginSharedMemoryAgentChatThread(string $projectId, ?string $repositoryId): array
+{
+    $threadId = (string) Str::ulid();
+    $messageId = (string) Str::ulid();
+    $userId = (int) DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $now = now();
+
+    DB::table('agent_chat_threads')->insert([
+        'id' => $threadId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'task_id' => null,
+        'created_by_user_id' => $userId,
+        'agent_key' => 'local_agent',
+        'title' => 'Plugin linked chat',
+        'status' => 'active',
+        'latest_agent_work_item_id' => null,
+        'latest_assistant_run_id' => null,
+        'last_message_at' => $now,
+        'metadata' => json_encode([], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('agent_chat_messages')->insert([
+        'id' => $messageId,
+        'agent_chat_thread_id' => $threadId,
+        'author_user_id' => $userId,
+        'assistant_run_id' => null,
+        'agent_work_item_id' => null,
+        'role' => 'user',
+        'content' => 'Please complete this local workspace task.',
+        'metadata' => json_encode([], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+    ]);
+
+    return [
+        'id' => $threadId,
+        'user_message_id' => $messageId,
+    ];
 }
 
 function pluginSharedMemoryProject(string $name, string $slug, string $status = 'active'): string
@@ -637,7 +779,7 @@ function pluginSharedMemoryClaim(mixed $test, array $token, string $workItemId, 
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{why: string, changed: array<int, mixed>, tests: array<int, mixed>, skipped_checks: array<int, mixed>, risks: array<int, mixed>}
  */
 function pluginSharedMemoryCompletionPayload(array $overrides = []): array

@@ -47,6 +47,40 @@ it('returns a versioned shared memory snapshot for a linked workspace', function
     expect($response->json('etag'))->toBe($response->json('version'));
 });
 
+it('preserves dashboard user inserted memory in the Hades snapshot', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $memoryId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'user_inserted',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'Dashboard user inserted memory remains visible to Hades.',
+        'payload' => json_encode(['source_label' => 'inserito dall utente'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $this->getJson('/api/hades/v1/memory/snapshot?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('items.0.id', $memoryId)
+        ->assertJsonPath('items.0.source', 'user_inserted')
+        ->assertJsonPath('items.0.payload.source_label', 'inserito dall utente');
+});
+
 it('creates idempotent memory proposals and auto-accepts low risk creates', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);

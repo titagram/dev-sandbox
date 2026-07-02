@@ -207,6 +207,19 @@ class DevBoardSeeder extends Seeder
             'updated_at' => $now,
         ]);
 
+        $this->upsertUlid('ai_model_providers', ['provider_key' => 'opencode_go'], [
+            'display_name' => 'OpenCode Go',
+            'provider_type' => 'openai_compatible',
+            'base_url' => 'https://opencode.ai/zen/go/v1',
+            'enabled' => false,
+            'metadata' => json_encode([
+                'source_status' => 'verified_from_docs',
+                'notes' => 'First-class configurable provider slot for OpenCode Go. Credentials are supplied by an Admin.',
+            ], JSON_THROW_ON_ERROR),
+            'created_by_user_id' => $userId,
+            'updated_at' => $now,
+        ]);
+
         $defaultTextModelProfileId = $this->upsertUlid('ai_model_profiles', ['profile_key' => 'openai_default_text'], [
             'provider_id' => $openAiProviderId,
             'display_name' => 'OpenAI Default Text',
@@ -254,7 +267,7 @@ class DevBoardSeeder extends Seeder
                 'description' => 'Project-level read-only supervisor that routes requests to controlled specialist flows.',
                 'agent_type' => 'supervisor',
                 'parent_agent_key' => null,
-                'allowed_tools' => ['read_project_summary', 'read_agent_profile_registry', 'append_assistant_suggestion'],
+                'allowed_tools' => ['read_project_summary', 'search_project_memory', 'query_project_graph', 'read_agent_profile_registry', 'append_assistant_suggestion'],
                 'trigger_events' => ['manual_chat', 'project_summary_request'],
                 'output_schema' => [
                     'type' => 'object',
@@ -313,7 +326,7 @@ class DevBoardSeeder extends Seeder
                 'description' => 'Answers from DevBoard-held wiki evidence and flags stale or conflicting pages.',
                 'agent_type' => 'specialist',
                 'parent_agent_key' => 'socrate_supervisor',
-                'allowed_tools' => ['search_wiki_revisions', 'read_artifact_metadata', 'append_assistant_suggestion'],
+                'allowed_tools' => ['search_wiki_revisions', 'search_project_memory', 'query_project_graph', 'write_wiki_revision', 'read_artifact_metadata', 'append_assistant_suggestion'],
                 'trigger_events' => ['manual_chat', 'wiki_freshness_check'],
                 'output_schema' => [
                     'type' => 'object',
@@ -349,7 +362,7 @@ class DevBoardSeeder extends Seeder
     }
 
     /**
-     * @param array<string, string> $roleIds
+     * @param  array<string, string>  $roleIds
      */
     private function seedUser(string $name, string $email, string $password, string $role, array $roleIds, mixed $now): string
     {
@@ -379,8 +392,8 @@ class DevBoardSeeder extends Seeder
     }
 
     /**
-     * @param array<string, mixed> $where
-     * @param array<string, mixed> $values
+     * @param  array<string, mixed>  $where
+     * @param  array<string, mixed>  $values
      */
     private function upsertUlid(string $table, array $where, array $values): string
     {

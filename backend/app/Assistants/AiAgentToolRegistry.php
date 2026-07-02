@@ -2,10 +2,13 @@
 
 namespace App\Assistants;
 
+use App\Assistants\Tools\QueryProjectGraphTool;
 use App\Assistants\Tools\ReadProjectSummaryTool;
 use App\Assistants\Tools\ReadProjectTasksTool;
 use App\Assistants\Tools\ReadTaskDetailTool;
+use App\Assistants\Tools\SearchProjectMemoryTool;
 use App\Assistants\Tools\SearchWikiRevisionsTool;
+use App\Assistants\Tools\WriteWikiRevisionTool;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Laravel\Ai\Contracts\Tool;
@@ -19,7 +22,10 @@ final class AiAgentToolRegistry
         'read_project_summary' => ReadProjectSummaryTool::class,
         'read_project_tasks' => ReadProjectTasksTool::class,
         'read_task_detail' => ReadTaskDetailTool::class,
+        'query_project_graph' => QueryProjectGraphTool::class,
+        'search_project_memory' => SearchProjectMemoryTool::class,
         'search_wiki_revisions' => SearchWikiRevisionsTool::class,
+        'write_wiki_revision' => WriteWikiRevisionTool::class,
     ];
 
     /**

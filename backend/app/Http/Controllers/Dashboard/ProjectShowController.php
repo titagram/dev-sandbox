@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Dashboard;
 
 use App\Assistants\BacklogTriageService;
+use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use Illuminate\Http\Request;
@@ -14,7 +15,7 @@ class ProjectShowController extends Controller
 {
     use ChecksDashboardRoles;
 
-    public function __invoke(Request $request, BacklogTriageService $triage, string $project): Response
+    public function __invoke(Request $request, BacklogTriageService $triage, DashboardApiReader $reader, string $project): Response
     {
         $projectRow = DB::table('projects')->where('id', $project)->firstOrFail();
         $repositories = DB::table('repositories')->where('project_id', $project)->orderBy('name')->get()->map(function (object $repository) {
@@ -45,6 +46,7 @@ class ProjectShowController extends Controller
                 'wiki_status' => $wikiCount === 0 ? 'none' : ($staleWikiCount > 0 ? "{$staleWikiCount} stale" : 'current'),
                 'risk_level' => $latestRun?->risk_level ?? 'low',
                 'latest_run' => $latestRun?->id,
+                'graph_href' => $latestRun ? "/graph?run={$latestRun->id}" : ($graphArtifact ? '/graph' : null),
                 'source_label' => 'local_plugin_snapshot',
             ];
         });
@@ -58,9 +60,12 @@ class ProjectShowController extends Controller
             ],
             'assistant' => [
                 'triage_href' => "/api/dashboard/projects/{$projectRow->id}/assistant/backlog-triage",
+                'agent_work_href' => "/api/dashboard/projects/{$projectRow->id}/agent-work",
                 'can_triage' => $this->userHasRole($request->user(), 'Admin') || $this->userHasRole($request->user(), 'PM'),
                 'latest_backlog_triage_suggestion' => $triage->latestSuggestionForProject((string) $projectRow->id),
             ],
+            'agentWork' => $reader->projectAgentWork((string) $projectRow->id),
+            'memory' => $reader->projectMemory((string) $projectRow->id),
             'policySummary' => [
                 'workspace' => 'implicit',
                 'git_mode' => 'local_only',

@@ -3,13 +3,18 @@
 use App\Assistants\Agents\BacklogTriageAgent;
 use App\Assistants\Agents\TaskClarifierAgent;
 use App\Assistants\AiAgentToolRegistry;
+use App\Assistants\Tools\QueryProjectGraphTool;
 use App\Assistants\Tools\ReadProjectSummaryTool;
 use App\Assistants\Tools\ReadProjectTasksTool;
 use App\Assistants\Tools\ReadTaskDetailTool;
+use App\Assistants\Tools\SearchProjectMemoryTool;
 use App\Assistants\Tools\SearchWikiRevisionsTool;
+use App\Assistants\Tools\WriteWikiRevisionTool;
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Laravel\Ai\Contracts\HasTools;
 use Laravel\Ai\Contracts\Tool;
@@ -18,7 +23,7 @@ use Laravel\Ai\Tools\Request;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('registers read-only tools matching the controlled task clarifier profile', function () {
@@ -51,6 +56,18 @@ it('registers read-only tools matching the controlled backlog triage profile', f
         ->and(BacklogTriageAgent::make())->toBeInstanceOf(HasTools::class)
         ->and(array_map(fn (Tool $tool): string => $tool->name(), [...BacklogTriageAgent::make()->tools()]))
         ->toEqualCanonicalizing($toolNames);
+});
+
+it('registers memory graph and controlled wiki write tools for the matching agent profiles', function () {
+    $registry = app(AiAgentToolRegistry::class);
+
+    $socratesToolNames = array_map(fn (Tool $tool): string => $tool->name(), $registry->forAgentKey('socrate_supervisor'));
+    $wikiToolNames = array_map(fn (Tool $tool): string => $tool->name(), $registry->forAgentKey('wiki_query'));
+
+    expect($socratesToolNames)->toContain('search_project_memory')
+        ->and($socratesToolNames)->toContain('query_project_graph')
+        ->and($wikiToolNames)->toContain('search_wiki_revisions')
+        ->and($wikiToolNames)->toContain('write_wiki_revision');
 });
 
 it('reads a bounded project summary from DevBoard evidence only', function () {
@@ -179,6 +196,105 @@ it('searches current wiki revisions with bounded excerpts and evidence refs', fu
         ->and($payload['results'][0]['evidence_refs'][0]['id'])->toBe('artifact-1');
 });
 
+it('searches project memory by domain for agent use without mutating memory', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $memoryId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $projectId,
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => 'socrates',
+        'source' => 'server_agent',
+        'kind' => 'agent_note',
+        'completeness' => 'complete',
+        'summary' => 'Socrates captured the queue latency diagnosis.',
+        'payload' => json_encode(['answer' => str_repeat('Queue latency evidence. ', 30)], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $beforeCount = DB::table('project_memory_entries')->count();
+
+    $payload = (new SearchProjectMemoryTool)->payload([
+        'project_id' => $projectId,
+        'domain' => 'agent_notes',
+        'query' => 'latency',
+        'limit' => 5,
+    ]);
+
+    expect($payload['tool'])->toBe('search_project_memory')
+        ->and($payload['source_status'])->toBe('verified_from_code')
+        ->and($payload['domain'])->toBe('agent_notes')
+        ->and($payload['results'][0]['id'])->toBe($memoryId)
+        ->and($payload['results'][0]['domain'])->toBe('agent_notes')
+        ->and(strlen($payload['results'][0]['payload_excerpt']))->toBeLessThanOrEqual(500)
+        ->and(DB::table('project_memory_entries')->count())->toBe($beforeCount);
+});
+
+it('queries a bounded read-only project graph from the latest graph artifact', function () {
+    Storage::fake('local');
+
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('project_id', $projectId)->value('id');
+    aiAgentToolsCreateGraphSnapshot($projectId, $repositoryId, [
+        'nodes' => [
+            ['id' => 'app/Http/Controllers/FooController.php', 'labels' => ['File', 'Controller'], 'properties' => ['name' => 'FooController', 'path' => 'app/Http/Controllers/FooController.php']],
+            ['id' => 'App\\Services\\InvoiceService', 'labels' => ['Class'], 'properties' => ['name' => 'InvoiceService']],
+        ],
+        'relationships' => [
+            ['id' => 'rel-1', 'source_id' => 'app/Http/Controllers/FooController.php', 'target_id' => 'App\\Services\\InvoiceService', 'type' => 'USES'],
+        ],
+    ]);
+
+    $payload = (new QueryProjectGraphTool)->payload([
+        'project_id' => $projectId,
+        'query' => 'invoice',
+        'limit' => 5,
+    ]);
+
+    expect($payload['tool'])->toBe('query_project_graph')
+        ->and($payload['source_status'])->toBe('verified_from_code')
+        ->and($payload['found'])->toBeTrue()
+        ->and($payload['stats']['nodes'])->toBe(2)
+        ->and($payload['nodes'][0]['id'])->toBe('App\\Services\\InvoiceService')
+        ->and($payload['relationships'][0]['from'])->toBe('app/Http/Controllers/FooController.php')
+        ->and($payload['relationships'][0]['to'])->toBe('App\\Services\\InvoiceService');
+});
+
+it('writes wiki revisions through a controlled audited agent tool', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $payload = app(WriteWikiRevisionTool::class)->payload([
+        'project_id' => $projectId,
+        'slug' => 'agent/runtime-notes',
+        'title' => 'Agent Runtime Notes',
+        'page_type' => 'technical',
+        'source_status' => 'verified_from_code',
+        'content_markdown' => "# Agent Runtime Notes\n\nGenerated from controlled agent evidence.",
+        'evidence_refs' => [
+            ['type' => 'memory_entry', 'id' => 'mem_123'],
+        ],
+        'agent_key' => 'wiki_query',
+    ]);
+
+    expect($payload['tool'])->toBe('write_wiki_revision')
+        ->and($payload['source_status'])->toBe('verified_from_code')
+        ->and($payload['written'])->toBeTrue()
+        ->and($payload['wiki_page_id'])->toBeString()
+        ->and($payload['wiki_revision_id'])->toBeString();
+
+    expect(DB::table('wiki_pages')->where('id', $payload['wiki_page_id'])->value('slug'))->toBe('agent/runtime-notes')
+        ->and(DB::table('wiki_revisions')->where('id', $payload['wiki_revision_id'])->value('producer'))->toBe('ai_agent:wiki_query')
+        ->and(DB::table('wiki_revisions')->where('id', $payload['wiki_revision_id'])->value('source_type'))->toBe('controlled_agent_tool')
+        ->and(DB::table('audit_logs')->where('action', 'wiki.updated')->where('target_id', $payload['wiki_page_id'])->exists())->toBeTrue();
+});
+
 function aiAgentToolsUserWithRole(string $roleName): User
 {
     $user = User::factory()->create();
@@ -195,7 +311,7 @@ function aiAgentToolsUserWithRole(string $roleName): User
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 function aiAgentToolsCreateTask(string $projectId, User $user, array $overrides = []): string
 {
@@ -227,7 +343,7 @@ function aiAgentToolsCreateTask(string $projectId, User $user, array $overrides 
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 function aiAgentToolsCreateWikiRevision(string $projectId, array $overrides = []): string
 {
@@ -263,4 +379,109 @@ function aiAgentToolsCreateWikiRevision(string $projectId, array $overrides = []
     ]);
 
     return $revisionId;
+}
+
+/**
+ * @param  array<string, mixed>  $graphPayload
+ */
+function aiAgentToolsCreateGraphSnapshot(string $projectId, string $repositoryId, array $graphPayload): string
+{
+    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $now = now();
+    $deviceId = (string) Str::ulid();
+    $workspaceId = (string) Str::ulid();
+    $runId = (string) Str::ulid();
+    $artifactId = (string) Str::ulid();
+    $snapshotId = (string) Str::ulid();
+    $storagePath = "testing/graphs/{$artifactId}.json";
+    $encoded = json_encode($graphPayload, JSON_THROW_ON_ERROR);
+
+    Storage::disk('local')->put($storagePath, $encoded);
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $userId,
+        'name' => 'AI Agent Graph Tool Device',
+        'fingerprint_hash' => 'sha256:'.$deviceId,
+        'platform_os' => 'linux',
+        'platform_arch' => 'amd64',
+        'plugin_version' => 'test',
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('local_workspaces')->insert([
+        'id' => $workspaceId,
+        'repository_id' => $repositoryId,
+        'device_id' => $deviceId,
+        'local_root_hash' => 'sha256:'.$workspaceId,
+        'display_path' => '~/Code/ai-agent-graph-tool',
+        'current_branch' => 'main',
+        'last_head_sha' => str_repeat('a', 40),
+        'dirty_status' => 'clean',
+        'last_snapshot_id' => null,
+        'last_seen_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('runs')->insert([
+        'id' => $runId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'task_id' => null,
+        'device_id' => $deviceId,
+        'started_by_user_id' => $userId,
+        'runtime_profile' => 'agent_plugin',
+        'status' => 'finished',
+        'branch' => 'main',
+        'base_branch' => 'main',
+        'base_sha' => str_repeat('a', 40),
+        'head_sha' => str_repeat('b', 40),
+        'summary' => 'Graph tool test run.',
+        'risk_level' => 'low',
+        'started_at' => $now,
+        'finished_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('artifacts')->insert([
+        'id' => $artifactId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'run_id' => $runId,
+        'artifact_type' => 'graph_snapshot',
+        'storage_path' => $storagePath,
+        'sha256' => hash('sha256', $encoded),
+        'size_bytes' => strlen($encoded),
+        'mime_type' => 'application/json',
+        'schema_version' => 'graph.v1',
+        'status' => 'imported',
+        'producer' => 'test',
+        'metadata' => json_encode(['graph_parser' => 'test'], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('snapshots')->insert([
+        'id' => $snapshotId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'source_type' => 'local_plugin_snapshot',
+        'branch' => 'main',
+        'base_sha' => str_repeat('a', 40),
+        'head_sha' => str_repeat('b', 40),
+        'dirty_status' => 'clean',
+        'file_inventory_artifact_id' => null,
+        'graph_snapshot_artifact_id' => $artifactId,
+        'created_by_run_id' => $runId,
+        'created_at' => $now,
+    ]);
+
+    return $snapshotId;
 }

@@ -258,6 +258,39 @@ Follow-up emersi da M1:
 - [ ] Produrre contract docs/OpenAPI e fixture health/discovery/doctor prima
   della piena integrazione Hades.
 
+## DevBoard agent-work/memory/graph slice - 2026-07-01
+
+Stato: implementata nel repo `/home/ubuntu/dev-sandbox` senza push/reset.
+
+Risultati verificati da codice:
+
+- `platon` e `aristoteles` in `agent_work_items.assigned_agent_key` ora sono
+  serviti dal backend tramite alias controllati verso `task_clarifier` e
+  `backlog_triage`.
+- Le risposte server-side completate scrivono sia memoria progetto
+  (`project_memory_entries.kind = agent_note`) sia chat persistente
+  (`assistant_runs/messages` con `target_type = agent_work_item`).
+- Aggiunto dettaglio dashboard
+  `GET /api/dashboard/projects/{project}/agent-work/{workItem}` con eventi,
+  result memory e messaggi chat.
+- Memoria dashboard interrogabile per domini `logbook`, `wiki`, `agent_notes`
+  tramite `domain` e `q`.
+- Tool AI controllati aggiunti:
+  `search_project_memory`, `query_project_graph`, `write_wiki_revision`.
+- `write_wiki_revision` passa da `WikiRevisionService`: mantiene validazione
+  evidence per `verified_from_code` e audit `wiki.updated`.
+- La pagina React progetto espone chat agent-scoped basata su agent-work,
+  dettaglio agent-work cliccabile, query domini memoria e link graph.
+
+Verifiche:
+
+- `APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test --display-warnings`
+  passato: `282 passed / 2460 assertions`.
+- `./vendor/bin/pint --test ...` sui file PHP toccati: passato.
+- `npm run build` in `backend`: passato.
+- Typecheck frontend non eseguito: `backend/package.json` non definisce script
+  di typecheck e non esiste `node_modules/.bin/tsc`.
+
 ## Conclusioni da implementare in futuro
 
 - [ ] **M1 - Backend foundation.** Creare namespace Hades lato Laravel con
@@ -870,3 +903,45 @@ Pulizia:
   un progetto `carnovali-2` verso `~/.hermes/hermes-agent/ui-tui`.
 - Il progetto e' stato archiviato e il binding/cache locale spurio sono stati
   rimossi; resta attivo solo `carnovali`.
+
+## Fix memory proposal summary lunga 2026-07-01
+
+Problema osservato durante il test locale nel workspace Carnovali:
+
+- `hades backend sync` inviava una memory proposal locale con summary lunga;
+- il backend rispondeva HTTP 500;
+- Laravel log riportava PostgreSQL `SQLSTATE[22001] value too long for type
+  character varying(255)` su `project_memory_entries.summary`;
+- il contratto API validava gia' `summary` fino a 4000 caratteri e
+  `hades_memory_proposals.summary` era gia' `text`, quindi il collo di
+  bottiglia era solo la tabella condivisa `project_memory_entries`.
+
+Interventi backend remoto:
+
+- `project_memory_entries.summary` cambiato da `string` a `text` nella
+  migration sorgente;
+- aggiunta migration runtime
+  `2026_07_01_000005_expand_project_memory_entry_summary_column.php`;
+- applicata migration su PostgreSQL con `php artisan migrate --force`;
+- verificato via DB che l'ultima entry `hades_agent/proposal` per Carnovali
+  contiene summary lunga 1005 caratteri.
+
+Interventi client Hades locale:
+
+- `hades_backend_sync.run_backend_sync()` ora cancella `last_sync_error` quando
+  una sync completa termina senza errori;
+- aggiunto helper `clear_sync_state()` in `hades_backend_db`;
+- aggiornato anche il managed checkout locale `~/.hermes/hermes-agent` per
+  rendere subito corretto il comando `hades` installato su questo Mac.
+
+Verifiche:
+
+- Test rosso schema: `project_memory_entries.summary` era `varchar`;
+- test verde remoto: `22 passed / 237 assertions` su
+  `tests/Feature/Hades` + `ProjectWorkspaceMemoryQueueSchemaTest.php`;
+- test verde locale: `13 passed` su backend command, doctor e TUI RPC;
+- `hades backend sync` da `/Users/gabriele/Dev/sinervis/carnovali`:
+  `memory 1, proposals 1`, senza errori;
+- sync successiva: `proposal_errors: 0`, `last_error: null`;
+- stato locale: proposal accettata `accepted: 1`; resta una vecchia proposal
+  `refused: 1` da revisionare separatamente, non collegata al 500.

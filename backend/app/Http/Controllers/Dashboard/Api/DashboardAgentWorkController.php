@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Models\User;
 use App\Projects\ProjectLifecycleService;
+use App\Services\ServerAgentWorkService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -24,10 +25,18 @@ final class DashboardAgentWorkController extends Controller
         return response()->json($reader->projectAgentWork($project));
     }
 
+    public function show(Request $request, DashboardApiReader $reader, string $project, string $workItem): JsonResponse
+    {
+        $this->abortUnlessDashboardReader($request);
+
+        return response()->json($reader->agentWorkDetail($project, $workItem));
+    }
+
     public function store(
         Request $request,
         DashboardApiReader $reader,
         ProjectLifecycleService $lifecycle,
+        ServerAgentWorkService $serverAgentWork,
         string $project,
     ): JsonResponse {
         $user = $this->abortUnlessDashboardMutator($request);
@@ -88,6 +97,10 @@ final class DashboardAgentWorkController extends Controller
                 now: $now,
             );
         });
+
+        if ($serverAgentWork->shouldHandle((string) $validated['assigned_agent_key'])) {
+            $serverAgentWork->process($workItemId);
+        }
 
         return response()->json($reader->agentWorkItemById($workItemId), 201);
     }
@@ -200,7 +213,7 @@ final class DashboardAgentWorkController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function recordEvent(
         string $workItemId,

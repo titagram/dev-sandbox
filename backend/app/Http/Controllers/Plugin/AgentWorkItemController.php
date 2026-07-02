@@ -16,7 +16,9 @@ use Symfony\Component\HttpFoundation\Response;
 class AgentWorkItemController extends Controller
 {
     private const ACTIVE_STATUSES = ['queued', 'claimed', 'running'];
+
     private const TERMINAL_STATUSES = ['completed', 'completed_with_incomplete_memory', 'failed', 'canceled'];
+
     private const MEMORY_KINDS = [
         'decision',
         'implementation',
@@ -28,9 +30,7 @@ class AgentWorkItemController extends Controller
         'agent_note',
     ];
 
-    public function __construct(private readonly ProjectLifecycleService $lifecycle)
-    {
-    }
+    public function __construct(private readonly ProjectLifecycleService $lifecycle) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -268,6 +268,7 @@ class AgentWorkItemController extends Controller
             'memory_entry.payload.tests' => ['present_with:memory_entry', 'array'],
             'memory_entry.payload.skipped_checks' => ['present_with:memory_entry', 'array'],
             'memory_entry.payload.risks' => ['present_with:memory_entry', 'array'],
+            'chat_message' => ['sometimes', 'nullable', 'string', 'max:8000'],
         ]);
 
         $result = DB::transaction(function () use ($workItem, $device, $validated): array {
@@ -334,6 +335,8 @@ class AgentWorkItemController extends Controller
                 now: $now,
             );
 
+            $this->syncAgentChatCompletion($item, $workItem, $memoryEntryId, $validated['chat_message'] ?? null, $status, $now);
+
             return [
                 'item' => $this->workItemOrFail($workItem),
                 'memory_entry' => $memoryEntry,
@@ -385,6 +388,7 @@ class AgentWorkItemController extends Controller
 
             $this->releaseActiveLeases($workItem, $now);
             $this->recordEvent($workItem, 'failed', null, (string) $device->id, $validated['failure_reason'], [], $now);
+            $this->syncAgentChatFailure($item, $workItem, $validated['failure_reason'], $now);
 
             return $this->workItemOrFail($workItem);
         });
@@ -495,7 +499,7 @@ class AgentWorkItemController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function recordEvent(
         string $workItemId,
@@ -517,6 +521,159 @@ class AgentWorkItemController extends Controller
             'created_at' => $now,
             'updated_at' => $now,
         ]);
+    }
+
+    private function syncAgentChatCompletion(object $item, string $workItem, ?string $memoryEntryId, ?string $chatMessage, string $status, mixed $now): void
+    {
+        $payload = $this->agentChatPayload($item);
+
+        if ($payload === null) {
+            return;
+        }
+
+        $thread = $this->agentChatThread($payload['agent_chat_thread_id'], (string) $item->project_id);
+
+        if (! $thread) {
+            return;
+        }
+
+        $content = $this->normalizedChatMessage($chatMessage);
+
+        if ($content === null && $memoryEntryId !== null) {
+            $content = $this->normalizedChatMessage(
+                DB::table('project_memory_entries')->where('id', $memoryEntryId)->value('summary'),
+            );
+        }
+
+        $content ??= $status === 'completed_with_incomplete_memory'
+            ? 'Local agent completed the chat turn without a memory entry.'
+            : 'Local agent completed the chat turn.';
+
+        $this->appendAgentChatMessage(
+            threadId: (string) $thread->id,
+            workItem: $workItem,
+            role: 'assistant',
+            content: $content,
+            metadata: [
+                'schema' => 'devboard.agent_chat_local_completion.v1',
+                'agent_key' => 'local_agent',
+                'status' => $status,
+                'memory_entry_id' => $memoryEntryId,
+            ],
+            now: $now,
+        );
+
+        DB::table('agent_chat_threads')->where('id', $thread->id)->update([
+            'status' => 'active',
+            'latest_agent_work_item_id' => $workItem,
+            'last_message_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
+    private function syncAgentChatFailure(object $item, string $workItem, string $failureReason, mixed $now): void
+    {
+        $payload = $this->agentChatPayload($item);
+
+        if ($payload === null) {
+            return;
+        }
+
+        $thread = $this->agentChatThread($payload['agent_chat_thread_id'], (string) $item->project_id);
+
+        if (! $thread) {
+            return;
+        }
+
+        $this->appendAgentChatMessage(
+            threadId: (string) $thread->id,
+            workItem: $workItem,
+            role: 'system',
+            content: 'Local agent failed: '.$failureReason,
+            metadata: [
+                'schema' => 'devboard.agent_chat_local_failure.v1',
+                'agent_key' => 'local_agent',
+                'failure_reason' => $failureReason,
+            ],
+            now: $now,
+        );
+
+        DB::table('agent_chat_threads')->where('id', $thread->id)->update([
+            'status' => 'failed',
+            'latest_agent_work_item_id' => $workItem,
+            'last_message_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
+    /**
+     * @return array{agent_chat_thread_id: string, agent_chat_message_id?: string}|null
+     */
+    private function agentChatPayload(object $item): ?array
+    {
+        try {
+            $payload = json_decode((string) $item->payload, true, flags: JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return null;
+        }
+
+        if (! is_array($payload)
+            || ($payload['schema'] ?? null) !== 'devboard.agent_chat_turn.v1'
+            || ! is_string($payload['agent_chat_thread_id'] ?? null)) {
+            return null;
+        }
+
+        return [
+            'agent_chat_thread_id' => $payload['agent_chat_thread_id'],
+            'agent_chat_message_id' => is_string($payload['agent_chat_message_id'] ?? null) ? $payload['agent_chat_message_id'] : null,
+        ];
+    }
+
+    private function agentChatThread(string $threadId, string $projectId): ?object
+    {
+        return DB::table('agent_chat_threads')
+            ->where('id', $threadId)
+            ->where('project_id', $projectId)
+            ->first();
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    private function appendAgentChatMessage(string $threadId, string $workItem, string $role, string $content, array $metadata, mixed $now): void
+    {
+        $exists = DB::table('agent_chat_messages')
+            ->where('agent_chat_thread_id', $threadId)
+            ->where('agent_work_item_id', $workItem)
+            ->where('role', $role)
+            ->exists();
+
+        if ($exists) {
+            return;
+        }
+
+        DB::table('agent_chat_messages')->insert([
+            'id' => (string) Str::ulid(),
+            'agent_chat_thread_id' => $threadId,
+            'author_user_id' => null,
+            'assistant_run_id' => null,
+            'agent_work_item_id' => $workItem,
+            'role' => $role,
+            'content' => $content,
+            'metadata' => json_encode($metadata, JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+        ]);
+    }
+
+    private function normalizedChatMessage(mixed $message): ?string
+    {
+        if (! is_string($message)) {
+            return null;
+        }
+
+        $message = trim($message);
+
+        return $message === '' ? null : $message;
     }
 
     /**
@@ -575,7 +732,7 @@ class AgentWorkItemController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $details
+     * @param  array<string, mixed>  $details
      */
     private function error(string $code, string $message, int $status, array $details = []): JsonResponse
     {

@@ -9,10 +9,11 @@ class HadesCapabilityPolicy
         'read_files',
         'sync_git_tree',
         'populate_backend_ast',
+        'populate_project_wiki',
     ];
 
     /**
-     * @param array<mixed> $capabilities
+     * @param  array<mixed>  $capabilities
      * @return list<string>
      */
     public function normalizeNames(array $capabilities): array
@@ -37,8 +38,8 @@ class HadesCapabilityPolicy
     }
 
     /**
-     * @param list<string> $declared
-     * @param list<string> $allowed
+     * @param  list<string>  $declared
+     * @param  list<string>  $allowed
      * @return list<string>
      */
     public function intersect(array $declared, array $allowed): array
@@ -53,7 +54,7 @@ class HadesCapabilityPolicy
     }
 
     /**
-     * @param list<string> $capabilities
+     * @param  list<string>  $capabilities
      * @return array<string, bool>
      */
     public function toMap(array $capabilities): array

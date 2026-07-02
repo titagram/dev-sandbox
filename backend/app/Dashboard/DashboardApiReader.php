@@ -37,6 +37,10 @@ final class DashboardApiReader
 
         return [
             ...$this->projectSummary($project),
+            'links' => [
+                'wiki' => "/projects/{$projectId}/wiki",
+                'wiki_api' => "/api/dashboard/projects/{$projectId}/wiki",
+            ],
             'repositories' => $repositories,
             'kickstart' => $this->kickstart($projectId),
             'assistant' => [
@@ -81,20 +85,25 @@ final class DashboardApiReader
     /**
      * @return array{entries: list<array<string, mixed>>}
      */
-    public function projectMemory(string $projectId): array
+    public function projectMemory(string $projectId, ?string $domain = null, ?string $query = null): array
     {
         $this->abortUnlessProjectReadable($projectId);
 
-        $entries = DB::table('project_memory_entries')
-            ->where('project_id', $projectId)
-            ->orderByDesc('occurred_at')
-            ->orderByDesc('created_at')
-            ->limit(100)
-            ->get()
-            ->map(fn (object $entry): array => $this->memoryEntry($entry))
-            ->all();
+        $normalizedDomain = $this->normalizeMemoryDomain($domain);
+        $normalizedQuery = trim((string) ($query ?? ''));
 
-        return ['entries' => $entries];
+        if ($normalizedDomain === 'wiki') {
+            $entries = $this->wikiMemoryEntries($projectId, $normalizedQuery);
+        } else {
+            $entries = $this->projectMemoryEntries($projectId, $normalizedDomain, $normalizedQuery);
+        }
+
+        return [
+            'domain' => $normalizedDomain ?? 'all',
+            'query' => $normalizedQuery === '' ? null : $normalizedQuery,
+            'domains' => $this->memoryDomainCounts($projectId),
+            'entries' => $entries,
+        ];
     }
 
     /**
@@ -131,6 +140,43 @@ final class DashboardApiReader
     /**
      * @return array<string, mixed>
      */
+    public function agentWorkDetail(string $projectId, string $workItemId): array
+    {
+        $this->abortUnlessProjectReadable($projectId);
+
+        $item = DB::table('agent_work_items')
+            ->where('project_id', $projectId)
+            ->where('id', $workItemId)
+            ->first();
+        abort_unless($item, 404);
+
+        $resultMemory = $item->result_memory_entry_id
+            ? DB::table('project_memory_entries')->where('id', $item->result_memory_entry_id)->first()
+            : null;
+
+        $run = DB::table('assistant_runs')
+            ->where('target_type', 'agent_work_item')
+            ->where('target_id', $workItemId)
+            ->orderByDesc('started_at')
+            ->first();
+
+        return [
+            'item' => [
+                ...$this->agentWorkItem($item),
+                'result_memory_entry' => $resultMemory ? $this->memoryEntry($resultMemory) : null,
+                'events' => $this->agentWorkEvents($workItemId),
+                'chat' => [
+                    'run_id' => $run ? (string) $run->id : null,
+                    'agent_key' => (string) $item->assigned_agent_key,
+                    'messages' => $run ? $this->assistantMessages((string) $run->id) : [],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function agentWorkItemById(string $workItemId): array
     {
         $item = DB::table('agent_work_items')->where('id', $workItemId)->first();
@@ -138,6 +184,46 @@ final class DashboardApiReader
         $this->abortUnlessProjectReadable((string) $item->project_id);
 
         return $this->agentWorkItem($item);
+    }
+
+    /**
+     * @return array{threads: list<array<string, mixed>>}
+     */
+    public function projectAgentChats(string $projectId): array
+    {
+        $this->abortUnlessProjectReadable($projectId);
+
+        $threads = DB::table('agent_chat_threads')
+            ->where('project_id', $projectId)
+            ->orderByDesc('last_message_at')
+            ->orderByDesc('updated_at')
+            ->limit(100)
+            ->get()
+            ->map(fn (object $thread): array => $this->agentChatThread($thread))
+            ->all();
+
+        return ['threads' => $threads];
+    }
+
+    /**
+     * @return array{thread: array<string, mixed>}
+     */
+    public function agentChatThreadDetail(string $projectId, string $threadId): array
+    {
+        $this->abortUnlessProjectReadable($projectId);
+
+        $thread = DB::table('agent_chat_threads')
+            ->where('project_id', $projectId)
+            ->where('id', $threadId)
+            ->first();
+        abort_unless($thread, 404);
+
+        return [
+            'thread' => [
+                ...$this->agentChatThread($thread),
+                'messages' => $this->agentChatMessages($threadId),
+            ],
+        ];
     }
 
     /**
@@ -781,6 +867,168 @@ final class DashboardApiReader
     }
 
     /**
+     * @return list<array<string, mixed>>
+     */
+    private function projectMemoryEntries(string $projectId, ?string $domain, string $query): array
+    {
+        $entries = DB::table('project_memory_entries')
+            ->where('project_id', $projectId)
+            ->when($domain === 'logbook', function ($builder): void {
+                $builder->where(function ($nested): void {
+                    $nested
+                        ->whereNull('agent_key')
+                        ->orWhere('agent_key', '');
+                })->where('kind', '!=', 'agent_note')
+                    ->whereNotIn('source', ['server_agent', 'hades_agent']);
+            })
+            ->when($domain === 'agent_notes', function ($builder): void {
+                $builder->where(function ($nested): void {
+                    $nested
+                        ->where('kind', 'agent_note')
+                        ->orWhereIn('source', ['server_agent', 'hades_agent'])
+                        ->orWhereNotNull('agent_key');
+                });
+            })
+            ->when($query !== '', function ($builder) use ($query): void {
+                $like = '%'.$query.'%';
+                $builder->where(function ($nested) use ($like): void {
+                    $nested
+                        ->where('summary', 'like', $like)
+                        ->orWhere('payload', 'like', $like)
+                        ->orWhere('kind', 'like', $like)
+                        ->orWhere('source', 'like', $like)
+                        ->orWhere('agent_key', 'like', $like);
+                });
+            })
+            ->orderByDesc('occurred_at')
+            ->orderByDesc('created_at')
+            ->limit(100)
+            ->get()
+            ->map(fn (object $entry): array => $this->memoryEntry($entry))
+            ->all();
+
+        return $entries;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function wikiMemoryEntries(string $projectId, string $query): array
+    {
+        return DB::table('wiki_pages')
+            ->join('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
+            ->where('wiki_pages.project_id', $projectId)
+            ->when($query !== '', function ($builder) use ($query): void {
+                $like = '%'.$query.'%';
+                $builder->where(function ($nested) use ($like): void {
+                    $nested
+                        ->where('wiki_pages.title', 'like', $like)
+                        ->orWhere('wiki_pages.slug', 'like', $like)
+                        ->orWhere('wiki_revisions.content_markdown', 'like', $like)
+                        ->orWhere('wiki_revisions.source_status', 'like', $like);
+                });
+            })
+            ->select([
+                'wiki_pages.id as page_id',
+                'wiki_pages.project_id',
+                'wiki_pages.repository_id',
+                'wiki_pages.slug',
+                'wiki_pages.title',
+                'wiki_pages.page_type',
+                'wiki_pages.source_status as page_source_status',
+                'wiki_pages.updated_at',
+                'wiki_revisions.id as revision_id',
+                'wiki_revisions.author_user_id',
+                'wiki_revisions.source_type',
+                'wiki_revisions.source_status',
+                'wiki_revisions.content_markdown',
+                'wiki_revisions.evidence_refs',
+                'wiki_revisions.created_at as revision_created_at',
+            ])
+            ->orderByDesc('wiki_pages.updated_at')
+            ->limit(100)
+            ->get()
+            ->map(fn (object $row): array => [
+                'id' => (string) $row->revision_id,
+                'project_id' => (string) $row->project_id,
+                'repository_id' => $row->repository_id ? (string) $row->repository_id : null,
+                'task_id' => null,
+                'run_id' => null,
+                'author_user_id' => $row->author_user_id === null ? null : (int) $row->author_user_id,
+                'agent_key' => null,
+                'source' => 'wiki_revision',
+                'kind' => 'wiki',
+                'domain' => 'wiki',
+                'completeness' => (string) $row->source_status,
+                'summary' => (string) $row->title,
+                'payload' => [
+                    'page_id' => (string) $row->page_id,
+                    'page_slug' => (string) $row->slug,
+                    'page_type' => (string) $row->page_type,
+                    'page_source_status' => (string) $row->page_source_status,
+                    'revision_source_status' => (string) $row->source_status,
+                    'source_type' => (string) $row->source_type,
+                    'content_excerpt' => $this->memoryExcerpt((string) $row->content_markdown),
+                    'evidence_refs' => $this->decodeJsonList($row->evidence_refs),
+                ],
+                'occurred_at' => (string) $row->revision_created_at,
+                'created_at' => (string) $row->revision_created_at,
+            ])
+            ->all();
+    }
+
+    /**
+     * @return array{logbook: int, wiki: int, agent_notes: int}
+     */
+    private function memoryDomainCounts(string $projectId): array
+    {
+        $agentNotes = DB::table('project_memory_entries')
+            ->where('project_id', $projectId)
+            ->where(function ($nested): void {
+                $nested
+                    ->where('kind', 'agent_note')
+                    ->orWhereIn('source', ['server_agent', 'hades_agent'])
+                    ->orWhereNotNull('agent_key');
+            })
+            ->count();
+
+        $logbook = DB::table('project_memory_entries')
+            ->where('project_id', $projectId)
+            ->where(function ($nested): void {
+                $nested
+                    ->whereNull('agent_key')
+                    ->orWhere('agent_key', '');
+            })
+            ->where('kind', '!=', 'agent_note')
+            ->whereNotIn('source', ['server_agent', 'hades_agent'])
+            ->count();
+
+        $wiki = DB::table('wiki_pages')
+            ->join('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
+            ->where('wiki_pages.project_id', $projectId)
+            ->count();
+
+        return [
+            'logbook' => $logbook,
+            'wiki' => $wiki,
+            'agent_notes' => $agentNotes,
+        ];
+    }
+
+    private function normalizeMemoryDomain(?string $domain): ?string
+    {
+        $domain = trim((string) $domain);
+
+        if ($domain === '' || $domain === 'all') {
+            return null;
+        }
+
+        abort_unless(in_array($domain, ['logbook', 'wiki', 'agent_notes'], true), 422, 'Unknown memory domain.');
+
+        return $domain;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function memoryEntry(object $entry): array
@@ -795,12 +1043,31 @@ final class DashboardApiReader
             'agent_key' => $entry->agent_key ? (string) $entry->agent_key : null,
             'source' => (string) $entry->source,
             'kind' => (string) $entry->kind,
+            'domain' => $this->memoryDomain($entry),
             'completeness' => (string) $entry->completeness,
             'summary' => (string) $entry->summary,
             'payload' => json_decode((string) $entry->payload, true, flags: JSON_THROW_ON_ERROR),
             'occurred_at' => (string) $entry->occurred_at,
             'created_at' => (string) $entry->created_at,
         ];
+    }
+
+    private function memoryDomain(object $entry): string
+    {
+        if ((string) $entry->kind === 'agent_note'
+            || in_array((string) $entry->source, ['server_agent', 'hades_agent'], true)
+            || $entry->agent_key !== null) {
+            return 'agent_notes';
+        }
+
+        return 'logbook';
+    }
+
+    private function memoryExcerpt(string $content): string
+    {
+        $normalized = trim((string) preg_replace('/\s+/', ' ', strip_tags($content)));
+
+        return substr($normalized, 0, 500);
     }
 
     /**
@@ -834,6 +1101,111 @@ final class DashboardApiReader
         ];
     }
 
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function agentWorkEvents(string $workItemId): array
+    {
+        return DB::table('agent_work_item_events')
+            ->where('agent_work_item_id', $workItemId)
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->limit(100)
+            ->get()
+            ->map(fn (object $event): array => [
+                'id' => (string) $event->id,
+                'event_type' => (string) $event->event_type,
+                'actor_user_id' => $event->actor_user_id === null ? null : (int) $event->actor_user_id,
+                'actor_device_id' => $event->actor_device_id ? (string) $event->actor_device_id : null,
+                'message' => $event->message ? (string) $event->message : null,
+                'payload' => json_decode((string) $event->payload, true, flags: JSON_THROW_ON_ERROR),
+                'created_at' => (string) $event->created_at,
+            ])
+            ->all();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function agentChatThread(object $thread): array
+    {
+        $latestMessage = DB::table('agent_chat_messages')
+            ->where('agent_chat_thread_id', $thread->id)
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->first();
+
+        return [
+            'id' => (string) $thread->id,
+            'project_id' => (string) $thread->project_id,
+            'repository_id' => $thread->repository_id ? (string) $thread->repository_id : null,
+            'task_id' => $thread->task_id ? (string) $thread->task_id : null,
+            'created_by_user_id' => $thread->created_by_user_id === null ? null : (int) $thread->created_by_user_id,
+            'agent_key' => (string) $thread->agent_key,
+            'title' => (string) $thread->title,
+            'status' => (string) $thread->status,
+            'latest_agent_work_item_id' => $thread->latest_agent_work_item_id ? (string) $thread->latest_agent_work_item_id : null,
+            'latest_assistant_run_id' => $thread->latest_assistant_run_id ? (string) $thread->latest_assistant_run_id : null,
+            'last_message_at' => $thread->last_message_at ? (string) $thread->last_message_at : null,
+            'message_count' => DB::table('agent_chat_messages')->where('agent_chat_thread_id', $thread->id)->count(),
+            'last_message' => $latestMessage ? [
+                'id' => (string) $latestMessage->id,
+                'role' => (string) $latestMessage->role,
+                'content' => (string) $latestMessage->content,
+                'created_at' => (string) $latestMessage->created_at,
+            ] : null,
+            'metadata' => $this->decodeJson(is_string($thread->metadata ?? null) ? $thread->metadata : null),
+            'created_at' => (string) $thread->created_at,
+            'updated_at' => (string) $thread->updated_at,
+        ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function agentChatMessages(string $threadId): array
+    {
+        return DB::table('agent_chat_messages')
+            ->where('agent_chat_thread_id', $threadId)
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->limit(200)
+            ->get()
+            ->map(fn (object $message): array => [
+                'id' => (string) $message->id,
+                'thread_id' => (string) $message->agent_chat_thread_id,
+                'role' => (string) $message->role,
+                'author_user_id' => $message->author_user_id === null ? null : (int) $message->author_user_id,
+                'assistant_run_id' => $message->assistant_run_id ? (string) $message->assistant_run_id : null,
+                'agent_work_item_id' => $message->agent_work_item_id ? (string) $message->agent_work_item_id : null,
+                'content' => (string) $message->content,
+                'metadata' => $this->decodeJson(is_string($message->metadata ?? null) ? $message->metadata : null),
+                'created_at' => (string) $message->created_at,
+            ])
+            ->all();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function assistantMessages(string $runId): array
+    {
+        return DB::table('assistant_messages')
+            ->where('assistant_run_id', $runId)
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->limit(100)
+            ->get()
+            ->map(fn (object $message): array => [
+                'id' => (string) $message->id,
+                'role' => (string) $message->role,
+                'content' => (string) $message->content,
+                'metadata' => json_decode((string) $message->metadata, true, flags: JSON_THROW_ON_ERROR),
+                'created_at' => (string) $message->created_at,
+            ])
+            ->all();
+    }
+
     private function resolveProject(?string $projectId): ?object
     {
         if ($projectId === null) {
@@ -864,8 +1236,8 @@ final class DashboardApiReader
     }
 
     /**
-     * @param array<string, int> $counts
-     * @param list<string> $keys
+     * @param  array<string, int>  $counts
+     * @param  list<string>  $keys
      * @return array<string, int>
      */
     private function countsWithDefaults(array $counts, array $keys): array
@@ -1229,7 +1601,7 @@ final class DashboardApiReader
     }
 
     /**
-     * @param Collection<int, object> $events
+     * @param  Collection<int, object>  $events
      * @return list<array<string, mixed>>
      */
     private function riskTriggers(Collection $events): array
@@ -1253,7 +1625,7 @@ final class DashboardApiReader
     }
 
     /**
-     * @param Collection<int, object> $artifacts
+     * @param  Collection<int, object>  $artifacts
      * @return list<array<string, string>>
      */
     private function safetyResults(Collection $artifacts): array
@@ -1271,7 +1643,7 @@ final class DashboardApiReader
     }
 
     /**
-     * @param Collection<int, object> $artifacts
+     * @param  Collection<int, object>  $artifacts
      */
     private function testOutput(Collection $artifacts): string
     {
@@ -1382,8 +1754,8 @@ final class DashboardApiReader
     }
 
     /**
-     * @param array<string, mixed> $node
-     * @param array<string, int> $degreeByNode
+     * @param  array<string, mixed>  $node
+     * @param  array<string, int>  $degreeByNode
      * @return array<string, mixed>
      */
     private function graphNode(array $node, string $repository, array $degreeByNode): array
@@ -1404,8 +1776,8 @@ final class DashboardApiReader
     }
 
     /**
-     * @param list<array<string, mixed>> $nodes
-     * @param list<array{from: string, to: string}> $relationships
+     * @param  list<array<string, mixed>>  $nodes
+     * @param  list<array{from: string, to: string}>  $relationships
      * @return list<array<string, mixed>>
      */
     private function graphPreviewNodes(array $nodes, array $relationships): array
@@ -1451,7 +1823,7 @@ final class DashboardApiReader
     }
 
     /**
-     * @param array<string, mixed> $node
+     * @param  array<string, mixed>  $node
      */
     private function graphNodeId(array $node): string
     {
@@ -1461,7 +1833,7 @@ final class DashboardApiReader
     }
 
     /**
-     * @param list<mixed> $relationships
+     * @param  list<mixed>  $relationships
      * @return list<array{id: string|null, from: string, to: string, type: string|null}>
      */
     private function graphRelationships(array $relationships): array
@@ -1492,7 +1864,7 @@ final class DashboardApiReader
     }
 
     /**
-     * @param list<array{from: string, to: string}> $relationships
+     * @param  list<array{from: string, to: string}>  $relationships
      * @return array<string, int>
      */
     private function graphDegrees(array $relationships): array
@@ -1508,7 +1880,7 @@ final class DashboardApiReader
     }
 
     /**
-     * @param list<mixed> $nodes
+     * @param  list<mixed>  $nodes
      * @return array{modules: int, routes: int}
      */
     private function graphNodeStats(array $nodes): array
@@ -1534,7 +1906,7 @@ final class DashboardApiReader
     }
 
     /**
-     * @param list<mixed> $labels
+     * @param  list<mixed>  $labels
      */
     private function graphNodeKind(array $labels): string
     {
@@ -1748,6 +2120,16 @@ final class DashboardApiReader
         $decoded = json_decode($payload, true);
 
         return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * @return list<mixed>
+     */
+    private function decodeJsonList(mixed $payload): array
+    {
+        $decoded = is_string($payload) ? json_decode($payload, true) : $payload;
+
+        return is_array($decoded) && array_is_list($decoded) ? $decoded : [];
     }
 
     /**

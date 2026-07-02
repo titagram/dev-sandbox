@@ -1,15 +1,19 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('lets a developer create and list local agent work with repository and task scope', function () {
@@ -79,6 +83,213 @@ it('lets a developer create and list local agent work with repository and task s
         ->assertJsonPath('items.0.title', 'Inspect task before implementation')
         ->assertJsonPath('items.0.repository_id', $repositoryId)
         ->assertJsonPath('items.0.task_id', $taskId);
+});
+
+it('runs socrates work through the configured OpenAI compatible provider and stores the answer as memory', function () {
+    Http::fake([
+        'https://opencode.ai/zen/go/v1/chat/completions' => Http::response([
+            'choices' => [
+                [
+                    'message' => [
+                        'content' => 'Il progetto contiene una repository locale e manca una wiki aggiornata con runbook e architettura.',
+                    ],
+                ],
+            ],
+        ]),
+    ]);
+
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    agentWorkDashboardApiConfigureSocratesProvider();
+
+    $workItem = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => 'socrates',
+            'priority' => 'normal',
+            'title' => 'Ask Socrates for project context',
+            'prompt' => 'Dimmi cosa sai sul progetto e cosa ti serve sapere.',
+            'payload' => [
+                'source' => 'ask_page',
+                'question' => 'Dimmi cosa sai sul progetto e cosa ti serve sapere.',
+            ],
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assigned_agent_key', 'socrates')
+        ->assertJsonPath('status', 'completed')
+        ->json();
+
+    $memoryEntry = DB::table('project_memory_entries')->where('id', $workItem['result_memory_entry_id'])->first();
+    expect($memoryEntry)->not->toBeNull();
+    $memoryPayload = json_decode((string) $memoryEntry->payload, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($memoryEntry->project_id)->toBe($projectId)
+        ->and($memoryEntry->agent_key)->toBe('socrates')
+        ->and($memoryEntry->source)->toBe('server_agent')
+        ->and($memoryEntry->kind)->toBe('agent_note')
+        ->and($memoryPayload['answer'])->toContain('wiki aggiornata')
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem['id'])->where('event_type', 'running')->exists())->toBeTrue()
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem['id'])->where('event_type', 'completed')->exists())->toBeTrue();
+
+    Http::assertSent(fn ($request): bool => $request->url() === 'https://opencode.ai/zen/go/v1/chat/completions'
+        && $request['model'] === 'deepseek-v4-flash'
+        && str_contains($request->body(), 'Dimmi cosa sai sul progetto')
+        && $request->hasHeader('Authorization', 'Bearer sk-opencode-test'));
+});
+
+it('fails socrates work visibly when the configured provider rejects the request', function () {
+    Http::fake([
+        'https://opencode.ai/zen/go/v1/chat/completions' => Http::response(['error' => ['message' => 'unauthorized']], 401),
+    ]);
+
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    agentWorkDashboardApiConfigureSocratesProvider();
+
+    $workItem = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => 'socrates',
+            'title' => 'Ask Socrates with bad key',
+            'prompt' => 'Dimmi cosa sai sul progetto e cosa ti serve sapere.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('status', 'failed')
+        ->json();
+
+    expect($workItem['failure_reason'])->toBe('AI provider returned HTTP 401.')
+        ->and($workItem['result_memory_entry_id'])->toBeNull()
+        ->and(DB::table('project_memory_entries')->where('project_id', $projectId)->where('agent_key', 'socrates')->exists())->toBeFalse()
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem['id'])->where('event_type', 'failed')->exists())->toBeTrue();
+});
+
+it('runs platon and aristoteles work through controlled backend agent profiles', function (string $agentKey, string $answer) {
+    Http::fake([
+        'https://opencode.ai/zen/go/v1/chat/completions' => Http::response([
+            'choices' => [
+                [
+                    'message' => ['content' => $answer],
+                ],
+            ],
+        ]),
+    ]);
+
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    agentWorkDashboardApiConfigureSocratesProvider();
+
+    $workItem = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => $agentKey,
+            'title' => "Ask {$agentKey} for help",
+            'prompt' => 'Rispondi usando solo il contesto DevBoard disponibile.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assigned_agent_key', $agentKey)
+        ->assertJsonPath('status', 'completed')
+        ->json();
+
+    $memoryPayload = json_decode(
+        (string) DB::table('project_memory_entries')->where('id', $workItem['result_memory_entry_id'])->value('payload'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+
+    expect($memoryPayload['answer'])->toBe($answer)
+        ->and(DB::table('project_memory_entries')->where('id', $workItem['result_memory_entry_id'])->value('agent_key'))->toBe($agentKey)
+        ->and(DB::table('assistant_runs')->where('target_type', 'agent_work_item')->where('target_id', $workItem['id'])->exists())->toBeTrue()
+        ->and(DB::table('assistant_messages')->where('role', 'user')->where('content', 'Rispondi usando solo il contesto DevBoard disponibile.')->exists())->toBeTrue()
+        ->and(DB::table('assistant_messages')->where('role', 'assistant')->where('content', $answer)->exists())->toBeTrue();
+})->with([
+    ['platon', 'Platon vede una task poco chiara e propone criteri di accettazione.'],
+    ['aristoteles', 'Aristoteles vede un collo di bottiglia nella coda agent-work.'],
+]);
+
+it('returns agent work detail with events result memory and persisted chat messages', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $workItemId = agentWorkDashboardApiWorkItem($projectId, [
+        'assigned_agent_key' => 'socrates',
+        'status' => 'completed',
+        'completed_at' => now(),
+    ]);
+    $memoryId = (string) Str::ulid();
+    $runId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $projectId,
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => 'socrates',
+        'source' => 'server_agent',
+        'kind' => 'agent_note',
+        'completeness' => 'complete',
+        'summary' => 'Socrates answered from the persisted chat.',
+        'payload' => json_encode(['answer' => 'Persistent answer'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('agent_work_items')->where('id', $workItemId)->update([
+        'result_memory_entry_id' => $memoryId,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('agent_work_item_events')->insert([
+        'id' => (string) Str::ulid(),
+        'agent_work_item_id' => $workItemId,
+        'actor_user_id' => $developer->id,
+        'actor_device_id' => null,
+        'event_type' => 'queued',
+        'message' => 'Dashboard user queued work for an agent.',
+        'payload' => json_encode([], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('assistant_runs')->insert([
+        'id' => $runId,
+        'project_id' => $projectId,
+        'agent_profile_id' => DB::table('ai_agent_profiles')->where('agent_key', 'socrate_supervisor')->value('id'),
+        'target_type' => 'agent_work_item',
+        'target_id' => $workItemId,
+        'triggered_by_user_id' => $developer->id,
+        'status' => 'completed',
+        'model_provider_id' => null,
+        'model_profile_id' => null,
+        'context_hash' => hash('sha256', 'agent-work-detail'),
+        'context_snapshot' => json_encode(['project_id' => $projectId], JSON_THROW_ON_ERROR),
+        'result_summary' => 'Persistent answer',
+        'metadata' => json_encode(['agent_key' => 'socrates'], JSON_THROW_ON_ERROR),
+        'started_at' => $now,
+        'finished_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    foreach ([['user', 'Question for Socrates'], ['assistant', 'Persistent answer']] as [$role, $content]) {
+        DB::table('assistant_messages')->insert([
+            'id' => (string) Str::ulid(),
+            'assistant_run_id' => $runId,
+            'role' => $role,
+            'content' => $content,
+            'metadata' => json_encode([], JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+        ]);
+    }
+
+    $this->actingAs($developer)
+        ->getJson("/api/dashboard/projects/{$projectId}/agent-work/{$workItemId}")
+        ->assertOk()
+        ->assertJsonPath('item.id', $workItemId)
+        ->assertJsonPath('item.result_memory_entry.id', $memoryId)
+        ->assertJsonPath('item.result_memory_entry.domain', 'agent_notes')
+        ->assertJsonPath('item.chat.messages.0.role', 'user')
+        ->assertJsonPath('item.chat.messages.1.content', 'Persistent answer')
+        ->assertJsonPath('item.events.0.event_type', 'queued');
 });
 
 it('lets pm cancel queued work before the local agent claims it', function () {
@@ -259,7 +470,7 @@ it('does not cancel work that becomes claimed after the initial cancel read', fu
     $workItemId = agentWorkDashboardApiWorkItem($projectId);
     $claimedDuringCancel = false;
 
-    DB::listen(function (Illuminate\Database\Events\QueryExecuted $query) use (&$claimedDuringCancel, $workItemId, $deviceId): void {
+    DB::listen(function (QueryExecuted $query) use (&$claimedDuringCancel, $workItemId, $deviceId): void {
         if ($claimedDuringCancel || ! str_contains($query->sql, 'from "agent_work_items"')) {
             return;
         }
@@ -481,7 +692,7 @@ function agentWorkDashboardApiTask(string $projectId): string
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 function agentWorkDashboardApiWorkItem(string $projectId, array $overrides = []): string
 {
@@ -540,4 +751,26 @@ function agentWorkDashboardApiDevice(): string
     ]);
 
     return $deviceId;
+}
+
+function agentWorkDashboardApiConfigureSocratesProvider(): void
+{
+    $providerId = (string) DB::table('ai_model_providers')->where('provider_key', 'openai')->value('id');
+
+    DB::table('ai_model_providers')->where('id', $providerId)->update([
+        'base_url' => 'https://opencode.ai/zen/go/v1/chat/completions',
+        'encrypted_api_key' => Crypt::encryptString('sk-opencode-test'),
+        'api_key_last_four' => 'test',
+        'enabled' => true,
+        'updated_at' => now(),
+    ]);
+
+    DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->update([
+        'provider_id' => $providerId,
+        'model_name' => 'deepseek-v4-flash',
+        'max_output_tokens' => 1024,
+        'timeout_seconds' => 30,
+        'enabled' => true,
+        'updated_at' => now(),
+    ]);
 }

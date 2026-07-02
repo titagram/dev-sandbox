@@ -8,7 +8,7 @@ use Illuminate\Support\Str;
 class WikiRevisionService
 {
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      * @return array{wiki_page_id: string, wiki_revision_id: string, source_status: string}
      */
     public function write(array $payload, ?int $authorUserId = null, ?string $authorDeviceId = null): array
@@ -63,7 +63,7 @@ class WikiRevisionService
             'id' => (string) Str::ulid(),
             'actor_user_id' => $authorUserId,
             'actor_device_id' => $authorDeviceId,
-            'actor_type' => $authorDeviceId ? 'plugin' : 'system',
+            'actor_type' => $authorUserId ? 'user' : ($authorDeviceId ? 'plugin' : 'system'),
             'action' => 'wiki.updated',
             'target_type' => 'wiki_page',
             'target_id' => $pageId,
@@ -81,7 +81,7 @@ class WikiRevisionService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function findPageId(array $payload): ?string
     {

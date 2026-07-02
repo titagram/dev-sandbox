@@ -1,25 +1,30 @@
 <?php
 
 use App\Http\Controllers\Hades\AgentJobResultController as HadesAgentJobResultController;
-use App\Http\Controllers\Hades\PersephoneController as HadesPersephoneController;
-use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportController;
-use App\Http\Controllers\Hades\ArtifactController as HadesArtifactController;
 use App\Http\Controllers\Hades\AgentJobsController as HadesAgentJobsController;
 use App\Http\Controllers\Hades\AgentJobStatusController as HadesAgentJobStatusController;
 use App\Http\Controllers\Hades\AgentRegisterController as HadesAgentRegisterController;
+use App\Http\Controllers\Hades\ArtifactController as HadesArtifactController;
 use App\Http\Controllers\Hades\CapabilitiesController as HadesCapabilitiesController;
+use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportController;
 use App\Http\Controllers\Hades\HealthController as HadesHealthController;
+use App\Http\Controllers\Hades\MemoryImportBundleController as HadesMemoryImportBundleController;
 use App\Http\Controllers\Hades\MemoryProposalController as HadesMemoryProposalController;
 use App\Http\Controllers\Hades\MemorySnapshotController as HadesMemorySnapshotController;
+use App\Http\Controllers\Hades\PersephoneController as HadesPersephoneController;
 use App\Http\Controllers\Hades\TokenVerifyController as HadesTokenVerifyController;
 use App\Http\Controllers\Hades\WorkspaceBindController as HadesWorkspaceBindController;
 use App\Http\Controllers\Hades\WorkspaceUnlinkController as HadesWorkspaceUnlinkController;
-use App\Http\Controllers\Plugin\AuthCheckController;
 use App\Http\Controllers\Plugin\AgentWorkItemController;
+use App\Http\Controllers\Plugin\AuthCheckController;
 use App\Http\Controllers\Plugin\DeltaChunkController;
 use App\Http\Controllers\Plugin\DeltaFinalizeController;
 use App\Http\Controllers\Plugin\DeltaLocalSnapshotController;
 use App\Http\Controllers\Plugin\DeltaStartController;
+use App\Http\Controllers\Plugin\GenesisChunkController;
+use App\Http\Controllers\Plugin\GenesisFinalizeController;
+use App\Http\Controllers\Plugin\GenesisStartController;
+use App\Http\Controllers\Plugin\GenesisStatusController;
 use App\Http\Controllers\Plugin\ListProjectsController;
 use App\Http\Controllers\Plugin\ListRepositoriesController;
 use App\Http\Controllers\Plugin\RegisterDeviceController;
@@ -31,10 +36,6 @@ use App\Http\Controllers\Plugin\RunFinishController;
 use App\Http\Controllers\Plugin\RunHeartbeatController;
 use App\Http\Controllers\Plugin\RunStartController;
 use App\Http\Controllers\Plugin\SharedMemoryPackController;
-use App\Http\Controllers\Plugin\GenesisChunkController;
-use App\Http\Controllers\Plugin\GenesisFinalizeController;
-use App\Http\Controllers\Plugin\GenesisStartController;
-use App\Http\Controllers\Plugin\GenesisStatusController;
 use App\Http\Controllers\Plugin\WikiRevisionController;
 use Illuminate\Support\Facades\Route;
 
@@ -167,6 +168,9 @@ Route::prefix('hades/v1')->group(function () {
     Route::post('/memory/proposals', HadesMemoryProposalController::class)
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
+    Route::post('/memory/import-bundles', HadesMemoryImportBundleController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
     Route::get('/agent/jobs', HadesAgentJobsController::class)
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
@@ -175,7 +179,6 @@ Route::prefix('hades/v1')->group(function () {
 
     Route::post('/agent/jobs/{job}/result', HadesAgentJobResultController::class)
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
-
 
     Route::post('/artifacts', HadesArtifactController::class)
         ->middleware(['throttle:plugin-api-heavy', 'hades.agent']);

@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -9,7 +10,7 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('lets a developer append and list project memory entries', function () {
@@ -49,14 +50,14 @@ it('lets a developer append and list project memory entries', function () {
         ->assertJsonPath('run_id', $runId)
         ->assertJsonPath('author_user_id', $developer->id)
         ->assertJsonPath('agent_key', 'local_agent')
-        ->assertJsonPath('source', 'dashboard_user')
+        ->assertJsonPath('source', 'user_inserted')
         ->assertJsonPath('kind', 'implementation')
         ->assertJsonPath('completeness', 'incomplete')
         ->assertJsonPath('summary', 'Added employee table pagination guard.')
         ->assertJsonPath('payload.changed.0.path', 'app/Tables/EmployeeTable.php')
         ->json();
 
-    expect(DB::table('project_memory_entries')->where('id', $created['id'])->value('source'))->toBe('dashboard_user')
+    expect(DB::table('project_memory_entries')->where('id', $created['id'])->value('source'))->toBe('user_inserted')
         ->and(DB::table('project_memory_entries')->where('id', $created['id'])->value('author_user_id'))->toBe($developer->id);
 
     $this->actingAs($developer)
@@ -78,8 +79,30 @@ it('lets pm append project memory entries', function () {
             'payload' => ['why' => 'Dashboard users need durable project context.'],
         ])
         ->assertCreated()
-        ->assertJsonPath('source', 'dashboard_user')
+        ->assertJsonPath('source', 'user_inserted')
         ->assertJsonPath('completeness', 'complete');
+});
+
+it('lets a developer delete project memory entries', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $entry = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory", [
+            'kind' => 'decision',
+            'summary' => 'Delete obsolete manual dashboard memory.',
+            'payload' => ['why' => 'The user should control manually inserted memory.'],
+        ])
+        ->assertCreated()
+        ->json();
+
+    $this->actingAs($developer)
+        ->deleteJson("/api/dashboard/projects/{$projectId}/memory/{$entry['id']}")
+        ->assertNoContent();
+
+    expect(DB::table('project_memory_entries')->where('id', $entry['id'])->exists())->toBeFalse()
+        ->and(DB::table('audit_logs')->where('action', 'project_memory.deleted')->where('target_id', $entry['id'])->value('actor_type'))
+        ->toBe('user');
 });
 
 it('rejects memory summaries shorter than eight characters', function () {
@@ -111,6 +134,37 @@ it('keeps memory project scoped', function () {
         ->getJson("/api/dashboard/projects/{$secondary['project_id']}/memory")
         ->assertOk()
         ->assertJsonPath('entries', []);
+});
+
+it('keeps memory deletion project scoped', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $primaryProjectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $secondary = projectMemoryDashboardApiProject('Memory Delete Second Project', 'memory-delete-second-project');
+    $entryId = (string) Str::ulid();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $entryId,
+        'project_id' => $primaryProjectId,
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => $developer->id,
+        'agent_key' => null,
+        'source' => 'user_inserted',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'Primary project deletion scope entry.',
+        'payload' => json_encode(['why' => 'Delete route must stay project scoped.'], JSON_THROW_ON_ERROR),
+        'occurred_at' => now(),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->actingAs($developer)
+        ->deleteJson("/api/dashboard/projects/{$secondary['project_id']}/memory/{$entryId}")
+        ->assertNotFound();
+
+    expect(DB::table('project_memory_entries')->where('id', $entryId)->exists())->toBeTrue();
 });
 
 it('returns newest project memory entries first and limits the list', function () {
@@ -226,9 +280,10 @@ it('blocks writes to archived and deleted projects', function (string $status) {
 it('allows sysadmin to read memory but not append it', function () {
     $sysadmin = projectMemoryDashboardApiUserWithRole('Sysadmin');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $memoryId = (string) Str::ulid();
 
     DB::table('project_memory_entries')->insert([
-        'id' => (string) Str::ulid(),
+        'id' => $memoryId,
         'project_id' => $projectId,
         'repository_id' => null,
         'task_id' => null,
@@ -257,6 +312,104 @@ it('allows sysadmin to read memory but not append it', function () {
             'payload' => ['why' => 'Sysadmin is not a mutator role.'],
         ])
         ->assertForbidden();
+
+    $this->actingAs($sysadmin)
+        ->deleteJson("/api/dashboard/projects/{$projectId}/memory/{$memoryId}")
+        ->assertForbidden();
+});
+
+it('queries separated logbook wiki and agent note memory domains', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $now = now();
+    $logbookId = (string) Str::ulid();
+    $agentNoteId = (string) Str::ulid();
+    $pageId = (string) Str::ulid();
+    $revisionId = (string) Str::ulid();
+
+    DB::table('project_memory_entries')->insert([
+        [
+            'id' => $logbookId,
+            'project_id' => $projectId,
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => $developer->id,
+            'agent_key' => null,
+            'source' => 'user_inserted',
+            'kind' => 'decision',
+            'completeness' => 'complete',
+            'summary' => 'Logbook decision about payments.',
+            'payload' => json_encode(['domain' => 'logbook', 'topic' => 'payments'], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now->copy()->subMinutes(2),
+            'created_at' => $now->copy()->subMinutes(2),
+            'updated_at' => $now->copy()->subMinutes(2),
+        ],
+        [
+            'id' => $agentNoteId,
+            'project_id' => $projectId,
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => 'socrates',
+            'source' => 'server_agent',
+            'kind' => 'agent_note',
+            'completeness' => 'complete',
+            'summary' => 'Socrates note about backlog latency.',
+            'payload' => json_encode(['domain' => 'agent_notes', 'topic' => 'latency'], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now->copy()->subMinute(),
+            'created_at' => $now->copy()->subMinute(),
+            'updated_at' => $now->copy()->subMinute(),
+        ],
+    ]);
+
+    DB::table('wiki_pages')->insert([
+        'id' => $pageId,
+        'project_id' => $projectId,
+        'repository_id' => null,
+        'slug' => 'payments-runbook',
+        'title' => 'Payments Runbook',
+        'page_type' => 'technical',
+        'current_revision_id' => $revisionId,
+        'source_status' => 'verified_from_code',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('wiki_revisions')->insert([
+        'id' => $revisionId,
+        'wiki_page_id' => $pageId,
+        'author_user_id' => null,
+        'author_device_id' => null,
+        'producer' => 'test',
+        'source_type' => 'manual',
+        'source_status' => 'verified_from_code',
+        'content_markdown' => 'Payments runbook contains deployment and rollback notes.',
+        'evidence_refs' => json_encode([['type' => 'file_ref', 'path' => 'docs/payments.md']], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+    ]);
+
+    $this->actingAs($developer)
+        ->getJson("/api/dashboard/projects/{$projectId}/memory?domain=agent_notes&q=latency")
+        ->assertOk()
+        ->assertJsonPath('domain', 'agent_notes')
+        ->assertJsonPath('query', 'latency')
+        ->assertJsonPath('entries.0.id', $agentNoteId)
+        ->assertJsonPath('entries.0.domain', 'agent_notes')
+        ->assertJsonCount(1, 'entries')
+        ->assertJsonPath('domains.agent_notes', 1)
+        ->assertJsonPath('domains.logbook', 1)
+        ->assertJsonPath('domains.wiki', 1);
+
+    $this->actingAs($developer)
+        ->getJson("/api/dashboard/projects/{$projectId}/memory?domain=wiki&q=rollback")
+        ->assertOk()
+        ->assertJsonPath('domain', 'wiki')
+        ->assertJsonPath('entries.0.id', $revisionId)
+        ->assertJsonPath('entries.0.domain', 'wiki')
+        ->assertJsonPath('entries.0.payload.page_slug', 'payments-runbook')
+        ->assertJsonPath('entries.0.payload.evidence_refs.0.path', 'docs/payments.md');
 });
 
 function projectMemoryDashboardApiUserWithRole(string $roleName): User

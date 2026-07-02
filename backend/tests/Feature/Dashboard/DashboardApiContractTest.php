@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -10,7 +11,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('serves the generated frontend dashboard read contract', function () {
@@ -28,6 +29,8 @@ it('serves the generated frontend dashboard read contract', function () {
         ->getJson("/api/dashboard/projects/{$ids['project_id']}")
         ->assertOk()
         ->assertJsonPath('repositories.0.id', $ids['repository_id'])
+        ->assertJsonPath('links.wiki', "/projects/{$ids['project_id']}/wiki")
+        ->assertJsonPath('links.wiki_api', "/api/dashboard/projects/{$ids['project_id']}/wiki")
         ->assertJsonPath('policy.code_write_allowed', true)
         ->assertJsonPath('recent_run_ids.0', $ids['run_id']);
 
