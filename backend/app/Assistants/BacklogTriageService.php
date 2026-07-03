@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Laravel\Ai\Ai;
 use Laravel\Ai\Responses\StructuredAgentResponse;
+use Throwable;
 
 final class BacklogTriageService
 {
@@ -51,6 +52,7 @@ final class BacklogTriageService
                     'provider_key' => $execution['provider_key'],
                     'model_name' => $execution['model_name'],
                     'sdk_agent' => BacklogTriageAgent::class,
+                    'provider_failure' => $execution['provider_failure'],
                 ], JSON_THROW_ON_ERROR),
                 'started_at' => $now,
                 'finished_at' => $now,
@@ -75,6 +77,7 @@ final class BacklogTriageService
                     'metadata' => json_encode([
                         'structured' => true,
                         'execution_mode' => $execution['execution_mode'],
+                        'provider_failure' => $execution['provider_failure'],
                     ], JSON_THROW_ON_ERROR),
                     'created_at' => $now,
                 ],
@@ -257,7 +260,7 @@ final class BacklogTriageService
 
     /**
      * @param array<string, mixed> $context
-     * @return array{structured: array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>, confidence: float}, prompt: string, execution_mode: string, external_provider_call: bool, model_provider_id: ?string, model_profile_id: ?string, provider_key: ?string, model_name: ?string}
+     * @return array{structured: array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>, confidence: float}, prompt: string, execution_mode: string, external_provider_call: bool, model_provider_id: ?string, model_profile_id: ?string, provider_key: ?string, model_name: ?string, provider_failure: ?array<string, string>}
      */
     private function generateSuggestion(object $project, object $agentProfile, array $context): array
     {
@@ -275,6 +278,7 @@ final class BacklogTriageService
                 'model_profile_id' => $modelProfile?->model_profile_id ? (string) $modelProfile->model_profile_id : null,
                 'provider_key' => $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
                 'model_name' => $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
+                'provider_failure' => null,
             ];
         }
 
@@ -282,12 +286,29 @@ final class BacklogTriageService
             $this->configureLaravelAiProvider($modelProfile);
         }
 
-        $response = BacklogTriageAgent::make()->prompt(
-            $prompt,
-            provider: $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
-            model: $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
-            timeout: $modelProfile?->timeout_seconds ? (int) $modelProfile->timeout_seconds : null,
-        );
+        try {
+            $response = BacklogTriageAgent::make()->prompt(
+                $prompt,
+                provider: $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
+                model: $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
+                timeout: $modelProfile?->timeout_seconds ? (int) $modelProfile->timeout_seconds : null,
+            );
+        } catch (Throwable $exception) {
+            return [
+                'structured' => $this->structuredSuggestion($context),
+                'prompt' => $prompt,
+                'execution_mode' => 'provider_failed_fallback',
+                'external_provider_call' => ! BacklogTriageAgent::isFaked(),
+                'model_provider_id' => $modelProfile?->model_provider_id ? (string) $modelProfile->model_provider_id : null,
+                'model_profile_id' => $modelProfile?->model_profile_id ? (string) $modelProfile->model_profile_id : null,
+                'provider_key' => $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
+                'model_name' => $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
+                'provider_failure' => [
+                    'class' => $exception::class,
+                    'message' => Str::limit($exception->getMessage(), 500, ''),
+                ],
+            ];
+        }
 
         return [
             'structured' => $this->normalizeStructuredSuggestion(
@@ -303,6 +324,7 @@ final class BacklogTriageService
             'model_profile_id' => $modelProfile?->model_profile_id ? (string) $modelProfile->model_profile_id : null,
             'provider_key' => $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
             'model_name' => $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
+            'provider_failure' => null,
         ];
     }
 

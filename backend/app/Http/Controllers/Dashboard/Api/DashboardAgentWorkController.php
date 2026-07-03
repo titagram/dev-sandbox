@@ -174,6 +174,87 @@ final class DashboardAgentWorkController extends Controller
         return response()->json($reader->agentWorkItemById($workItem));
     }
 
+    public function destroy(
+        Request $request,
+        DashboardApiReader $reader,
+        ProjectLifecycleService $lifecycle,
+        string $workItem,
+    ): JsonResponse {
+        $user = $this->abortUnlessDashboardMutator($request);
+        $validated = $request->validate([
+            'message' => ['sometimes', 'nullable', 'string', 'max:1000'],
+        ]);
+
+        $item = DB::table('agent_work_items')->where('id', $workItem)->first();
+        abort_unless($item, 404);
+
+        if ($error = $lifecycle->assertProjectActiveForDashboard((string) $item->project_id)) {
+            return $error;
+        }
+
+        abort_if($item->archived_at !== null, 409, 'Work item is already archived.');
+        abort_if($this->isClaimedOrRunning($item), 409, 'Claimed or running work cannot be archived.');
+
+        $now = now();
+        $message = $validated['message'] ?? null;
+
+        DB::transaction(function () use ($item, $message, $user, $workItem, $now): void {
+            if ($this->isCancelableQueuedItem($item)) {
+                $updated = DB::table('agent_work_items')
+                    ->where('id', $workItem)
+                    ->where('status', 'queued')
+                    ->whereNull('claimed_by_device_id')
+                    ->whereNull('claimed_at')
+                    ->whereNull('heartbeat_at')
+                    ->whereNull('archived_at')
+                    ->update([
+                        'status' => 'canceled',
+                        'canceled_at' => $now,
+                        'archived_at' => $now,
+                        'archived_by_user_id' => $user->id,
+                        'archive_reason' => $message,
+                        'updated_at' => $now,
+                    ]);
+
+                abort_if($updated === 0, 409, 'Work item is no longer archivable.');
+
+                $this->recordEvent(
+                    workItemId: $workItem,
+                    eventType: 'canceled',
+                    userId: $user->id,
+                    deviceId: null,
+                    message: $message,
+                    payload: ['source' => 'dashboard_archive'],
+                    now: $now,
+                );
+            } else {
+                $updated = DB::table('agent_work_items')
+                    ->where('id', $workItem)
+                    ->whereNull('archived_at')
+                    ->update([
+                        'archived_at' => $now,
+                        'archived_by_user_id' => $user->id,
+                        'archive_reason' => $message,
+                        'updated_at' => $now,
+                    ]);
+
+                abort_if($updated === 0, 409, 'Work item is already archived.');
+            }
+
+            $this->recordEvent(
+                workItemId: $workItem,
+                eventType: 'archived',
+                userId: $user->id,
+                deviceId: null,
+                message: $message,
+                payload: ['source' => 'dashboard'],
+                now: $now,
+            );
+        });
+
+        return response()->json($reader->agentWorkItemById($workItem));
+    }
+
     private function abortUnlessDashboardReader(Request $request): User
     {
         $user = $this->activeDashboardUser($request);
@@ -210,6 +291,22 @@ final class DashboardAgentWorkController extends Controller
         abort_unless($user instanceof User && $user->status === 'active', 403);
 
         return $user;
+    }
+
+    private function isClaimedOrRunning(object $item): bool
+    {
+        return in_array((string) $item->status, ['claimed', 'running'], true)
+            || $item->claimed_by_device_id !== null
+            || $item->claimed_at !== null
+            || $item->heartbeat_at !== null;
+    }
+
+    private function isCancelableQueuedItem(object $item): bool
+    {
+        return (string) $item->status === 'queued'
+            && $item->claimed_by_device_id === null
+            && $item->claimed_at === null
+            && $item->heartbeat_at === null;
     }
 
     /**

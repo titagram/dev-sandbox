@@ -3,7 +3,9 @@
 use App\Assistants\Agents\BacklogTriageAgent;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
 
@@ -101,6 +103,34 @@ it('uses the Laravel AI SDK backlog triage agent when it is faked', function () 
         ->and($metadata['sdk_agent'])->toBe(BacklogTriageAgent::class);
 });
 
+it('falls back to deterministic backlog triage when the configured provider fails', function () {
+    Http::fake(['*' => Http::response(['error' => ['message' => 'not found']], 404)]);
+
+    $pm = backlogTriageUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    backlogTriageCreateTask($projectId, $pm, [
+        'title' => 'Clarify import queue',
+        'description' => 'Import queue needs clearer status wording.',
+    ]);
+    backlogTriageConfigureProvider();
+
+    $response = $this->actingAs($pm)
+        ->postJson("/api/dashboard/projects/{$projectId}/assistant/backlog-triage")
+        ->assertCreated()
+        ->assertJsonPath('run.status', 'completed')
+        ->assertJsonPath('suggestion.structured_payload.groups.0.label', 'Needs clarification');
+
+    $metadata = json_decode(
+        (string) DB::table('assistant_runs')->where('id', $response->json('run.id'))->value('metadata'),
+        true,
+        flags: JSON_THROW_ON_ERROR
+    );
+
+    expect($metadata['execution_mode'])->toBe('provider_failed_fallback')
+        ->and($metadata['external_provider_call'])->toBeTrue()
+        ->and($metadata['provider_failure']['message'])->toContain('HTTP request returned status code 404');
+});
+
 it('shows the latest backlog triage suggestion on the project page', function () {
     $pm = backlogTriageUserWithRole('PM');
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
@@ -162,6 +192,28 @@ function backlogTriageUserWithRole(string $roleName): User
     ]);
 
     return $user;
+}
+
+function backlogTriageConfigureProvider(): void
+{
+    $providerId = (string) DB::table('ai_model_providers')->where('provider_key', 'openai')->value('id');
+
+    DB::table('ai_model_providers')->where('id', $providerId)->update([
+        'base_url' => 'https://opencode.ai/zen/go/v1/chat/completions',
+        'encrypted_api_key' => Crypt::encryptString('sk-opencode-test'),
+        'api_key_last_four' => 'test',
+        'enabled' => true,
+        'updated_at' => now(),
+    ]);
+
+    DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->update([
+        'provider_id' => $providerId,
+        'model_name' => 'deepseek-v4-flash',
+        'max_output_tokens' => 1024,
+        'timeout_seconds' => 30,
+        'enabled' => true,
+        'updated_at' => now(),
+    ]);
 }
 
 /**

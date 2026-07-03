@@ -310,6 +310,80 @@ it('lets pm cancel queued work before the local agent claims it', function () {
         ->toBe('The task was rewritten.');
 });
 
+it('archives completed work and hides it from the default project list', function () {
+    $pm = agentWorkDashboardApiUserWithRole('PM');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $workItemId = agentWorkDashboardApiWorkItem($projectId, [
+        'status' => 'completed',
+        'completed_at' => now()->subMinute(),
+        'title' => 'Completed work to archive',
+    ]);
+
+    $this->actingAs($pm)
+        ->deleteJson("/api/dashboard/agent-work/{$workItemId}", [
+            'message' => 'No longer needed in the active queue.',
+        ])
+        ->assertOk()
+        ->assertJsonPath('id', $workItemId)
+        ->assertJsonPath('status', 'completed')
+        ->assertJsonPath('archive_reason', 'No longer needed in the active queue.');
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('archived_at'))->not->toBeNull()
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'archived')->value('message'))
+        ->toBe('No longer needed in the active queue.');
+
+    $items = $this->actingAs($pm)
+        ->getJson("/api/dashboard/projects/{$projectId}/agent-work")
+        ->assertOk()
+        ->json('items');
+
+    expect(collect($items)->pluck('id')->all())->not->toContain($workItemId);
+
+    $this->actingAs($pm)
+        ->getJson("/api/dashboard/projects/{$projectId}/agent-work/{$workItemId}")
+        ->assertOk()
+        ->assertJsonPath('item.id', $workItemId)
+        ->assertJsonPath('item.archived_by_user_id', $pm->id);
+});
+
+it('cancels and archives queued unclaimed work in one delete action', function () {
+    $pm = agentWorkDashboardApiUserWithRole('PM');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $workItemId = agentWorkDashboardApiWorkItem($projectId, ['title' => 'Queued work to remove']);
+
+    $this->actingAs($pm)
+        ->deleteJson("/api/dashboard/agent-work/{$workItemId}", [
+            'message' => 'Superseded by a newer request.',
+        ])
+        ->assertOk()
+        ->assertJsonPath('id', $workItemId)
+        ->assertJsonPath('status', 'canceled')
+        ->assertJsonPath('archive_reason', 'Superseded by a newer request.');
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('canceled_at'))->not->toBeNull()
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('archived_at'))->not->toBeNull()
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'canceled')->exists())->toBeTrue()
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'archived')->exists())->toBeTrue();
+});
+
+it('does not archive claimed or running work from the dashboard', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $deviceId = agentWorkDashboardApiDevice();
+    $workItemId = agentWorkDashboardApiWorkItem($projectId, [
+        'status' => 'running',
+        'claimed_by_device_id' => $deviceId,
+        'claimed_at' => now(),
+        'heartbeat_at' => now(),
+    ]);
+
+    $this->actingAs($developer)
+        ->deleteJson("/api/dashboard/agent-work/{$workItemId}")
+        ->assertConflict();
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('archived_at'))->toBeNull();
+});
+
 it('allows sysadmin to read but not create or cancel agent work', function () {
     $sysadmin = agentWorkDashboardApiUserWithRole('Sysadmin');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
@@ -330,6 +404,10 @@ it('allows sysadmin to read but not create or cancel agent work', function () {
 
     $this->actingAs($sysadmin)
         ->postJson("/api/dashboard/agent-work/{$workItemId}/cancel")
+        ->assertForbidden();
+
+    $this->actingAs($sysadmin)
+        ->deleteJson("/api/dashboard/agent-work/{$workItemId}")
         ->assertForbidden();
 
     expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('queued');

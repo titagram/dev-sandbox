@@ -55,7 +55,7 @@ final class DashboardMemoryImportController extends Controller
             'mode' => ['nullable', 'string', Rule::in(['copy_as_proposals'])],
             'filters' => ['nullable', 'array'],
             'filters.kinds' => ['nullable', 'array'],
-            'filters.kinds.*' => ['string', Rule::in(['decision', 'implementation', 'clarification', 'risk', 'verification', 'handoff', 'incident', 'agent_note'])],
+            'filters.kinds.*' => ['string', Rule::in(['decision', 'implementation', 'clarification', 'risk', 'verification', 'handoff', 'incident', 'logbook', 'agent_note'])],
             'filters.since' => ['nullable', 'string', 'max:64'],
             'filters.limit' => ['nullable', 'integer', 'min:1', 'max:100'],
             'dedupe_strategy' => ['nullable', 'string', Rule::in(['source_hash', 'summary_payload_hash', 'provenance_hash'])],
@@ -63,7 +63,7 @@ final class DashboardMemoryImportController extends Controller
             'entries' => ['nullable', 'array', 'min:1', 'max:100'],
             'entries.*.source_local_id' => ['nullable', 'string', 'max:191'],
             'entries.*.source_hash' => ['required', 'string', 'max:191'],
-            'entries.*.kind' => ['nullable', 'string', Rule::in(['decision', 'implementation', 'clarification', 'risk', 'verification', 'handoff', 'incident', 'agent_note'])],
+            'entries.*.kind' => ['nullable', 'string', Rule::in(['decision', 'implementation', 'clarification', 'risk', 'verification', 'handoff', 'incident', 'logbook', 'agent_note'])],
             'entries.*.summary' => ['required', 'string', 'min:8', 'max:4000'],
             'entries.*.payload' => ['nullable', 'array'],
             'entries.*.provenance' => ['nullable', 'array'],
@@ -107,6 +107,25 @@ final class DashboardMemoryImportController extends Controller
         abort_unless(DB::table('memory_import_batches')->where('id', $batch)->where('project_id', $project)->exists(), 404);
 
         return response()->json(['import_batch' => $imports->batchPayload($batch)]);
+    }
+
+    public function cancel(Request $request, MemoryImportService $imports, string $project, string $batch): JsonResponse
+    {
+        $this->abortUnlessMutator($request);
+        abort_unless(DB::table('projects')->where('id', $project)->where('status', 'active')->exists(), 404);
+        abort_unless(DB::table('memory_import_batches')->where('id', $batch)->where('project_id', $project)->exists(), 404);
+
+        $validated = $request->validate([
+            'message' => ['sometimes', 'nullable', 'string', 'max:1000'],
+        ]);
+
+        return response()->json([
+            'import_batch' => $imports->cancelBatch(
+                $batch,
+                $request->user()->id,
+                $validated['message'] ?? null,
+            ),
+        ]);
     }
 
     private function abortUnlessReader(Request $request): void

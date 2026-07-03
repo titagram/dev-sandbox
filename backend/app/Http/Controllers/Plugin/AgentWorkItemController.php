@@ -27,6 +27,7 @@ class AgentWorkItemController extends Controller
         'verification',
         'handoff',
         'incident',
+        'logbook',
         'agent_note',
     ];
 
@@ -73,6 +74,7 @@ class AgentWorkItemController extends Controller
             ->whereNull('projects.deleted_at')
             ->where('agent_work_items.assigned_agent_key', 'local_agent')
             ->whereIn('agent_work_items.status', self::ACTIVE_STATUSES)
+            ->whereNull('agent_work_items.archived_at')
             ->where(function ($query) use ($device): void {
                 $query->whereNull('agent_work_items.claimed_by_device_id')
                     ->orWhere('agent_work_items.claimed_by_device_id', $device->id);
@@ -133,6 +135,10 @@ class AgentWorkItemController extends Controller
             }
 
             if ((string) $item->assigned_agent_key !== 'local_agent') {
+                abort(Response::HTTP_NOT_FOUND);
+            }
+
+            if ($item->archived_at !== null) {
                 abort(Response::HTTP_NOT_FOUND);
             }
 

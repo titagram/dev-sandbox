@@ -80,14 +80,17 @@ Route::middleware('auth')->group(function () {
         Route::get('/projects/{project}/memory/imports', [DashboardMemoryImportController::class, 'index']);
         Route::post('/projects/{project}/memory/imports', [DashboardMemoryImportController::class, 'store']);
         Route::get('/projects/{project}/memory/imports/{batch}', [DashboardMemoryImportController::class, 'show']);
+        Route::post('/projects/{project}/memory/imports/{batch}/cancel', [DashboardMemoryImportController::class, 'cancel']);
         Route::get('/projects/{project}/agent-work', [DashboardAgentWorkController::class, 'index']);
         Route::post('/projects/{project}/agent-work', [DashboardAgentWorkController::class, 'store']);
         Route::get('/projects/{project}/agent-work/{workItem}', [DashboardAgentWorkController::class, 'show']);
         Route::post('/agent-work/{workItem}/cancel', [DashboardAgentWorkController::class, 'cancel']);
+        Route::delete('/agent-work/{workItem}', [DashboardAgentWorkController::class, 'destroy']);
         Route::get('/projects/{project}/agent-chats', [DashboardAgentChatController::class, 'index']);
         Route::post('/projects/{project}/agent-chats', [DashboardAgentChatController::class, 'store']);
         Route::get('/projects/{project}/agent-chats/{thread}', [DashboardAgentChatController::class, 'show']);
         Route::post('/projects/{project}/agent-chats/{thread}/messages', [DashboardAgentChatController::class, 'storeMessage']);
+        Route::delete('/projects/{project}/agent-chats/{thread}', [DashboardAgentChatController::class, 'destroy']);
         Route::post('/projects/{project}/assistant/backlog-triage', BacklogTriageController::class);
         Route::post('/projects/{project}/archive', [DashboardProjectLifecycleController::class, 'archive']);
         Route::post('/projects/{project}/restore', [DashboardProjectLifecycleController::class, 'restore']);

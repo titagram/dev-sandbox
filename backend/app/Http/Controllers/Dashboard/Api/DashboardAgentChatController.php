@@ -115,6 +115,54 @@ final class DashboardAgentChatController extends Controller
         return response()->json($this->reader->agentChatThreadDetail($project, $thread));
     }
 
+    public function destroy(Request $request, string $project, string $thread): JsonResponse
+    {
+        $user = $this->activeDashboardUser($request);
+        $this->authorizeMutator($user);
+        if ($response = $this->lifecycle->assertProjectActiveForDashboard($project)) {
+            return $response;
+        }
+
+        $data = $request->validate([
+            'message' => ['sometimes', 'nullable', 'string', 'max:1000'],
+        ]);
+
+        $row = DB::table('agent_chat_threads')
+            ->where('project_id', $project)
+            ->where('id', $thread)
+            ->first();
+        abort_unless($row, 404);
+        abort_if((string) $row->status === 'archived' || $row->archived_at !== null, 409, 'Agent chat thread is already archived.');
+
+        $now = now();
+        $message = $data['message'] ?? null;
+
+        DB::transaction(function () use ($project, $row, $thread, $user, $message, $now): void {
+            if ($row->latest_agent_work_item_id) {
+                $this->archiveLinkedWorkItemForThread(
+                    projectId: $project,
+                    workItemId: (string) $row->latest_agent_work_item_id,
+                    userId: $user->id,
+                    message: $message,
+                    now: $now,
+                );
+            }
+
+            DB::table('agent_chat_threads')
+                ->where('project_id', $project)
+                ->where('id', $thread)
+                ->update([
+                    'status' => 'archived',
+                    'archived_at' => $now,
+                    'archived_by_user_id' => $user->id,
+                    'archive_reason' => $message,
+                    'updated_at' => $now,
+                ]);
+        });
+
+        return response()->json($this->reader->agentChatThreadDetail($project, $thread));
+    }
+
     private function appendUserTurn(string $projectId, string $threadId, User $user, string $content, array $metadata): void
     {
         $thread = DB::table('agent_chat_threads')
@@ -304,6 +352,71 @@ final class DashboardAgentChatController extends Controller
         abort_unless($thread, 404);
 
         abort_if((string) $thread->status === 'archived', 409, 'Agent chat thread is archived.');
+    }
+
+    private function archiveLinkedWorkItemForThread(
+        string $projectId,
+        string $workItemId,
+        int $userId,
+        ?string $message,
+        mixed $now,
+    ): void {
+        $item = DB::table('agent_work_items')
+            ->where('project_id', $projectId)
+            ->where('id', $workItemId)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $item || $item->archived_at !== null) {
+            return;
+        }
+
+        abort_if(
+            in_array((string) $item->status, ['claimed', 'running'], true)
+            || $item->claimed_by_device_id !== null
+            || $item->claimed_at !== null
+            || $item->heartbeat_at !== null,
+            409,
+            'Latest work item is running and cannot be archived.',
+        );
+
+        $updates = [
+            'archived_at' => $now,
+            'archived_by_user_id' => $userId,
+            'archive_reason' => $message,
+            'updated_at' => $now,
+        ];
+
+        if ((string) $item->status === 'queued') {
+            $updates['status'] = 'canceled';
+            $updates['canceled_at'] = $now;
+        }
+
+        DB::table('agent_work_items')->where('id', $workItemId)->update($updates);
+
+        if ((string) $item->status === 'queued') {
+            $this->recordWorkEvent($workItemId, 'canceled', $userId, $message, ['source' => 'agent_chat_archive'], $now);
+        }
+
+        $this->recordWorkEvent($workItemId, 'archived', $userId, $message, ['source' => 'agent_chat_archive'], $now);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function recordWorkEvent(string $workItemId, string $eventType, int $userId, ?string $message, array $payload, mixed $now): void
+    {
+        DB::table('agent_work_item_events')->insert([
+            'id' => (string) Str::ulid(),
+            'agent_work_item_id' => $workItemId,
+            'actor_user_id' => $userId,
+            'actor_device_id' => null,
+            'event_type' => $eventType,
+            'message' => $message,
+            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
     }
 
     private function authorizeReader(User $user): void

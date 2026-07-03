@@ -195,6 +195,77 @@ class MemoryImportService
     /**
      * @return array<string, mixed>
      */
+    public function cancelBatch(string $batchId, int $userId, ?string $message = null): array
+    {
+        $now = now();
+
+        DB::transaction(function () use ($batchId, $userId, $message, $now): void {
+            $batch = DB::table('memory_import_batches')
+                ->where('id', $batchId)
+                ->lockForUpdate()
+                ->first();
+            abort_unless($batch, 404);
+            abort_if((string) $batch->status === 'cancelled', 409, 'Memory import is already cancelled.');
+
+            $items = DB::table('memory_import_items')
+                ->where('batch_id', $batchId)
+                ->lockForUpdate()
+                ->get();
+            $proposalIds = $items
+                ->pluck('proposal_id')
+                ->filter()
+                ->map(fn (mixed $id): string => (string) $id)
+                ->values()
+                ->all();
+
+            if ($proposalIds !== []) {
+                $acceptedCount = DB::table('hades_memory_proposals')
+                    ->whereIn('id', $proposalIds)
+                    ->where('status', '!=', 'pending')
+                    ->count();
+
+                abort_if($acceptedCount > 0, 409, 'Memory import already has reviewed proposals and cannot be cancelled.');
+            }
+
+            DB::table('memory_import_items')
+                ->where('batch_id', $batchId)
+                ->where('status', 'proposal_created')
+                ->update([
+                    'status' => 'proposal_cancelled',
+                    'conflict_reason' => $message ?: 'Import cancelled before review.',
+                    'updated_at' => $now,
+                ]);
+
+            if ($proposalIds !== []) {
+                DB::table('hades_memory_proposals')
+                    ->whereIn('id', $proposalIds)
+                    ->where('status', 'pending')
+                    ->update([
+                        'status' => 'refused',
+                        'reason_code' => 'import_cancelled',
+                        'reason_message' => $message ?: 'Import cancelled before review.',
+                        'decided_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+            }
+
+            DB::table('memory_import_batches')
+                ->where('id', $batchId)
+                ->update([
+                    'status' => 'cancelled',
+                    'cancelled_at' => $now,
+                    'cancelled_by_user_id' => $userId,
+                    'cancel_reason' => $message,
+                    'updated_at' => $now,
+                ]);
+        });
+
+        return $this->batchPayload($batchId);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function batchPayload(string $batchId): array
     {
         $batch = DB::table('memory_import_batches')->where('id', $batchId)->first();
@@ -224,7 +295,9 @@ class MemoryImportService
             'accepted_created' => (int) ($statuses->get('accepted_created') ?? 0),
             'skipped_duplicates' => (int) ($statuses->get('duplicate_skipped') ?? 0),
             'conflicted' => (int) ($statuses->get('conflicted') ?? 0),
+            'cancelled' => (int) ($statuses->get('proposal_cancelled') ?? 0),
         ];
+        $reviewStatus = $this->reviewStatus((string) $batch->status, $items);
 
         return [
             'id' => (string) $batch->id,
@@ -234,6 +307,7 @@ class MemoryImportService
             'requested_by_user_id' => $batch->requested_by_user_id === null ? null : (int) $batch->requested_by_user_id,
             'requested_by_hades_agent_id' => $batch->requested_by_hades_agent_id ? (string) $batch->requested_by_hades_agent_id : null,
             'status' => (string) $batch->status,
+            'review_status' => $reviewStatus,
             'mode' => (string) $batch->mode,
             'dedupe_strategy' => (string) $batch->dedupe_strategy,
             'conflict_policy' => (string) $batch->conflict_policy,
@@ -242,6 +316,9 @@ class MemoryImportService
             'filters' => is_array($source['filters'] ?? null) ? $source['filters'] : [],
             'counts' => $counts,
             'completed_at' => $batch->completed_at ? (string) $batch->completed_at : null,
+            'cancelled_at' => $batch->cancelled_at ? (string) $batch->cancelled_at : null,
+            'cancelled_by_user_id' => $batch->cancelled_by_user_id === null ? null : (int) $batch->cancelled_by_user_id,
+            'cancel_reason' => $batch->cancel_reason ? (string) $batch->cancel_reason : null,
             'created_at' => (string) $batch->created_at,
             'updated_at' => (string) $batch->updated_at,
             'items' => $items,
@@ -253,6 +330,36 @@ class MemoryImportService
         return (string) DB::table('hades_workspace_bindings')
             ->where('id', $targetWorkspaceBindingId)
             ->value('hades_agent_id');
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $items
+     */
+    private function reviewStatus(string $batchStatus, array $items): string
+    {
+        if ($batchStatus === 'cancelled') {
+            return 'cancelled';
+        }
+
+        if ($items === []) {
+            return 'empty';
+        }
+
+        $statuses = collect($items)->countBy('status');
+
+        if (($statuses->get('proposal_created') ?? 0) > 0) {
+            return 'review_pending';
+        }
+
+        if (($statuses->get('proposal_cancelled') ?? 0) > 0) {
+            return 'cancelled';
+        }
+
+        if (($statuses->get('accepted_created') ?? 0) > 0) {
+            return 'applied';
+        }
+
+        return 'no_action_required';
     }
 
     /**

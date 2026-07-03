@@ -25,6 +25,7 @@ final class DashboardMemoryController extends Controller
         'verification',
         'handoff',
         'incident',
+        'logbook',
     ];
 
     public function index(Request $request, DashboardApiReader $reader, string $project): JsonResponse

@@ -3,7 +3,9 @@
 use App\Assistants\Agents\TaskClarifierAgent;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
 
@@ -85,6 +87,34 @@ it('uses the Laravel AI SDK task clarifier agent when it is faked', function () 
     expect($metadata['execution_mode'])->toBe('laravel_ai_sdk_fake')
         ->and($metadata['external_provider_call'])->toBeFalse()
         ->and($metadata['sdk_agent'])->toBe(TaskClarifierAgent::class);
+});
+
+it('falls back to deterministic clarification when the configured provider fails', function () {
+    Http::fake(['*' => Http::response(['error' => ['message' => 'not found']], 404)]);
+
+    $pm = taskClarifierUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $taskId = taskClarifierCreateTask($projectId, $pm, [
+        'title' => 'Fix dashboard status',
+        'description' => 'Make it better.',
+    ]);
+    taskClarifierConfigureProvider();
+
+    $response = $this->actingAs($pm)
+        ->postJson("/api/dashboard/tasks/{$taskId}/assistant/clarify")
+        ->assertCreated()
+        ->assertJsonPath('run.status', 'completed')
+        ->assertJsonPath('suggestion.structured_payload.questions.0', 'Which user or role needs this outcome?');
+
+    $metadata = json_decode(
+        (string) DB::table('assistant_runs')->where('id', $response->json('run.id'))->value('metadata'),
+        true,
+        flags: JSON_THROW_ON_ERROR
+    );
+
+    expect($metadata['execution_mode'])->toBe('provider_failed_fallback')
+        ->and($metadata['external_provider_call'])->toBeTrue()
+        ->and($metadata['provider_failure']['message'])->toContain('HTTP request returned status code 404');
 });
 
 it('shows the latest task clarification suggestion on the task page', function () {
@@ -396,6 +426,28 @@ function taskClarifierUserWithRole(string $roleName): User
     ]);
 
     return $user;
+}
+
+function taskClarifierConfigureProvider(): void
+{
+    $providerId = (string) DB::table('ai_model_providers')->where('provider_key', 'openai')->value('id');
+
+    DB::table('ai_model_providers')->where('id', $providerId)->update([
+        'base_url' => 'https://opencode.ai/zen/go/v1/chat/completions',
+        'encrypted_api_key' => Crypt::encryptString('sk-opencode-test'),
+        'api_key_last_four' => 'test',
+        'enabled' => true,
+        'updated_at' => now(),
+    ]);
+
+    DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->update([
+        'provider_id' => $providerId,
+        'model_name' => 'deepseek-v4-flash',
+        'max_output_tokens' => 1024,
+        'timeout_seconds' => 30,
+        'enabled' => true,
+        'updated_at' => now(),
+    ]);
 }
 
 /**

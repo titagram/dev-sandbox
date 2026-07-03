@@ -128,6 +128,74 @@ it('continues a persistent thread with new user turns', function () {
         ->and(DB::table('agent_work_items')->where('project_id', $projectId)->where('assigned_agent_key', 'local_agent')->count())->toBe(2);
 });
 
+it('archives a local-agent chat thread and cancels its queued work item', function () {
+    $developer = agentChatDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $thread = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-chats", [
+            'agent_key' => 'local_agent',
+            'initial_message' => 'This thread can be archived before the local agent claims it.',
+        ])
+        ->assertCreated()
+        ->json('thread');
+
+    $workItemId = $thread['latest_agent_work_item_id'];
+
+    $this->actingAs($developer)
+        ->deleteJson("/api/dashboard/projects/{$projectId}/agent-chats/{$thread['id']}", [
+            'message' => 'Thread is no longer useful.',
+        ])
+        ->assertOk()
+        ->assertJsonPath('thread.id', $thread['id'])
+        ->assertJsonPath('thread.status', 'archived')
+        ->assertJsonPath('thread.archive_reason', 'Thread is no longer useful.');
+
+    expect(DB::table('agent_chat_threads')->where('id', $thread['id'])->value('archived_at'))->not->toBeNull()
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('canceled')
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('archived_at'))->not->toBeNull()
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'canceled')->exists())->toBeTrue();
+
+    $threads = $this->actingAs($developer)
+        ->getJson("/api/dashboard/projects/{$projectId}/agent-chats")
+        ->assertOk()
+        ->json('threads');
+
+    expect(collect($threads)->pluck('id')->all())->not->toContain($thread['id']);
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-chats/{$thread['id']}/messages", [
+            'content' => 'Cannot continue an archived thread.',
+        ])
+        ->assertConflict();
+});
+
+it('does not archive a chat thread while the latest work item is running', function () {
+    $developer = agentChatDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $thread = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-chats", [
+            'agent_key' => 'local_agent',
+            'initial_message' => 'Running work blocks archive.',
+        ])
+        ->assertCreated()
+        ->json('thread');
+
+    DB::table('agent_work_items')->where('id', $thread['latest_agent_work_item_id'])->update([
+        'status' => 'running',
+        'claimed_at' => now(),
+        'heartbeat_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->actingAs($developer)
+        ->deleteJson("/api/dashboard/projects/{$projectId}/agent-chats/{$thread['id']}")
+        ->assertConflict();
+
+    expect(DB::table('agent_chat_threads')->where('id', $thread['id'])->value('status'))->toBe('pending_local_agent');
+});
+
 it('allows sysadmin to read but not create or continue agent chats', function () {
     $developer = agentChatDashboardApiUserWithRole('Developer');
     $sysadmin = agentChatDashboardApiUserWithRole('Sysadmin');
@@ -157,6 +225,10 @@ it('allows sysadmin to read but not create or continue agent chats', function ()
         ->postJson("/api/dashboard/projects/{$projectId}/agent-chats/{$thread['id']}/messages", [
             'content' => 'Sysadmin cannot continue.',
         ])
+        ->assertForbidden();
+
+    $this->actingAs($sysadmin)
+        ->deleteJson("/api/dashboard/projects/{$projectId}/agent-chats/{$thread['id']}")
         ->assertForbidden();
 });
 

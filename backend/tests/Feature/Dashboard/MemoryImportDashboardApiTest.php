@@ -56,6 +56,7 @@ it('creates a dashboard memory import batch as pending Hades proposals and dedup
         ->assertCreated()
         ->assertJsonPath('import_batch.project_id', $projectId)
         ->assertJsonPath('import_batch.status', 'completed')
+        ->assertJsonPath('import_batch.review_status', 'review_pending')
         ->assertJsonPath('import_batch.items.0.status', 'proposal_created')
         ->json('import_batch');
 
@@ -113,10 +114,88 @@ it('derives dashboard memory import entries from existing project memory when en
         ])
         ->assertCreated()
         ->assertJsonPath('import_batch.status', 'completed')
+        ->assertJsonPath('import_batch.review_status', 'review_pending')
         ->assertJsonPath('import_batch.filters.kinds.0', 'decision')
         ->assertJsonPath('import_batch.counts.entries_found', 1)
         ->assertJsonPath('import_batch.counts.proposals_created', 1)
         ->assertJsonPath('import_batch.items.0.status', 'proposal_created');
+});
+
+it('cancels a dashboard memory import batch with pending proposals', function () {
+    $admin = memoryImportDashboardUserWithRole('Admin');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $agent = memoryImportHadesAgent($projectId);
+    $sourceBindingId = memoryImportWorkspaceBinding($agent, 'wf_import_cancel_source');
+    $targetBindingId = memoryImportWorkspaceBinding($agent, 'wf_import_cancel_target');
+
+    $batch = $this->actingAs($admin)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory/imports", [
+            'source_workspace_binding_id' => $sourceBindingId,
+            'target_workspace_binding_id' => $targetBindingId,
+            'reason' => 'Import that will be cancelled.',
+            'entries' => [
+                [
+                    'source_hash' => hash('sha256', 'cancel-import-entry'),
+                    'kind' => 'logbook',
+                    'summary' => 'Carry over the local logbook update.',
+                    'payload' => ['logbook' => 'bounded'],
+                    'provenance' => ['source' => 'workspace_transfer'],
+                ],
+            ],
+        ])
+        ->assertCreated()
+        ->assertJsonPath('import_batch.review_status', 'review_pending')
+        ->json('import_batch');
+
+    $proposalId = $batch['items'][0]['proposal_id'];
+
+    $this->actingAs($admin)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory/imports/{$batch['id']}/cancel", [
+            'message' => 'Imported from the wrong workspace.',
+        ])
+        ->assertOk()
+        ->assertJsonPath('import_batch.status', 'cancelled')
+        ->assertJsonPath('import_batch.review_status', 'cancelled')
+        ->assertJsonPath('import_batch.cancel_reason', 'Imported from the wrong workspace.')
+        ->assertJsonPath('import_batch.items.0.status', 'proposal_cancelled');
+
+    expect(DB::table('memory_import_batches')->where('id', $batch['id'])->value('cancelled_at'))->not->toBeNull()
+        ->and(DB::table('hades_memory_proposals')->where('id', $proposalId)->value('status'))->toBe('refused')
+        ->and(DB::table('hades_memory_proposals')->where('id', $proposalId)->value('reason_code'))->toBe('import_cancelled');
+});
+
+it('does not cancel a memory import batch after a proposal has been accepted', function () {
+    $admin = memoryImportDashboardUserWithRole('Admin');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $agent = memoryImportHadesAgent($projectId);
+    $targetBindingId = memoryImportWorkspaceBinding($agent, 'wf_import_accepted_target');
+
+    $batch = $this->actingAs($admin)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory/imports", [
+            'target_workspace_binding_id' => $targetBindingId,
+            'entries' => [
+                [
+                    'source_hash' => hash('sha256', 'accepted-import-entry'),
+                    'summary' => 'This proposal is already accepted.',
+                    'payload' => ['decision' => 'accepted'],
+                    'provenance' => [],
+                ],
+            ],
+        ])
+        ->assertCreated()
+        ->json('import_batch');
+
+    DB::table('hades_memory_proposals')->where('id', $batch['items'][0]['proposal_id'])->update([
+        'status' => 'accepted',
+        'decided_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->actingAs($admin)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory/imports/{$batch['id']}/cancel")
+        ->assertConflict();
+
+    expect(DB::table('memory_import_batches')->where('id', $batch['id'])->value('status'))->toBe('completed');
 });
 
 it('accepts Hades memory import bundles without crossing projects', function () {

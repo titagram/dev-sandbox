@@ -136,6 +136,59 @@ it('lets pm append project memory entries', function () {
         ->assertJsonPath('completeness', 'complete');
 });
 
+it('lets a developer append manual logbook memory entries', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $created = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory", [
+            'kind' => 'logbook',
+            'summary' => 'Recorded what has been completed so far.',
+            'payload' => [
+                'note' => 'Implemented the first production readiness fixes and left follow-up risks explicit.',
+            ],
+        ])
+        ->assertCreated()
+        ->assertJsonPath('kind', 'logbook')
+        ->assertJsonPath('domain', 'logbook')
+        ->json();
+
+    $this->actingAs($developer)
+        ->getJson("/api/dashboard/projects/{$projectId}/memory?domain=logbook&q=completed")
+        ->assertOk()
+        ->assertJsonPath('domain', 'logbook')
+        ->assertJsonPath('entries.0.id', $created['id'])
+        ->assertJsonPath('entries.0.kind', 'logbook');
+});
+
+it('lets manual logbook memory entries be updated', function () {
+    $developer = projectMemoryDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $entry = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/memory", [
+            'kind' => 'logbook',
+            'summary' => 'Original logbook memory entry.',
+            'payload' => ['note' => 'Original note.'],
+        ])
+        ->assertCreated()
+        ->json();
+
+    $this->actingAs($developer)
+        ->patchJson("/api/dashboard/projects/{$projectId}/memory/{$entry['id']}", [
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'kind' => 'logbook',
+            'completeness' => 'complete',
+            'summary' => 'Updated logbook memory entry.',
+            'payload' => ['note' => 'Updated note.'],
+        ])
+        ->assertOk()
+        ->assertJsonPath('kind', 'logbook')
+        ->assertJsonPath('domain', 'logbook');
+});
+
 it('lets a developer delete project memory entries', function () {
     $developer = projectMemoryDashboardApiUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');

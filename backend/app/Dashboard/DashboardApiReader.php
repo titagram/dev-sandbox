@@ -127,6 +127,7 @@ final class DashboardApiReader
 
         $items = DB::table('agent_work_items')
             ->where('project_id', $projectId)
+            ->whereNull('archived_at')
             ->orderByRaw("case priority when 'urgent' then 1 when 'high' then 2 when 'normal' then 3 else 4 end")
             ->orderByDesc('created_at')
             ->limit(100)
@@ -195,6 +196,8 @@ final class DashboardApiReader
 
         $threads = DB::table('agent_chat_threads')
             ->where('project_id', $projectId)
+            ->where('status', '!=', 'archived')
+            ->whereNull('archived_at')
             ->orderByDesc('last_message_at')
             ->orderByDesc('updated_at')
             ->limit(100)
@@ -1134,6 +1137,9 @@ final class DashboardApiReader
             'failed_at' => $item->failed_at ? (string) $item->failed_at : null,
             'canceled_at' => $item->canceled_at ? (string) $item->canceled_at : null,
             'failure_reason' => $item->failure_reason ? (string) $item->failure_reason : null,
+            'archived_at' => $item->archived_at ? (string) $item->archived_at : null,
+            'archived_by_user_id' => $item->archived_by_user_id === null ? null : (int) $item->archived_by_user_id,
+            'archive_reason' => $item->archive_reason ? (string) $item->archive_reason : null,
             'created_at' => (string) $item->created_at,
             'updated_at' => (string) $item->updated_at,
         ];
@@ -1185,6 +1191,9 @@ final class DashboardApiReader
             'latest_agent_work_item_id' => $thread->latest_agent_work_item_id ? (string) $thread->latest_agent_work_item_id : null,
             'latest_assistant_run_id' => $thread->latest_assistant_run_id ? (string) $thread->latest_assistant_run_id : null,
             'last_message_at' => $thread->last_message_at ? (string) $thread->last_message_at : null,
+            'archived_at' => $thread->archived_at ? (string) $thread->archived_at : null,
+            'archived_by_user_id' => $thread->archived_by_user_id === null ? null : (int) $thread->archived_by_user_id,
+            'archive_reason' => $thread->archive_reason ? (string) $thread->archive_reason : null,
             'message_count' => DB::table('agent_chat_messages')->where('agent_chat_thread_id', $thread->id)->count(),
             'last_message' => $latestMessage ? [
                 'id' => (string) $latestMessage->id,
