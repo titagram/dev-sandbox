@@ -5,6 +5,8 @@ use App\Http\Controllers\Hades\AgentJobsController as HadesAgentJobsController;
 use App\Http\Controllers\Hades\AgentJobStatusController as HadesAgentJobStatusController;
 use App\Http\Controllers\Hades\AgentRegisterController as HadesAgentRegisterController;
 use App\Http\Controllers\Hades\ArtifactController as HadesArtifactController;
+use App\Http\Controllers\Hades\BugEvidenceController as HadesBugEvidenceController;
+use App\Http\Controllers\Hades\BugReportController as HadesBugReportController;
 use App\Http\Controllers\Hades\CapabilitiesController as HadesCapabilitiesController;
 use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportController;
 use App\Http\Controllers\Hades\HealthController as HadesHealthController;
@@ -173,6 +175,18 @@ Route::prefix('hades/v1')->group(function () {
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/memory/import-bundles', HadesMemoryImportBundleController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/bug-reports', [HadesBugReportController::class, 'store'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/bug-reports/{bugReport}', [HadesBugReportController::class, 'show'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/bug-evidence', [HadesBugEvidenceController::class, 'store'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/bug-evidence/search', [HadesBugEvidenceController::class, 'search'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/agent/jobs', HadesAgentJobsController::class)

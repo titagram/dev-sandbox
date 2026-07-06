@@ -411,6 +411,120 @@ it('rejects shared memory access for an unlinked workspace binding', function ()
         ->assertJsonPath('error.code', 'workspace_binding_unlinked');
 });
 
+it('stores bug reports and searchable evidence for linked workspaces', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $otherBinding = hadesM3WorkspaceBinding($agent);
+    $observedAt = now()->subMinutes(5)->toISOString();
+
+    $report = $this->postJson('/api/hades/v1/bug-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'title' => 'Taxonomy activity page returns 500',
+        'symptom' => 'Opening the security activity category page returns HTTP 500.',
+        'severity' => 'high',
+        'environment' => ['app_env' => 'testing', 'release' => '2026.07.07'],
+        'affected_refs' => [['type' => 'route', 'name' => 'taxonomy.security_activity.show']],
+        'observed_at' => $observedAt,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('bug_report.title', 'Taxonomy activity page returns 500')
+        ->assertJsonPath('bug_report.severity', 'high')
+        ->assertJsonPath('bug_report.environment.release', '2026.07.07')
+        ->json('bug_report');
+
+    $evidence = $this->postJson('/api/hades/v1/bug-evidence', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'bug_report_id' => $report['id'],
+        'kind' => 'stack_trace',
+        'summary' => 'Call to member function active() on null in SecurityActivityCategoryController.',
+        'payload' => [
+            'exception' => 'Error',
+            'frames' => [[
+                'file' => 'app/Http/Controllers/Taxonomy/SecurityActivityCategoryController.php',
+                'line' => 42,
+                'function' => 'show',
+            ]],
+        ],
+        'source' => 'laravel.log',
+        'redactions' => 1,
+        'retention_class' => 'stack_trace',
+        'occurred_at' => $observedAt,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('evidence.kind', 'stack_trace')
+        ->assertJsonPath('evidence.bug_report_id', $report['id'])
+        ->assertJsonPath('evidence.payload.frames.0.line', 42)
+        ->assertJsonPath('evidence.redactions', 1)
+        ->json('evidence');
+
+    expect($evidence['sha256'])->toBeString()->toHaveLength(64);
+
+    $search = $this->getJson('/api/hades/v1/bug-evidence/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'SecurityActivityCategoryController active null',
+        'kind' => 'stack_trace',
+        'limit' => 5,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $evidence['id'])
+        ->assertJsonPath('items.0.bug_report_id', $report['id'])
+        ->assertJsonPath('freshness.workspace_head_commit', str_repeat('f', 40))
+        ->assertJsonPath('freshness.index_status', 'live_query')
+        ->json();
+
+    expect($search['items'][0]['score'])->toBeGreaterThan(0)
+        ->and($search['version'])->toStartWith('bug_evidence_search_');
+
+    $this->getJson('/api/hades/v1/bug-evidence/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $otherBinding['workspace_binding_id'],
+        'query' => 'SecurityActivityCategoryController',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 0);
+
+    $this->getJson('/api/hades/v1/bug-reports/'.$report['id'].'?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('bug_report.id', $report['id'])
+        ->assertJsonPath('evidence.0.id', $evidence['id']);
+});
+
+it('rejects bug evidence for reports outside the linked workspace', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $otherBinding = hadesM3WorkspaceBinding($agent);
+
+    $report = $this->postJson('/api/hades/v1/bug-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'title' => 'Queue worker failure',
+        'symptom' => 'Worker exits before processing the job.',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->json('bug_report');
+
+    $this->postJson('/api/hades/v1/bug-evidence', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $otherBinding['workspace_binding_id'],
+        'bug_report_id' => $report['id'],
+        'kind' => 'log_excerpt',
+        'summary' => 'This evidence should not attach across workspace bindings.',
+        'payload' => ['line' => 'worker failed'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertNotFound()
+        ->assertJsonPath('error.code', 'bug_report_not_found');
+});
+
 function hadesM3Headers(?string $token = null): array
 {
     return $token === null ? [] : ['Authorization' => 'Bearer '.$token];
