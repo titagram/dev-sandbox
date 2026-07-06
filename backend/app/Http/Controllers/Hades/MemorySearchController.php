@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesProjectAwareness;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -18,6 +19,8 @@ class MemorySearchController extends Controller
         'backend_wiki.file_chunk',
         '---begin_content---',
     ];
+
+    public function __construct(private readonly HadesProjectAwareness $awareness) {}
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -93,11 +96,7 @@ class MemorySearchController extends Controller
             'candidate_count' => $candidateCount,
             'truncated' => $candidateCount > count($items),
             'raw_chunks_omitted' => $rawChunksOmitted,
-            'freshness' => [
-                'workspace_head_commit' => $binding->head_commit,
-                'index_status' => 'live_query',
-                'stale_reason' => null,
-            ],
+            'freshness' => $this->awareness->freshnessForBinding($binding),
             'items' => array_values($items),
             'server_time' => now()->toISOString(),
         ]);

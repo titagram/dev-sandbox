@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesProjectAwareness;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -36,6 +37,8 @@ class BugEvidenceController extends Controller
         'diagnosis_evidence',
         'source_reference',
     ];
+
+    public function __construct(private readonly HadesProjectAwareness $awareness) {}
 
     public function store(Request $request): JsonResponse
     {
@@ -192,11 +195,7 @@ class BugEvidenceController extends Controller
             'count' => count($items),
             'candidate_count' => $candidateCount,
             'truncated' => $candidateCount > count($items),
-            'freshness' => [
-                'workspace_head_commit' => $binding->head_commit,
-                'index_status' => 'live_query',
-                'stale_reason' => null,
-            ],
+            'freshness' => $this->awareness->freshnessForBinding($binding),
             'items' => array_values($items),
             'server_time' => now()->toISOString(),
         ]);

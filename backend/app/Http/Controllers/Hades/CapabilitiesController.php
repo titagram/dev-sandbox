@@ -36,6 +36,7 @@ class CapabilitiesController extends Controller
                 'workspaces_unlink' => '/api/hades/v1/workspaces/{workspace_binding_id}/unlink',
                 'memory_snapshot' => '/api/hades/v1/memory/snapshot',
                 'memory_proposals' => '/api/hades/v1/memory/proposals',
+                'project_awareness_status' => '/api/hades/v1/project-awareness/status',
                 'bug_reports' => '/api/hades/v1/bug-reports',
                 'bug_report' => '/api/hades/v1/bug-reports/{bug_report_id}',
                 'bug_evidence' => '/api/hades/v1/bug-evidence',

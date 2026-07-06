@@ -525,6 +525,128 @@ it('rejects bug evidence for reports outside the linked workspace', function () 
         ->assertJsonPath('error.code', 'bug_report_not_found');
 });
 
+it('reports missing project awareness coverage for a newly linked workspace', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('project_id', $agent['project_id'])
+        ->assertJsonPath('workspace_binding_id', $binding['workspace_binding_id'])
+        ->assertJsonPath('freshness.status', 'missing')
+        ->assertJsonPath('freshness.stale_reason', 'artifacts_missing')
+        ->assertJsonPath('coverage.memory.status', 'missing')
+        ->assertJsonPath('coverage.artifacts.status', 'missing')
+        ->assertJsonPath('coverage.bug_evidence.status', 'missing')
+        ->assertJsonPath('coverage.source_slices.status', 'missing')
+        ->assertJsonPath('coverage.code_graph.status', 'missing')
+        ->assertJsonPath('diagnosable_without_source', false)
+        ->assertJsonPath('overall_status', 'missing_index');
+});
+
+it('reports current artifact freshness and partial graph coverage', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $now = now();
+    $head = str_repeat('f', 40);
+
+    DB::table('project_memory_entries')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'manual',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'Shared memory is available for project awareness.',
+        'payload' => json_encode(['note' => 'coverage'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    hadesM3Artifact($agent, $binding, 'hades.git_tree.v1', [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => $head,
+        'project_index' => [
+            'schema' => 'hades.project_index.v1',
+            'routes' => [['method' => 'GET', 'uri' => '/api/hades/v1/health']],
+        ],
+    ]);
+
+    DB::table('hades_bug_evidence_items')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'bug_report_id' => null,
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'kind' => 'failing_test',
+        'summary' => 'Feature test reproduces the failure.',
+        'payload' => json_encode(['test' => 'HadesTest'], JSON_THROW_ON_ERROR),
+        'source' => 'phpunit',
+        'sha256' => str_repeat('a', 64),
+        'redactions' => 0,
+        'retention_class' => 'test_failure',
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('freshness.status', 'current')
+        ->assertJsonPath('freshness.workspace_head_commit', $head)
+        ->assertJsonPath('freshness.artifact_head_commit', $head)
+        ->assertJsonPath('coverage.memory.status', 'current')
+        ->assertJsonPath('coverage.memory.count', 1)
+        ->assertJsonPath('coverage.artifacts.status', 'current')
+        ->assertJsonPath('coverage.bug_evidence.status', 'current')
+        ->assertJsonPath('coverage.code_graph.status', 'partial')
+        ->assertJsonPath('coverage.code_graph.coverage_type', 'metadata_or_symbol_index')
+        ->assertJsonPath('diagnosable_without_source', false)
+        ->assertJsonPath('overall_status', 'partial')
+        ->json();
+
+    expect($response['coverage']['artifacts']['schemas']['hades.git_tree.v1'])->toBe(1);
+});
+
+it('reports stale project awareness when indexed artifacts are from another commit', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $staleHead = str_repeat('e', 40);
+
+    hadesM3Artifact($agent, $binding, 'hades.git_tree.v1', [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => $staleHead,
+        'files' => [['path' => 'README.md', 'sha256' => str_repeat('1', 64), 'bytes' => 100]],
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('freshness.status', 'stale')
+        ->assertJsonPath('freshness.stale_reason', 'artifact_head_mismatch')
+        ->assertJsonPath('freshness.artifact_head_commit', $staleHead)
+        ->assertJsonPath('coverage.artifacts.status', 'stale')
+        ->assertJsonPath('coverage.code_graph.status', 'stale')
+        ->assertJsonPath('overall_status', 'stale')
+        ->json();
+
+    expect($response['actions'])->toContain('Run `hades backend sync` from the current checkout so indexed artifacts match workspace HEAD.');
+});
+
 function hadesM3Headers(?string $token = null): array
 {
     return $token === null ? [] : ['Authorization' => 'Bearer '.$token];
@@ -627,4 +749,33 @@ function hadesM3WorkspaceBinding(array $agent): array
     ], hadesM3Headers($agent['agent_token']))->assertOk();
 
     return ['workspace_binding_id' => $bound->json('workspace_binding_id')];
+}
+
+/**
+ * @param  array{project_id: string, external_agent_id: string, backend_agent_id: string, agent_token: string}  $agent
+ * @param  array{workspace_binding_id: string}  $binding
+ * @param  array<string, mixed>  $artifact
+ */
+function hadesM3Artifact(array $agent, array $binding, string $schema, array $artifact): string
+{
+    $id = (string) Str::ulid();
+    $artifactJson = json_encode($artifact, JSON_THROW_ON_ERROR);
+    $now = now();
+
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $id,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'job_id' => null,
+        'schema' => $schema,
+        'artifact' => $artifactJson,
+        'sha256' => hash('sha256', $artifactJson),
+        'truncated' => false,
+        'redactions' => 0,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return $id;
 }
