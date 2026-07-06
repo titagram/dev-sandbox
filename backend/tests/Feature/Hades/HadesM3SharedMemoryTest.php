@@ -291,6 +291,96 @@ it('quarantines raw source chunks from memory search unless explicitly requested
         ->assertJsonPath('items.0.source', 'graphify-sidecar/carnovali-facts.md');
 });
 
+it('searches project index artifacts through the Hades memory search endpoint', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $artifactId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $artifactId,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'job_id' => null,
+        'schema' => 'hades.git_tree.v1',
+        'artifact' => json_encode([
+            'schema' => 'hades.git_tree.v1',
+            'root' => 'hades',
+            'project_index' => [
+                'schema' => 'hades.project_index.v1',
+                'routes' => [[
+                    'method' => 'GET',
+                    'uri' => '/hades/memory',
+                    'handler' => 'MemoryController@index',
+                    'name' => 'hades.memory',
+                    'path' => 'routes/api.php',
+                ]],
+                'dependency_manifests' => [[
+                    'manager' => 'composer',
+                    'path' => 'composer.json',
+                    'packages' => ['laravel/framework'],
+                ]],
+                'database' => [
+                    'migrations' => ['database/migrations/2026_07_06_000000_create_hades_memory.php'],
+                ],
+            ],
+            'files' => [],
+            'omitted' => [],
+            'raw_source_included' => false,
+        ], JSON_THROW_ON_ERROR),
+        'sha256' => str_repeat('3', 64),
+        'truncated' => false,
+        'redactions' => 0,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'hades memory route laravel',
+        'domain' => 'artifacts',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $artifactId)
+        ->assertJsonPath('items.0.domain', 'artifacts')
+        ->assertJsonPath('items.0.schema', 'hades.git_tree.v1')
+        ->assertJsonPath('items.0.source', 'hades.git_tree.v1');
+
+    expect($response->json('items.0.summary'))->toContain('GET /hades/memory');
+    expect($response->json('items.0.payload_excerpt'))->toContain('laravel/framework');
+});
+
+it('quarantines raw chunk import bundle entries instead of creating memory proposals', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $this->postJson('/api/hades/v1/memory/import-bundles', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'source' => ['kind' => 'backend_wiki_import'],
+        'entries' => [[
+            'source_hash' => 'sha256:raw-chunk-1',
+            'kind' => 'file_chunk',
+            'summary' => 'Route::get raw taxonomy chunk should not become a note.',
+            'payload' => [
+                'schema' => 'hades.backend_wiki.file_chunk.v1',
+                'path' => 'graphify-sidecar/carnovali-facts.md',
+                'chunk_index' => 245,
+                'chunk_count' => 267,
+            ],
+        ]],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('import_batch.counts.proposals_created', 0)
+        ->assertJsonPath('import_batch.counts.quarantined_raw_chunks', 1)
+        ->assertJsonPath('import_batch.items.0.status', 'raw_chunk_quarantined');
+
+    expect(DB::table('hades_memory_proposals')->where('project_id', $agent['project_id'])->count())->toBe(0);
+});
+
 it('rejects shared memory access for an unlinked workspace binding', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);

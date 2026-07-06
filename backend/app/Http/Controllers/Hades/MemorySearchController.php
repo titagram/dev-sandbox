@@ -25,7 +25,7 @@ class MemorySearchController extends Controller
             'project_id' => ['required', 'string'],
             'workspace_binding_id' => ['required', 'string'],
             'query' => ['nullable', 'string', 'max:1000'],
-            'domain' => ['nullable', 'string', 'in:all,project_memory,logbook,wiki,agent_notes,source_chunks'],
+            'domain' => ['nullable', 'string', 'in:all,project_memory,logbook,wiki,agent_notes,source_chunks,artifacts'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:50'],
             'include_raw_chunks' => ['nullable', 'boolean'],
         ]);
@@ -45,7 +45,7 @@ class MemorySearchController extends Controller
         $rawChunksOmitted = 0;
         $items = [];
 
-        if ($domain !== 'wiki') {
+        if (! in_array($domain, ['wiki', 'artifacts'], true)) {
             [$memoryItems, $omitted] = $this->memoryResults(
                 projectId: $validated['project_id'],
                 query: $query,
@@ -59,6 +59,10 @@ class MemorySearchController extends Controller
 
         if (in_array($domain, ['all', 'wiki'], true)) {
             $items = array_merge($items, $this->wikiResults($validated['project_id'], $query, $limit));
+        }
+
+        if (in_array($domain, ['all', 'artifacts'], true)) {
+            $items = array_merge($items, $this->artifactResults($validated['project_id'], $binding->id, $query, $limit));
         }
 
         usort($items, function (array $a, array $b): int {
@@ -265,6 +269,113 @@ class MemorySearchController extends Controller
                 'version' => 'wiki_'.hash('sha256', $row->revision_id.'|'.$row->updated_at),
             ])
             ->all();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function artifactResults(string $projectId, string $bindingId, string $query, int $limit): array
+    {
+        $tokens = $this->tokens($query);
+
+        return DB::table('hades_agent_artifacts')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+                $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
+                $builder->where(function ($nested) use ($patterns): void {
+                    foreach ($patterns as $pattern) {
+                        $like = '%'.$pattern.'%';
+                        $nested
+                            ->orWhere('schema', 'like', $like)
+                            ->orWhere('artifact', 'like', $like);
+                    }
+                });
+            })
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->limit(max(50, $limit * 8))
+            ->get()
+            ->map(function (object $row) use ($query, $tokens): array {
+                $artifact = $this->decodePayload($row->artifact);
+                $summary = $this->artifactSummary((string) $row->schema, $artifact);
+                $encoded = json_encode($artifact, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
+
+                return [
+                    'id' => (string) $row->id,
+                    'domain' => 'artifacts',
+                    'source' => (string) $row->schema,
+                    'kind' => 'artifact',
+                    'schema' => (string) $row->schema,
+                    'summary' => $summary,
+                    'payload_excerpt' => $this->excerpt($encoded),
+                    'score' => $this->score($query, $tokens, [
+                        $summary,
+                        (string) $row->schema,
+                        $encoded,
+                    ]),
+                    'raw_chunk' => false,
+                    'occurred_at' => $this->toIsoString($row->created_at),
+                    'updated_at' => $this->toIsoString($row->updated_at),
+                    'version' => 'artifact_'.hash('sha256', $row->id.'|'.$row->updated_at.'|'.$row->sha256),
+                ];
+            })
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $artifact
+     */
+    private function artifactSummary(string $schema, array $artifact): string
+    {
+        $index = isset($artifact['project_index']) && is_array($artifact['project_index'])
+            ? $artifact['project_index']
+            : [];
+        $parts = [];
+
+        $routes = isset($index['routes']) && is_array($index['routes']) ? array_slice($index['routes'], 0, 8) : [];
+        foreach ($routes as $route) {
+            if (! is_array($route)) {
+                continue;
+            }
+            $method = trim((string) ($route['method'] ?? ''));
+            $uri = trim((string) ($route['uri'] ?? ''));
+            $handler = trim((string) ($route['handler'] ?? ''));
+            $name = trim((string) ($route['name'] ?? ''));
+            $routeText = trim($method.' '.$uri.($handler !== '' ? ' -> '.$handler : '').($name !== '' ? ' ['.$name.']' : ''));
+            if ($routeText !== '') {
+                $parts[] = $routeText;
+            }
+        }
+
+        $manifests = isset($index['dependency_manifests']) && is_array($index['dependency_manifests'])
+            ? array_slice($index['dependency_manifests'], 0, 6)
+            : [];
+        foreach ($manifests as $manifest) {
+            if (! is_array($manifest)) {
+                continue;
+            }
+            $manager = trim((string) ($manifest['manager'] ?? 'deps'));
+            $packages = isset($manifest['packages']) && is_array($manifest['packages'])
+                ? array_slice(array_map('strval', $manifest['packages']), 0, 8)
+                : [];
+            if ($packages !== []) {
+                $parts[] = $manager.': '.implode(', ', $packages);
+            }
+        }
+
+        $database = isset($index['database']) && is_array($index['database']) ? $index['database'] : [];
+        $migrationCount = isset($database['migration_count'])
+            ? (int) $database['migration_count']
+            : count(is_array($database['migrations'] ?? null) ? $database['migrations'] : []);
+        if ($migrationCount > 0) {
+            $parts[] = $migrationCount.' database migration(s)';
+        }
+
+        $fallback = $this->payloadString($artifact, ['summary']);
+        $body = $parts !== [] ? implode('; ', $parts) : ($fallback !== '' ? $fallback : 'indexed project artifact');
+
+        return $this->compact($schema.' project index: '.$body, 800);
     }
 
     private function domainMatches(string $entryDomain, string $requestedDomain): bool

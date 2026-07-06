@@ -7,6 +7,13 @@ use Illuminate\Support\Str;
 
 class MemoryImportService
 {
+    private const RAW_CHUNK_MARKERS = [
+        'file_chunk',
+        'source_chunk',
+        'backend_wiki.file_chunk',
+        '---begin_content---',
+    ];
+
     /**
      * @param  list<array<string, mixed>>  $entries
      * @param  array<string, mixed>  $source
@@ -58,6 +65,7 @@ class MemoryImportService
             foreach ($entries as $entry) {
                 $sourceHash = (string) $entry['source_hash'];
                 $localProposalId = 'memory-import:'.$sourceHash;
+                $itemId = (string) Str::ulid();
                 $provenance = [
                     'schema' => 'devboard.memory_import_provenance.v1',
                     'import_batch_id' => $batchId,
@@ -69,13 +77,30 @@ class MemoryImportService
                     'entry_payload' => $entry['payload'] ?? [],
                 ];
 
+                if ($this->isRawChunkEntry($entry)) {
+                    DB::table('memory_import_items')->insert([
+                        'id' => $itemId,
+                        'batch_id' => $batchId,
+                        'source_local_id' => $entry['source_local_id'] ?? null,
+                        'source_hash' => $sourceHash,
+                        'proposal_id' => null,
+                        'target_memory_entry_id' => null,
+                        'status' => 'raw_chunk_quarantined',
+                        'conflict_reason' => 'Raw source chunks must be promoted to verified facts or wiki pages before project memory import.',
+                        'provenance' => json_encode($provenance, JSON_THROW_ON_ERROR),
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+
+                    continue;
+                }
+
                 $existingProposal = DB::table('hades_memory_proposals')
                     ->where('project_id', $projectId)
                     ->where('workspace_binding_id', $targetWorkspaceBindingId)
                     ->where('local_proposal_id', $localProposalId)
                     ->first();
 
-                $itemId = (string) Str::ulid();
                 if ($existingProposal) {
                     DB::table('memory_import_items')->insert([
                         'id' => $itemId,
@@ -295,6 +320,7 @@ class MemoryImportService
             'accepted_created' => (int) ($statuses->get('accepted_created') ?? 0),
             'skipped_duplicates' => (int) ($statuses->get('duplicate_skipped') ?? 0),
             'conflicted' => (int) ($statuses->get('conflicted') ?? 0),
+            'quarantined_raw_chunks' => (int) ($statuses->get('raw_chunk_quarantined') ?? 0),
             'cancelled' => (int) ($statuses->get('proposal_cancelled') ?? 0),
         ];
         $reviewStatus = $this->reviewStatus((string) $batch->status, $items);
@@ -360,6 +386,57 @@ class MemoryImportService
         }
 
         return 'no_action_required';
+    }
+
+    /**
+     * @param  array<string, mixed>  $entry
+     */
+    private function isRawChunkEntry(array $entry): bool
+    {
+        $payload = isset($entry['payload']) && is_array($entry['payload']) ? $entry['payload'] : [];
+        $schema = Str::lower($this->payloadString($payload, ['schema', 'content_schema', 'artifact_schema']));
+        $kind = Str::lower((string) ($entry['kind'] ?? ''));
+        $summary = Str::lower((string) ($entry['summary'] ?? ''));
+        $sourceHash = Str::lower((string) ($entry['source_hash'] ?? ''));
+
+        if (isset($payload['chunk_index']) || isset($payload['chunk_count'])) {
+            return true;
+        }
+
+        foreach (self::RAW_CHUNK_MARKERS as $marker) {
+            if (str_contains($schema, $marker)
+                || str_contains($kind, $marker)
+                || str_contains($summary, $marker)
+                || str_contains($sourceHash, $marker)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  list<string>  $keys
+     */
+    private function payloadString(array $payload, array $keys): string
+    {
+        $containers = [$payload];
+        foreach (['metadata', 'provenance', 'payload'] as $nestedKey) {
+            if (isset($payload[$nestedKey]) && is_array($payload[$nestedKey])) {
+                $containers[] = $payload[$nestedKey];
+            }
+        }
+
+        foreach ($containers as $container) {
+            foreach ($keys as $key) {
+                if (isset($container[$key]) && trim((string) $container[$key]) !== '') {
+                    return trim((string) $container[$key]);
+                }
+            }
+        }
+
+        return '';
     }
 
     /**
