@@ -869,6 +869,36 @@ it('reports ready project awareness when source slices and evidence are current'
         ->and($response['coverage']['source_slices']['redactions'])->toBe(1);
 });
 
+it('stores diagnosis reports with evidence refs for linked workspaces', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $response = $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'final',
+        'confidence' => 'high',
+        'root_cause' => 'OrderController calls a service with a null dependency.',
+        'mechanism' => 'The stack trace frame and source slice both point to the same call site.',
+        'evidence_refs' => [
+            ['type' => 'bug_evidence', 'id' => 'evidence_1'],
+            ['type' => 'source_slice', 'id' => 'slice_1'],
+        ],
+        'freshness' => ['status' => 'current', 'workspace_head_commit' => str_repeat('f', 40)],
+        'payload' => ['next_verification' => 'Run the failing feature test.'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('diagnosis_report.status', 'final')
+        ->assertJsonPath('diagnosis_report.confidence', 'high')
+        ->assertJsonPath('diagnosis_report.evidence_refs.0.type', 'bug_evidence')
+        ->assertJsonPath('diagnosis_report.freshness.status', 'current')
+        ->json('diagnosis_report');
+
+    expect(DB::table('hades_diagnosis_reports')->where('id', $response['id'])->value('root_cause'))
+        ->toBe('OrderController calls a service with a null dependency.');
+});
+
 it('reports stale project awareness when indexed artifacts are from another commit', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
