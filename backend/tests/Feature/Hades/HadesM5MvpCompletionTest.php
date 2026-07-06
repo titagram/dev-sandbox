@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -9,7 +10,7 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('lets admins provision and revoke project scoped Hades bootstrap tokens with installer commands', function () {
@@ -97,7 +98,7 @@ it('lets admins queue Hades jobs and review memory proposals for linked workspac
     expect(DB::table('hades_memory_proposals')->where('id', $proposalId)->value('reason_code'))->toBe('duplicate');
 });
 
-it('stores Hades git tree and symbols artifacts from authenticated agents', function () {
+it('stores Hades git tree, symbols, and PHP graph artifacts from authenticated agents', function () {
     $agent = hadesM5RegisteredAgent();
     $binding = hadesM5WorkspaceBinding($agent);
 
@@ -135,8 +136,37 @@ it('stores Hades git tree and symbols artifacts from authenticated agents', func
         ->assertCreated()
         ->assertJsonPath('artifact.schema', 'hades.symbols.v1');
 
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => [
+            'schema' => 'hades.php_graph.v1',
+            'head_commit' => str_repeat('a', 40),
+            'routes' => [[
+                'method' => 'GET',
+                'uri' => '/orders/{order}',
+                'handler' => 'OrderController@show',
+            ]],
+            'symbols' => [[
+                'name' => 'App\Http\Controllers\OrderController',
+                'kind' => 'class',
+                'path' => 'app/Http/Controllers/OrderController.php',
+            ]],
+            'edges' => [[
+                'kind' => 'route_handler',
+                'from' => 'route:orders.show',
+                'to' => 'OrderController@show',
+            ]],
+            'raw_source_included' => false,
+        ],
+    ], hadesM5Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('artifact.schema', 'hades.php_graph.v1');
+
     expect(DB::table('hades_agent_artifacts')->where('schema', 'hades.git_tree.v1')->count())->toBe(1)
-        ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.symbols.v1')->count())->toBe(1);
+        ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.symbols.v1')->count())->toBe(1)
+        ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.php_graph.v1')->count())->toBe(1);
 });
 
 it('stores explicit doctor reports and exposes a persistent Persephone inbox with polling and SSE fallback', function () {
@@ -287,7 +317,7 @@ function hadesM5RegisteredAgent(?User $owner = null): array
 }
 
 /**
- * @param array{project_id: string, external_agent_id: string, backend_agent_id: string, agent_token: string} $agent
+ * @param  array{project_id: string, external_agent_id: string, backend_agent_id: string, agent_token: string}  $agent
  * @return array{workspace_binding_id: string}
  */
 function hadesM5WorkspaceBinding(array $agent): array
@@ -307,9 +337,9 @@ function hadesM5WorkspaceBinding(array $agent): array
 }
 
 /**
- * @param array{project_id: string, external_agent_id: string, backend_agent_id: string, agent_token: string} $agent
- * @param array{workspace_binding_id: string} $binding
- * @param array<string, mixed> $overrides
+ * @param  array{project_id: string, external_agent_id: string, backend_agent_id: string, agent_token: string}  $agent
+ * @param  array{workspace_binding_id: string}  $binding
+ * @param  array<string, mixed>  $overrides
  */
 function hadesM5MemoryProposal(array $agent, array $binding, array $overrides = []): string
 {

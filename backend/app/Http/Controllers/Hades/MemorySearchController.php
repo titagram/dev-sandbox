@@ -327,6 +327,10 @@ class MemorySearchController extends Controller
      */
     private function artifactSummary(string $schema, array $artifact): string
     {
+        if ($schema === 'hades.php_graph.v1' || ($artifact['schema'] ?? null) === 'hades.php_graph.v1') {
+            return $this->phpGraphSummary($schema, $artifact);
+        }
+
         $index = isset($artifact['project_index']) && is_array($artifact['project_index'])
             ? $artifact['project_index']
             : [];
@@ -375,6 +379,65 @@ class MemorySearchController extends Controller
         $body = $parts !== [] ? implode('; ', $parts) : ($fallback !== '' ? $fallback : 'indexed project artifact');
 
         return $this->compact($schema.' project index: '.$body, 800);
+    }
+
+    /**
+     * @param  array<string, mixed>  $artifact
+     */
+    private function phpGraphSummary(string $schema, array $artifact): string
+    {
+        $parts = [];
+
+        $routes = isset($artifact['routes']) && is_array($artifact['routes']) ? array_slice($artifact['routes'], 0, 8) : [];
+        foreach ($routes as $route) {
+            if (! is_array($route)) {
+                continue;
+            }
+            $method = trim((string) ($route['method'] ?? ''));
+            $uri = trim((string) ($route['uri'] ?? ''));
+            $handler = trim((string) ($route['handler'] ?? ''));
+            $name = trim((string) ($route['name'] ?? ''));
+            $routeText = trim($method.' '.$uri.($handler !== '' ? ' -> '.$handler : '').($name !== '' ? ' ['.$name.']' : ''));
+            if ($routeText !== '') {
+                $parts[] = $routeText;
+            }
+        }
+
+        $symbols = isset($artifact['symbols']) && is_array($artifact['symbols']) ? array_slice($artifact['symbols'], 0, 10) : [];
+        foreach ($symbols as $symbol) {
+            if (! is_array($symbol)) {
+                continue;
+            }
+            $name = trim((string) ($symbol['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            $kind = trim((string) ($symbol['kind'] ?? 'symbol'));
+            $role = trim((string) ($symbol['role'] ?? ''));
+            $parts[] = trim($kind.' '.$name.($role !== '' ? ' ['.$role.']' : ''));
+        }
+
+        $edges = isset($artifact['edges']) && is_array($artifact['edges']) ? $artifact['edges'] : [];
+        if ($edges !== []) {
+            $edgeKinds = [];
+            foreach ($edges as $edge) {
+                if (is_array($edge)) {
+                    $kind = trim((string) ($edge['kind'] ?? 'edge'));
+                    $edgeKinds[$kind] = ($edgeKinds[$kind] ?? 0) + 1;
+                }
+            }
+            ksort($edgeKinds);
+            $parts[] = count($edges).' graph edge(s): '.implode(', ', array_map(
+                fn (string $kind, int $count): string => $kind.':'.$count,
+                array_keys($edgeKinds),
+                array_values($edgeKinds),
+            ));
+        }
+
+        $fallback = $this->payloadString($artifact, ['summary']);
+        $body = $parts !== [] ? implode('; ', $parts) : ($fallback !== '' ? $fallback : 'indexed PHP graph artifact');
+
+        return $this->compact($schema.' code graph: '.$body, 800);
     }
 
     private function domainMatches(string $entryDomain, string $requestedDomain): bool

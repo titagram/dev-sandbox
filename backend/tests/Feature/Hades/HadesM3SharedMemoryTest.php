@@ -353,6 +353,78 @@ it('searches project index artifacts through the Hades memory search endpoint', 
     expect($response->json('items.0.payload_excerpt'))->toContain('laravel/framework');
 });
 
+it('searches PHP graph artifacts through the Hades memory search endpoint', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $artifactId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $artifactId,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'job_id' => null,
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => json_encode([
+            'schema' => 'hades.php_graph.v1',
+            'head_commit' => str_repeat('f', 40),
+            'routes' => [[
+                'method' => 'GET',
+                'uri' => '/orders/{order}',
+                'handler' => 'OrderController@show',
+                'name' => 'orders.show',
+                'path' => 'routes/web.php',
+            ]],
+            'symbols' => [[
+                'kind' => 'class',
+                'name' => 'App\Http\Controllers\OrderController',
+                'role' => 'controller',
+                'path' => 'app/Http/Controllers/OrderController.php',
+            ], [
+                'kind' => 'method',
+                'name' => 'OrderController@show',
+                'class' => 'App\Http\Controllers\OrderController',
+                'role' => 'controller',
+                'path' => 'app/Http/Controllers/OrderController.php',
+            ]],
+            'edges' => [[
+                'kind' => 'route_handler',
+                'from' => 'route:orders.show',
+                'to' => 'OrderController@show',
+            ], [
+                'kind' => 'eloquent_relation',
+                'from' => 'App\Models\Order',
+                'to' => 'App\Models\Customer',
+            ]],
+            'raw_source_included' => false,
+        ], JSON_THROW_ON_ERROR),
+        'sha256' => str_repeat('4', 64),
+        'truncated' => false,
+        'redactions' => 0,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'orders show controller graph',
+        'domain' => 'artifacts',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $artifactId)
+        ->assertJsonPath('items.0.domain', 'artifacts')
+        ->assertJsonPath('items.0.schema', 'hades.php_graph.v1')
+        ->assertJsonPath('items.0.source', 'hades.php_graph.v1');
+
+    expect($response->json('items.0.summary'))->toContain('GET /orders/{order}')
+        ->and($response->json('items.0.summary'))->toContain('OrderController@show')
+        ->and($response->json('items.0.summary'))->toContain('route_handler:1')
+        ->and($response->json('items.0.payload_excerpt'))->toContain('hades.php_graph.v1');
+});
+
 it('quarantines raw chunk import bundle entries instead of creating memory proposals', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
@@ -618,6 +690,36 @@ it('reports current artifact freshness and partial graph coverage', function () 
         ->json();
 
     expect($response['coverage']['artifacts']['schemas']['hades.git_tree.v1'])->toBe(1);
+});
+
+it('reports current PHP graph coverage for current graph artifacts', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $head = str_repeat('f', 40);
+
+    hadesM3Artifact($agent, $binding, 'hades.php_graph.v1', [
+        'schema' => 'hades.php_graph.v1',
+        'head_commit' => $head,
+        'routes' => [['method' => 'GET', 'uri' => '/orders/{order}', 'handler' => 'OrderController@show']],
+        'symbols' => [['kind' => 'class', 'name' => 'App\Http\Controllers\OrderController']],
+        'edges' => [['kind' => 'route_handler', 'from' => 'route:orders.show', 'to' => 'OrderController@show']],
+        'raw_source_included' => false,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('freshness.status', 'current')
+        ->assertJsonPath('coverage.artifacts.status', 'current')
+        ->assertJsonPath('coverage.code_graph.status', 'current')
+        ->assertJsonPath('coverage.code_graph.schema', 'hades.php_graph.v1')
+        ->assertJsonPath('coverage.code_graph.coverage_type', 'code_graph')
+        ->assertJsonPath('diagnosable_without_source', false)
+        ->json();
+
+    expect($response['coverage']['artifacts']['schemas']['hades.php_graph.v1'])->toBe(1);
 });
 
 it('reports stale project awareness when indexed artifacts are from another commit', function () {
