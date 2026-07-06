@@ -2,6 +2,15 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-06 - Project memory test data reset
+
+- Request: delete all test memories and verify that users can delete project memory entries.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, bugfix workflow, file-boundary/logbook/source-of-truth policies, `DashboardMemoryController`, `DashboardApiReader`, project memory migrations/tests, and the external React `ProjectMemoryPage`.
+- Work performed: inspected the project memory schema and current dev database state; confirmed `project_memory_entries` had 261 rows, all on active project `carnovali`, with `hades_agent`/`server_agent` sources; verified foreign keys from work items, Hades proposals, import items, and memory links use null/cascade delete behavior; deleted all rows from `project_memory_entries` in the development database using `DELETE` so referential actions were applied.
+- Verification commands and result: PostgreSQL transactional single-row delete/rollback succeeded; `DELETE FROM project_memory_entries` removed 261 rows; follow-up counts showed `project_memory_entries`, `project_memory_links`, `agent_work_items.result_memory_entry_id`, `hades_memory_proposals.memory_entry_id`, `hades_memory_proposals.target_memory_entry_id`, and `memory_import_items.target_memory_entry_id` all at zero; `DashboardApiReader::projectMemory()` for `carnovali` returned `entries: []`; `php artisan test tests/Feature/Dashboard/ProjectMemoryDashboardApiTest.php` passed `18 passed / 99 assertions`.
+- Files changed: `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: no browser Playwright smoke was run. Wiki pages/revisions were intentionally not deleted because they are wiki content surfaced under the separate `wiki` memory domain, not `project_memory_entries`.
+
 ## 2026-07-02 - Production readiness execution start
 
 - Request: execute the production-readiness plan while remembering that the public React frontend lives in `/home/ubuntu/emergent_devboard_frontend`.
