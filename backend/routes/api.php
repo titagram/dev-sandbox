@@ -10,6 +10,7 @@ use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportContro
 use App\Http\Controllers\Hades\HealthController as HadesHealthController;
 use App\Http\Controllers\Hades\MemoryImportBundleController as HadesMemoryImportBundleController;
 use App\Http\Controllers\Hades\MemoryProposalController as HadesMemoryProposalController;
+use App\Http\Controllers\Hades\MemorySearchController as HadesMemorySearchController;
 use App\Http\Controllers\Hades\MemorySnapshotController as HadesMemorySnapshotController;
 use App\Http\Controllers\Hades\PersephoneController as HadesPersephoneController;
 use App\Http\Controllers\Hades\TokenVerifyController as HadesTokenVerifyController;
@@ -163,6 +164,9 @@ Route::prefix('hades/v1')->group(function () {
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/memory/snapshot', HadesMemorySnapshotController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/memory/search', HadesMemorySearchController::class)
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/memory/proposals', HadesMemoryProposalController::class)

@@ -125,6 +125,172 @@ it('creates idempotent memory proposals and auto-accepts low risk creates', func
     expect(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->where('source', 'hades_agent')->count())->toBe(1);
 });
 
+it('searches shared memory with domains, scores, and freshness metadata', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        [
+            'id' => (string) Str::ulid(),
+            'project_id' => $agent['project_id'],
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => null,
+            'source' => 'manual',
+            'kind' => 'decision',
+            'completeness' => 'complete',
+            'summary' => 'Backend memory search should rank Hades project routes.',
+            'payload' => json_encode(['note' => 'route prefix /api/hades/v1'], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+        [
+            'id' => (string) Str::ulid(),
+            'project_id' => $agent['project_id'],
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => 'local-agent',
+            'source' => 'hades_agent',
+            'kind' => 'agent_note',
+            'completeness' => 'complete',
+            'summary' => 'Agent note mentions Hades project routes but is not logbook.',
+            'payload' => json_encode(['note' => 'agent only'], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now->copy()->subMinute(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'Hades project routes',
+        'domain' => 'logbook',
+        'limit' => 5,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('domain', 'logbook')
+        ->assertJsonPath('workspace_binding_id', $binding['workspace_binding_id'])
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.domain', 'logbook')
+        ->assertJsonPath('items.0.summary', 'Backend memory search should rank Hades project routes.')
+        ->assertJsonPath('freshness.index_status', 'live_query')
+        ->assertJsonPath('freshness.workspace_head_commit', str_repeat('f', 40));
+
+    expect($response->json('items.0.score'))->toBeGreaterThan(0);
+    expect($response->json('version'))->toStartWith('search_');
+});
+
+it('searches current wiki revisions through the Hades memory search endpoint', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $pageId = (string) Str::ulid();
+    $revisionId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('wiki_pages')->insert([
+        'id' => $pageId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'slug' => 'architecture/hades-memory',
+        'title' => 'Hades Memory Architecture',
+        'page_type' => 'architecture',
+        'current_revision_id' => $revisionId,
+        'source_status' => 'verified_from_code',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('wiki_revisions')->insert([
+        'id' => $revisionId,
+        'wiki_page_id' => $pageId,
+        'author_user_id' => null,
+        'author_device_id' => null,
+        'producer' => 'test',
+        'source_type' => 'controlled_agent_tool',
+        'source_status' => 'verified_from_code',
+        'content_markdown' => 'The taxonomy route is documented in the Hades memory architecture wiki.',
+        'evidence_refs' => json_encode([['path' => 'routes/api.php']], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+    ]);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'taxonomy route',
+        'domain' => 'wiki',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.domain', 'wiki')
+        ->assertJsonPath('items.0.id', $revisionId)
+        ->assertJsonPath('items.0.page_slug', 'architecture/hades-memory')
+        ->assertJsonPath('items.0.evidence_count', 1)
+        ->assertJsonPath('items.0.source_status', 'verified_from_code');
+});
+
+it('quarantines raw source chunks from memory search unless explicitly requested', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $chunkId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $chunkId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'backend_wiki_import',
+        'kind' => 'file_chunk',
+        'completeness' => 'complete',
+        'summary' => 'Taxonomy route raw chunk should stay out of automatic memory.',
+        'payload' => json_encode([
+            'schema' => 'hades.backend_wiki.file_chunk.v1',
+            'path' => 'graphify-sidecar/carnovali-facts.md',
+            'chunk_index' => 245,
+            'chunk_count' => 267,
+        ], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'taxonomy route raw chunk',
+        'domain' => 'source_chunks',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 0)
+        ->assertJsonPath('raw_chunks_omitted', 1);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'taxonomy route raw chunk',
+        'domain' => 'source_chunks',
+        'include_raw_chunks' => true,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('raw_chunks_omitted', 0)
+        ->assertJsonPath('items.0.id', $chunkId)
+        ->assertJsonPath('items.0.domain', 'source_chunks')
+        ->assertJsonPath('items.0.raw_chunk', true)
+        ->assertJsonPath('items.0.schema', 'hades.backend_wiki.file_chunk.v1')
+        ->assertJsonPath('items.0.source', 'graphify-sidecar/carnovali-facts.md');
+});
+
 it('rejects shared memory access for an unlinked workspace binding', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
