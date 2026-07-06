@@ -30,6 +30,7 @@ class HadesProjectAwareness
         $memory = $this->memoryCoverage((string) $binding->project_id);
         $artifacts = $this->artifactCoverage((string) $binding->project_id, (string) $binding->id);
         $bugEvidence = $this->bugEvidenceCoverage((string) $binding->project_id, (string) $binding->id);
+        $sourceSlices = $this->sourceSliceCoverage((string) $binding->project_id, (string) $binding->id, $this->blankToNull($binding->head_commit ?? null));
         $freshness = $this->freshness($binding, $artifacts, $bugEvidence);
 
         $artifacts['status'] = $this->artifactStatusFromFreshness($freshness['status']);
@@ -37,11 +38,7 @@ class HadesProjectAwareness
             'memory' => $memory,
             'artifacts' => $artifacts,
             'bug_evidence' => $bugEvidence,
-            'source_slices' => [
-                'status' => 'missing',
-                'count' => 0,
-                'reason' => 'source_slice_index_not_enabled',
-            ],
+            'source_slices' => $sourceSlices,
             'code_graph' => $this->codeGraphCoverage($artifacts),
         ];
         $actions = $this->actions($freshness, $coverage);
@@ -183,6 +180,51 @@ class HadesProjectAwareness
             'stale_reason' => $staleReason,
             'last_artifact_at' => $artifacts['updated_at'] ?? null,
             'last_evidence_at' => $bugEvidence['updated_at'] ?? null,
+        ];
+    }
+
+    private function sourceSliceCoverage(string $projectId, string $bindingId, ?string $workspaceHead): array
+    {
+        $rows = DB::table('hades_source_slices')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->orderByDesc('updated_at')
+            ->orderByDesc('id')
+            ->get();
+        $count = count($rows);
+
+        if ($count === 0) {
+            return [
+                'status' => 'missing',
+                'count' => 0,
+                'reason' => 'source_slices_missing',
+            ];
+        }
+
+        $latest = $rows->first();
+        $sliceHead = $this->blankToNull($latest->head_commit ?? null);
+        $status = 'current';
+        $reason = null;
+
+        if ($workspaceHead === null) {
+            $status = 'unknown';
+            $reason = 'workspace_head_unknown';
+        } elseif ($sliceHead === null) {
+            $status = 'unknown';
+            $reason = 'source_slice_head_unknown';
+        } elseif (! hash_equals($workspaceHead, $sliceHead)) {
+            $status = 'stale';
+            $reason = 'source_slice_head_mismatch';
+        }
+
+        return [
+            'status' => $status,
+            'count' => $count,
+            'updated_at' => $this->toIsoString($latest->updated_at ?? null),
+            'source_slice_head_commit' => $sliceHead,
+            'stale_reason' => $reason,
+            'truncated_count' => $rows->filter(fn (object $row): bool => (bool) ($row->truncated ?? false))->count(),
+            'redactions' => $rows->sum(fn (object $row): int => (int) ($row->redactions ?? 0)),
         ];
     }
 

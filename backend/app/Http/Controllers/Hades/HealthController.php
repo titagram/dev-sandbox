@@ -22,6 +22,7 @@ class HealthController extends Controller
                 'bug_reports' => '/api/hades/v1/bug-reports',
                 'project_awareness_status' => '/api/hades/v1/project-awareness/status',
                 'bug_evidence_search' => '/api/hades/v1/bug-evidence/search',
+                'source_slices' => '/api/hades/v1/source-slices',
                 'doctor_reports' => '/api/hades/v1/doctor/reports',
                 'persephone_inbox' => '/api/hades/v1/persephone/inbox',
             ],

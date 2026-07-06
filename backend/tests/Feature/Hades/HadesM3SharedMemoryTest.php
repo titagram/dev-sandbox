@@ -571,6 +571,58 @@ it('stores bug reports and searchable evidence for linked workspaces', function 
         ->assertJsonPath('evidence.0.id', $evidence['id']);
 });
 
+it('stores and fetches bounded source slices for linked workspaces', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $content = <<<'SOURCE'
+41: public function show(Order $order) {
+42:     return ***;
+43: }
+SOURCE;
+
+    $created = $this->postJson('/api/hades/v1/source-slices', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'path' => 'app/Http/Controllers/OrderController.php',
+        'start_line' => 41,
+        'end_line' => 43,
+        'language' => 'php',
+        'symbol' => 'OrderController@show',
+        'head_commit' => str_repeat('f', 40),
+        'content_redacted' => $content,
+        'redactions' => 1,
+        'truncated' => false,
+        'retention_class' => 'source_slice',
+        'policy' => 'manual_review',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('source_slice.path', 'app/Http/Controllers/OrderController.php')
+        ->assertJsonPath('source_slice.start_line', 41)
+        ->assertJsonPath('source_slice.end_line', 43)
+        ->assertJsonPath('source_slice.content_redacted', $content)
+        ->assertJsonPath('source_slice.redactions', 1)
+        ->json('source_slice');
+
+    $response = $this->getJson('/api/hades/v1/source-slices?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'path' => 'app/Http/Controllers/OrderController.php',
+        'line' => 42,
+        'query' => 'OrderController show',
+        'limit' => 5,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $created['id'])
+        ->assertJsonPath('items.0.symbol', 'OrderController@show')
+        ->assertJsonPath('items.0.content_redacted', $content)
+        ->assertJsonPath('freshness.workspace_head_commit', str_repeat('f', 40));
+
+    expect($response->json('items.0.score'))->toBeGreaterThan(0)
+        ->and(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->count())->toBe(0);
+});
+
 it('rejects bug evidence for reports outside the linked workspace', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
@@ -720,6 +772,101 @@ it('reports current PHP graph coverage for current graph artifacts', function ()
         ->json();
 
     expect($response['coverage']['artifacts']['schemas']['hades.php_graph.v1'])->toBe(1);
+});
+
+it('reports ready project awareness when source slices and evidence are current', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $now = now();
+    $head = str_repeat('f', 40);
+
+    DB::table('project_memory_entries')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'manual',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'Project memory is available for ready awareness.',
+        'payload' => json_encode(['note' => 'ready'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    hadesM3Artifact($agent, $binding, 'hades.php_graph.v1', [
+        'schema' => 'hades.php_graph.v1',
+        'head_commit' => $head,
+        'routes' => [['method' => 'GET', 'uri' => '/orders/{order}', 'handler' => 'OrderController@show']],
+        'symbols' => [['kind' => 'class', 'name' => 'App\Http\Controllers\OrderController']],
+        'edges' => [['kind' => 'route_handler', 'from' => 'route:orders.show', 'to' => 'OrderController@show']],
+        'raw_source_included' => false,
+    ]);
+
+    DB::table('hades_bug_evidence_items')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'bug_report_id' => null,
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'kind' => 'stack_trace',
+        'summary' => 'OrderController show frame points to line 42.',
+        'payload' => json_encode(['frame' => ['path' => 'app/Http/Controllers/OrderController.php', 'line' => 42]], JSON_THROW_ON_ERROR),
+        'source' => 'laravel.log',
+        'sha256' => str_repeat('b', 64),
+        'redactions' => 0,
+        'retention_class' => 'stack_trace',
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_source_slices')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'job_id' => null,
+        'path' => 'app/Http/Controllers/OrderController.php',
+        'start_line' => 41,
+        'end_line' => 43,
+        'language' => 'php',
+        'symbol' => 'OrderController@show',
+        'head_commit' => $head,
+        'sha256' => str_repeat('c', 64),
+        'content_redacted' => '41: public function show() {
+42:     return ***;
+43: }',
+        'redactions' => 1,
+        'truncated' => false,
+        'retention_class' => 'source_slice',
+        'policy' => 'manual_review',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('freshness.status', 'current')
+        ->assertJsonPath('coverage.memory.status', 'current')
+        ->assertJsonPath('coverage.artifacts.status', 'current')
+        ->assertJsonPath('coverage.bug_evidence.status', 'current')
+        ->assertJsonPath('coverage.code_graph.status', 'current')
+        ->assertJsonPath('coverage.source_slices.status', 'current')
+        ->assertJsonPath('coverage.source_slices.source_slice_head_commit', $head)
+        ->assertJsonPath('diagnosable_without_source', true)
+        ->assertJsonPath('overall_status', 'ready')
+        ->json();
+
+    expect($response['coverage']['source_slices']['count'])->toBe(1)
+        ->and($response['coverage']['source_slices']['redactions'])->toBe(1);
 });
 
 it('reports stale project awareness when indexed artifacts are from another commit', function () {

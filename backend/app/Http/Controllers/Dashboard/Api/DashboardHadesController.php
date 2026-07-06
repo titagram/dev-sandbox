@@ -79,7 +79,7 @@ final class DashboardHadesController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'expires_in_days' => ['nullable', 'integer', 'min:1', 'max:365'],
             'allowed_capabilities' => ['nullable', 'array'],
-            'allowed_capabilities.*' => ['string', 'in:read_files,sync_git_tree,populate_backend_ast,populate_project_wiki'],
+            'allowed_capabilities.*' => ['string', 'in:read_files,read_source_slice,sync_git_tree,populate_backend_ast,populate_project_wiki'],
             'base_url' => ['nullable', 'url'],
             'project_name' => ['nullable', 'string', 'max:255'],
         ]);
@@ -131,7 +131,7 @@ final class DashboardHadesController extends Controller
             'workspace_binding_id' => ['required', 'string', 'exists:hades_workspace_bindings,id'],
             'hades_agent_id' => ['nullable', 'string', 'exists:hades_agents,id'],
             'idempotency_key' => ['nullable', 'string', 'max:191'],
-            'capability' => ['required', 'string', 'in:read_files,sync_git_tree,populate_backend_ast,populate_project_wiki'],
+            'capability' => ['required', 'string', 'in:read_files,read_source_slice,sync_git_tree,populate_backend_ast,populate_project_wiki'],
             'policy' => ['nullable', 'string', 'max:191'],
             'priority' => ['nullable', 'string', 'max:191'],
             'payload' => ['required', 'array'],

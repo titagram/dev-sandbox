@@ -7,6 +7,7 @@ class HadesCapabilityPolicy
     /** @var list<string> */
     private const SUPPORTED_M1_CAPABILITIES = [
         'read_files',
+        'read_source_slice',
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',

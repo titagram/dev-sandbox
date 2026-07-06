@@ -16,6 +16,7 @@ use App\Http\Controllers\Hades\MemorySearchController as HadesMemorySearchContro
 use App\Http\Controllers\Hades\MemorySnapshotController as HadesMemorySnapshotController;
 use App\Http\Controllers\Hades\PersephoneController as HadesPersephoneController;
 use App\Http\Controllers\Hades\ProjectAwarenessStatusController as HadesProjectAwarenessStatusController;
+use App\Http\Controllers\Hades\SourceSliceController as HadesSourceSliceController;
 use App\Http\Controllers\Hades\TokenVerifyController as HadesTokenVerifyController;
 use App\Http\Controllers\Hades\WorkspaceBindController as HadesWorkspaceBindController;
 use App\Http\Controllers\Hades\WorkspaceUnlinkController as HadesWorkspaceUnlinkController;
@@ -191,6 +192,12 @@ Route::prefix('hades/v1')->group(function () {
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/bug-evidence/search', [HadesBugEvidenceController::class, 'search'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/source-slices', [HadesSourceSliceController::class, 'store'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/source-slices', [HadesSourceSliceController::class, 'index'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/agent/jobs', HadesAgentJobsController::class)

@@ -12,6 +12,7 @@ use Symfony\Component\HttpFoundation\Response;
 class HadesTokenService
 {
     private const BOOTSTRAP_PREFIX = 'hades_bootstrap_';
+
     private const AGENT_PREFIX = 'hades_agent_';
 
     /**
@@ -116,9 +117,8 @@ class HadesTokenService
         ];
     }
 
-
     /**
-     * @param list<string>|null $allowedCapabilities
+     * @param  list<string>|null  $allowedCapabilities
      * @return array{id: string, plain_token: string, token: object}
      */
     public function createBootstrapToken(string $projectId, string $name, ?int $expiresInDays = 90, ?array $allowedCapabilities = null): array
@@ -127,7 +127,7 @@ class HadesTokenService
         $secret = Str::random(64);
         $prefix = self::BOOTSTRAP_PREFIX.$id;
         $now = now();
-        $allowed = array_values(array_filter($allowedCapabilities ?? ['read_files', 'sync_git_tree', 'populate_backend_ast'], 'is_string'));
+        $allowed = array_values(array_filter($allowedCapabilities ?? ['read_files', 'read_source_slice', 'sync_git_tree', 'populate_backend_ast'], 'is_string'));
 
         DB::table('hades_bootstrap_tokens')->insert([
             'id' => $id,
