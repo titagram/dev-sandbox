@@ -194,15 +194,28 @@ final class DashboardHadesController extends Controller
 
         abort_unless(DB::table('hades_memory_proposals')->where('id', $proposal)->exists(), 404);
 
-        DB::table('hades_memory_proposals')->where('id', $proposal)->update([
-            'status' => $validated['status'],
-            'reason_code' => $validated['reason_code'] ?? null,
-            'reason_message' => $validated['reason_message'] ?? null,
-            'decided_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $row = DB::transaction(function () use ($proposal, $validated) {
+            $now = now();
+            $row = DB::table('hades_memory_proposals')->where('id', $proposal)->first();
+            $memoryEntryId = $row->memory_entry_id;
 
-        $row = DB::table('hades_memory_proposals')->where('id', $proposal)->first();
+            if ($validated['status'] === 'accepted'
+                && $row->action === 'create'
+                && $memoryEntryId === null) {
+                $memoryEntryId = $this->createProjectMemoryFromProposal($row, $now);
+            }
+
+            DB::table('hades_memory_proposals')->where('id', $proposal)->update([
+                'memory_entry_id' => $memoryEntryId,
+                'status' => $validated['status'],
+                'reason_code' => $validated['reason_code'] ?? null,
+                'reason_message' => $validated['reason_message'] ?? null,
+                'decided_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            return DB::table('hades_memory_proposals')->where('id', $proposal)->first();
+        });
 
         return response()->json([
             'proposal' => [
@@ -212,9 +225,58 @@ final class DashboardHadesController extends Controller
                 'status' => $row->status,
                 'reason_code' => $row->reason_code,
                 'reason_message' => $row->reason_message,
+                'memory_entry_id' => $row->memory_entry_id,
                 'decided_at' => $row->decided_at,
             ],
         ]);
+    }
+
+    private function createProjectMemoryFromProposal(object $proposal, mixed $now): string
+    {
+        $memoryEntryId = (string) Str::ulid();
+        $provenance = json_decode((string) $proposal->provenance, true);
+        $provenance = is_array($provenance) ? $provenance : [];
+        $agentKey = DB::table('hades_agents')->where('id', $proposal->hades_agent_id)->value('external_agent_id');
+        $binding = DB::table('hades_workspace_bindings')->where('id', $proposal->workspace_binding_id)->first();
+        $workspaceHeadCommit = trim((string) ($binding->head_commit ?? ''));
+        $reviewedAt = method_exists($now, 'toISOString') ? $now->toISOString() : (string) $now;
+
+        DB::table('project_memory_entries')->insert([
+            'id' => $memoryEntryId,
+            'project_id' => $proposal->project_id,
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => $agentKey,
+            'source' => 'hades_agent',
+            'kind' => $proposal->intent === 'note_backfill_candidate' ? 'verified_note_fact' : 'proposal',
+            'completeness' => 'complete',
+            'summary' => $proposal->summary,
+            'payload' => json_encode([
+                'schema' => 'hades.memory_proposal.v1',
+                'action' => $proposal->action,
+                'intent' => $proposal->intent,
+                'workspace_binding_id' => $proposal->workspace_binding_id,
+                'local_proposal_id' => $proposal->local_proposal_id,
+                'provenance' => $provenance,
+                'review' => [
+                    'status' => 'accepted',
+                    'reviewed_from' => 'dashboard',
+                ],
+                'freshness' => [
+                    'status' => $workspaceHeadCommit !== '' ? 'current' : 'unknown',
+                    'workspace_head_commit' => $workspaceHeadCommit !== '' ? $workspaceHeadCommit : null,
+                    'index_status' => 'reviewed_note_fact',
+                    'reviewed_at' => $reviewedAt,
+                ],
+            ], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        return $memoryEntryId;
     }
 
     private function bootstrapTokenPayload(object $token): array

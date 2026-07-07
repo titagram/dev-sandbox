@@ -126,6 +126,52 @@ it('creates idempotent memory proposals and auto-accepts low risk creates', func
     expect(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->where('source', 'hades_agent')->count())->toBe(1);
 });
 
+it('keeps note backfill candidate proposals pending for manual review', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $payload = [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'local_proposal_id' => 'local-note-backfill-1',
+        'action' => 'create',
+        'intent' => 'note_backfill_candidate',
+        'summary' => 'Controller.php handles 3 taxonomy routes.',
+        'provenance' => [
+            'source' => 'hades_note_quality',
+            'candidate_fact_fingerprint' => hash('sha256', 'route-handler-group'),
+            'candidate_fact' => [
+                'kind' => 'route_handler_group',
+                'review_status' => 'candidate',
+            ],
+        ],
+    ];
+
+    $first = $this->postJson('/api/hades/v1/memory/proposals', $payload, hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('proposal.local_proposal_id', 'local-note-backfill-1')
+        ->assertJsonPath('proposal.status', 'pending')
+        ->assertJsonPath('proposal.reason_code', 'manual_review_required')
+        ->assertJsonPath('proposal.memory_entry_id', null);
+
+    $proposalId = $first->json('proposal.id');
+
+    expect(DB::table('hades_memory_proposals')->where('id', $proposalId)->value('status'))->toBe('pending');
+    expect(DB::table('hades_memory_proposals')->where('id', $proposalId)->value('memory_entry_id'))->toBeNull();
+    expect(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->where('source', 'hades_agent')->count())->toBe(0);
+
+    $this->postJson('/api/hades/v1/memory/proposals', array_merge($payload, [
+        'summary' => 'Changed after retry should not duplicate.',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('proposal.id', $proposalId)
+        ->assertJsonPath('proposal.status', 'pending')
+        ->assertJsonPath('proposal.memory_entry_id', null);
+
+    expect(DB::table('hades_memory_proposals')->where('workspace_binding_id', $binding['workspace_binding_id'])->count())->toBe(1);
+    expect(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->where('source', 'hades_agent')->count())->toBe(0);
+});
+
 it('searches shared memory with domains, scores, and freshness metadata', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
@@ -187,6 +233,65 @@ it('searches shared memory with domains, scores, and freshness metadata', functi
 
     expect($response->json('items.0.score'))->toBeGreaterThan(0);
     expect($response->json('version'))->toStartWith('search_');
+});
+
+it('ranks concise multi token memory matches above newer noisy matches', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $now = now();
+    $preciseId = (string) Str::ulid();
+    $noisyId = (string) Str::ulid();
+
+    DB::table('project_memory_entries')->insert([
+        [
+            'id' => $noisyId,
+            'project_id' => $agent['project_id'],
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => null,
+            'source' => 'manual',
+            'kind' => 'decision',
+            'completeness' => 'complete',
+            'summary' => 'Checkout operational note covering many unrelated topics: deployment windows, token rotation, frontend retry copy, rate limits, mismatch alerts, queue retries, and general monitoring.',
+            'payload' => json_encode(['note' => 'noisy but newer'], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+        [
+            'id' => $preciseId,
+            'project_id' => $agent['project_id'],
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => null,
+            'source' => 'manual',
+            'kind' => 'decision',
+            'completeness' => 'complete',
+            'summary' => 'Checkout token mismatch caused 419 responses.',
+            'payload' => json_encode(['note' => 'precise but older'], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now->copy()->subDay(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'checkout mismatch token',
+        'domain' => 'logbook',
+        'limit' => 2,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 2)
+        ->assertJsonPath('items.0.id', $preciseId)
+        ->assertJsonPath('items.1.id', $noisyId);
+
+    expect($response->json('items.0.score'))->toBeGreaterThan($response->json('items.1.score'));
 });
 
 it('filters Hades memory search by structured fields', function () {

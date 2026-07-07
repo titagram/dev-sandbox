@@ -98,6 +98,62 @@ it('lets admins queue Hades jobs and review memory proposals for linked workspac
     expect(DB::table('hades_memory_proposals')->where('id', $proposalId)->value('reason_code'))->toBe('duplicate');
 });
 
+it('promotes accepted note backfill proposals to project memory once', function () {
+    $admin = hadesM5DashboardUserWithRole('Admin');
+    $agent = hadesM5RegisteredAgent($admin);
+    $binding = hadesM5WorkspaceBinding($agent);
+    $proposalId = hadesM5MemoryProposal($agent, $binding, [
+        'action' => 'create',
+        'intent' => 'note_backfill_candidate',
+        'summary' => 'Controller.php handles 3 taxonomy routes.',
+        'provenance' => [
+            'source' => 'hades_note_quality',
+            'candidate_fact_fingerprint' => hash('sha256', 'route-handler-group'),
+            'candidate_fact' => [
+                'kind' => 'route_handler_group',
+                'review_status' => 'candidate',
+            ],
+        ],
+        'status' => 'pending',
+    ]);
+
+    $first = $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/hades/memory-proposals/'.$proposalId.'/review', [
+            'status' => 'accepted',
+            'reason_code' => 'verified',
+            'reason_message' => 'Reviewed route-handler fact.',
+        ])
+        ->assertOk()
+        ->assertJsonPath('proposal.id', $proposalId)
+        ->assertJsonPath('proposal.status', 'accepted');
+
+    $memoryEntryId = $first->json('proposal.memory_entry_id');
+    expect($memoryEntryId)->toBeString();
+
+    $entry = DB::table('project_memory_entries')->where('id', $memoryEntryId)->first();
+    expect($entry)->not->toBeNull()
+        ->and($entry->kind)->toBe('verified_note_fact')
+        ->and($entry->summary)->toBe('Controller.php handles 3 taxonomy routes.');
+
+    $payload = json_decode($entry->payload, true, flags: JSON_THROW_ON_ERROR);
+    expect($payload['intent'])->toBe('note_backfill_candidate')
+        ->and($payload['provenance']['source'])->toBe('hades_note_quality')
+        ->and($payload['provenance']['candidate_fact']['kind'])->toBe('route_handler_group')
+        ->and($payload['freshness']['status'])->toBe('current')
+        ->and($payload['freshness']['workspace_head_commit'])->toBe(str_repeat('5', 40))
+        ->and($payload['freshness']['index_status'])->toBe('reviewed_note_fact');
+
+    $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/hades/memory-proposals/'.$proposalId.'/review', [
+            'status' => 'accepted',
+            'reason_code' => 'verified_again',
+        ])
+        ->assertOk()
+        ->assertJsonPath('proposal.memory_entry_id', $memoryEntryId);
+
+    expect(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->where('source', 'hades_agent')->count())->toBe(1);
+});
+
 it('stores Hades git tree, symbols, and PHP graph artifacts from authenticated agents', function () {
     $agent = hadesM5RegisteredAgent();
     $binding = hadesM5WorkspaceBinding($agent);
@@ -197,6 +253,49 @@ it('stores Hades git tree, symbols, and PHP graph artifacts from authenticated a
         ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.symbols.v1')->count())->toBe(1)
         ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.php_graph.v1')->count())->toBe(1)
         ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.code_graph.v1')->count())->toBe(1);
+});
+
+it('stores compressed Hades artifacts as decoded JSON', function () {
+    $agent = hadesM5RegisteredAgent();
+    $binding = hadesM5WorkspaceBinding($agent);
+    $artifact = [
+        'schema' => 'hades.code_graph.v1',
+        'framework' => 'nextjs',
+        'head_commit' => str_repeat('c', 40),
+        'symbols' => collect(range(1, 300))->map(fn (int $index) => [
+            'kind' => 'component',
+            'name' => 'OrderComponent'.$index,
+            'path' => 'app/orders/page.tsx',
+            'line' => $index,
+        ])->all(),
+        'routes' => [],
+        'edges' => [],
+        'raw_source_included' => false,
+    ];
+    $json = json_encode($artifact, JSON_THROW_ON_ERROR);
+    $compressed = gzencode($json);
+
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.code_graph.v1',
+        'artifact_encoding' => 'gzip+base64',
+        'artifact_compressed' => base64_encode($compressed),
+        'artifact_uncompressed_sha256' => hash('sha256', $json),
+        'artifact_uncompressed_bytes' => strlen($json),
+        'artifact_compressed_bytes' => strlen($compressed),
+        'sha256' => hash('sha256', $json),
+    ], hadesM5Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('artifact.schema', 'hades.code_graph.v1')
+        ->assertJsonPath('artifact.workspace_binding_id', $binding['workspace_binding_id']);
+
+    $stored = DB::table('hades_agent_artifacts')->where('schema', 'hades.code_graph.v1')->first();
+    $decoded = json_decode($stored->artifact, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($decoded['schema'])->toBe('hades.code_graph.v1')
+        ->and($decoded['symbols'])->toHaveCount(300)
+        ->and($decoded['symbols'][0]['name'])->toBe('OrderComponent1');
 });
 
 it('stores explicit doctor reports and exposes a persistent Persephone inbox with polling and SSE fallback', function () {
@@ -375,6 +474,7 @@ function hadesM5MemoryProposal(array $agent, array $binding, array $overrides = 
 {
     $id = (string) Str::ulid();
     $now = now();
+    $provenance = $overrides['provenance'] ?? ['source' => 'test'];
 
     DB::table('hades_memory_proposals')->insert(array_merge([
         'id' => $id,
@@ -382,10 +482,10 @@ function hadesM5MemoryProposal(array $agent, array $binding, array $overrides = 
         'hades_agent_id' => $agent['backend_agent_id'],
         'workspace_binding_id' => $binding['workspace_binding_id'],
         'local_proposal_id' => 'm5-proposal-'.$id,
-        'action' => 'update',
-        'intent' => 'shared_memory_update',
-        'summary' => 'Update shared memory from Hades.',
-        'provenance' => json_encode(['source' => 'test'], JSON_THROW_ON_ERROR),
+        'action' => $overrides['action'] ?? 'update',
+        'intent' => $overrides['intent'] ?? 'shared_memory_update',
+        'summary' => $overrides['summary'] ?? 'Update shared memory from Hades.',
+        'provenance' => json_encode($provenance, JSON_THROW_ON_ERROR),
         'base_version' => null,
         'target_memory_entry_id' => null,
         'memory_entry_id' => null,

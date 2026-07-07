@@ -52,7 +52,7 @@ class MemoryProposalController extends Controller
             $reasonMessage = null;
             $decidedAt = null;
 
-            if ($validated['action'] === 'create') {
+            if ($validated['action'] === 'create' && $this->shouldAutoAcceptCreate($validated)) {
                 $memoryEntryId = (string) Str::ulid();
                 $status = 'accepted';
                 $decidedAt = $now;
@@ -81,6 +81,9 @@ class MemoryProposalController extends Controller
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
+            } elseif ($validated['action'] === 'create') {
+                $reasonCode = 'manual_review_required';
+                $reasonMessage = 'This memory proposal must be reviewed before it can become project memory.';
             }
 
             $proposalId = (string) Str::ulid();
@@ -109,6 +112,13 @@ class MemoryProposalController extends Controller
         });
 
         return response()->json($this->proposalPayload($proposal));
+    }
+
+    private function shouldAutoAcceptCreate(array $validated): bool
+    {
+        return ! in_array($validated['intent'], [
+            'note_backfill_candidate',
+        ], true);
     }
 
     private function linkedBinding(object $agent, string $projectId, string $bindingId): mixed

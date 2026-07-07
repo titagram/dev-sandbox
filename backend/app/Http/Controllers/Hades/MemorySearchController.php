@@ -775,25 +775,65 @@ class MemorySearchController extends Controller
     private function score(string $query, array $tokens, array $haystacks): int
     {
         $query = Str::lower(trim($query));
-        $summary = Str::lower($haystacks[0] ?? '');
+        $fields = [
+            ['text' => Str::lower($haystacks[0] ?? ''), 'weight' => 12],
+            ['text' => Str::lower($haystacks[1] ?? ''), 'weight' => 7],
+            ['text' => Str::lower($haystacks[2] ?? ''), 'weight' => 5],
+            ['text' => Str::lower($haystacks[3] ?? ''), 'weight' => 4],
+            ['text' => Str::lower($haystacks[4] ?? ''), 'weight' => 3],
+        ];
+        $summary = $fields[0]['text'];
         $joined = Str::lower(implode(PHP_EOL, $haystacks));
         $score = 0;
+        $matchedTokens = [];
 
         if ($query !== '' && str_contains($summary, $query)) {
-            $score += 40;
+            $score += 80;
         } elseif ($query !== '' && str_contains($joined, $query)) {
-            $score += 20;
+            $score += 35;
         }
 
-        foreach ($tokens as $token) {
-            if (str_contains($summary, $token)) {
-                $score += 4;
-            } elseif (str_contains($joined, $token)) {
-                $score += 2;
+        foreach ($fields as $field) {
+            $text = trim((string) $field['text']);
+            if ($text === '') {
+                continue;
+            }
+
+            $fieldMatches = 0;
+            foreach ($tokens as $token) {
+                if (! str_contains($text, $token)) {
+                    continue;
+                }
+
+                $matchedTokens[$token] = true;
+                $fieldMatches++;
+                $occurrences = substr_count($text, $token);
+                $score += (int) $field['weight'] + min(4, $occurrences) * 2 + min(12, strlen($token));
+            }
+
+            if ($fieldMatches > 1) {
+                $score += $this->fieldDensityBonus($text, $fieldMatches, (int) $field['weight']);
             }
         }
 
+        $matchedCount = count($matchedTokens);
+        if ($matchedCount > 1) {
+            $score += $matchedCount * $matchedCount * 3;
+        }
+
+        if ($tokens !== [] && $matchedCount === count($tokens)) {
+            $score += 20 + (count($tokens) * 5);
+        }
+
         return $score;
+    }
+
+    private function fieldDensityBonus(string $text, int $matches, int $weight): int
+    {
+        preg_match_all('/[a-z0-9_.:\/-]{2,}/', $text, $words);
+        $wordCount = max(1, count($words[0] ?? []));
+
+        return intdiv($matches * $matches * $weight * 20, min(200, $wordCount + 10));
     }
 
     /**

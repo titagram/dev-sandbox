@@ -19,7 +19,12 @@ class ArtifactController extends Controller
             'workspace_binding_id' => ['required', 'string'],
             'job_id' => ['nullable', 'string'],
             'schema' => ['required', 'string', 'in:hades.git_tree.v1,hades.symbols.v1,hades.php_graph.v1,hades.code_graph.v1'],
-            'artifact' => ['required', 'array'],
+            'artifact' => ['required_without:artifact_compressed', 'array'],
+            'artifact_compressed' => ['required_without:artifact', 'string'],
+            'artifact_encoding' => ['nullable', 'required_with:artifact_compressed', 'string', 'in:gzip+base64'],
+            'artifact_uncompressed_sha256' => ['nullable', 'string', 'size:64'],
+            'artifact_uncompressed_bytes' => ['nullable', 'integer', 'min:0', 'max:200000000'],
+            'artifact_compressed_bytes' => ['nullable', 'integer', 'min:0', 'max:200000000'],
             'sha256' => ['nullable', 'string', 'size:64'],
             'truncated' => ['nullable', 'boolean'],
             'redactions' => ['nullable', 'integer', 'min:0', 'max:100000'],
@@ -45,7 +50,15 @@ class ArtifactController extends Controller
             }
         }
 
-        $artifactJson = json_encode($validated['artifact'], JSON_THROW_ON_ERROR);
+        $artifactPayload = $validated['artifact'] ?? null;
+        if ($artifactPayload === null) {
+            $artifactPayload = $this->decodeCompressedArtifact($validated);
+            if ($artifactPayload instanceof JsonResponse) {
+                return $artifactPayload;
+            }
+        }
+
+        $artifactJson = json_encode($artifactPayload, JSON_THROW_ON_ERROR);
         $id = (string) Str::ulid();
         $now = now();
 
@@ -72,6 +85,42 @@ class ArtifactController extends Controller
             'artifact' => $this->payload($artifact),
             'server_time' => now()->toISOString(),
         ], Response::HTTP_CREATED);
+    }
+
+    private function decodeCompressedArtifact(array $payload): array|JsonResponse
+    {
+        if (($payload['artifact_encoding'] ?? null) !== 'gzip+base64') {
+            return $this->error('artifact_encoding_unsupported', 'Compressed artifact encoding is not supported.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $compressed = base64_decode((string) ($payload['artifact_compressed'] ?? ''), true);
+        if ($compressed === false) {
+            return $this->error('artifact_compressed_invalid', 'Compressed artifact is not valid base64.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        if (isset($payload['artifact_compressed_bytes']) && strlen($compressed) !== (int) $payload['artifact_compressed_bytes']) {
+            return $this->error('artifact_compressed_size_mismatch', 'Compressed artifact byte count does not match.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $json = gzdecode($compressed);
+        if ($json === false) {
+            return $this->error('artifact_compressed_invalid', 'Compressed artifact is not valid gzip.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        if (isset($payload['artifact_uncompressed_bytes']) && strlen($json) !== (int) $payload['artifact_uncompressed_bytes']) {
+            return $this->error('artifact_uncompressed_size_mismatch', 'Artifact byte count does not match.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        if (($payload['artifact_uncompressed_sha256'] ?? null) !== null && hash('sha256', $json) !== $payload['artifact_uncompressed_sha256']) {
+            return $this->error('artifact_uncompressed_hash_mismatch', 'Artifact hash does not match.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $artifact = json_decode($json, true);
+        if (! is_array($artifact)) {
+            return $this->error('artifact_compressed_invalid', 'Compressed artifact JSON must decode to an object.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        return $artifact;
     }
 
     private function linkedBinding(object $agent, string $projectId, string $bindingId, ?string $externalAgentId): mixed
