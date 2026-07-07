@@ -425,6 +425,94 @@ it('searches PHP graph artifacts through the Hades memory search endpoint', func
         ->and($response->json('items.0.payload_excerpt'))->toContain('hades.php_graph.v1');
 });
 
+it('traverses PHP graph artifacts through a bounded Hades graph endpoint', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $head = str_repeat('f', 40);
+    $artifactId = hadesM3Artifact($agent, $binding, 'hades.php_graph.v1', [
+        'schema' => 'hades.php_graph.v1',
+        'head_commit' => $head,
+        'routes' => [[
+            'method' => 'GET',
+            'uri' => '/orders/{order}',
+            'handler' => 'OrderController@show',
+            'name' => 'orders.show',
+            'path' => 'routes/web.php',
+        ]],
+        'symbols' => [[
+            'kind' => 'method',
+            'name' => 'OrderController@show',
+            'class' => 'App\Http\Controllers\OrderController',
+            'role' => 'controller',
+            'path' => 'app/Http/Controllers/OrderController.php',
+        ], [
+            'kind' => 'class',
+            'name' => 'App\Services\OrderPresenter',
+            'role' => 'service',
+            'path' => 'app/Services/OrderPresenter.php',
+        ], [
+            'kind' => 'class',
+            'name' => 'App\Models\Order',
+            'role' => 'model',
+            'path' => 'app/Models/Order.php',
+        ]],
+        'edges' => [[
+            'kind' => 'route_handler',
+            'from' => 'route:orders.show',
+            'to' => 'OrderController@show',
+        ], [
+            'kind' => 'static_call',
+            'from' => 'OrderController@show',
+            'to' => 'App\Services\OrderPresenter',
+        ], [
+            'kind' => 'model_use',
+            'from' => 'App\Services\OrderPresenter',
+            'to' => 'App\Models\Order',
+        ]],
+        'raw_source_included' => false,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/graph/traverse?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'start' => 'orders.show',
+        'max_depth' => 2,
+        'limit' => 10,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('artifact_id', $artifactId)
+        ->assertJsonPath('schema', 'hades.php_graph.v1')
+        ->assertJsonPath('head_commit', $head)
+        ->assertJsonPath('freshness.status', 'current')
+        ->assertJsonPath('provenance.artifact_id', $artifactId)
+        ->json();
+
+    expect(collect($response['nodes'])->pluck('id')->all())
+        ->toContain('route:orders.show')
+        ->toContain('OrderController@show')
+        ->toContain('App\Services\OrderPresenter')
+        ->not->toContain('App\Models\Order');
+    expect(collect($response['edges'])->pluck('kind')->all())
+        ->toContain('route_handler')
+        ->toContain('static_call')
+        ->not->toContain('model_use');
+    expect($response['match_fields'])->toContain('id')
+        ->and($response['truncated'])->toBeFalse();
+});
+
+it('reports missing graph traversal when no graph artifact exists', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $this->getJson('/api/hades/v1/graph/traverse?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'start' => 'orders.show',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertStatus(404)
+        ->assertJsonPath('error.code', 'graph_artifact_not_found');
+});
+
 it('quarantines raw chunk import bundle entries instead of creating memory proposals', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
