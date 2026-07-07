@@ -29,6 +29,11 @@ class MemorySearchController extends Controller
             'workspace_binding_id' => ['required', 'string'],
             'query' => ['nullable', 'string', 'max:1000'],
             'domain' => ['nullable', 'string', 'in:all,project_memory,logbook,wiki,agent_notes,source_chunks,artifacts'],
+            'kind' => ['nullable', 'string', 'max:120'],
+            'schema' => ['nullable', 'string', 'max:160'],
+            'source' => ['nullable', 'string', 'max:512'],
+            'symbol' => ['nullable', 'string', 'max:512'],
+            'path' => ['nullable', 'string', 'max:1024'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:50'],
             'include_raw_chunks' => ['nullable', 'boolean'],
         ]);
@@ -45,6 +50,7 @@ class MemorySearchController extends Controller
         $domain = (string) ($validated['domain'] ?? 'all');
         $limit = (int) ($validated['limit'] ?? 10);
         $includeRawChunks = (bool) ($validated['include_raw_chunks'] ?? false);
+        $filters = $this->filters($validated);
         $rawChunksOmitted = 0;
         $items = [];
 
@@ -53,6 +59,7 @@ class MemorySearchController extends Controller
                 projectId: $validated['project_id'],
                 query: $query,
                 domain: $domain,
+                filters: $filters,
                 limit: $limit,
                 includeRawChunks: $includeRawChunks,
                 workspaceHeadCommit: (string) ($binding->head_commit ?? ''),
@@ -62,11 +69,11 @@ class MemorySearchController extends Controller
         }
 
         if (in_array($domain, ['all', 'wiki'], true)) {
-            $items = array_merge($items, $this->wikiResults($validated['project_id'], $query, $limit));
+            $items = array_merge($items, $this->wikiResults($validated['project_id'], $query, $filters, $limit));
         }
 
         if (in_array($domain, ['all', 'artifacts'], true)) {
-            $items = array_merge($items, $this->artifactResults($validated['project_id'], $binding->id, $query, $limit));
+            $items = array_merge($items, $this->artifactResults($validated['project_id'], $binding->id, $query, $filters, $limit));
         }
 
         usort($items, function (array $a, array $b): int {
@@ -81,7 +88,7 @@ class MemorySearchController extends Controller
 
         $candidateCount = count($items);
         $items = array_slice($items, 0, $limit);
-        $version = $this->searchVersion($validated['project_id'], $binding->id, $query, $domain, $items);
+        $version = $this->searchVersion($validated['project_id'], $binding->id, $query, $domain, $filters, $items);
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -91,6 +98,7 @@ class MemorySearchController extends Controller
             'etag' => $version,
             'query' => $query,
             'domain' => $domain,
+            'filters' => $filters,
             'limit' => $limit,
             'include_raw_chunks' => $includeRawChunks,
             'count' => count($items),
@@ -129,11 +137,29 @@ class MemorySearchController extends Controller
     /**
      * @return array{0: list<array<string, mixed>>, 1: int}
      */
-    private function memoryResults(string $projectId, string $query, string $domain, int $limit, bool $includeRawChunks, string $workspaceHeadCommit = ''): array
+    private function memoryResults(string $projectId, string $query, string $domain, array $filters, int $limit, bool $includeRawChunks, string $workspaceHeadCommit = ''): array
     {
         $tokens = $this->tokens($query);
         $rows = DB::table('project_memory_entries')
             ->where('project_id', $projectId)
+            ->when(($filters['kind'] ?? '') !== '', function ($builder) use ($filters): void {
+                $builder->where('kind', $filters['kind']);
+            })
+            ->when($this->hasCoarsePayloadFilters($filters), function ($builder) use ($filters): void {
+                $builder->where(function ($nested) use ($filters): void {
+                    foreach (['schema', 'source', 'symbol', 'path'] as $key) {
+                        $value = $filters[$key] ?? '';
+                        if ($value === '') {
+                            continue;
+                        }
+                        $like = '%'.$value.'%';
+                        if ($key === 'source') {
+                            $nested->orWhere('source', 'like', $like);
+                        }
+                        $nested->orWhere('payload', 'like', $like);
+                    }
+                });
+            })
             ->when($query !== '', function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
@@ -150,7 +176,7 @@ class MemorySearchController extends Controller
             })
             ->orderByDesc('occurred_at')
             ->orderByDesc('id')
-            ->limit(max(100, $limit * 12))
+            ->limit(max($filters === [] ? 100 : 250, $limit * ($filters === [] ? 12 : 20)))
             ->get();
 
         $items = [];
@@ -173,6 +199,13 @@ class MemorySearchController extends Controller
 
             $schema = $this->payloadString($payload, ['schema', 'content_schema', 'artifact_schema']);
             $source = $this->payloadString($payload, ['path', 'source_path', 'file', 'uri', 'route', 'symbol']);
+            $filterFields = $this->memoryFilterFields($entry, $payload, $schema, $source);
+
+            if (! $this->matchesFilters($filterFields, $filters)) {
+                continue;
+            }
+
+            $matchFields = $this->matchFields($filterFields, $filters);
             $validity = $this->resolvedBugValidity($entry, $payload, $workspaceHeadCommit);
             $score = $this->score($query, $tokens, [
                 (string) $entry->summary,
@@ -181,6 +214,7 @@ class MemorySearchController extends Controller
                 (string) $entry->source,
                 (string) $entry->agent_key,
             ]);
+            $score += count($matchFields) * 15;
             if ((string) $entry->kind === 'resolved_bug') {
                 $score += 12;
             }
@@ -195,6 +229,7 @@ class MemorySearchController extends Controller
                 'summary' => $this->compact((string) $entry->summary, $rawChunk ? 1200 : 800),
                 'payload_excerpt' => $this->excerpt(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: ''),
                 'score' => $score,
+                'match_fields' => $matchFields,
                 'raw_chunk' => $rawChunk,
                 'stale' => $validity['stale'],
                 'stale_reason' => $validity['stale_reason'],
@@ -210,7 +245,7 @@ class MemorySearchController extends Controller
     /**
      * @return list<array<string, mixed>>
      */
-    private function wikiResults(string $projectId, string $query, int $limit): array
+    private function wikiResults(string $projectId, string $query, array $filters, int $limit): array
     {
         $tokens = $this->tokens($query);
 
@@ -247,47 +282,69 @@ class MemorySearchController extends Controller
             ])
             ->orderByDesc('wiki_pages.updated_at')
             ->orderByDesc('wiki_revisions.created_at')
-            ->limit(max(50, $limit * 8))
+            ->limit(max($filters === [] ? 50 : 150, $limit * ($filters === [] ? 8 : 15)))
             ->get()
-            ->map(fn (object $row): array => [
-                'id' => (string) $row->revision_id,
-                'domain' => 'wiki',
-                'source' => 'wiki_revision',
-                'kind' => 'wiki',
-                'schema' => 'devboard.wiki_revision.v1',
-                'summary' => (string) $row->title,
-                'page_id' => (string) $row->page_id,
-                'page_slug' => (string) $row->slug,
-                'page_type' => (string) $row->page_type,
-                'source_type' => (string) $row->source_type,
-                'source_status' => (string) $row->revision_source_status,
-                'payload_excerpt' => $this->excerpt((string) $row->content_markdown),
-                'evidence_count' => count($this->decodeList($row->evidence_refs)),
-                'score' => $this->score($query, $tokens, [
-                    (string) $row->title,
-                    (string) $row->slug,
-                    (string) $row->page_type,
-                    (string) $row->content_markdown,
-                    (string) $row->evidence_refs,
-                ]),
-                'raw_chunk' => false,
-                'occurred_at' => $this->toIsoString($row->revision_created_at),
-                'updated_at' => $this->toIsoString($row->updated_at),
-                'version' => 'wiki_'.hash('sha256', $row->revision_id.'|'.$row->updated_at),
-            ])
+            ->map(function (object $row) use ($filters, $query, $tokens): ?array {
+                $filterFields = [
+                    'kind' => ['wiki'],
+                    'schema' => ['devboard.wiki_revision.v1'],
+                    'source' => ['wiki_revision', (string) $row->source_type],
+                    'path' => [(string) $row->slug, (string) $row->evidence_refs],
+                    'symbol' => [(string) $row->title, (string) $row->content_markdown, (string) $row->evidence_refs],
+                ];
+
+                if (! $this->matchesFilters($filterFields, $filters)) {
+                    return null;
+                }
+
+                $matchFields = $this->matchFields($filterFields, $filters);
+
+                return [
+                    'id' => (string) $row->revision_id,
+                    'domain' => 'wiki',
+                    'source' => 'wiki_revision',
+                    'kind' => 'wiki',
+                    'schema' => 'devboard.wiki_revision.v1',
+                    'summary' => (string) $row->title,
+                    'page_id' => (string) $row->page_id,
+                    'page_slug' => (string) $row->slug,
+                    'page_type' => (string) $row->page_type,
+                    'source_type' => (string) $row->source_type,
+                    'source_status' => (string) $row->revision_source_status,
+                    'payload_excerpt' => $this->excerpt((string) $row->content_markdown),
+                    'evidence_count' => count($this->decodeList($row->evidence_refs)),
+                    'score' => $this->score($query, $tokens, [
+                        (string) $row->title,
+                        (string) $row->slug,
+                        (string) $row->page_type,
+                        (string) $row->content_markdown,
+                        (string) $row->evidence_refs,
+                    ]) + count($matchFields) * 15,
+                    'match_fields' => $matchFields,
+                    'raw_chunk' => false,
+                    'occurred_at' => $this->toIsoString($row->revision_created_at),
+                    'updated_at' => $this->toIsoString($row->updated_at),
+                    'version' => 'wiki_'.hash('sha256', $row->revision_id.'|'.$row->updated_at),
+                ];
+            })
+            ->filter()
+            ->values()
             ->all();
     }
 
     /**
      * @return list<array<string, mixed>>
      */
-    private function artifactResults(string $projectId, string $bindingId, string $query, int $limit): array
+    private function artifactResults(string $projectId, string $bindingId, string $query, array $filters, int $limit): array
     {
         $tokens = $this->tokens($query);
 
         return DB::table('hades_agent_artifacts')
             ->where('project_id', $projectId)
             ->where('workspace_binding_id', $bindingId)
+            ->when(($filters['schema'] ?? '') !== '', function ($builder) use ($filters): void {
+                $builder->where('schema', 'like', '%'.$filters['schema'].'%');
+            })
             ->when($query !== '', function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
@@ -301,12 +358,19 @@ class MemorySearchController extends Controller
             })
             ->orderByDesc('created_at')
             ->orderByDesc('id')
-            ->limit(max(50, $limit * 8))
+            ->limit(max($filters === [] ? 50 : 150, $limit * ($filters === [] ? 8 : 15)))
             ->get()
-            ->map(function (object $row) use ($query, $tokens): array {
+            ->map(function (object $row) use ($filters, $query, $tokens): ?array {
                 $artifact = $this->decodePayload($row->artifact);
                 $summary = $this->artifactSummary((string) $row->schema, $artifact);
                 $encoded = json_encode($artifact, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
+                $filterFields = $this->artifactFilterFields((string) $row->schema, $artifact, $summary, $encoded);
+
+                if (! $this->matchesFilters($filterFields, $filters)) {
+                    return null;
+                }
+
+                $matchFields = $this->matchFields($filterFields, $filters);
 
                 return [
                     'id' => (string) $row->id,
@@ -320,14 +384,179 @@ class MemorySearchController extends Controller
                         $summary,
                         (string) $row->schema,
                         $encoded,
-                    ]),
+                    ]) + count($matchFields) * 15,
+                    'match_fields' => $matchFields,
                     'raw_chunk' => false,
                     'occurred_at' => $this->toIsoString($row->created_at),
                     'updated_at' => $this->toIsoString($row->updated_at),
                     'version' => 'artifact_'.hash('sha256', $row->id.'|'.$row->updated_at.'|'.$row->sha256),
                 ];
             })
+            ->filter()
+            ->values()
             ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array<string, string>
+     */
+    private function filters(array $validated): array
+    {
+        $filters = [];
+
+        foreach (['kind', 'schema', 'source', 'symbol', 'path'] as $key) {
+            $value = trim((string) ($validated[$key] ?? ''));
+            if ($value !== '') {
+                $filters[$key] = $value;
+            }
+        }
+
+        return $filters;
+    }
+
+    /**
+     * @param  array<string, string>  $filters
+     */
+    private function hasCoarsePayloadFilters(array $filters): bool
+    {
+        foreach (['schema', 'source', 'symbol', 'path'] as $key) {
+            if (($filters[$key] ?? '') !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return list<string>
+     */
+    private function payloadValues(array $payload, array $keys): array
+    {
+        $containers = [$payload];
+        foreach (['metadata', 'provenance', 'payload'] as $nestedKey) {
+            if (isset($payload[$nestedKey]) && is_array($payload[$nestedKey])) {
+                $containers[] = $payload[$nestedKey];
+            }
+        }
+
+        $values = [];
+        foreach ($containers as $container) {
+            foreach ($keys as $key) {
+                if (array_key_exists($key, $container)) {
+                    $rendered = $this->filterValue($container[$key]);
+                    if ($rendered !== '') {
+                        $values[] = $rendered;
+                    }
+                }
+            }
+        }
+
+        return array_values(array_unique($values));
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, list<string>>
+     */
+    private function memoryFilterFields(object $entry, array $payload, string $schema, string $source): array
+    {
+        return [
+            'kind' => [(string) $entry->kind],
+            'schema' => [$schema],
+            'source' => [(string) $entry->source, $source],
+            'path' => $this->payloadValues($payload, ['path', 'source_path', 'file', 'uri']),
+            'symbol' => $this->payloadValues($payload, ['symbol', 'symbols', 'affected_symbols', 'name', 'class', 'handler']),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $artifact
+     * @return array<string, list<string>>
+     */
+    private function artifactFilterFields(string $schema, array $artifact, string $summary, string $encoded): array
+    {
+        return [
+            'kind' => ['artifact'],
+            'schema' => [$schema, $this->payloadString($artifact, ['schema', 'artifact_schema'])],
+            'source' => [$schema],
+            'path' => array_merge(
+                $this->payloadValues($artifact, ['path', 'source_path', 'file', 'uri']),
+                [$summary, $encoded],
+            ),
+            'symbol' => array_merge(
+                $this->payloadValues($artifact, ['symbol', 'symbols', 'affected_symbols', 'name', 'class', 'handler']),
+                [$summary, $encoded],
+            ),
+        ];
+    }
+
+    private function filterValue(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_array($value) || is_object($value)) {
+            return json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
+        }
+
+        return trim((string) $value);
+    }
+
+    /**
+     * @param  array<string, list<string>>  $fields
+     * @param  array<string, string>  $filters
+     */
+    private function matchesFilters(array $fields, array $filters): bool
+    {
+        foreach ($filters as $key => $expected) {
+            $expected = Str::lower(trim($expected));
+            if ($expected === '') {
+                continue;
+            }
+
+            $actual = Str::lower(implode(PHP_EOL, array_map(fn (mixed $value): string => $this->filterValue($value), $fields[$key] ?? [])));
+            if ($key === 'kind') {
+                if ($actual !== $expected) {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (! str_contains($actual, $expected)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  array<string, list<string>>  $fields
+     * @param  array<string, string>  $filters
+     * @return list<string>
+     */
+    private function matchFields(array $fields, array $filters): array
+    {
+        $matched = [];
+
+        foreach ($filters as $key => $expected) {
+            $expected = Str::lower(trim($expected));
+            if ($expected === '') {
+                continue;
+            }
+
+            $actual = Str::lower(implode(PHP_EOL, array_map(fn (mixed $value): string => $this->filterValue($value), $fields[$key] ?? [])));
+            if (($key === 'kind' && $actual === $expected) || ($key !== 'kind' && str_contains($actual, $expected))) {
+                $matched[] = $key;
+            }
+        }
+
+        return $matched;
     }
 
     /**
@@ -637,9 +866,10 @@ class MemorySearchController extends Controller
     /**
      * @param  list<array<string, mixed>>  $items
      */
-    private function searchVersion(string $projectId, string $bindingId, string $query, string $domain, array $items): string
+    private function searchVersion(string $projectId, string $bindingId, string $query, string $domain, array $filters, array $items): string
     {
-        $material = [$projectId, $bindingId, $query, $domain, (string) count($items)];
+        ksort($filters);
+        $material = [$projectId, $bindingId, $query, $domain, json_encode($filters), (string) count($items)];
         foreach ($items as $item) {
             $material[] = ($item['id'] ?? '').':'.($item['version'] ?? '').':'.($item['score'] ?? '');
         }

@@ -189,6 +189,85 @@ it('searches shared memory with domains, scores, and freshness metadata', functi
     expect($response->json('version'))->toStartWith('search_');
 });
 
+it('filters Hades memory search by structured fields', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $now = now();
+    $matchingId = (string) Str::ulid();
+
+    DB::table('project_memory_entries')->insert([
+        [
+            'id' => $matchingId,
+            'project_id' => $agent['project_id'],
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => null,
+            'source' => 'hades_diagnosis_report',
+            'kind' => 'resolved_bug',
+            'completeness' => 'complete',
+            'summary' => 'Resolved bug: active() on null in OrderController.',
+            'payload' => json_encode([
+                'schema' => 'hades.resolved_bug.v1',
+                'affected_symbols' => ['App\\Http\\Controllers\\OrderController@show'],
+                'path' => 'app/Http/Controllers/OrderController.php',
+                'root_cause' => 'OrderController dereferences a missing customer relation.',
+            ], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+        [
+            'id' => (string) Str::ulid(),
+            'project_id' => $agent['project_id'],
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => null,
+            'source' => 'hades_diagnosis_report',
+            'kind' => 'resolved_bug',
+            'completeness' => 'complete',
+            'summary' => 'Resolved bug: checkout timeout in PaymentController.',
+            'payload' => json_encode([
+                'schema' => 'hades.resolved_bug.v1',
+                'affected_symbols' => ['App\\Http\\Controllers\\PaymentController@store'],
+                'path' => 'app/Http/Controllers/PaymentController.php',
+                'root_cause' => 'Payment gateway timeout was not retried.',
+            ], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now->copy()->subMinute(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'resolved bug',
+        'domain' => 'project_memory',
+        'kind' => 'resolved_bug',
+        'schema' => 'hades.resolved_bug.v1',
+        'source' => 'hades_diagnosis_report',
+        'symbol' => 'OrderController@show',
+        'path' => 'OrderController.php',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('filters.kind', 'resolved_bug')
+        ->assertJsonPath('filters.schema', 'hades.resolved_bug.v1')
+        ->assertJsonPath('filters.symbol', 'OrderController@show')
+        ->assertJsonPath('items.0.id', $matchingId)
+        ->assertJsonPath('items.0.kind', 'resolved_bug');
+
+    expect($response->json('items.0.match_fields'))->toContain('kind')
+        ->and($response->json('items.0.match_fields'))->toContain('schema')
+        ->and($response->json('items.0.match_fields'))->toContain('source')
+        ->and($response->json('items.0.match_fields'))->toContain('symbol')
+        ->and($response->json('items.0.match_fields'))->toContain('path');
+});
+
 it('searches current wiki revisions through the Hades memory search endpoint', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
@@ -412,6 +491,9 @@ it('searches PHP graph artifacts through the Hades memory search endpoint', func
         'workspace_binding_id' => $binding['workspace_binding_id'],
         'query' => 'orders show controller graph',
         'domain' => 'artifacts',
+        'schema' => 'hades.php_graph.v1',
+        'symbol' => 'OrderController@show',
+        'path' => 'OrderController.php',
     ]), hadesM3Headers($agent['agent_token']))
         ->assertOk()
         ->assertJsonPath('count', 1)
@@ -423,7 +505,10 @@ it('searches PHP graph artifacts through the Hades memory search endpoint', func
     expect($response->json('items.0.summary'))->toContain('GET /orders/{order}')
         ->and($response->json('items.0.summary'))->toContain('OrderController@show')
         ->and($response->json('items.0.summary'))->toContain('route_handler:1')
-        ->and($response->json('items.0.payload_excerpt'))->toContain('hades.php_graph.v1');
+        ->and($response->json('items.0.payload_excerpt'))->toContain('hades.php_graph.v1')
+        ->and($response->json('items.0.match_fields'))->toContain('schema')
+        ->and($response->json('items.0.match_fields'))->toContain('symbol')
+        ->and($response->json('items.0.match_fields'))->toContain('path');
 });
 
 it('searches generic code graph artifacts through the Hades memory search endpoint', function () {
