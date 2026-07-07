@@ -31,6 +31,7 @@ class HadesProjectAwareness
         $artifacts = $this->artifactCoverage((string) $binding->project_id, (string) $binding->id);
         $bugEvidence = $this->bugEvidenceCoverage((string) $binding->project_id, (string) $binding->id);
         $sourceSlices = $this->sourceSliceCoverage((string) $binding->project_id, (string) $binding->id, $this->blankToNull($binding->head_commit ?? null));
+        $evidencePacks = $this->evidencePackCoverage((string) $binding->project_id, (string) $binding->id);
         $freshness = $this->freshness($binding, $artifacts, $bugEvidence);
 
         $artifacts['status'] = $this->artifactStatusFromFreshness($freshness['status']);
@@ -39,6 +40,7 @@ class HadesProjectAwareness
             'artifacts' => $artifacts,
             'bug_evidence' => $bugEvidence,
             'source_slices' => $sourceSlices,
+            'evidence_packs' => $evidencePacks,
             'code_graph' => $this->codeGraphCoverage($artifacts),
         ];
         $actions = $this->actions($freshness, $coverage);
@@ -87,6 +89,30 @@ class HadesProjectAwareness
     private function bugEvidenceCoverage(string $projectId, string $bindingId): array
     {
         $row = DB::table('hades_bug_evidence_items')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->selectRaw('COUNT(*) as aggregate_count, MAX(updated_at) as updated_at')
+            ->first();
+        $count = (int) ($row->aggregate_count ?? 0);
+
+        return [
+            'status' => $count > 0 ? 'current' : 'missing',
+            'count' => $count,
+            'updated_at' => $this->toIsoString($row->updated_at ?? null),
+        ];
+    }
+
+    private function evidencePackCoverage(string $projectId, string $bindingId): array
+    {
+        if (! DB::getSchemaBuilder()->hasTable('hades_evidence_packs')) {
+            return [
+                'status' => 'missing',
+                'count' => 0,
+                'reason' => 'evidence_pack_store_missing',
+            ];
+        }
+
+        $row = DB::table('hades_evidence_packs')
             ->where('project_id', $projectId)
             ->where('workspace_binding_id', $bindingId)
             ->selectRaw('COUNT(*) as aggregate_count, MAX(updated_at) as updated_at')

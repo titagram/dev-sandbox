@@ -24,6 +24,7 @@ class HealthController extends Controller
                 'bug_evidence_search' => '/api/hades/v1/bug-evidence/search',
                 'source_slices' => '/api/hades/v1/source-slices',
                 'graph_traverse' => '/api/hades/v1/graph/traverse',
+                'evidence_packs' => '/api/hades/v1/evidence-packs',
                 'diagnosis_reports' => '/api/hades/v1/diagnosis-reports',
                 'doctor_reports' => '/api/hades/v1/doctor/reports',
                 'persephone_inbox' => '/api/hades/v1/persephone/inbox',

@@ -10,6 +10,7 @@ use App\Http\Controllers\Hades\BugReportController as HadesBugReportController;
 use App\Http\Controllers\Hades\CapabilitiesController as HadesCapabilitiesController;
 use App\Http\Controllers\Hades\DiagnosisReportController as HadesDiagnosisReportController;
 use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportController;
+use App\Http\Controllers\Hades\EvidencePackController as HadesEvidencePackController;
 use App\Http\Controllers\Hades\GraphTraversalController as HadesGraphTraversalController;
 use App\Http\Controllers\Hades\HealthController as HadesHealthController;
 use App\Http\Controllers\Hades\MemoryImportBundleController as HadesMemoryImportBundleController;
@@ -203,6 +204,12 @@ Route::prefix('hades/v1')->group(function () {
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/graph/traverse', HadesGraphTraversalController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/evidence-packs', [HadesEvidencePackController::class, 'store'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/evidence-packs', [HadesEvidencePackController::class, 'index'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/diagnosis-reports', [HadesDiagnosisReportController::class, 'store'])

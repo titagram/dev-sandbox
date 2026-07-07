@@ -10,6 +10,8 @@ class HadesEvidencePolicy
 
     public const MAX_DIAGNOSIS_PAYLOAD_BYTES = 32000;
 
+    public const MAX_EVIDENCE_PACK_PAYLOAD_BYTES = 96000;
+
     /**
      * @return array{code: string, message: string}|null
      */
@@ -44,6 +46,27 @@ class HadesEvidencePolicy
         }
 
         return $this->rejectUnredactedSecret([$rootCause, $mechanism, $evidenceRefs, $freshness, $payload]);
+    }
+
+    /**
+     * @return array{code: string, message: string}|null
+     */
+    public function validateEvidencePack(string $title, string $summary, array $evidenceRefs, array $graphRefs, array $sourceSliceIds, array $payload): ?array
+    {
+        $material = [
+            'title' => $title,
+            'summary' => $summary,
+            'evidence_refs' => $evidenceRefs,
+            'graph_refs' => $graphRefs,
+            'source_slice_ids' => $sourceSliceIds,
+            'payload' => $payload,
+        ];
+
+        if ($this->encodedBytes($material) > self::MAX_EVIDENCE_PACK_PAYLOAD_BYTES) {
+            return $this->error('evidence_pack_payload_too_large', 'Evidence pack payload exceeds the Hades diagnosis safety limit.');
+        }
+
+        return $this->rejectUnredactedSecret([$title, $summary, $evidenceRefs, $graphRefs, $sourceSliceIds, $payload]);
     }
 
     /**

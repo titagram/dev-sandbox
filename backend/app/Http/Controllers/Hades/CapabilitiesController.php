@@ -43,6 +43,7 @@ class CapabilitiesController extends Controller
                 'bug_evidence_search' => '/api/hades/v1/bug-evidence/search',
                 'source_slices' => '/api/hades/v1/source-slices',
                 'graph_traverse' => '/api/hades/v1/graph/traverse',
+                'evidence_packs' => '/api/hades/v1/evidence-packs',
                 'diagnosis_reports' => '/api/hades/v1/diagnosis-reports',
                 'agent_jobs' => '/api/hades/v1/agent/jobs',
                 'agent_job_status' => '/api/hades/v1/agent/jobs/{job_id}/status',

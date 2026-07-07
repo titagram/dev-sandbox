@@ -1213,6 +1213,97 @@ it('refuses to promote unverified diagnosis reports to resolved bug memory', fun
     expect(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->where('kind', 'resolved_bug')->exists())->toBeFalse();
 });
 
+it('stores and searches Hades evidence packs for source-free diagnosis', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $head = str_repeat('f', 40);
+
+    $bug = $this->postJson('/api/hades/v1/bug-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'title' => 'Order page returns 500',
+        'symptom' => 'Opening an archived order throws a 500.',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->json('bug_report');
+
+    $evidence = $this->postJson('/api/hades/v1/bug-evidence', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'bug_report_id' => $bug['id'],
+        'kind' => 'stack_trace',
+        'summary' => 'OrderController show fails on archived customer at line 42.',
+        'payload' => ['frame' => ['path' => 'app/Http/Controllers/OrderController.php', 'line' => 42]],
+        'source' => 'laravel.log',
+        'retention_class' => 'stack_trace',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->json('evidence');
+
+    $slice = $this->postJson('/api/hades/v1/source-slices', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'path' => 'app/Http/Controllers/OrderController.php',
+        'start_line' => 41,
+        'end_line' => 43,
+        'language' => 'php',
+        'symbol' => 'OrderController@show',
+        'head_commit' => $head,
+        'content_redacted' => "41: public function show() {\n42:     return ***;\n43: }",
+        'redactions' => 1,
+        'policy' => 'manual_review',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->json('source_slice');
+
+    $pack = $this->postJson('/api/hades/v1/evidence-packs', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'bug_report_id' => $bug['id'],
+        'title' => 'Archived order 500 evidence pack',
+        'summary' => 'Stack trace, graph route, and source slice point to OrderController archived customer handling.',
+        'evidence_refs' => [['type' => 'bug_evidence', 'id' => $evidence['id']]],
+        'graph_refs' => [['type' => 'route_handler', 'from' => 'route:orders.show', 'to' => 'OrderController@show']],
+        'source_slice_ids' => [$slice['id']],
+        'payload' => ['next_verification' => 'Run OrderControllerTest::test_archived_order_show'],
+        'redactions' => 1,
+        'head_commit' => $head,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('evidence_pack.bug_report_id', $bug['id'])
+        ->assertJsonPath('evidence_pack.source_slice_ids.0', $slice['id'])
+        ->assertJsonPath('evidence_pack.evidence_refs.0.id', $evidence['id'])
+        ->json('evidence_pack');
+
+    $this->getJson('/api/hades/v1/evidence-packs?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'archived customer',
+        'limit' => 5,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('items.0.id', $pack['id'])
+        ->assertJsonPath('items.0.payload.next_verification', 'Run OrderControllerTest::test_archived_order_show');
+
+    $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('coverage.evidence_packs.status', 'current')
+        ->assertJsonPath('coverage.evidence_packs.count', 1);
+
+    $this->postJson('/api/hades/v1/evidence-packs', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'title' => 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz',
+        'summary' => 'Unredacted token should be refused.',
+        'payload' => [],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'unredacted_secret_detected');
+});
+
 it('reports stale project awareness when indexed artifacts are from another commit', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
