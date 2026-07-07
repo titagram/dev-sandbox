@@ -14,6 +14,39 @@ class ArtifactController extends Controller
 {
     public function __construct(private readonly HadesSearchDocumentIndexer $searchIndexer) {}
 
+    public function lookup(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'project_id' => ['required', 'string'],
+            'agent_id' => ['nullable', 'string', 'max:191'],
+            'workspace_binding_id' => ['required', 'string'],
+            'schema' => ['required', 'string', 'in:hades.git_tree.v1,hades.symbols.v1,hades.php_graph.v1,hades.code_graph.v1'],
+            'sha256' => ['required', 'string', 'size:64'],
+        ]);
+
+        $auth = $request->attributes->get('hades_auth');
+        $agent = $auth['agent'];
+        $binding = $this->linkedBinding($agent, $validated['project_id'], $validated['workspace_binding_id'], $validated['agent_id'] ?? null);
+
+        if ($binding instanceof JsonResponse) {
+            return $binding;
+        }
+
+        $artifact = $this->findExistingArtifact($validated['project_id'], $binding->id, $validated['schema'], $validated['sha256']);
+
+        return response()->json([
+            'protocol_version' => 'v1',
+            'project_id' => $validated['project_id'],
+            'exists' => $artifact !== null,
+            'artifact' => $artifact ? $this->payload($artifact) : null,
+            'delta_upload' => [
+                'required' => $artifact === null,
+                'reason' => $artifact ? 'unchanged_on_backend' : 'missing_on_backend',
+            ],
+            'server_time' => now()->toISOString(),
+        ]);
+    }
+
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -62,6 +95,22 @@ class ArtifactController extends Controller
         }
 
         $artifactJson = json_encode($artifactPayload, JSON_THROW_ON_ERROR);
+        $payloadHash = $validated['sha256'] ?? hash('sha256', $artifactJson);
+        $existing = $this->findExistingArtifact($validated['project_id'], $binding->id, $validated['schema'], $payloadHash);
+        if ($existing) {
+            return response()->json([
+                'protocol_version' => 'v1',
+                'project_id' => $validated['project_id'],
+                'artifact' => $this->payload($existing),
+                'deduplicated' => true,
+                'delta_upload' => [
+                    'required' => false,
+                    'reason' => 'unchanged_on_backend',
+                ],
+                'server_time' => now()->toISOString(),
+            ]);
+        }
+
         $id = (string) Str::ulid();
         $now = now();
 
@@ -73,7 +122,7 @@ class ArtifactController extends Controller
             'job_id' => $validated['job_id'] ?? null,
             'schema' => $validated['schema'],
             'artifact' => $artifactJson,
-            'sha256' => $validated['sha256'] ?? hash('sha256', $artifactJson),
+            'sha256' => $payloadHash,
             'truncated' => (bool) ($validated['truncated'] ?? false),
             'redactions' => (int) ($validated['redactions'] ?? 0),
             'created_at' => $now,
@@ -152,6 +201,17 @@ class ArtifactController extends Controller
         }
 
         return $binding;
+    }
+
+    private function findExistingArtifact(string $projectId, string $bindingId, string $schema, string $sha256): ?object
+    {
+        return DB::table('hades_agent_artifacts')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->where('schema', $schema)
+            ->where('sha256', $sha256)
+            ->orderByDesc('created_at')
+            ->first();
     }
 
     private function payload(object $artifact): array

@@ -237,6 +237,9 @@ Route::prefix('hades/v1')->group(function () {
     Route::post('/agent/jobs/{job}/result', HadesAgentJobResultController::class)
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
+    Route::get('/artifacts/lookup', [HadesArtifactController::class, 'lookup'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
     Route::post('/artifacts', HadesArtifactController::class)
         ->middleware(['throttle:plugin-api-heavy', 'hades.agent']);
 

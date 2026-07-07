@@ -302,6 +302,69 @@ it('stores compressed Hades artifacts as decoded JSON', function () {
         ->and(DB::table('hades_search_documents')->where('source_schema', 'hades.code_graph.v1')->where('body', 'like', '%OrderComponent300%')->exists())->toBeTrue();
 });
 
+it('looks up and deduplicates unchanged Hades artifacts by hash', function () {
+    $agent = hadesM5RegisteredAgent();
+    $binding = hadesM5WorkspaceBinding($agent);
+    $artifact = [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => str_repeat('d', 40),
+        'files' => [
+            ['path' => 'README.md', 'sha256' => str_repeat('1', 64), 'bytes' => 120],
+        ],
+    ];
+    $json = json_encode($artifact, JSON_THROW_ON_ERROR);
+    $sha256 = hash('sha256', $json);
+
+    $this->getJson('/api/hades/v1/artifacts/lookup?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.git_tree.v1',
+        'sha256' => $sha256,
+    ]), hadesM5Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('exists', false)
+        ->assertJsonPath('delta_upload.required', true);
+
+    $first = $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.git_tree.v1',
+        'artifact' => $artifact,
+        'sha256' => $sha256,
+        'truncated' => false,
+    ], hadesM5Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('artifact.schema', 'hades.git_tree.v1')
+        ->json('artifact.id');
+
+    $this->getJson('/api/hades/v1/artifacts/lookup?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.git_tree.v1',
+        'sha256' => $sha256,
+    ]), hadesM5Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('exists', true)
+        ->assertJsonPath('artifact.id', $first)
+        ->assertJsonPath('delta_upload.required', false);
+
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.git_tree.v1',
+        'artifact' => $artifact,
+        'sha256' => $sha256,
+        'truncated' => false,
+    ], hadesM5Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('artifact.id', $first)
+        ->assertJsonPath('deduplicated', true)
+        ->assertJsonPath('delta_upload.reason', 'unchanged_on_backend');
+
+    expect(DB::table('hades_agent_artifacts')->where('schema', 'hades.git_tree.v1')->count())->toBe(1)
+        ->and(DB::table('hades_search_documents')->where('source_table', 'hades_agent_artifacts')->count())->toBe(1);
+});
+
 it('stores explicit doctor reports and exposes a persistent Persephone inbox with polling and SSE fallback', function () {
     $agent = hadesM5RegisteredAgent();
     $binding = hadesM5WorkspaceBinding($agent);
