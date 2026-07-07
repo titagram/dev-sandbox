@@ -48,6 +48,19 @@ class DiagnosisReportController extends Controller
             return $this->error($policyError['code'], $policyError['message'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
+        if (in_array($validated['confidence'], ['high', 'medium'], true)) {
+            $evidenceRefs = $validated['evidence_refs'] ?? [];
+            $freshness = $validated['freshness'] ?? [];
+
+            if ($evidenceRefs === []) {
+                return $this->error('diagnosis_evidence_refs_required', 'High or medium confidence diagnosis reports require evidence refs.', Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+
+            if (($freshness['status'] ?? null) !== 'current') {
+                return $this->error('diagnosis_freshness_not_current', 'High or medium confidence diagnosis reports require current project awareness freshness.', Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+        }
+
         $auth = $request->attributes->get('hades_auth');
         $agent = $auth['agent'];
         $binding = $this->linkedBinding($agent, $validated['project_id'], $validated['workspace_binding_id']);

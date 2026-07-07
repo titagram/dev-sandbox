@@ -1099,6 +1099,45 @@ it('stores diagnosis reports with evidence refs for linked workspaces', function
         ->toBe('OrderController calls a service with a null dependency.');
 });
 
+it('blocks precise diagnosis reports without current freshness and evidence refs', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'final',
+        'confidence' => 'high',
+        'root_cause' => 'OrderController dereferences a missing customer relation.',
+        'evidence_refs' => [['type' => 'bug_evidence', 'id' => 'evidence_1']],
+        'freshness' => ['status' => 'stale'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'diagnosis_freshness_not_current');
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'final',
+        'confidence' => 'medium',
+        'root_cause' => 'OrderController dereferences a missing customer relation.',
+        'freshness' => ['status' => 'current'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'diagnosis_evidence_refs_required');
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'final',
+        'confidence' => 'low',
+        'root_cause' => 'Possible cause needs current evidence before precision.',
+        'freshness' => ['status' => 'stale'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('diagnosis_report.confidence', 'low');
+});
+
 it('promotes final diagnosis reports to resolved bug memory and search surfaces staleness', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
