@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Dashboard\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
+use App\Services\Hades\HadesSearchDocumentIndexer;
 use App\Services\Hades\HadesTokenService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,6 +15,8 @@ use Symfony\Component\HttpFoundation\Response;
 final class DashboardHadesController extends Controller
 {
     use ChecksDashboardRoles;
+
+    public function __construct(private readonly HadesSearchDocumentIndexer $searchIndexer) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -275,6 +278,11 @@ final class DashboardHadesController extends Controller
             'created_at' => $now,
             'updated_at' => $now,
         ]);
+
+        $entry = DB::table('project_memory_entries')->where('id', $memoryEntryId)->first();
+        if ($entry) {
+            $this->searchIndexer->indexMemoryEntry($entry);
+        }
 
         return $memoryEntryId;
     }

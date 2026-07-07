@@ -2,11 +2,14 @@
 
 namespace App\Services;
 
+use App\Services\Hades\HadesSearchDocumentIndexer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class WikiRevisionService
 {
+    public function __construct(private readonly HadesSearchDocumentIndexer $searchIndexer) {}
+
     /**
      * @param  array<string, mixed>  $payload
      * @return array{wiki_page_id: string, wiki_revision_id: string, source_status: string}
@@ -72,6 +75,12 @@ class WikiRevisionService
             'payload' => json_encode(['wiki_revision_id' => $revisionId], JSON_THROW_ON_ERROR),
             'created_at' => $now,
         ]);
+
+        $page = DB::table('wiki_pages')->where('id', $pageId)->first();
+        $revision = DB::table('wiki_revisions')->where('id', $revisionId)->first();
+        if ($page && $revision) {
+            $this->searchIndexer->indexWikiRevision($page, $revision);
+        }
 
         return [
             'wiki_page_id' => $pageId,

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Hades;
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesEvidencePolicy;
 use App\Services\Hades\HadesProjectAwareness;
+use App\Services\Hades\HadesSearchDocumentIndexer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -26,6 +27,7 @@ class SourceSliceController extends Controller
     public function __construct(
         private readonly HadesProjectAwareness $awareness,
         private readonly HadesEvidencePolicy $policy,
+        private readonly HadesSearchDocumentIndexer $searchIndexer,
     ) {}
 
     public function store(Request $request): JsonResponse
@@ -108,6 +110,7 @@ class SourceSliceController extends Controller
         ]);
 
         $slice = DB::table('hades_source_slices')->where('id', $id)->first();
+        $this->searchIndexer->indexSourceSlice($slice);
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -142,10 +145,16 @@ class SourceSliceController extends Controller
         $query = trim((string) ($validated['query'] ?? ''));
         $tokens = $this->tokens($query);
         $limit = (int) ($validated['limit'] ?? 5);
+        $searchFilters = array_filter([
+            'path' => trim((string) ($validated['path'] ?? '')),
+            'symbol' => trim((string) ($validated['symbol'] ?? '')),
+        ], fn (string $value): bool => $value !== '');
+        $indexedSliceIds = $this->searchIndexer->matchingSourceIds($validated['project_id'], $binding->id, ['source_slices'], $query, $searchFilters, $limit, false);
 
         $rows = DB::table('hades_source_slices')
             ->where('project_id', $validated['project_id'])
             ->where('workspace_binding_id', $binding->id)
+            ->when(($validated['id'] ?? null) === null && $indexedSliceIds !== [], fn ($builder) => $builder->whereIn('id', $indexedSliceIds))
             ->when(($validated['id'] ?? null) !== null, fn ($builder) => $builder->where('id', $validated['id']))
             ->when(($validated['path'] ?? null) !== null, fn ($builder) => $builder->where('path', $validated['path']))
             ->when(($validated['symbol'] ?? null) !== null, fn ($builder) => $builder->where('symbol', $validated['symbol']))
@@ -153,7 +162,7 @@ class SourceSliceController extends Controller
                 $line = (int) $validated['line'];
                 $builder->where('start_line', '<=', $line)->where('end_line', '>=', $line);
             })
-            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+            ->when($query !== '' && $indexedSliceIds === [], function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
                     foreach ($patterns as $pattern) {

@@ -84,7 +84,7 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
         'evidence_refs' => [['type' => 'bug_evidence', 'id' => $evidenceId]],
         'graph_refs' => [
             ['type' => 'artifact', 'id' => $artifactId, 'start' => 'route:orders.show'],
-            ['type' => 'edge', 'from' => 'route:orders.show', 'to' => 'App\\Http\\Controllers\\OrderController@show'],
+            ['type' => 'edge', 'from' => 'route:orders.show', 'to' => 'App\Http\Controllers\OrderController@show'],
         ],
         'source_slice_ids' => [$sourceSliceId],
         'payload' => ['next_verification' => 'Run OrderControllerTest::test_show_missing_customer'],
@@ -94,6 +94,10 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
     ], $headers)
         ->assertCreated()
         ->json('evidence_pack.id');
+
+    expect(DB::table('hades_search_documents')->where('domain', 'bug_evidence')->where('source_table', 'hades_bug_evidence_items')->where('source_id', $evidenceId)->where('body', 'like', '%OrderController@show%')->exists())->toBeTrue()
+        ->and(DB::table('hades_search_documents')->where('domain', 'source_slices')->where('source_table', 'hades_source_slices')->where('source_id', $sourceSliceId)->where('body', 'like', '%customer->active%')->exists())->toBeTrue()
+        ->and(DB::table('hades_search_documents')->where('domain', 'evidence_packs')->where('source_table', 'hades_evidence_packs')->where('source_id', $evidencePackId)->where('body', 'like', '%missing customer guard%')->exists())->toBeTrue();
 
     $awareness = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
         'project_id' => $projectId,

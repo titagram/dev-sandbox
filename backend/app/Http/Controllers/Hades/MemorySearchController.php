@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesProjectAwareness;
+use App\Services\Hades\HadesSearchDocumentIndexer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -20,7 +21,10 @@ class MemorySearchController extends Controller
         '---begin_content---',
     ];
 
-    public function __construct(private readonly HadesProjectAwareness $awareness) {}
+    public function __construct(
+        private readonly HadesProjectAwareness $awareness,
+        private readonly HadesSearchDocumentIndexer $searchIndexer,
+    ) {}
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -60,6 +64,7 @@ class MemorySearchController extends Controller
                 query: $query,
                 domain: $domain,
                 filters: $filters,
+                workspaceBindingId: $binding->id,
                 limit: $limit,
                 includeRawChunks: $includeRawChunks,
                 workspaceHeadCommit: (string) ($binding->head_commit ?? ''),
@@ -137,10 +142,22 @@ class MemorySearchController extends Controller
     /**
      * @return array{0: list<array<string, mixed>>, 1: int}
      */
-    private function memoryResults(string $projectId, string $query, string $domain, array $filters, int $limit, bool $includeRawChunks, string $workspaceHeadCommit = ''): array
+    private function memoryResults(string $projectId, string $query, string $domain, array $filters, string $workspaceBindingId, int $limit, bool $includeRawChunks, string $workspaceHeadCommit = ''): array
     {
         $tokens = $this->tokens($query);
+        $indexedDomains = match ($domain) {
+            'all', 'project_memory' => ['project_memory', 'logbook', 'agent_notes', 'source_chunks'],
+            'logbook' => ['logbook'],
+            'agent_notes' => ['agent_notes'],
+            'source_chunks' => ['source_chunks'],
+            default => ['project_memory', 'logbook', 'agent_notes', 'source_chunks'],
+        };
+        $indexedMemoryIds = $this->searchIndexer->matchingSourceIds($projectId, $workspaceBindingId, $indexedDomains, $query, $filters, $limit);
+
         $rows = DB::table('project_memory_entries')
+            ->when($indexedMemoryIds !== [], function ($builder) use ($indexedMemoryIds): void {
+                $builder->whereIn('id', $indexedMemoryIds);
+            })
             ->where('project_id', $projectId)
             ->when(($filters['kind'] ?? '') !== '', function ($builder) use ($filters): void {
                 $builder->where('kind', $filters['kind']);
@@ -160,7 +177,7 @@ class MemorySearchController extends Controller
                     }
                 });
             })
-            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+            ->when($query !== '' && $indexedMemoryIds === [], function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
                     foreach ($patterns as $pattern) {
@@ -248,11 +265,15 @@ class MemorySearchController extends Controller
     private function wikiResults(string $projectId, string $query, array $filters, int $limit): array
     {
         $tokens = $this->tokens($query);
+        $indexedRevisionIds = $this->searchIndexer->matchingSourceIds($projectId, null, ['wiki'], $query, $filters, $limit);
 
         return DB::table('wiki_pages')
             ->join('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
             ->where('wiki_pages.project_id', $projectId)
-            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+            ->when($indexedRevisionIds !== [], function ($builder) use ($indexedRevisionIds): void {
+                $builder->whereIn('wiki_revisions.id', $indexedRevisionIds);
+            })
+            ->when($query !== '' && $indexedRevisionIds === [], function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
                     foreach ($patterns as $pattern) {

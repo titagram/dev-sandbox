@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesSearchDocumentIndexer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -11,6 +12,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class MemoryProposalController extends Controller
 {
+    public function __construct(private readonly HadesSearchDocumentIndexer $searchIndexer) {}
+
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -81,6 +84,11 @@ class MemoryProposalController extends Controller
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
+
+                $entry = DB::table('project_memory_entries')->where('id', $memoryEntryId)->first();
+                if ($entry) {
+                    $this->searchIndexer->indexMemoryEntry($entry);
+                }
             } elseif ($validated['action'] === 'create') {
                 $reasonCode = 'manual_review_required';
                 $reasonMessage = 'This memory proposal must be reviewed before it can become project memory.';

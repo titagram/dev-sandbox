@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Hades;
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesEvidencePolicy;
 use App\Services\Hades\HadesProjectAwareness;
+use App\Services\Hades\HadesSearchDocumentIndexer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -18,6 +19,7 @@ class DiagnosisReportController extends Controller
     public function __construct(
         private readonly HadesEvidencePolicy $policy,
         private readonly HadesProjectAwareness $awareness,
+        private readonly HadesSearchDocumentIndexer $searchIndexer,
     ) {}
 
     private const CONFIDENCE = ['high', 'medium', 'low', 'insufficient'];
@@ -302,7 +304,12 @@ class DiagnosisReportController extends Controller
                 ]);
             }
 
-            return DB::table('project_memory_entries')->where('id', $memoryEntryId)->first();
+            $entry = DB::table('project_memory_entries')->where('id', $memoryEntryId)->first();
+            if ($entry) {
+                $this->searchIndexer->indexMemoryEntry($entry);
+            }
+
+            return $entry;
         });
 
         return response()->json([

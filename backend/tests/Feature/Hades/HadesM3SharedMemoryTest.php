@@ -124,6 +124,7 @@ it('creates idempotent memory proposals and auto-accepts low risk creates', func
 
     expect(DB::table('hades_memory_proposals')->where('workspace_binding_id', $binding['workspace_binding_id'])->count())->toBe(1);
     expect(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->where('source', 'hades_agent')->count())->toBe(1);
+    expect(DB::table('hades_search_documents')->where('source_table', 'project_memory_entries')->where('source_id', $memoryEntryId)->whereNull('workspace_binding_id')->where('body', 'like', '%Laravel%')->exists())->toBeTrue();
 });
 
 it('keeps note backfill candidate proposals pending for manual review', function () {
@@ -418,6 +419,123 @@ it('searches current wiki revisions through the Hades memory search endpoint', f
         ->assertJsonPath('items.0.page_slug', 'architecture/hades-memory')
         ->assertJsonPath('items.0.evidence_count', 1)
         ->assertJsonPath('items.0.source_status', 'verified_from_code');
+});
+
+it('uses materialized search documents for Hades memory search candidates', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $memoryId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'manual',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'Plain project memory without the indexed-only token.',
+        'payload' => json_encode(['note' => 'plain memory payload'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_search_documents')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => null,
+        'domain' => 'logbook',
+        'kind' => 'decision',
+        'source_table' => 'project_memory_entries',
+        'source_id' => $memoryId,
+        'source_schema' => null,
+        'title' => 'Materialized memory candidate',
+        'body' => 'materialized-memory-only-needle',
+        'metadata' => json_encode(['source' => 'test'], JSON_THROW_ON_ERROR),
+        'checksum' => str_repeat('1', 64),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'materialized-memory-only-needle',
+        'domain' => 'logbook',
+        'limit' => 5,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $memoryId)
+        ->assertJsonPath('items.0.domain', 'logbook');
+});
+
+it('uses materialized search documents for Hades wiki search candidates', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $pageId = (string) Str::ulid();
+    $revisionId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('wiki_pages')->insert([
+        'id' => $pageId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'slug' => 'architecture/materialized-search',
+        'title' => 'Materialized Search Architecture',
+        'page_type' => 'architecture',
+        'current_revision_id' => $revisionId,
+        'source_status' => 'verified_from_code',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('wiki_revisions')->insert([
+        'id' => $revisionId,
+        'wiki_page_id' => $pageId,
+        'author_user_id' => null,
+        'author_device_id' => null,
+        'producer' => 'test',
+        'source_type' => 'controlled_agent_tool',
+        'source_status' => 'verified_from_code',
+        'content_markdown' => 'This wiki body intentionally omits the indexed-only token.',
+        'evidence_refs' => json_encode([], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+    ]);
+
+    DB::table('hades_search_documents')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => null,
+        'domain' => 'wiki',
+        'kind' => 'wiki',
+        'source_table' => 'wiki_revisions',
+        'source_id' => $revisionId,
+        'source_schema' => 'devboard.wiki_revision.v1',
+        'title' => 'Materialized wiki candidate',
+        'body' => 'materialized-wiki-only-needle',
+        'metadata' => json_encode(['slug' => 'architecture/materialized-search'], JSON_THROW_ON_ERROR),
+        'checksum' => str_repeat('2', 64),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'materialized-wiki-only-needle',
+        'domain' => 'wiki',
+        'limit' => 5,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $revisionId)
+        ->assertJsonPath('items.0.domain', 'wiki')
+        ->assertJsonPath('items.0.page_slug', 'architecture/materialized-search');
 });
 
 it('quarantines raw source chunks from memory search unless explicitly requested', function () {

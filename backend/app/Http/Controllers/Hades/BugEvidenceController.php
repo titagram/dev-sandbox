@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Hades;
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesEvidencePolicy;
 use App\Services\Hades\HadesProjectAwareness;
+use App\Services\Hades\HadesSearchDocumentIndexer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -42,6 +43,7 @@ class BugEvidenceController extends Controller
     public function __construct(
         private readonly HadesProjectAwareness $awareness,
         private readonly HadesEvidencePolicy $policy,
+        private readonly HadesSearchDocumentIndexer $searchIndexer,
     ) {}
 
     public function store(Request $request): JsonResponse
@@ -106,6 +108,7 @@ class BugEvidenceController extends Controller
         ]);
 
         $item = DB::table('hades_bug_evidence_items')->where('id', $id)->first();
+        $this->searchIndexer->indexBugEvidence($item);
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -138,13 +141,19 @@ class BugEvidenceController extends Controller
         $query = trim((string) ($validated['query'] ?? ''));
         $tokens = $this->tokens($query);
         $limit = (int) ($validated['limit'] ?? 10);
+        $searchFilters = [];
+        if (($validated['kind'] ?? null) !== null) {
+            $searchFilters['kind'] = $validated['kind'];
+        }
+        $indexedEvidenceIds = $this->searchIndexer->matchingSourceIds($validated['project_id'], $binding->id, ['bug_evidence'], $query, $searchFilters, $limit, false);
 
         $rows = DB::table('hades_bug_evidence_items')
             ->where('project_id', $validated['project_id'])
             ->where('workspace_binding_id', $binding->id)
+            ->when($indexedEvidenceIds !== [], fn ($builder) => $builder->whereIn('id', $indexedEvidenceIds))
             ->when(($validated['kind'] ?? null) !== null, fn ($builder) => $builder->where('kind', $validated['kind']))
             ->when(($validated['bug_report_id'] ?? null) !== null, fn ($builder) => $builder->where('bug_report_id', $validated['bug_report_id']))
-            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+            ->when($query !== '' && $indexedEvidenceIds === [], function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
                     foreach ($patterns as $pattern) {

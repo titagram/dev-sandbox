@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Hades;
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesEvidencePolicy;
 use App\Services\Hades\HadesProjectAwareness;
+use App\Services\Hades\HadesSearchDocumentIndexer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -25,6 +26,7 @@ class EvidencePackController extends Controller
     public function __construct(
         private readonly HadesProjectAwareness $awareness,
         private readonly HadesEvidencePolicy $policy,
+        private readonly HadesSearchDocumentIndexer $searchIndexer,
     ) {}
 
     public function store(Request $request): JsonResponse
@@ -125,6 +127,7 @@ class EvidencePackController extends Controller
         ]);
 
         $pack = DB::table('hades_evidence_packs')->where('id', $id)->first();
+        $this->searchIndexer->indexEvidencePack($pack);
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -157,13 +160,15 @@ class EvidencePackController extends Controller
         $query = trim((string) ($validated['query'] ?? ''));
         $tokens = $this->tokens($query);
         $limit = (int) ($validated['limit'] ?? 10);
+        $indexedPackIds = $this->searchIndexer->matchingSourceIds($validated['project_id'], $binding->id, ['evidence_packs'], $query, [], $limit, false);
 
         $rows = DB::table('hades_evidence_packs')
             ->where('project_id', $validated['project_id'])
             ->where('workspace_binding_id', $binding->id)
+            ->when(($validated['id'] ?? null) === null && $indexedPackIds !== [], fn ($builder) => $builder->whereIn('id', $indexedPackIds))
             ->when(($validated['id'] ?? null) !== null, fn ($builder) => $builder->where('id', $validated['id']))
             ->when(($validated['bug_report_id'] ?? null) !== null, fn ($builder) => $builder->where('bug_report_id', $validated['bug_report_id']))
-            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+            ->when($query !== '' && $indexedPackIds === [], function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
                     foreach ($patterns as $pattern) {
