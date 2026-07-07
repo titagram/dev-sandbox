@@ -416,7 +416,9 @@
             "type": "string",
             "enum": [
               "hades.git_tree.v1",
-              "hades.symbols.v1"
+              "hades.symbols.v1",
+              "hades.php_graph.v1",
+              "hades.code_graph.v1"
             ]
           },
           "artifact": {

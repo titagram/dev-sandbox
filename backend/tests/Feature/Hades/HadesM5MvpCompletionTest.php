@@ -164,9 +164,39 @@ it('stores Hades git tree, symbols, and PHP graph artifacts from authenticated a
         ->assertCreated()
         ->assertJsonPath('artifact.schema', 'hades.php_graph.v1');
 
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.code_graph.v1',
+        'artifact' => [
+            'schema' => 'hades.code_graph.v1',
+            'framework' => 'nextjs',
+            'routes' => [[
+                'framework' => 'nextjs',
+                'method' => 'GET',
+                'path' => '/api/orders',
+                'handler' => 'app/api/orders/route.ts:GET',
+            ]],
+            'symbols' => [[
+                'name' => 'OrdersPage',
+                'kind' => 'component',
+                'path' => 'app/orders/page.tsx',
+            ]],
+            'edges' => [[
+                'kind' => 'imports',
+                'from' => 'app/orders/page.tsx',
+                'to' => '../../components/OrderTable',
+            ]],
+            'raw_source_included' => false,
+        ],
+    ], hadesM5Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('artifact.schema', 'hades.code_graph.v1');
+
     expect(DB::table('hades_agent_artifacts')->where('schema', 'hades.git_tree.v1')->count())->toBe(1)
         ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.symbols.v1')->count())->toBe(1)
-        ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.php_graph.v1')->count())->toBe(1);
+        ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.php_graph.v1')->count())->toBe(1)
+        ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.code_graph.v1')->count())->toBe(1);
 });
 
 it('stores explicit doctor reports and exposes a persistent Persephone inbox with polling and SSE fallback', function () {

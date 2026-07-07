@@ -335,8 +335,8 @@ class MemorySearchController extends Controller
      */
     private function artifactSummary(string $schema, array $artifact): string
     {
-        if ($schema === 'hades.php_graph.v1' || ($artifact['schema'] ?? null) === 'hades.php_graph.v1') {
-            return $this->phpGraphSummary($schema, $artifact);
+        if (in_array($schema, ['hades.php_graph.v1', 'hades.code_graph.v1'], true) || in_array($artifact['schema'] ?? null, ['hades.php_graph.v1', 'hades.code_graph.v1'], true)) {
+            return $this->codeGraphSummary($schema, $artifact);
         }
 
         $index = isset($artifact['project_index']) && is_array($artifact['project_index'])
@@ -350,7 +350,7 @@ class MemorySearchController extends Controller
                 continue;
             }
             $method = trim((string) ($route['method'] ?? ''));
-            $uri = trim((string) ($route['uri'] ?? ''));
+            $uri = trim((string) ($route['uri'] ?? $route['path'] ?? ''));
             $handler = trim((string) ($route['handler'] ?? ''));
             $name = trim((string) ($route['name'] ?? ''));
             $routeText = trim($method.' '.$uri.($handler !== '' ? ' -> '.$handler : '').($name !== '' ? ' ['.$name.']' : ''));
@@ -392,7 +392,7 @@ class MemorySearchController extends Controller
     /**
      * @param  array<string, mixed>  $artifact
      */
-    private function phpGraphSummary(string $schema, array $artifact): string
+    private function codeGraphSummary(string $schema, array $artifact): string
     {
         $parts = [];
 
@@ -402,7 +402,7 @@ class MemorySearchController extends Controller
                 continue;
             }
             $method = trim((string) ($route['method'] ?? ''));
-            $uri = trim((string) ($route['uri'] ?? ''));
+            $uri = trim((string) ($route['uri'] ?? $route['path'] ?? ''));
             $handler = trim((string) ($route['handler'] ?? ''));
             $name = trim((string) ($route['name'] ?? ''));
             $routeText = trim($method.' '.$uri.($handler !== '' ? ' -> '.$handler : '').($name !== '' ? ' ['.$name.']' : ''));
@@ -425,6 +425,11 @@ class MemorySearchController extends Controller
             $parts[] = trim($kind.' '.$name.($role !== '' ? ' ['.$role.']' : ''));
         }
 
+        $framework = trim((string) ($artifact['framework'] ?? ''));
+        if ($framework !== '') {
+            $parts[] = 'framework: '.$framework;
+        }
+
         $edges = isset($artifact['edges']) && is_array($artifact['edges']) ? $artifact['edges'] : [];
         if ($edges !== []) {
             $edgeKinds = [];
@@ -443,7 +448,7 @@ class MemorySearchController extends Controller
         }
 
         $fallback = $this->payloadString($artifact, ['summary']);
-        $body = $parts !== [] ? implode('; ', $parts) : ($fallback !== '' ? $fallback : 'indexed PHP graph artifact');
+        $body = $parts !== [] ? implode('; ', $parts) : ($fallback !== '' ? $fallback : 'indexed code graph artifact');
 
         return $this->compact($schema.' code graph: '.$body, 800);
     }

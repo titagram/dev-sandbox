@@ -425,6 +425,66 @@ it('searches PHP graph artifacts through the Hades memory search endpoint', func
         ->and($response->json('items.0.payload_excerpt'))->toContain('hades.php_graph.v1');
 });
 
+it('searches generic code graph artifacts through the Hades memory search endpoint', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $artifactId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $artifactId,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'job_id' => null,
+        'schema' => 'hades.code_graph.v1',
+        'artifact' => json_encode([
+            'schema' => 'hades.code_graph.v1',
+            'framework' => 'nextjs',
+            'head_commit' => str_repeat('e', 40),
+            'routes' => [[
+                'framework' => 'nextjs',
+                'method' => 'GET',
+                'path' => '/api/orders',
+                'handler' => 'app/api/orders/route.ts:GET',
+                'source_path' => 'app/api/orders/route.ts',
+            ]],
+            'symbols' => [[
+                'kind' => 'component',
+                'name' => 'OrdersPage',
+                'path' => 'app/orders/page.tsx',
+            ]],
+            'edges' => [[
+                'kind' => 'imports',
+                'from' => 'app/api/orders/route.ts',
+                'to' => '../../../server/orders',
+            ]],
+            'raw_source_included' => false,
+        ], JSON_THROW_ON_ERROR),
+        'sha256' => str_repeat('6', 64),
+        'truncated' => false,
+        'redactions' => 0,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'orders nextjs route component graph',
+        'domain' => 'artifacts',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $artifactId)
+        ->assertJsonPath('items.0.schema', 'hades.code_graph.v1');
+
+    expect($response->json('items.0.summary'))->toContain('GET /api/orders')
+        ->and($response->json('items.0.summary'))->toContain('OrdersPage')
+        ->and($response->json('items.0.summary'))->toContain('framework: nextjs')
+        ->and($response->json('items.0.payload_excerpt'))->toContain('hades.code_graph.v1');
+});
+
 it('traverses PHP graph artifacts through a bounded Hades graph endpoint', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);

@@ -18,7 +18,7 @@ class ArtifactController extends Controller
             'agent_id' => ['nullable', 'string', 'max:191'],
             'workspace_binding_id' => ['required', 'string'],
             'job_id' => ['nullable', 'string'],
-            'schema' => ['required', 'string', 'in:hades.git_tree.v1,hades.symbols.v1,hades.php_graph.v1'],
+            'schema' => ['required', 'string', 'in:hades.git_tree.v1,hades.symbols.v1,hades.php_graph.v1,hades.code_graph.v1'],
             'artifact' => ['required', 'array'],
             'sha256' => ['nullable', 'string', 'size:64'],
             'truncated' => ['nullable', 'boolean'],
