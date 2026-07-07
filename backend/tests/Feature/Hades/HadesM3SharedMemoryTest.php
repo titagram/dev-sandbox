@@ -869,6 +869,58 @@ it('reports ready project awareness when source slices and evidence are current'
         ->and($response['coverage']['source_slices']['redactions'])->toBe(1);
 });
 
+it('rejects unredacted bug evidence and oversized payloads', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $this->postJson('/api/hades/v1/bug-evidence', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'kind' => 'log_excerpt',
+        'summary' => 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz',
+        'payload' => ['line' => 'request failed'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'unredacted_secret_detected');
+
+    $this->postJson('/api/hades/v1/bug-evidence', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'kind' => 'log_excerpt',
+        'summary' => 'Large but redacted log payload.',
+        'payload' => ['line' => str_repeat('x', 70000)],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'evidence_payload_too_large');
+});
+
+it('rejects unredacted source slices and diagnosis reports', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $this->postJson('/api/hades/v1/source-slices', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'path' => 'app/Http/Controllers/OrderController.php',
+        'start_line' => 10,
+        'end_line' => 12,
+        'content_redacted' => 'OPENAI_API_KEY=sk-live-secretvalue12345',
+        'redactions' => 0,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'unredacted_secret_detected');
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'final',
+        'confidence' => 'low',
+        'root_cause' => 'The request carried Authorization: Bearer abcdefghijklmnopqrstuvwxyz.',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'unredacted_secret_detected');
+});
+
 it('stores diagnosis reports with evidence refs for linked workspaces', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);

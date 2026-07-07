@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesEvidencePolicy;
 use App\Services\Hades\HadesProjectAwareness;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,7 +23,10 @@ class SourceSliceController extends Controller
 
     private const MAX_LINE_WINDOW = 400;
 
-    public function __construct(private readonly HadesProjectAwareness $awareness) {}
+    public function __construct(
+        private readonly HadesProjectAwareness $awareness,
+        private readonly HadesEvidencePolicy $policy,
+    ) {}
 
     public function store(Request $request): JsonResponse
     {
@@ -47,6 +51,14 @@ class SourceSliceController extends Controller
 
         if (((int) $validated['end_line'] - (int) $validated['start_line'] + 1) > self::MAX_LINE_WINDOW) {
             return $this->error('source_slice_window_too_large', 'Source slice line window is too large.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        if ($policyError = $this->policy->validateSourceSlice(
+            $validated['path'],
+            (string) $validated['content_redacted'],
+            (int) ($validated['redactions'] ?? 0),
+        )) {
+            return $this->error($policyError['code'], $policyError['message'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
         $auth = $request->attributes->get('hades_auth');

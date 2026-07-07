@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesEvidencePolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -13,6 +14,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class DiagnosisReportController extends Controller
 {
+    public function __construct(private readonly HadesEvidencePolicy $policy) {}
+
     private const CONFIDENCE = ['high', 'medium', 'low', 'insufficient'];
 
     private const STATUSES = ['draft', 'final'];
@@ -32,6 +35,16 @@ class DiagnosisReportController extends Controller
             'payload' => ['nullable', 'array'],
             'redactions' => ['nullable', 'integer', 'min:0', 'max:100000'],
         ]);
+
+        if ($policyError = $this->policy->validateDiagnosisReport(
+            $validated['root_cause'],
+            $validated['mechanism'] ?? null,
+            $validated['evidence_refs'] ?? [],
+            $validated['freshness'] ?? [],
+            $validated['payload'] ?? [],
+        )) {
+            return $this->error($policyError['code'], $policyError['message'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
 
         $auth = $request->attributes->get('hades_auth');
         $agent = $auth['agent'];

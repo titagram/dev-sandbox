@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesEvidencePolicy;
 use App\Services\Hades\HadesProjectAwareness;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -38,7 +39,10 @@ class BugEvidenceController extends Controller
         'source_reference',
     ];
 
-    public function __construct(private readonly HadesProjectAwareness $awareness) {}
+    public function __construct(
+        private readonly HadesProjectAwareness $awareness,
+        private readonly HadesEvidencePolicy $policy,
+    ) {}
 
     public function store(Request $request): JsonResponse
     {
@@ -55,6 +59,10 @@ class BugEvidenceController extends Controller
             'retention_class' => ['nullable', 'string', Rule::in(self::RETENTION_CLASSES)],
             'occurred_at' => ['nullable', 'date'],
         ]);
+
+        if ($policyError = $this->policy->validateBugEvidence($validated['summary'], $validated['payload'])) {
+            return $this->error($policyError['code'], $policyError['message'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
 
         $auth = $request->attributes->get('hades_auth');
         $agent = $auth['agent'];
