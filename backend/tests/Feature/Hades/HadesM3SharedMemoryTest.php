@@ -1073,6 +1073,8 @@ it('rejects unredacted source slices and diagnosis reports', function () {
 it('stores diagnosis reports with evidence refs for linked workspaces', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
+    $dataset = hadesM3PrivacyDataset($agent, $binding);
+    hadesM3CurrentGraphArtifact($agent, $binding);
 
     $response = $this->postJson('/api/hades/v1/diagnosis-reports', [
         'project_id' => $agent['project_id'],
@@ -1082,8 +1084,8 @@ it('stores diagnosis reports with evidence refs for linked workspaces', function
         'root_cause' => 'OrderController calls a service with a null dependency.',
         'mechanism' => 'The stack trace frame and source slice both point to the same call site.',
         'evidence_refs' => [
-            ['type' => 'bug_evidence', 'id' => 'evidence_1'],
-            ['type' => 'source_slice', 'id' => 'slice_1'],
+            ['type' => 'bug_evidence', 'id' => $dataset['bug_evidence_id']],
+            ['type' => 'source_slice', 'id' => $dataset['source_slice_id']],
         ],
         'freshness' => ['status' => 'current', 'workspace_head_commit' => str_repeat('f', 40)],
         'payload' => ['next_verification' => 'Run the failing feature test.'],
@@ -1142,6 +1144,8 @@ it('blocks precise diagnosis reports without current freshness and evidence refs
 it('promotes final diagnosis reports to resolved bug memory and search surfaces staleness', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
+    $dataset = hadesM3PrivacyDataset($agent, $binding);
+    hadesM3CurrentGraphArtifact($agent, $binding);
 
     $bugReport = $this->postJson('/api/hades/v1/bug-reports', [
         'project_id' => $agent['project_id'],
@@ -1161,8 +1165,8 @@ it('promotes final diagnosis reports to resolved bug memory and search surfaces 
         'root_cause' => 'OrderController dereferences a missing customer relation before checking active().',
         'mechanism' => 'The stack trace frame and source slice both point to OrderController@show calling active() on a nullable relation.',
         'evidence_refs' => [
-            ['type' => 'bug_evidence', 'id' => 'evidence_1'],
-            ['type' => 'source_slice', 'id' => 'slice_1'],
+            ['type' => 'bug_evidence', 'id' => $dataset['bug_evidence_id']],
+            ['type' => 'source_slice', 'id' => $dataset['source_slice_id']],
         ],
         'freshness' => ['status' => 'current', 'workspace_head_commit' => str_repeat('f', 40)],
         'payload' => ['next_verification' => 'Run OrderControllerTest::test_archived_customer_show.'],
@@ -1762,6 +1766,17 @@ function hadesM3PrivacyDataset(array $agent, array $binding, ?Carbon $createdAt 
  * @param  array{workspace_binding_id: string}  $binding
  * @param  array<string, mixed>  $artifact
  */
+function hadesM3CurrentGraphArtifact(array $agent, array $binding): string
+{
+    return hadesM3Artifact($agent, $binding, 'hades.php_graph.v1', [
+        'schema' => 'hades.php_graph.v1',
+        'head_commit' => str_repeat('f', 40),
+        'raw_source_included' => false,
+        'symbols' => [['name' => 'OrderController@show', 'kind' => 'method', 'path' => 'app/Http/Controllers/OrderController.php', 'line' => 42]],
+        'edges' => [['kind' => 'handles', 'from' => 'route:orders.show', 'to' => 'OrderController@show']],
+    ]);
+}
+
 function hadesM3Artifact(array $agent, array $binding, string $schema, array $artifact): string
 {
     $id = (string) Str::ulid();

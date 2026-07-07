@@ -167,6 +167,77 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
         ->assertJsonPath('diagnosis_report.status', 'final');
 });
 
+it('rejects precise source-free diagnosis when coverage is insufficient', function () {
+    $agent = hadesNoCodebaseRegisteredAgent();
+    $binding = hadesNoCodebaseWorkspaceBinding($agent);
+    $headers = hadesNoCodebaseHeaders($agent['agent_token']);
+    $projectId = $agent['project_id'];
+    $bindingId = $binding['workspace_binding_id'];
+    $head = str_repeat('f', 40);
+
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => hadesNoCodebaseGraphArtifact($head),
+        'truncated' => false,
+        'redactions' => 0,
+    ], $headers)->assertCreated();
+
+    $bugReportId = $this->postJson('/api/hades/v1/bug-reports', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'title' => 'Order detail has stack trace but no source slice',
+        'symptom' => 'GET /orders/123 returns 500.',
+    ], $headers)->assertCreated()->json('bug_report.id');
+
+    $evidenceId = $this->postJson('/api/hades/v1/bug-evidence', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'kind' => 'stack_trace',
+        'summary' => 'OrderController@show fails, but no source slice was approved.',
+        'payload' => ['frames' => [['path' => 'app/Http/Controllers/OrderController.php', 'line' => 43]]],
+        'source' => 'laravel.log',
+    ], $headers)->assertCreated()->json('evidence.id');
+
+    $awareness = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+    ]), $headers)
+        ->assertOk()
+        ->assertJsonPath('freshness.status', 'current')
+        ->assertJsonPath('coverage.source_slices.status', 'missing')
+        ->assertJsonPath('diagnosable_without_source', false)
+        ->json();
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'status' => 'final',
+        'confidence' => 'high',
+        'root_cause' => 'OrderController@show likely dereferences customer without a guard.',
+        'evidence_refs' => [['type' => 'bug_evidence', 'id' => $evidenceId]],
+        'freshness' => $awareness['freshness'],
+    ], $headers)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'diagnosis_awareness_not_diagnosable');
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'status' => 'final',
+        'confidence' => 'insufficient',
+        'root_cause' => 'Precise cause is not supported until a source slice or verified code fact is available.',
+        'evidence_refs' => [['type' => 'bug_evidence', 'id' => $evidenceId]],
+        'freshness' => $awareness['freshness'],
+    ], $headers)
+        ->assertCreated()
+        ->assertJsonPath('diagnosis_report.confidence', 'insufficient');
+});
+
 function hadesNoCodebaseHeaders(?string $token = null): array
 {
     return $token === null ? [] : ['Authorization' => 'Bearer '.$token];

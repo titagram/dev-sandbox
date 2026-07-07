@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesEvidencePolicy;
+use App\Services\Hades\HadesProjectAwareness;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -14,7 +15,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 class DiagnosisReportController extends Controller
 {
-    public function __construct(private readonly HadesEvidencePolicy $policy) {}
+    public function __construct(
+        private readonly HadesEvidencePolicy $policy,
+        private readonly HadesProjectAwareness $awareness,
+    ) {}
 
     private const CONFIDENCE = ['high', 'medium', 'low', 'insufficient'];
 
@@ -78,6 +82,18 @@ class DiagnosisReportController extends Controller
 
             if (! $exists) {
                 return $this->error('bug_report_not_found', 'Hades bug report was not found.', Response::HTTP_NOT_FOUND);
+            }
+        }
+
+        if (in_array($validated['confidence'], ['high', 'medium'], true)) {
+            $awareness = $this->awareness->statusPayload($binding);
+
+            if (! (bool) ($awareness['diagnosable_without_source'] ?? false)) {
+                return $this->error(
+                    'diagnosis_awareness_not_diagnosable',
+                    'High or medium confidence diagnosis reports require current graph, bug evidence, and source slice coverage.',
+                    Response::HTTP_UNPROCESSABLE_ENTITY,
+                );
             }
         }
 
