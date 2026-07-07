@@ -8,6 +8,7 @@ use App\Http\Controllers\Hades\ArtifactController as HadesArtifactController;
 use App\Http\Controllers\Hades\BugEvidenceController as HadesBugEvidenceController;
 use App\Http\Controllers\Hades\BugReportController as HadesBugReportController;
 use App\Http\Controllers\Hades\CapabilitiesController as HadesCapabilitiesController;
+use App\Http\Controllers\Hades\DataPrivacyController as HadesDataPrivacyController;
 use App\Http\Controllers\Hades\DiagnosisReportController as HadesDiagnosisReportController;
 use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportController;
 use App\Http\Controllers\Hades\EvidencePackController as HadesEvidencePackController;
@@ -216,6 +217,15 @@ Route::prefix('hades/v1')->group(function () {
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/diagnosis-reports/{diagnosisReport}/promote', [HadesDiagnosisReportController::class, 'promote'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/privacy/export', [HadesDataPrivacyController::class, 'export'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/privacy/delete', [HadesDataPrivacyController::class, 'delete'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/privacy/retention-cleanup', [HadesDataPrivacyController::class, 'retentionCleanup'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/agent/jobs', HadesAgentJobsController::class)

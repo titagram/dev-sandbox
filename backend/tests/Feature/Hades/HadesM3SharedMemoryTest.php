@@ -2,6 +2,7 @@
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -1343,6 +1344,134 @@ it('stores and searches Hades evidence packs for source-free diagnosis', functio
         ->assertJsonPath('error.code', 'unredacted_secret_detected');
 });
 
+it('exports Hades diagnosis data scoped to a workspace binding', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $otherBinding = hadesM3WorkspaceBinding($agent);
+    $dataset = hadesM3PrivacyDataset($agent, $binding);
+    $other = hadesM3PrivacyDataset($agent, $otherBinding);
+
+    $metadataOnly = $this->getJson('/api/hades/v1/privacy/export?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'include_content' => false,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('scope', 'workspace_binding')
+        ->assertJsonPath('include_content', false)
+        ->assertJsonPath('counts.bug_reports', 1)
+        ->assertJsonPath('counts.bug_evidence', 1)
+        ->assertJsonPath('counts.source_slices', 1)
+        ->assertJsonPath('counts.evidence_packs', 1)
+        ->assertJsonPath('counts.diagnosis_reports', 1)
+        ->assertJsonPath('collections.bug_reports.0.id', $dataset['bug_report_id'])
+        ->json();
+
+    expect($metadataOnly['collections']['source_slices'][0])->not->toHaveKey('content_redacted')
+        ->and($metadataOnly['collections']['bug_evidence'][0])->not->toHaveKey('payload')
+        ->and(json_encode($metadataOnly, JSON_THROW_ON_ERROR))->not->toContain($other['bug_report_id']);
+
+    $withContent = $this->getJson('/api/hades/v1/privacy/export?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('include_content', true)
+        ->assertJsonPath('collections.source_slices.0.content_redacted', 'line 42: return ***;')
+        ->assertJsonPath('collections.bug_evidence.0.payload.frame.line', 42)
+        ->json();
+
+    expect(json_encode($withContent, JSON_THROW_ON_ERROR))->not->toContain($other['source_slice_id']);
+});
+
+it('deletes Hades diagnosis data only after confirmation and keeps other workspaces', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $otherBinding = hadesM3WorkspaceBinding($agent);
+    hadesM3PrivacyDataset($agent, $binding);
+    hadesM3PrivacyDataset($agent, $otherBinding);
+
+    $this->postJson('/api/hades/v1/privacy/delete', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('dry_run', true)
+        ->assertJsonPath('would_delete.hades_bug_reports', 1)
+        ->assertJsonPath('would_delete.hades_source_slices', 1);
+
+    expect(DB::table('hades_bug_reports')->where('workspace_binding_id', $binding['workspace_binding_id'])->count())->toBe(1);
+
+    $this->postJson('/api/hades/v1/privacy/delete', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'dry_run' => false,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'delete_confirmation_required');
+
+    $this->postJson('/api/hades/v1/privacy/delete', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'dry_run' => false,
+        'confirm' => true,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('dry_run', false)
+        ->assertJsonPath('deleted.hades_bug_reports', 1)
+        ->assertJsonPath('deleted.hades_diagnosis_reports', 1);
+
+    foreach (['hades_bug_reports', 'hades_bug_evidence_items', 'hades_source_slices', 'hades_evidence_packs', 'hades_diagnosis_reports'] as $table) {
+        expect(DB::table($table)->where('workspace_binding_id', $binding['workspace_binding_id'])->count())->toBe(0)
+            ->and(DB::table($table)->where('workspace_binding_id', $otherBinding['workspace_binding_id'])->count())->toBe(1);
+    }
+});
+
+it('cleans up Hades diagnosis data by retention age with dry-run safety', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    hadesM3PrivacyDataset($agent, $binding, now()->subDays(45));
+    hadesM3PrivacyDataset($agent, $binding, now());
+
+    $this->postJson('/api/hades/v1/privacy/retention-cleanup', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'retention_days' => 30,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('dry_run', true)
+        ->assertJsonPath('would_delete.hades_bug_reports', 1)
+        ->assertJsonPath('would_delete.hades_source_slices', 1);
+
+    expect(DB::table('hades_bug_reports')->where('workspace_binding_id', $binding['workspace_binding_id'])->count())->toBe(2);
+
+    $this->postJson('/api/hades/v1/privacy/retention-cleanup', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'retention_days' => 30,
+        'dry_run' => false,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'retention_cleanup_confirmation_required');
+
+    $this->postJson('/api/hades/v1/privacy/retention-cleanup', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'retention_days' => 30,
+        'dry_run' => false,
+        'confirm' => true,
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('dry_run', false)
+        ->assertJsonPath('deleted.hades_bug_reports', 1)
+        ->assertJsonPath('deleted.hades_evidence_packs', 1);
+
+    foreach (['hades_bug_reports', 'hades_bug_evidence_items', 'hades_source_slices', 'hades_evidence_packs', 'hades_diagnosis_reports'] as $table) {
+        expect(DB::table($table)->where('workspace_binding_id', $binding['workspace_binding_id'])->count())->toBe(1);
+    }
+});
+
 it('reports stale project awareness when indexed artifacts are from another commit', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);
@@ -1472,6 +1601,123 @@ function hadesM3WorkspaceBinding(array $agent): array
     ], hadesM3Headers($agent['agent_token']))->assertOk();
 
     return ['workspace_binding_id' => $bound->json('workspace_binding_id')];
+}
+
+/**
+ * @param  array{project_id: string, external_agent_id: string, backend_agent_id: string, agent_token: string}  $agent
+ * @param  array{workspace_binding_id: string}  $binding
+ * @return array{bug_report_id: string, bug_evidence_id: string, source_slice_id: string, evidence_pack_id: string, diagnosis_report_id: string}
+ */
+function hadesM3PrivacyDataset(array $agent, array $binding, ?Carbon $createdAt = null): array
+{
+    $createdAt ??= now();
+    $bugReportId = (string) Str::ulid();
+    $bugEvidenceId = (string) Str::ulid();
+    $sourceSliceId = (string) Str::ulid();
+    $evidencePackId = (string) Str::ulid();
+    $diagnosisReportId = (string) Str::ulid();
+
+    DB::table('hades_bug_reports')->insert([
+        'id' => $bugReportId,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'title' => 'Privacy export fixture bug',
+        'symptom' => 'Order show returns 500.',
+        'severity' => 'high',
+        'status' => 'open',
+        'environment' => json_encode(['app_env' => 'testing'], JSON_THROW_ON_ERROR),
+        'affected_refs' => json_encode([['type' => 'route', 'name' => 'orders.show']], JSON_THROW_ON_ERROR),
+        'observed_at' => $createdAt,
+        'created_at' => $createdAt,
+        'updated_at' => $createdAt,
+    ]);
+
+    DB::table('hades_bug_evidence_items')->insert([
+        'id' => $bugEvidenceId,
+        'project_id' => $agent['project_id'],
+        'bug_report_id' => $bugReportId,
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'kind' => 'stack_trace',
+        'summary' => 'OrderController fails at line 42.',
+        'payload' => json_encode(['frame' => ['path' => 'app/Http/Controllers/OrderController.php', 'line' => 42]], JSON_THROW_ON_ERROR),
+        'source' => 'laravel.log',
+        'sha256' => str_repeat('1', 64),
+        'redactions' => 1,
+        'retention_class' => 'stack_trace',
+        'occurred_at' => $createdAt,
+        'created_at' => $createdAt,
+        'updated_at' => $createdAt,
+    ]);
+
+    DB::table('hades_source_slices')->insert([
+        'id' => $sourceSliceId,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'job_id' => null,
+        'path' => 'app/Http/Controllers/OrderController.php',
+        'start_line' => 42,
+        'end_line' => 42,
+        'language' => 'php',
+        'symbol' => 'OrderController@show',
+        'head_commit' => str_repeat('f', 40),
+        'sha256' => str_repeat('2', 64),
+        'content_redacted' => 'line 42: return ***;',
+        'redactions' => 1,
+        'truncated' => false,
+        'retention_class' => 'source_slice',
+        'policy' => 'manual_review',
+        'created_at' => $createdAt,
+        'updated_at' => $createdAt,
+    ]);
+
+    DB::table('hades_evidence_packs')->insert([
+        'id' => $evidencePackId,
+        'project_id' => $agent['project_id'],
+        'bug_report_id' => $bugReportId,
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'title' => 'Privacy evidence pack',
+        'summary' => 'Stack trace and source slice identify the order failure.',
+        'evidence_refs' => json_encode([['type' => 'bug_evidence', 'id' => $bugEvidenceId]], JSON_THROW_ON_ERROR),
+        'graph_refs' => json_encode([['type' => 'route', 'id' => 'orders.show']], JSON_THROW_ON_ERROR),
+        'source_slice_ids' => json_encode([$sourceSliceId], JSON_THROW_ON_ERROR),
+        'payload' => json_encode(['next_verification' => 'run feature test'], JSON_THROW_ON_ERROR),
+        'sha256' => str_repeat('3', 64),
+        'redactions' => 1,
+        'retention_class' => 'diagnosis_evidence',
+        'head_commit' => str_repeat('f', 40),
+        'created_at' => $createdAt,
+        'updated_at' => $createdAt,
+    ]);
+
+    DB::table('hades_diagnosis_reports')->insert([
+        'id' => $diagnosisReportId,
+        'project_id' => $agent['project_id'],
+        'bug_report_id' => $bugReportId,
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'final',
+        'confidence' => 'high',
+        'root_cause' => 'OrderController dereferences a nullable relation.',
+        'mechanism' => 'The stack frame and source slice point to the same line.',
+        'evidence_refs' => json_encode([['type' => 'bug_evidence', 'id' => $bugEvidenceId], ['type' => 'source_slice', 'id' => $sourceSliceId]], JSON_THROW_ON_ERROR),
+        'freshness' => json_encode(['status' => 'current', 'workspace_head_commit' => str_repeat('f', 40)], JSON_THROW_ON_ERROR),
+        'payload' => json_encode(['affected_symbols' => ['OrderController@show']], JSON_THROW_ON_ERROR),
+        'redactions' => 1,
+        'created_at' => $createdAt,
+        'updated_at' => $createdAt,
+    ]);
+
+    return [
+        'bug_report_id' => $bugReportId,
+        'bug_evidence_id' => $bugEvidenceId,
+        'source_slice_id' => $sourceSliceId,
+        'evidence_pack_id' => $evidencePackId,
+        'diagnosis_report_id' => $diagnosisReportId,
+    ];
 }
 
 /**
