@@ -149,7 +149,8 @@ class SourceSliceController extends Controller
             'path' => trim((string) ($validated['path'] ?? '')),
             'symbol' => trim((string) ($validated['symbol'] ?? '')),
         ], fn (string $value): bool => $value !== '');
-        $indexedSliceIds = $this->searchIndexer->matchingSourceIds($validated['project_id'], $binding->id, ['source_slices'], $query, $searchFilters, $limit, false);
+        $indexedSliceScores = $this->searchIndexer->matchingSourceScores($validated['project_id'], $binding->id, ['source_slices'], $query, $searchFilters, $limit, false);
+        $indexedSliceIds = array_keys($indexedSliceScores);
 
         $rows = DB::table('hades_source_slices')
             ->where('project_id', $validated['project_id'])
@@ -179,14 +180,14 @@ class SourceSliceController extends Controller
             ->orderByDesc('id')
             ->limit(max(20, $limit * 4))
             ->get()
-            ->map(function (object $row) use ($query, $tokens): array {
+            ->map(function (object $row) use ($indexedSliceScores, $query, $tokens): array {
                 $item = self::slicePayload($row);
-                $item['score'] = $this->score($query, $tokens, [
+                $item['score'] = max($indexedSliceScores[(string) $row->id] ?? 0, $this->score($query, $tokens, [
                     (string) $row->path,
                     (string) $row->symbol,
                     (string) $row->language,
                     (string) $row->content_redacted,
-                ]);
+                ]));
 
                 return $item;
             })

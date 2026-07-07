@@ -463,7 +463,7 @@ it('uses materialized search documents for Hades memory search candidates', func
         'updated_at' => $now,
     ]);
 
-    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
         'project_id' => $agent['project_id'],
         'workspace_binding_id' => $binding['workspace_binding_id'],
         'query' => 'materialized-memory-only-needle',
@@ -474,6 +474,8 @@ it('uses materialized search documents for Hades memory search candidates', func
         ->assertJsonPath('count', 1)
         ->assertJsonPath('items.0.id', $memoryId)
         ->assertJsonPath('items.0.domain', 'logbook');
+
+    expect($response->json('items.0.score'))->toBeGreaterThan(0);
 });
 
 it('uses materialized search documents for Hades wiki search candidates', function () {
@@ -525,7 +527,7 @@ it('uses materialized search documents for Hades wiki search candidates', functi
         'updated_at' => $now,
     ]);
 
-    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
         'project_id' => $agent['project_id'],
         'workspace_binding_id' => $binding['workspace_binding_id'],
         'query' => 'materialized-wiki-only-needle',
@@ -537,6 +539,8 @@ it('uses materialized search documents for Hades wiki search candidates', functi
         ->assertJsonPath('items.0.id', $revisionId)
         ->assertJsonPath('items.0.domain', 'wiki')
         ->assertJsonPath('items.0.page_slug', 'architecture/materialized-search');
+
+    expect($response->json('items.0.score'))->toBeGreaterThan(0);
 });
 
 it('backfills materialized search documents for legacy Hades records', function () {

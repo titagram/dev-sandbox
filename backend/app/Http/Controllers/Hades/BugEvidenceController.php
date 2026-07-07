@@ -145,7 +145,8 @@ class BugEvidenceController extends Controller
         if (($validated['kind'] ?? null) !== null) {
             $searchFilters['kind'] = $validated['kind'];
         }
-        $indexedEvidenceIds = $this->searchIndexer->matchingSourceIds($validated['project_id'], $binding->id, ['bug_evidence'], $query, $searchFilters, $limit, false);
+        $indexedEvidenceScores = $this->searchIndexer->matchingSourceScores($validated['project_id'], $binding->id, ['bug_evidence'], $query, $searchFilters, $limit, false);
+        $indexedEvidenceIds = array_keys($indexedEvidenceScores);
 
         $rows = DB::table('hades_bug_evidence_items')
             ->where('project_id', $validated['project_id'])
@@ -170,15 +171,15 @@ class BugEvidenceController extends Controller
             ->orderByDesc('created_at')
             ->limit(max(50, $limit * 8))
             ->get()
-            ->map(function (object $row) use ($query, $tokens): array {
+            ->map(function (object $row) use ($indexedEvidenceScores, $query, $tokens): array {
                 $item = self::evidencePayload($row);
                 $payload = json_encode($item['payload'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
-                $item['score'] = $this->score($query, $tokens, [
+                $item['score'] = max($indexedEvidenceScores[(string) $row->id] ?? 0, $this->score($query, $tokens, [
                     (string) $row->summary,
                     (string) $row->kind,
                     (string) $row->source,
                     $payload,
-                ]);
+                ]));
 
                 return $item;
             })

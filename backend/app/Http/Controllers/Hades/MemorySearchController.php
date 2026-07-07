@@ -152,7 +152,8 @@ class MemorySearchController extends Controller
             'source_chunks' => ['source_chunks'],
             default => ['project_memory', 'logbook', 'agent_notes', 'source_chunks'],
         };
-        $indexedMemoryIds = $this->searchIndexer->matchingSourceIds($projectId, $workspaceBindingId, $indexedDomains, $query, $filters, $limit);
+        $indexedMemoryScores = $this->searchIndexer->matchingSourceScores($projectId, $workspaceBindingId, $indexedDomains, $query, $filters, $limit);
+        $indexedMemoryIds = array_keys($indexedMemoryScores);
 
         $rows = DB::table('project_memory_entries')
             ->when($indexedMemoryIds !== [], function ($builder) use ($indexedMemoryIds): void {
@@ -224,13 +225,14 @@ class MemorySearchController extends Controller
 
             $matchFields = $this->matchFields($filterFields, $filters);
             $validity = $this->resolvedBugValidity($entry, $payload, $workspaceHeadCommit);
-            $score = $this->score($query, $tokens, [
+            $documentScore = $indexedMemoryScores[(string) $entry->id] ?? 0;
+            $score = max($documentScore, $this->score($query, $tokens, [
                 (string) $entry->summary,
                 (string) $entry->payload,
                 (string) $entry->kind,
                 (string) $entry->source,
                 (string) $entry->agent_key,
-            ]);
+            ]));
             $score += count($matchFields) * 15;
             if ((string) $entry->kind === 'resolved_bug') {
                 $score += 12;
@@ -265,7 +267,8 @@ class MemorySearchController extends Controller
     private function wikiResults(string $projectId, string $query, array $filters, int $limit): array
     {
         $tokens = $this->tokens($query);
-        $indexedRevisionIds = $this->searchIndexer->matchingSourceIds($projectId, null, ['wiki'], $query, $filters, $limit);
+        $indexedRevisionScores = $this->searchIndexer->matchingSourceScores($projectId, null, ['wiki'], $query, $filters, $limit);
+        $indexedRevisionIds = array_keys($indexedRevisionScores);
 
         return DB::table('wiki_pages')
             ->join('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
@@ -305,7 +308,7 @@ class MemorySearchController extends Controller
             ->orderByDesc('wiki_revisions.created_at')
             ->limit(max($filters === [] ? 50 : 150, $limit * ($filters === [] ? 8 : 15)))
             ->get()
-            ->map(function (object $row) use ($filters, $query, $tokens): ?array {
+            ->map(function (object $row) use ($filters, $indexedRevisionScores, $query, $tokens): ?array {
                 $filterFields = [
                     'kind' => ['wiki'],
                     'schema' => ['devboard.wiki_revision.v1'],
@@ -334,13 +337,13 @@ class MemorySearchController extends Controller
                     'source_status' => (string) $row->revision_source_status,
                     'payload_excerpt' => $this->excerpt((string) $row->content_markdown),
                     'evidence_count' => count($this->decodeList($row->evidence_refs)),
-                    'score' => $this->score($query, $tokens, [
+                    'score' => max($indexedRevisionScores[(string) $row->revision_id] ?? 0, $this->score($query, $tokens, [
                         (string) $row->title,
                         (string) $row->slug,
                         (string) $row->page_type,
                         (string) $row->content_markdown,
                         (string) $row->evidence_refs,
-                    ]) + count($matchFields) * 15,
+                    ])) + count($matchFields) * 15,
                     'match_fields' => $matchFields,
                     'raw_chunk' => false,
                     'occurred_at' => $this->toIsoString($row->revision_created_at),
@@ -359,7 +362,8 @@ class MemorySearchController extends Controller
     private function artifactResults(string $projectId, string $bindingId, string $query, array $filters, int $limit): array
     {
         $tokens = $this->tokens($query);
-        $indexedArtifactIds = $this->indexedArtifactIds($projectId, $bindingId, $query, $filters, $limit);
+        $indexedArtifactScores = $this->searchIndexer->matchingSourceScores($projectId, $bindingId, ['artifacts'], $query, $filters, $limit, false);
+        $indexedArtifactIds = array_keys($indexedArtifactScores);
 
         return DB::table('hades_agent_artifacts')
             ->where('project_id', $projectId)
@@ -385,7 +389,7 @@ class MemorySearchController extends Controller
             ->orderByDesc('id')
             ->limit(max($filters === [] ? 50 : 150, $limit * ($filters === [] ? 8 : 15)))
             ->get()
-            ->map(function (object $row) use ($filters, $query, $tokens): ?array {
+            ->map(function (object $row) use ($filters, $indexedArtifactScores, $query, $tokens): ?array {
                 $artifact = $this->decodePayload($row->artifact);
                 $summary = $this->artifactSummary((string) $row->schema, $artifact);
                 $encoded = json_encode($artifact, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
@@ -405,11 +409,11 @@ class MemorySearchController extends Controller
                     'schema' => (string) $row->schema,
                     'summary' => $summary,
                     'payload_excerpt' => $this->excerpt($encoded),
-                    'score' => $this->score($query, $tokens, [
+                    'score' => max($indexedArtifactScores[(string) $row->id] ?? 0, $this->score($query, $tokens, [
                         $summary,
                         (string) $row->schema,
                         $encoded,
-                    ]) + count($matchFields) * 15,
+                    ])) + count($matchFields) * 15,
                     'match_fields' => $matchFields,
                     'raw_chunk' => false,
                     'occurred_at' => $this->toIsoString($row->created_at),

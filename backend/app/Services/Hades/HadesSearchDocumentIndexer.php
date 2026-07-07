@@ -242,6 +242,16 @@ class HadesSearchDocumentIndexer
      */
     public function matchingSourceIds(string $projectId, ?string $workspaceBindingId, array $domains, string $query, array $filters, int $limit, bool $includeProjectLevel = true): array
     {
+        return array_keys($this->matchingSourceScores($projectId, $workspaceBindingId, $domains, $query, $filters, $limit, $includeProjectLevel));
+    }
+
+    /**
+     * @param  list<string>  $domains
+     * @param  array<string, string>  $filters
+     * @return array<string, int>
+     */
+    public function matchingSourceScores(string $projectId, ?string $workspaceBindingId, array $domains, string $query, array $filters, int $limit, bool $includeProjectLevel = true): array
+    {
         if ($query === '' && ! $this->hasFilters($filters)) {
             return [];
         }
@@ -297,10 +307,23 @@ class HadesSearchDocumentIndexer
             })
             ->orderByDesc('updated_at')
             ->limit(max(50, $limit * 15))
-            ->pluck('source_id')
-            ->all();
+            ->get(['source_id', 'title', 'body', 'source_schema', 'metadata']);
 
-        return array_values(array_unique(array_map('strval', $rows)));
+        $scores = [];
+        foreach ($rows as $row) {
+            $sourceId = (string) $row->source_id;
+            $score = $this->documentScore($query, $tokens, [
+                (string) $row->title,
+                (string) $row->body,
+                (string) $row->source_schema,
+                (string) $row->metadata,
+            ]);
+            $scores[$sourceId] = max($scores[$sourceId] ?? 0, $score);
+        }
+
+        arsort($scores);
+
+        return $scores;
     }
 
     /**
@@ -472,6 +495,62 @@ class HadesSearchDocumentIndexer
         }
 
         return false;
+    }
+
+    /**
+     * @param  list<string>  $tokens
+     * @param  list<string>  $fields
+     */
+    private function documentScore(string $query, array $tokens, array $fields): int
+    {
+        if ($query === '' && $tokens === []) {
+            return 1;
+        }
+
+        $query = Str::lower(trim($query));
+        $weightedFields = [
+            ['text' => Str::lower($fields[0] ?? ''), 'weight' => 14],
+            ['text' => Str::lower($fields[1] ?? ''), 'weight' => 8],
+            ['text' => Str::lower($fields[2] ?? ''), 'weight' => 5],
+            ['text' => Str::lower($fields[3] ?? ''), 'weight' => 4],
+        ];
+        $joined = Str::lower(implode(PHP_EOL, $fields));
+        $score = 0;
+        $matchedTokens = [];
+
+        if ($query !== '' && str_contains($weightedFields[0]['text'], $query)) {
+            $score += 90;
+        } elseif ($query !== '' && str_contains($joined, $query)) {
+            $score += 40;
+        }
+
+        foreach ($weightedFields as $field) {
+            $text = trim((string) $field['text']);
+            if ($text === '') {
+                continue;
+            }
+
+            $fieldMatches = 0;
+            foreach ($tokens as $token) {
+                if (! str_contains($text, $token)) {
+                    continue;
+                }
+
+                $matchedTokens[$token] = true;
+                $fieldMatches++;
+                $score += (int) $field['weight'] + min(4, substr_count($text, $token)) * 2 + min(12, strlen($token));
+            }
+
+            if ($fieldMatches > 1) {
+                $score += $fieldMatches * (int) $field['weight'];
+            }
+        }
+
+        if ($tokens !== [] && count($matchedTokens) === count($tokens)) {
+            $score += 20 + (count($tokens) * 5);
+        }
+
+        return $score;
     }
 
     /**

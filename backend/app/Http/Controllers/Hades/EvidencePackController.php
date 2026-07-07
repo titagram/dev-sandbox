@@ -160,7 +160,8 @@ class EvidencePackController extends Controller
         $query = trim((string) ($validated['query'] ?? ''));
         $tokens = $this->tokens($query);
         $limit = (int) ($validated['limit'] ?? 10);
-        $indexedPackIds = $this->searchIndexer->matchingSourceIds($validated['project_id'], $binding->id, ['evidence_packs'], $query, [], $limit, false);
+        $indexedPackScores = $this->searchIndexer->matchingSourceScores($validated['project_id'], $binding->id, ['evidence_packs'], $query, [], $limit, false);
+        $indexedPackIds = array_keys($indexedPackScores);
 
         $rows = DB::table('hades_evidence_packs')
             ->where('project_id', $validated['project_id'])
@@ -186,15 +187,15 @@ class EvidencePackController extends Controller
             ->orderByDesc('id')
             ->limit(max(50, $limit * 8))
             ->get()
-            ->map(function (object $row) use ($query, $tokens): array {
+            ->map(function (object $row) use ($indexedPackScores, $query, $tokens): array {
                 $item = self::packPayload($row);
-                $item['score'] = $this->score($query, $tokens, [
+                $item['score'] = max($indexedPackScores[(string) $row->id] ?? 0, $this->score($query, $tokens, [
                     (string) $row->title,
                     (string) $row->summary,
                     (string) $row->evidence_refs,
                     (string) $row->graph_refs,
                     (string) $row->payload,
-                ]);
+                ]));
 
                 return $item;
             })
