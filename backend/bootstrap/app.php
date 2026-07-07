@@ -30,6 +30,10 @@ return Application::configure(basePath: dirname(__DIR__))
             ->command('devboard:artifacts-retain', ['--days' => (int) config('services.devboard.artifact_retention_days', 90)])
             ->dailyAt('03:15')
             ->withoutOverlapping();
+        $schedule
+            ->command('hades:search-documents-reindex', ['--limit' => 100000])
+            ->dailyAt('03:45')
+            ->withoutOverlapping();
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->trustProxies(at: '*');
