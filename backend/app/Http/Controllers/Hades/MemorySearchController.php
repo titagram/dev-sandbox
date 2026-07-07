@@ -338,14 +338,18 @@ class MemorySearchController extends Controller
     private function artifactResults(string $projectId, string $bindingId, string $query, array $filters, int $limit): array
     {
         $tokens = $this->tokens($query);
+        $indexedArtifactIds = $this->indexedArtifactIds($projectId, $bindingId, $query, $filters, $limit);
 
         return DB::table('hades_agent_artifacts')
             ->where('project_id', $projectId)
             ->where('workspace_binding_id', $bindingId)
+            ->when($indexedArtifactIds !== [], function ($builder) use ($indexedArtifactIds): void {
+                $builder->whereIn('id', $indexedArtifactIds);
+            })
             ->when(($filters['schema'] ?? '') !== '', function ($builder) use ($filters): void {
                 $builder->where('schema', 'like', '%'.$filters['schema'].'%');
             })
-            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+            ->when($query !== '' && $indexedArtifactIds === [], function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
                     foreach ($patterns as $pattern) {
@@ -395,6 +399,44 @@ class MemorySearchController extends Controller
             ->filter()
             ->values()
             ->all();
+    }
+
+    /**
+     * @param  array<string, string>  $filters
+     * @return list<string>
+     */
+    private function indexedArtifactIds(string $projectId, string $bindingId, string $query, array $filters, int $limit): array
+    {
+        if ($query === '' && ($filters['schema'] ?? '') === '') {
+            return [];
+        }
+
+        $tokens = $this->tokens($query);
+        $rows = DB::table('hades_search_documents')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->where('domain', 'artifacts')
+            ->when(($filters['schema'] ?? '') !== '', function ($builder) use ($filters): void {
+                $builder->where('source_schema', 'like', '%'.$filters['schema'].'%');
+            })
+            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+                $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
+                $builder->where(function ($nested) use ($patterns): void {
+                    foreach ($patterns as $pattern) {
+                        $like = '%'.$pattern.'%';
+                        $nested
+                            ->orWhere('title', 'like', $like)
+                            ->orWhere('body', 'like', $like)
+                            ->orWhere('source_schema', 'like', $like);
+                    }
+                });
+            })
+            ->orderByDesc('updated_at')
+            ->limit(max(50, $limit * 15))
+            ->pluck('source_id')
+            ->all();
+
+        return array_values(array_unique(array_map('strval', $rows)));
     }
 
     /**

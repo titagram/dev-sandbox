@@ -252,7 +252,10 @@ it('stores Hades git tree, symbols, and PHP graph artifacts from authenticated a
     expect(DB::table('hades_agent_artifacts')->where('schema', 'hades.git_tree.v1')->count())->toBe(1)
         ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.symbols.v1')->count())->toBe(1)
         ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.php_graph.v1')->count())->toBe(1)
-        ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.code_graph.v1')->count())->toBe(1);
+        ->and(DB::table('hades_agent_artifacts')->where('schema', 'hades.code_graph.v1')->count())->toBe(1)
+        ->and(DB::table('hades_search_documents')->where('domain', 'artifacts')->count())->toBe(4)
+        ->and(DB::table('hades_search_documents')->where('source_schema', 'hades.php_graph.v1')->where('body', 'like', '%OrderController%')->exists())->toBeTrue()
+        ->and(DB::table('hades_search_documents')->where('source_schema', 'hades.code_graph.v1')->where('body', 'like', '%OrdersPage%')->exists())->toBeTrue();
 });
 
 it('stores compressed Hades artifacts as decoded JSON', function () {
@@ -295,7 +298,8 @@ it('stores compressed Hades artifacts as decoded JSON', function () {
 
     expect($decoded['schema'])->toBe('hades.code_graph.v1')
         ->and($decoded['symbols'])->toHaveCount(300)
-        ->and($decoded['symbols'][0]['name'])->toBe('OrderComponent1');
+        ->and($decoded['symbols'][0]['name'])->toBe('OrderComponent1')
+        ->and(DB::table('hades_search_documents')->where('source_schema', 'hades.code_graph.v1')->where('body', 'like', '%OrderComponent300%')->exists())->toBeTrue();
 });
 
 it('stores explicit doctor reports and exposes a persistent Persephone inbox with polling and SSE fallback', function () {

@@ -78,6 +78,7 @@ class ArtifactController extends Controller
         ]);
 
         $artifact = DB::table('hades_agent_artifacts')->where('id', $id)->first();
+        $this->indexArtifactSearchDocument($artifact, $artifactPayload, $artifactJson);
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -121,6 +122,93 @@ class ArtifactController extends Controller
         }
 
         return $artifact;
+    }
+
+    private function indexArtifactSearchDocument(object $artifact, array $artifactPayload, string $artifactJson): void
+    {
+        DB::table('hades_search_documents')->updateOrInsert(
+            [
+                'source_table' => 'hades_agent_artifacts',
+                'source_id' => $artifact->id,
+            ],
+            [
+                'id' => (string) Str::ulid(),
+                'project_id' => $artifact->project_id,
+                'workspace_binding_id' => $artifact->workspace_binding_id,
+                'domain' => 'artifacts',
+                'kind' => 'artifact',
+                'source_schema' => $artifact->schema,
+                'title' => $this->artifactSearchTitle((string) $artifact->schema, $artifactPayload),
+                'body' => $this->artifactSearchBody($artifactPayload, $artifactJson),
+                'metadata' => json_encode([
+                    'schema' => $artifact->schema,
+                    'sha256' => $artifact->sha256,
+                    'truncated' => (bool) $artifact->truncated,
+                    'redactions' => (int) $artifact->redactions,
+                ], JSON_THROW_ON_ERROR),
+                'checksum' => hash('sha256', $artifact->schema.'|'.$artifact->sha256.'|'.$artifactJson),
+                'created_at' => $artifact->created_at,
+                'updated_at' => now(),
+            ],
+        );
+    }
+
+    private function artifactSearchTitle(string $schema, array $artifact): string
+    {
+        $parts = [$schema];
+        foreach (['root', 'framework', 'language', 'head_commit'] as $key) {
+            $value = trim((string) ($artifact[$key] ?? ''));
+            if ($value !== '') {
+                $parts[] = $value;
+            }
+        }
+
+        return substr(implode(' ', array_values(array_unique($parts))), 0, 255);
+    }
+
+    private function artifactSearchBody(array $artifact, string $artifactJson): string
+    {
+        $parts = [];
+        $count = 0;
+        $this->collectSearchScalars($artifact, $parts, $count);
+        $body = trim(implode("\n", array_values(array_unique($parts))));
+
+        if ($body === '') {
+            $body = $artifactJson;
+        }
+
+        return substr($body, 0, 200000);
+    }
+
+    private function collectSearchScalars(mixed $value, array &$parts, int &$count): void
+    {
+        if ($count >= 2000) {
+            return;
+        }
+
+        if (is_scalar($value)) {
+            $text = trim((string) $value);
+            if ($text !== '') {
+                $parts[] = $text;
+                $count++;
+            }
+
+            return;
+        }
+
+        if (! is_array($value)) {
+            return;
+        }
+
+        foreach ($value as $key => $item) {
+            if ($count >= 2000) {
+                return;
+            }
+            if (is_string($key) && $key !== '') {
+                $parts[] = $key;
+            }
+            $this->collectSearchScalars($item, $parts, $count);
+        }
     }
 
     private function linkedBinding(object $agent, string $projectId, string $bindingId, ?string $externalAgentId): mixed
