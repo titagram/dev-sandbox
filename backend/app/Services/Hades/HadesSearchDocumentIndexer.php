@@ -2,6 +2,7 @@
 
 namespace App\Services\Hades;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -257,57 +258,79 @@ class HadesSearchDocumentIndexer
         }
 
         $tokens = $this->tokens($query);
-        $rows = DB::table('hades_search_documents')
-            ->where('project_id', $projectId)
-            ->whereIn('domain', $domains)
-            ->when($workspaceBindingId !== null, function ($builder) use ($includeProjectLevel, $workspaceBindingId): void {
-                if ($includeProjectLevel) {
-                    $builder->where(function ($nested) use ($workspaceBindingId): void {
-                        $nested->whereNull('workspace_binding_id')->orWhere('workspace_binding_id', $workspaceBindingId);
-                    });
+        $fullTextQuery = $this->fullTextQuery($query);
+        $useFullText = $fullTextQuery !== '' && $this->supportsFullTextSearch();
+        $selectRows = function (bool $withFullText) use ($domains, $filters, $fullTextQuery, $includeProjectLevel, $limit, $projectId, $query, $tokens, $workspaceBindingId) {
+            $fullTextMatch = 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE)';
 
-                    return;
-                }
+            return DB::table('hades_search_documents')
+                ->where('project_id', $projectId)
+                ->whereIn('domain', $domains)
+                ->when($workspaceBindingId !== null, function ($builder) use ($includeProjectLevel, $workspaceBindingId): void {
+                    if ($includeProjectLevel) {
+                        $builder->where(function ($nested) use ($workspaceBindingId): void {
+                            $nested->whereNull('workspace_binding_id')->orWhere('workspace_binding_id', $workspaceBindingId);
+                        });
 
-                $builder->where('workspace_binding_id', $workspaceBindingId);
-            })
-            ->when(($filters['kind'] ?? '') !== '', function ($builder) use ($filters): void {
-                $builder->where('kind', $filters['kind']);
-            })
-            ->when(($filters['schema'] ?? '') !== '', function ($builder) use ($filters): void {
-                $builder->where('source_schema', 'like', '%'.$filters['schema'].'%');
-            })
-            ->when($this->hasBodyFilters($filters), function ($builder) use ($filters): void {
-                $builder->where(function ($nested) use ($filters): void {
-                    foreach (['source', 'symbol', 'path'] as $key) {
-                        $value = $filters[$key] ?? '';
-                        if ($value === '') {
-                            continue;
+                        return;
+                    }
+
+                    $builder->where('workspace_binding_id', $workspaceBindingId);
+                })
+                ->when(($filters['kind'] ?? '') !== '', function ($builder) use ($filters): void {
+                    $builder->where('kind', $filters['kind']);
+                })
+                ->when(($filters['schema'] ?? '') !== '', function ($builder) use ($filters): void {
+                    $builder->where('source_schema', 'like', '%'.$filters['schema'].'%');
+                })
+                ->when($this->hasBodyFilters($filters), function ($builder) use ($filters): void {
+                    $builder->where(function ($nested) use ($filters): void {
+                        foreach (['source', 'symbol', 'path'] as $key) {
+                            $value = $filters[$key] ?? '';
+                            if ($value === '') {
+                                continue;
+                            }
+                            $like = '%'.$value.'%';
+                            $nested
+                                ->orWhere('title', 'like', $like)
+                                ->orWhere('body', 'like', $like)
+                                ->orWhere('metadata', 'like', $like);
                         }
-                        $like = '%'.$value.'%';
-                        $nested
-                            ->orWhere('title', 'like', $like)
-                            ->orWhere('body', 'like', $like)
-                            ->orWhere('metadata', 'like', $like);
-                    }
-                });
-            })
-            ->when($query !== '', function ($builder) use ($query, $tokens): void {
-                $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
-                $builder->where(function ($nested) use ($patterns): void {
-                    foreach ($patterns as $pattern) {
-                        $like = '%'.$pattern.'%';
-                        $nested
-                            ->orWhere('title', 'like', $like)
-                            ->orWhere('body', 'like', $like)
-                            ->orWhere('source_schema', 'like', $like)
-                            ->orWhere('metadata', 'like', $like);
-                    }
-                });
-            })
-            ->orderByDesc('updated_at')
-            ->limit(max(50, $limit * 15))
-            ->get(['source_id', 'title', 'body', 'source_schema', 'metadata']);
+                    });
+                })
+                ->when($withFullText, function ($builder) use ($fullTextMatch, $fullTextQuery): void {
+                    $builder->whereRaw($fullTextMatch, [$fullTextQuery]);
+                })
+                ->when($query !== '' && ! $withFullText, function ($builder) use ($query, $tokens): void {
+                    $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
+                    $builder->where(function ($nested) use ($patterns): void {
+                        foreach ($patterns as $pattern) {
+                            $like = '%'.$pattern.'%';
+                            $nested
+                                ->orWhere('title', 'like', $like)
+                                ->orWhere('body', 'like', $like)
+                                ->orWhere('source_schema', 'like', $like)
+                                ->orWhere('metadata', 'like', $like);
+                        }
+                    });
+                })
+                ->when(
+                    $withFullText,
+                    fn ($builder) => $builder->orderByRaw($fullTextMatch.' DESC', [$fullTextQuery]),
+                    fn ($builder) => $builder->orderByDesc('updated_at'),
+                )
+                ->limit(max(50, $limit * 15))
+                ->get(['source_id', 'title', 'body', 'source_schema', 'metadata']);
+        };
+
+        try {
+            $rows = $selectRows($useFullText);
+        } catch (QueryException $exception) {
+            if (! $useFullText) {
+                throw $exception;
+            }
+            $rows = $selectRows(false);
+        }
 
         $scores = [];
         foreach ($rows as $row) {
@@ -551,6 +574,19 @@ class HadesSearchDocumentIndexer
         }
 
         return $score;
+    }
+
+    private function supportsFullTextSearch(): bool
+    {
+        return DB::connection()->getDriverName() === 'mysql';
+    }
+
+    private function fullTextQuery(string $query): string
+    {
+        preg_match_all('/[A-Za-z0-9]{2,}/', $query, $matches);
+        $terms = array_slice(array_values(array_unique(array_map('strtolower', $matches[0] ?? []))), 0, 12);
+
+        return implode(' ', array_map(fn (string $term): string => '+'.$term.'*', $terms));
     }
 
     /**
