@@ -238,6 +238,106 @@ it('rejects precise source-free diagnosis when coverage is insufficient', functi
         ->assertJsonPath('diagnosis_report.confidence', 'insufficient');
 });
 
+it('rejects precise source-free diagnosis when graph and source slices are stale', function () {
+    $agent = hadesNoCodebaseRegisteredAgent();
+    $binding = hadesNoCodebaseWorkspaceBinding($agent);
+    $headers = hadesNoCodebaseHeaders($agent['agent_token']);
+    $projectId = $agent['project_id'];
+    $bindingId = $binding['workspace_binding_id'];
+    $workspaceHead = str_repeat('f', 40);
+    $staleHead = str_repeat('e', 40);
+
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => hadesNoCodebaseGraphArtifact($staleHead),
+        'truncated' => false,
+        'redactions' => 0,
+    ], $headers)->assertCreated();
+
+    $bugReportId = $this->postJson('/api/hades/v1/bug-reports', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'title' => 'Order detail graph is from an older checkout',
+        'symptom' => 'GET /orders/123 still returns 500 on the current deployment.',
+        'environment' => ['deploy_commit' => $workspaceHead],
+    ], $headers)->assertCreated()->json('bug_report.id');
+
+    $evidenceId = $this->postJson('/api/hades/v1/bug-evidence', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'kind' => 'stack_trace',
+        'summary' => 'OrderController@show stack trace was captured from the current deploy.',
+        'payload' => ['frames' => [['path' => 'app/Http/Controllers/OrderController.php', 'line' => 43]]],
+        'source' => 'laravel.log',
+    ], $headers)->assertCreated()->json('evidence.id');
+
+    $sourceSliceId = $this->postJson('/api/hades/v1/source-slices', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'path' => 'app/Http/Controllers/OrderController.php',
+        'start_line' => 41,
+        'end_line' => 44,
+        'language' => 'php',
+        'symbol' => 'App\\Http\\Controllers\\OrderController@show',
+        'head_commit' => $staleHead,
+        'content_redacted' => "41: public function show(int \$id)\n42: \$order = \$this->orders->findVisible(\$id);\n43: return \$order->customer->active();\n44: }",
+        'redactions' => 0,
+        'truncated' => false,
+        'retention_class' => 'source_slice',
+        'policy' => 'manual_review',
+    ], $headers)->assertCreated()->json('source_slice.id');
+
+    $awareness = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+    ]), $headers)
+        ->assertOk()
+        ->assertJsonPath('freshness.status', 'stale')
+        ->assertJsonPath('freshness.workspace_head_commit', $workspaceHead)
+        ->assertJsonPath('freshness.artifact_head_commit', $staleHead)
+        ->assertJsonPath('freshness.stale_reason', 'artifact_head_mismatch')
+        ->assertJsonPath('coverage.artifacts.status', 'stale')
+        ->assertJsonPath('coverage.code_graph.status', 'stale')
+        ->assertJsonPath('coverage.bug_evidence.status', 'current')
+        ->assertJsonPath('coverage.source_slices.status', 'stale')
+        ->assertJsonPath('coverage.source_slices.stale_reason', 'source_slice_head_mismatch')
+        ->assertJsonPath('diagnosable_without_source', false)
+        ->assertJsonPath('overall_status', 'stale')
+        ->json();
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'status' => 'final',
+        'confidence' => 'high',
+        'root_cause' => 'OrderController@show dereferences customer without a guard.',
+        'evidence_refs' => [
+            ['type' => 'bug_evidence', 'id' => $evidenceId],
+            ['type' => 'source_slice', 'id' => $sourceSliceId],
+        ],
+        'freshness' => $awareness['freshness'],
+    ], $headers)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'diagnosis_freshness_not_current');
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'status' => 'final',
+        'confidence' => 'insufficient',
+        'root_cause' => 'Precise diagnosis is blocked until graph and source slices are refreshed to the workspace HEAD.',
+        'evidence_refs' => [['type' => 'bug_evidence', 'id' => $evidenceId]],
+        'freshness' => $awareness['freshness'],
+    ], $headers)
+        ->assertCreated()
+        ->assertJsonPath('diagnosis_report.confidence', 'insufficient');
+});
+
 function hadesNoCodebaseHeaders(?string $token = null): array
 {
     return $token === null ? [] : ['Authorization' => 'Bearer '.$token];
