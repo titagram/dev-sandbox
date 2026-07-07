@@ -1,9 +1,10 @@
 <?php
 
+use App\Console\Commands\Hades\ReindexSearchDocumentsCommand;
 use App\Console\Commands\Quality\CheckGatesCommand;
 use App\Console\Commands\Quality\RouteInventoryCommand;
-use App\Http\Middleware\AuthenticateHadesAgentToken;
 use App\Console\Commands\Quality\RouteSmokeCommand;
+use App\Http\Middleware\AuthenticateHadesAgentToken;
 use App\Http\Middleware\AuthenticatePluginToken;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
@@ -20,6 +21,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withCommands([
         CheckGatesCommand::class,
+        ReindexSearchDocumentsCommand::class,
         RouteInventoryCommand::class,
         RouteSmokeCommand::class,
     ])

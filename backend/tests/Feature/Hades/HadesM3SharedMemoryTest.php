@@ -3,6 +3,7 @@
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -536,6 +537,139 @@ it('uses materialized search documents for Hades wiki search candidates', functi
         ->assertJsonPath('items.0.id', $revisionId)
         ->assertJsonPath('items.0.domain', 'wiki')
         ->assertJsonPath('items.0.page_slug', 'architecture/materialized-search');
+});
+
+it('backfills materialized search documents for legacy Hades records', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $projectId = $agent['project_id'];
+    $bindingId = $binding['workspace_binding_id'];
+    $now = now();
+    $memoryId = (string) Str::ulid();
+    $pageId = (string) Str::ulid();
+    $revisionId = (string) Str::ulid();
+    $evidenceId = (string) Str::ulid();
+    $sliceId = (string) Str::ulid();
+    $packId = (string) Str::ulid();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $projectId,
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'manual',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'Legacy memory should be backfilled into Hades search documents.',
+        'payload' => json_encode(['schema' => 'legacy.memory.v1', 'note' => 'legacy-memory-backfill'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('wiki_pages')->insert([
+        'id' => $pageId,
+        'project_id' => $projectId,
+        'repository_id' => null,
+        'slug' => 'legacy/backfill',
+        'title' => 'Legacy Backfill Wiki',
+        'page_type' => 'architecture',
+        'current_revision_id' => $revisionId,
+        'source_status' => 'verified_from_code',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('wiki_revisions')->insert([
+        'id' => $revisionId,
+        'wiki_page_id' => $pageId,
+        'author_user_id' => null,
+        'author_device_id' => null,
+        'producer' => 'test',
+        'source_type' => 'controlled_agent_tool',
+        'source_status' => 'verified_from_code',
+        'content_markdown' => 'Legacy wiki should be backfilled into Hades search documents.',
+        'evidence_refs' => json_encode([], JSON_THROW_ON_ERROR),
+        'created_at' => $now,
+    ]);
+
+    DB::table('hades_bug_evidence_items')->insert([
+        'id' => $evidenceId,
+        'project_id' => $projectId,
+        'bug_report_id' => null,
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $bindingId,
+        'kind' => 'stack_trace',
+        'summary' => 'Legacy bug evidence backfill stack trace.',
+        'payload' => json_encode(['schema' => 'hades.stack_trace.v1', 'frame' => 'LegacyController@show'], JSON_THROW_ON_ERROR),
+        'source' => 'laravel.log',
+        'sha256' => str_repeat('d', 64),
+        'redactions' => 0,
+        'retention_class' => 'stack_trace',
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_source_slices')->insert([
+        'id' => $sliceId,
+        'project_id' => $projectId,
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $bindingId,
+        'job_id' => null,
+        'path' => 'app/LegacyController.php',
+        'start_line' => 10,
+        'end_line' => 12,
+        'language' => 'php',
+        'symbol' => 'LegacyController@show',
+        'head_commit' => str_repeat('f', 40),
+        'sha256' => str_repeat('e', 64),
+        'content_redacted' => 'legacy source slice backfill content',
+        'redactions' => 0,
+        'truncated' => false,
+        'retention_class' => 'source_slice',
+        'policy' => 'manual_review',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_evidence_packs')->insert([
+        'id' => $packId,
+        'project_id' => $projectId,
+        'bug_report_id' => null,
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $bindingId,
+        'title' => 'Legacy evidence pack backfill',
+        'summary' => 'Legacy evidence pack should be indexed by the backfill command.',
+        'evidence_refs' => json_encode([['type' => 'bug_evidence', 'id' => $evidenceId]], JSON_THROW_ON_ERROR),
+        'graph_refs' => json_encode([], JSON_THROW_ON_ERROR),
+        'source_slice_ids' => json_encode([$sliceId], JSON_THROW_ON_ERROR),
+        'payload' => json_encode(['note' => 'legacy-pack-backfill'], JSON_THROW_ON_ERROR),
+        'sha256' => str_repeat('f', 64),
+        'redactions' => 0,
+        'retention_class' => 'diagnosis_evidence',
+        'head_commit' => str_repeat('f', 40),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    expect(DB::table('hades_search_documents')->count())->toBe(0);
+
+    $exitCode = Artisan::call('hades:search-documents-reindex', [
+        '--project' => $projectId,
+        '--json' => true,
+    ]);
+    $output = json_decode(Artisan::output(), true, 512, JSON_THROW_ON_ERROR);
+
+    expect($exitCode)->toBe(0)
+        ->and($output['indexed'])->toBeGreaterThanOrEqual(5)
+        ->and(DB::table('hades_search_documents')->where('source_table', 'project_memory_entries')->where('source_id', $memoryId)->whereNull('workspace_binding_id')->exists())->toBeTrue()
+        ->and(DB::table('hades_search_documents')->where('source_table', 'wiki_revisions')->where('source_id', $revisionId)->exists())->toBeTrue()
+        ->and(DB::table('hades_search_documents')->where('source_table', 'hades_bug_evidence_items')->where('source_id', $evidenceId)->exists())->toBeTrue()
+        ->and(DB::table('hades_search_documents')->where('source_table', 'hades_source_slices')->where('source_id', $sliceId)->exists())->toBeTrue()
+        ->and(DB::table('hades_search_documents')->where('source_table', 'hades_evidence_packs')->where('source_id', $packId)->exists())->toBeTrue();
 });
 
 it('quarantines raw source chunks from memory search unless explicitly requested', function () {
