@@ -204,6 +204,9 @@ Route::prefix('hades/v1')->group(function () {
     Route::post('/diagnosis-reports', [HadesDiagnosisReportController::class, 'store'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
+    Route::post('/diagnosis-reports/{diagnosisReport}/promote', [HadesDiagnosisReportController::class, 'promote'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
     Route::get('/agent/jobs', HadesAgentJobsController::class)
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 

@@ -951,6 +951,120 @@ it('stores diagnosis reports with evidence refs for linked workspaces', function
         ->toBe('OrderController calls a service with a null dependency.');
 });
 
+it('promotes final diagnosis reports to resolved bug memory and search surfaces staleness', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $bugReport = $this->postJson('/api/hades/v1/bug-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'title' => 'Order page returns 500',
+        'symptom' => 'Order show fails with active() on null for archived customers.',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->json('bug_report');
+
+    $diagnosis = $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'bug_report_id' => $bugReport['id'],
+        'status' => 'final',
+        'confidence' => 'high',
+        'root_cause' => 'OrderController dereferences a missing customer relation before checking active().',
+        'mechanism' => 'The stack trace frame and source slice both point to OrderController@show calling active() on a nullable relation.',
+        'evidence_refs' => [
+            ['type' => 'bug_evidence', 'id' => 'evidence_1'],
+            ['type' => 'source_slice', 'id' => 'slice_1'],
+        ],
+        'freshness' => ['status' => 'current', 'workspace_head_commit' => str_repeat('f', 40)],
+        'payload' => ['next_verification' => 'Run OrderControllerTest::test_archived_customer_show.'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->json('diagnosis_report');
+
+    $created = $this->postJson('/api/hades/v1/diagnosis-reports/'.$diagnosis['id'].'/promote', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'verification_status' => 'test_passed',
+        'fix_commit' => str_repeat('a', 40),
+        'affected_symbols' => ['OrderController@show'],
+        'regression_tests' => ['OrderControllerTest::test_archived_customer_show'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('already_promoted', false)
+        ->assertJsonPath('resolved_bug_memory.kind', 'resolved_bug')
+        ->assertJsonPath('resolved_bug_memory.payload.schema', 'hades.resolved_bug.v1')
+        ->assertJsonPath('resolved_bug_memory.payload.root_cause', 'OrderController dereferences a missing customer relation before checking active().')
+        ->assertJsonPath('resolved_bug_memory.payload.verification_status', 'test_passed')
+        ->assertJsonPath('resolved_bug_memory.payload.affected_symbols.0', 'OrderController@show')
+        ->json('resolved_bug_memory');
+
+    expect(DB::table('project_memory_entries')->where('id', $created['id'])->value('kind'))->toBe('resolved_bug')
+        ->and(DB::table('project_memory_entries')->where('id', $created['id'])->value('source'))->toBe('hades_diagnosis_report')
+        ->and(DB::table('project_memory_links')->where('memory_entry_id', $created['id'])->where('target_type', 'hades_diagnosis_report')->where('target_id', $diagnosis['id'])->exists())->toBeTrue();
+
+    $this->postJson('/api/hades/v1/diagnosis-reports/'.$diagnosis['id'].'/promote', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'verification_status' => 'test_passed',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('already_promoted', true)
+        ->assertJsonPath('resolved_bug_memory.id', $created['id']);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'active null archived customer',
+        'domain' => 'project_memory',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('items.0.id', $created['id'])
+        ->assertJsonPath('items.0.kind', 'resolved_bug')
+        ->assertJsonPath('items.0.stale', false);
+
+    DB::table('hades_workspace_bindings')
+        ->where('id', $binding['workspace_binding_id'])
+        ->update(['head_commit' => str_repeat('b', 40), 'updated_at' => now()]);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'active null archived customer',
+        'domain' => 'project_memory',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('items.0.id', $created['id'])
+        ->assertJsonPath('items.0.stale', true)
+        ->assertJsonPath('items.0.stale_reason', 'workspace_head_changed');
+});
+
+it('refuses to promote unverified diagnosis reports to resolved bug memory', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+
+    $diagnosis = $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'final',
+        'confidence' => 'insufficient',
+        'root_cause' => 'not determined',
+        'freshness' => ['status' => 'partial'],
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertCreated()
+        ->json('diagnosis_report');
+
+    $this->postJson('/api/hades/v1/diagnosis-reports/'.$diagnosis['id'].'/promote', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'verification_status' => 'manual_review',
+    ], hadesM3Headers($agent['agent_token']))
+        ->assertStatus(409)
+        ->assertJsonPath('error.code', 'diagnosis_confidence_too_low');
+
+    expect(DB::table('project_memory_entries')->where('project_id', $agent['project_id'])->where('kind', 'resolved_bug')->exists())->toBeFalse();
+});
+
 it('reports stale project awareness when indexed artifacts are from another commit', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);

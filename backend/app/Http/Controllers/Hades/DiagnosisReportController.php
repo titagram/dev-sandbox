@@ -20,6 +20,8 @@ class DiagnosisReportController extends Controller
 
     private const STATUSES = ['draft', 'final'];
 
+    private const PROMOTION_VERIFICATIONS = ['user_confirmed', 'test_passed', 'manual_review'];
+
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -98,6 +100,193 @@ class DiagnosisReportController extends Controller
         ], Response::HTTP_CREATED);
     }
 
+    public function promote(Request $request, string $diagnosisReport): JsonResponse
+    {
+        $validated = $request->validate([
+            'project_id' => ['required', 'string'],
+            'workspace_binding_id' => ['required', 'string'],
+            'verification_status' => ['required', 'string', Rule::in(self::PROMOTION_VERIFICATIONS)],
+            'fix_commit' => ['nullable', 'string', 'max:191'],
+            'fix_pr_url' => ['nullable', 'string', 'max:2048'],
+            'regression_tests' => ['nullable', 'array'],
+            'affected_symbols' => ['nullable', 'array'],
+            'payload' => ['nullable', 'array'],
+            'redactions' => ['nullable', 'integer', 'min:0', 'max:100000'],
+        ]);
+
+        $auth = $request->attributes->get('hades_auth');
+        $agent = $auth['agent'];
+        $binding = $this->linkedBinding($agent, $validated['project_id'], $validated['workspace_binding_id']);
+
+        if ($binding instanceof JsonResponse) {
+            return $binding;
+        }
+
+        $report = DB::table('hades_diagnosis_reports')
+            ->where('id', $diagnosisReport)
+            ->where('project_id', $validated['project_id'])
+            ->where('workspace_binding_id', $binding->id)
+            ->first();
+
+        if (! $report) {
+            return $this->error('diagnosis_report_not_found', 'Hades diagnosis report was not found.', Response::HTTP_NOT_FOUND);
+        }
+
+        if ($report->status !== 'final') {
+            return $this->error('diagnosis_report_not_final', 'Only final diagnosis reports can be promoted to resolved bug memory.', Response::HTTP_CONFLICT);
+        }
+
+        if (! in_array($report->confidence, ['high', 'medium'], true)) {
+            return $this->error('diagnosis_confidence_too_low', 'Only high or medium confidence diagnosis reports can become resolved bug memory.', Response::HTTP_CONFLICT);
+        }
+
+        $evidenceRefs = self::decode($report->evidence_refs);
+        $freshness = self::decode($report->freshness);
+        $reportPayload = self::decode($report->payload);
+        $affectedSymbols = self::normaliseStringList($validated['affected_symbols'] ?? ($reportPayload['affected_symbols'] ?? []));
+        $regressionTests = self::normaliseStringList($validated['regression_tests'] ?? ($reportPayload['regression_tests'] ?? []));
+        $promotionPayload = [
+            'verification_status' => $validated['verification_status'],
+            'fix_commit' => $validated['fix_commit'] ?? null,
+            'fix_pr_url' => $validated['fix_pr_url'] ?? null,
+            'affected_symbols' => $affectedSymbols,
+            'regression_tests' => $regressionTests,
+            'payload' => $validated['payload'] ?? [],
+        ];
+
+        if ($policyError = $this->policy->validateDiagnosisReport(
+            (string) $report->root_cause,
+            $report->mechanism,
+            $evidenceRefs,
+            $freshness,
+            array_merge($reportPayload, ['promotion' => $promotionPayload]),
+        )) {
+            return $this->error($policyError['code'], $policyError['message'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $existing = DB::table('project_memory_links as links')
+            ->join('project_memory_entries as entries', 'entries.id', '=', 'links.memory_entry_id')
+            ->where('links.target_type', 'hades_diagnosis_report')
+            ->where('links.target_id', $report->id)
+            ->where('entries.project_id', $validated['project_id'])
+            ->where('entries.kind', 'resolved_bug')
+            ->select('entries.*')
+            ->first();
+
+        if ($existing) {
+            return response()->json([
+                'protocol_version' => 'v1',
+                'project_id' => $validated['project_id'],
+                'workspace_binding_id' => $binding->id,
+                'diagnosis_report_id' => $report->id,
+                'already_promoted' => true,
+                'resolved_bug_memory' => self::memoryEntryPayload($existing),
+                'server_time' => now()->toISOString(),
+            ]);
+        }
+
+        $bugReport = $report->bug_report_id
+            ? DB::table('hades_bug_reports')
+                ->where('id', $report->bug_report_id)
+                ->where('project_id', $validated['project_id'])
+                ->first()
+            : null;
+        $now = now();
+        $validFromCommit = trim((string) ($freshness['workspace_head_commit'] ?? $binding->head_commit ?? ''));
+        $currentHead = trim((string) ($binding->head_commit ?? ''));
+        $validity = [
+            'status' => 'current',
+            'valid_from_commit' => $validFromCommit !== '' ? $validFromCommit : null,
+            'current_workspace_head_commit' => $currentHead !== '' ? $currentHead : null,
+        ];
+
+        if ($validFromCommit !== '' && $currentHead !== '' && ! hash_equals($validFromCommit, $currentHead)) {
+            $validity['status'] = 'stale';
+            $validity['stale_reason'] = 'workspace_head_changed';
+        }
+
+        $memory = DB::transaction(function () use ($affectedSymbols, $agent, $binding, $bugReport, $evidenceRefs, $freshness, $now, $promotionPayload, $regressionTests, $report, $validated, $validity) {
+            $memoryEntryId = (string) Str::ulid();
+            $summary = self::compact('Resolved bug: '.($bugReport?->symptom ? $bugReport->symptom.' -> ' : '').$report->root_cause, 4000);
+            $payload = [
+                'schema' => 'hades.resolved_bug.v1',
+                'diagnosis_report_id' => (string) $report->id,
+                'bug_report_id' => $report->bug_report_id,
+                'symptom' => $bugReport?->symptom,
+                'root_cause' => (string) $report->root_cause,
+                'mechanism' => $report->mechanism,
+                'confidence' => (string) $report->confidence,
+                'verification_status' => $validated['verification_status'],
+                'affected_symbols' => $affectedSymbols,
+                'fix_commit' => $validated['fix_commit'] ?? null,
+                'fix_pr_url' => $validated['fix_pr_url'] ?? null,
+                'regression_tests' => $regressionTests,
+                'evidence_refs' => $evidenceRefs,
+                'freshness' => $freshness,
+                'validity' => $validity,
+                'workspace_binding_id' => $binding->id,
+                'promotion' => $promotionPayload,
+                'redactions' => (int) ($validated['redactions'] ?? 0),
+                'promoted_at' => $now->toISOString(),
+            ];
+
+            DB::table('project_memory_entries')->insert([
+                'id' => $memoryEntryId,
+                'project_id' => $validated['project_id'],
+                'repository_id' => null,
+                'task_id' => null,
+                'run_id' => null,
+                'author_user_id' => null,
+                'agent_key' => $agent->external_agent_id,
+                'source' => 'hades_diagnosis_report',
+                'kind' => 'resolved_bug',
+                'completeness' => 'complete',
+                'summary' => $summary,
+                'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+                'occurred_at' => $now,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $links = [
+                ['target_type' => 'hades_diagnosis_report', 'target_id' => (string) $report->id],
+            ];
+            if ($report->bug_report_id) {
+                $links[] = ['target_type' => 'hades_bug_report', 'target_id' => (string) $report->bug_report_id];
+            }
+            foreach ($evidenceRefs as $ref) {
+                if (! is_array($ref) || ! isset($ref['id'])) {
+                    continue;
+                }
+                $type = isset($ref['type']) ? 'hades_'.Str::slug((string) $ref['type'], '_') : 'hades_evidence_ref';
+                $links[] = ['target_type' => $type, 'target_id' => (string) $ref['id']];
+            }
+
+            foreach ($links as $link) {
+                DB::table('project_memory_links')->insert([
+                    'id' => (string) Str::ulid(),
+                    'memory_entry_id' => $memoryEntryId,
+                    'target_type' => $link['target_type'],
+                    'target_id' => $link['target_id'],
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+            }
+
+            return DB::table('project_memory_entries')->where('id', $memoryEntryId)->first();
+        });
+
+        return response()->json([
+            'protocol_version' => 'v1',
+            'project_id' => $validated['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'diagnosis_report_id' => $report->id,
+            'already_promoted' => false,
+            'resolved_bug_memory' => self::memoryEntryPayload($memory),
+            'server_time' => now()->toISOString(),
+        ], Response::HTTP_CREATED);
+    }
+
     public static function reportPayload(object $report): array
     {
         return [
@@ -117,6 +306,59 @@ class DiagnosisReportController extends Controller
             'updated_at' => self::toIsoString($report->updated_at),
             'version' => 'diagnosis_report_'.hash('sha256', $report->id.'|'.$report->updated_at),
         ];
+    }
+
+    private static function memoryEntryPayload(object $entry): array
+    {
+        return [
+            'id' => $entry->id,
+            'project_id' => $entry->project_id,
+            'source' => $entry->source,
+            'kind' => $entry->kind,
+            'summary' => $entry->summary,
+            'payload' => self::decode($entry->payload),
+            'occurred_at' => self::toIsoString($entry->occurred_at),
+            'created_at' => self::toIsoString($entry->created_at),
+            'updated_at' => self::toIsoString($entry->updated_at),
+            'version' => 'mem_'.hash('sha256', $entry->id.'|'.$entry->updated_at),
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function normaliseStringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($value as $item) {
+            if (! is_scalar($item)) {
+                continue;
+            }
+            $text = trim((string) $item);
+            if ($text !== '') {
+                $items[] = self::compact($text, 500);
+            }
+            if (count($items) >= 50) {
+                break;
+            }
+        }
+
+        return array_values(array_unique($items));
+    }
+
+    private static function compact(string $value, int $max): string
+    {
+        $value = trim(preg_replace('/\s+/', ' ', $value) ?? $value);
+
+        if (strlen($value) <= $max) {
+            return $value;
+        }
+
+        return rtrim(substr($value, 0, $max - 3)).'...';
     }
 
     private function linkedBinding(object $agent, string $projectId, string $bindingId): mixed

@@ -55,6 +55,7 @@ class MemorySearchController extends Controller
                 domain: $domain,
                 limit: $limit,
                 includeRawChunks: $includeRawChunks,
+                workspaceHeadCommit: (string) ($binding->head_commit ?? ''),
             );
             $items = array_merge($items, $memoryItems);
             $rawChunksOmitted += $omitted;
@@ -128,7 +129,7 @@ class MemorySearchController extends Controller
     /**
      * @return array{0: list<array<string, mixed>>, 1: int}
      */
-    private function memoryResults(string $projectId, string $query, string $domain, int $limit, bool $includeRawChunks): array
+    private function memoryResults(string $projectId, string $query, string $domain, int $limit, bool $includeRawChunks, string $workspaceHeadCommit = ''): array
     {
         $tokens = $this->tokens($query);
         $rows = DB::table('project_memory_entries')
@@ -172,6 +173,17 @@ class MemorySearchController extends Controller
 
             $schema = $this->payloadString($payload, ['schema', 'content_schema', 'artifact_schema']);
             $source = $this->payloadString($payload, ['path', 'source_path', 'file', 'uri', 'route', 'symbol']);
+            $validity = $this->resolvedBugValidity($entry, $payload, $workspaceHeadCommit);
+            $score = $this->score($query, $tokens, [
+                (string) $entry->summary,
+                (string) $entry->payload,
+                (string) $entry->kind,
+                (string) $entry->source,
+                (string) $entry->agent_key,
+            ]);
+            if ((string) $entry->kind === 'resolved_bug') {
+                $score += 12;
+            }
 
             $items[] = [
                 'id' => (string) $entry->id,
@@ -182,14 +194,10 @@ class MemorySearchController extends Controller
                 'agent_key' => $entry->agent_key ? (string) $entry->agent_key : null,
                 'summary' => $this->compact((string) $entry->summary, $rawChunk ? 1200 : 800),
                 'payload_excerpt' => $this->excerpt(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: ''),
-                'score' => $this->score($query, $tokens, [
-                    (string) $entry->summary,
-                    (string) $entry->payload,
-                    (string) $entry->kind,
-                    (string) $entry->source,
-                    (string) $entry->agent_key,
-                ]),
+                'score' => $score,
                 'raw_chunk' => $rawChunk,
+                'stale' => $validity['stale'],
+                'stale_reason' => $validity['stale_reason'],
                 'occurred_at' => $this->toIsoString($entry->occurred_at),
                 'updated_at' => $this->toIsoString($entry->updated_at),
                 'version' => 'mem_'.hash('sha256', $entry->id.'|'.$entry->updated_at),
@@ -455,6 +463,10 @@ class MemorySearchController extends Controller
 
     private function memoryDomain(object $entry): string
     {
+        if ((string) $entry->kind === 'resolved_bug') {
+            return 'project_memory';
+        }
+
         if ((string) $entry->kind === 'agent_note'
             || in_array((string) $entry->source, ['server_agent', 'hades_agent'], true)
             || $entry->agent_key !== null) {
@@ -462,6 +474,28 @@ class MemorySearchController extends Controller
         }
 
         return 'logbook';
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{stale: bool, stale_reason: string|null}
+     */
+    private function resolvedBugValidity(object $entry, array $payload, string $workspaceHeadCommit): array
+    {
+        if ((string) $entry->kind !== 'resolved_bug') {
+            return ['stale' => false, 'stale_reason' => null];
+        }
+
+        $validity = isset($payload['validity']) && is_array($payload['validity']) ? $payload['validity'] : [];
+        $freshness = isset($payload['freshness']) && is_array($payload['freshness']) ? $payload['freshness'] : [];
+        $validFromCommit = trim((string) ($validity['valid_from_commit'] ?? $freshness['workspace_head_commit'] ?? ''));
+        $currentHead = trim($workspaceHeadCommit);
+
+        if ($validFromCommit !== '' && $currentHead !== '' && ! hash_equals($validFromCommit, $currentHead)) {
+            return ['stale' => true, 'stale_reason' => 'workspace_head_changed'];
+        }
+
+        return ['stale' => false, 'stale_reason' => null];
     }
 
     /**
