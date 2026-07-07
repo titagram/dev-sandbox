@@ -1383,6 +1383,16 @@ it('exports Hades diagnosis data scoped to a workspace binding', function () {
         ->json();
 
     expect(json_encode($withContent, JSON_THROW_ON_ERROR))->not->toContain($other['source_slice_id']);
+
+    $auditPayloads = DB::table('audit_logs')
+        ->where('action', 'hades.privacy_exported')
+        ->orderBy('created_at')
+        ->pluck('payload')
+        ->map(fn (string $payload): array => json_decode($payload, true, flags: JSON_THROW_ON_ERROR))
+        ->all();
+
+    expect($auditPayloads)->toHaveCount(2)
+        ->and(json_encode($auditPayloads, JSON_THROW_ON_ERROR))->not->toContain('line 42: return ***;');
 });
 
 it('deletes Hades diagnosis data only after confirmation and keeps other workspaces', function () {
@@ -1426,6 +1436,19 @@ it('deletes Hades diagnosis data only after confirmation and keeps other workspa
         expect(DB::table($table)->where('workspace_binding_id', $binding['workspace_binding_id'])->count())->toBe(0)
             ->and(DB::table($table)->where('workspace_binding_id', $otherBinding['workspace_binding_id'])->count())->toBe(1);
     }
+
+    $auditPayloads = DB::table('audit_logs')
+        ->where('action', 'hades.privacy_deleted')
+        ->orderBy('created_at')
+        ->pluck('payload')
+        ->map(fn (string $payload): array => json_decode($payload, true, flags: JSON_THROW_ON_ERROR))
+        ->all();
+
+    expect($auditPayloads)->toHaveCount(2)
+        ->and($auditPayloads[0]['dry_run'])->toBeTrue()
+        ->and($auditPayloads[1]['dry_run'])->toBeFalse()
+        ->and($auditPayloads[1]['counts']['hades_bug_reports'])->toBe(1)
+        ->and(json_encode($auditPayloads, JSON_THROW_ON_ERROR))->not->toContain('OrderController');
 });
 
 it('cleans up Hades diagnosis data by retention age with dry-run safety', function () {
@@ -1470,6 +1493,20 @@ it('cleans up Hades diagnosis data by retention age with dry-run safety', functi
     foreach (['hades_bug_reports', 'hades_bug_evidence_items', 'hades_source_slices', 'hades_evidence_packs', 'hades_diagnosis_reports'] as $table) {
         expect(DB::table($table)->where('workspace_binding_id', $binding['workspace_binding_id'])->count())->toBe(1);
     }
+
+    $auditPayloads = DB::table('audit_logs')
+        ->where('action', 'hades.retention_cleaned')
+        ->orderBy('created_at')
+        ->pluck('payload')
+        ->map(fn (string $payload): array => json_decode($payload, true, flags: JSON_THROW_ON_ERROR))
+        ->all();
+
+    expect($auditPayloads)->toHaveCount(2)
+        ->and($auditPayloads[0]['dry_run'])->toBeTrue()
+        ->and($auditPayloads[1]['dry_run'])->toBeFalse()
+        ->and($auditPayloads[1]['retention_days'])->toBe(30)
+        ->and($auditPayloads[1]['counts']['hades_source_slices'])->toBe(1)
+        ->and(json_encode($auditPayloads, JSON_THROW_ON_ERROR))->not->toContain('line 42: return ***;');
 });
 
 it('reports stale project awareness when indexed artifacts are from another commit', function () {

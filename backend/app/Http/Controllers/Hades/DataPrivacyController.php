@@ -7,6 +7,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
 class DataPrivacyController extends Controller
@@ -60,6 +61,14 @@ class DataPrivacyController extends Controller
             $counts[$key] = count($rows);
         }
 
+        $this->auditPrivacyAction($request, 'hades.privacy_exported', $binding->id, [
+            'scope' => 'workspace_binding',
+            'project_id' => $validated['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'include_content' => $includeContent,
+            'counts' => $counts,
+        ]);
+
         return response()->json([
             'protocol_version' => 'v1',
             'project_id' => $validated['project_id'],
@@ -110,6 +119,14 @@ class DataPrivacyController extends Controller
 
             return $counts;
         });
+
+        $this->auditPrivacyAction($request, 'hades.privacy_deleted', $binding->id, [
+            'scope' => 'workspace_binding',
+            'project_id' => $validated['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'dry_run' => $dryRun,
+            'counts' => $counts,
+        ]);
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -163,6 +180,16 @@ class DataPrivacyController extends Controller
 
             return $counts;
         });
+
+        $this->auditPrivacyAction($request, 'hades.retention_cleaned', $binding->id, [
+            'scope' => 'workspace_binding',
+            'project_id' => $validated['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'retention_days' => (int) $validated['retention_days'],
+            'cutoff' => $cutoff->toISOString(),
+            'dry_run' => $dryRun,
+            'counts' => $counts,
+        ]);
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -226,6 +253,29 @@ class DataPrivacyController extends Controller
         }
 
         return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function auditPrivacyAction(Request $request, string $action, string $bindingId, array $payload): void
+    {
+        $auth = $request->attributes->get('hades_auth') ?? [];
+        $agent = is_array($auth) ? ($auth['agent'] ?? null) : null;
+
+        DB::table('audit_logs')->insert([
+            'id' => (string) Str::ulid(),
+            'actor_user_id' => null,
+            'actor_device_id' => null,
+            'actor_type' => 'hades_agent',
+            'action' => $action,
+            'target_type' => 'hades_workspace_binding',
+            'target_id' => $bindingId,
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
+            'payload' => json_encode(['hades_agent_id' => $agent?->id] + $payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'created_at' => now(),
+        ]);
     }
 
     private function contentFields(string $table): array
