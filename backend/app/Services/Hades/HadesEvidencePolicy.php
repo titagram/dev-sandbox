@@ -70,6 +70,33 @@ class HadesEvidencePolicy
     }
 
     /**
+     * @return array{summary: string, payload: array<string, mixed>, redactions: int}
+     */
+    public function redactBugEvidenceMaterial(string $summary, array $payload): array
+    {
+        $redactions = 0;
+
+        return [
+            'summary' => $this->redactText($summary, $redactions),
+            'payload' => $this->redactValue($payload, $redactions),
+            'redactions' => $redactions,
+        ];
+    }
+
+    /**
+     * @return array{text: string, redactions: int}
+     */
+    public function redactTextMaterial(string $text): array
+    {
+        $redactions = 0;
+
+        return [
+            'text' => $this->redactText($text, $redactions),
+            'redactions' => $redactions,
+        ];
+    }
+
+    /**
      * @param  list<mixed>  $values
      * @return array{code: string, message: string}|null
      */
@@ -108,20 +135,61 @@ class HadesEvidencePolicy
             return false;
         }
 
-        $patterns = [
-            '/\bBearer\s+(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{12,}/i',
-            '/\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|cookie|password|private[_-]?key|secret|token)\s*[:=]\s*[\"\']?(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{8,}/i',
-            '/\b(?:sk|pk)-(?:live|test)-[A-Za-z0-9_\-]{8,}/i',
-            '/-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i',
-        ];
-
-        foreach ($patterns as $pattern) {
+        foreach ($this->secretPatterns() as $pattern) {
             if (preg_match($pattern, $text) === 1) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function secretPatterns(): array
+    {
+        return [
+            '/\bBearer\s+(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{12,}/i',
+            '/\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|cookie|password|private[_-]?key|secret|token)\s*[:=]\s*["\']?(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{8,}/i',
+            '/\b(?:sk|pk)-(?:live|test)-[A-Za-z0-9_\-]{8,}/i',
+            '/-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i',
+        ];
+    }
+
+    private function redactText(string $text, int &$redactions): string
+    {
+        $patterns = [
+            '/\bBearer\s+(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{12,}/i' => 'Bearer [redacted]',
+            '/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|cookie|password|private[_-]?key|secret|token)\s*[:=]\s*)["\']?(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{8,}/i' => '$1[redacted]',
+            '/\b(?:sk|pk)-(?:live|test)-[A-Za-z0-9_\-]{8,}/i' => '[redacted-token]',
+            '/-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----.*?-----END (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/is' => '[redacted-private-key]',
+        ];
+
+        foreach ($patterns as $pattern => $replacement) {
+            $text = preg_replace($pattern, $replacement, $text, -1, $count) ?? $text;
+            $redactions += $count;
+        }
+
+        return $text;
+    }
+
+    private function redactValue(mixed $value, int &$redactions): mixed
+    {
+        if (is_string($value)) {
+            return $this->redactText($value, $redactions);
+        }
+
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $redacted = [];
+        foreach ($value as $key => $item) {
+            $redacted[$key] = $this->redactValue($item, $redactions);
+        }
+
+        return $redacted;
     }
 
     /**

@@ -76,7 +76,7 @@ it('queues local agent work when explicitly requested from a kanban task', funct
         ->and($workItem->assigned_agent_key)->toBe('local_agent')
         ->and($workItem->status)->toBe('queued')
         ->and($workItem->repository_id)->toBe($repositoryId)
-        ->and($workItem->requires_memory_entry)->toBe(1)
+        ->and($workItem->requires_memory_entry)->toBeTrue()
         ->and($payload['schema'])->toBe('hades.kanban_task_work.v1')
         ->and($payload['task_id'])->toBe($taskId)
         ->and($payload['task_type'])->toBe('bug')
@@ -241,6 +241,49 @@ it('creates idempotent Hades bug intake when a ready bug task is assigned locall
     expect(DB::table('agent_work_items')->where('task_id', $taskId)->where('assigned_agent_key', 'local_agent')->count())->toBe(1)
         ->and(DB::table('hades_bug_reports')->where('project_id', $projectId)->count())->toBe(1)
         ->and(DB::table('hades_bug_evidence_items')->where('project_id', $projectId)->count())->toBe(1);
+});
+
+it('redacts task-derived Hades evidence and local work payloads', function () {
+    $pm = kanbanTaskCreateEditApiUserWithRole('PM');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = (string) DB::table('repositories')->where('project_id', $projectId)->value('id');
+    kanbanTaskCreateEditApiHadesWorkspaceBinding($projectId);
+
+    $rawBearer = 'rawBearerTokenValue12345';
+    $rawAccessToken = 'rawAccessTokenValue12345';
+    $taskId = $this->actingAs($pm)
+        ->postJson("/api/dashboard/projects/{$projectId}/tasks", [
+            'title' => 'Fix checkout token leak regression',
+            'description' => "Checkout returns HTTP 500 with Authorization: Bearer {$rawBearer} and access_token={$rawAccessToken} in logs.",
+            'priority' => 'high',
+            'risk' => 'high',
+            'repository_ids' => [$repositoryId],
+            'acceptance_criteria' => ['Root cause is identified without persisting raw credentials.'],
+            'assign_to_local_agent' => true,
+        ])
+        ->assertCreated()
+        ->json('id');
+
+    $workItem = DB::table('agent_work_items')->where('task_id', $taskId)->first();
+    $payload = json_decode((string) $workItem->payload, true, flags: JSON_THROW_ON_ERROR);
+    $bugReport = DB::table('hades_bug_reports')->where('id', $payload['bug_report_id'])->first();
+    $evidence = DB::table('hades_bug_evidence_items')->where('bug_report_id', $payload['bug_report_id'])->first();
+    $evidencePayload = json_decode((string) $evidence->payload, true, flags: JSON_THROW_ON_ERROR);
+    $combinedPersisted = json_encode([
+        'work_item_title' => $workItem->title,
+        'work_item_prompt' => $workItem->prompt,
+        'work_item_payload' => $payload,
+        'bug_report_title' => $bugReport->title,
+        'bug_report_symptom' => $bugReport->symptom,
+        'evidence_summary' => $evidence->summary,
+        'evidence_payload' => $evidencePayload,
+    ], JSON_THROW_ON_ERROR);
+
+    expect($payload['redactions'])->toBeGreaterThan(0)
+        ->and($evidence->redactions)->toBeGreaterThan(0)
+        ->and($combinedPersisted)->toContain('[redacted]')
+        ->and($combinedPersisted)->not->toContain($rawBearer)
+        ->and($combinedPersisted)->not->toContain($rawAccessToken);
 });
 
 it('edits task detail fields without moving the card when column is omitted', function () {

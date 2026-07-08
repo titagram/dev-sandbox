@@ -8,7 +8,10 @@ use Illuminate\Support\Str;
 
 final class HadesKanbanTaskIntakeService
 {
-    public function __construct(private readonly HadesSearchDocumentIndexer $indexer) {}
+    public function __construct(
+        private readonly HadesSearchDocumentIndexer $indexer,
+        private readonly HadesEvidencePolicy $policy,
+    ) {}
 
     public function queueLocalAgentWorkForTask(string $taskId, string $projectId, int $userId): ?string
     {
@@ -58,6 +61,7 @@ final class HadesKanbanTaskIntakeService
             userId: $userId,
             now: $now,
         );
+        $safeTitle = $this->policy->redactTextMaterial((string) $task->title)['text'];
 
         DB::table('agent_work_items')->insert([
             'id' => $workItemId,
@@ -68,7 +72,7 @@ final class HadesKanbanTaskIntakeService
             'assigned_agent_key' => 'local_agent',
             'status' => 'queued',
             'priority' => (string) $task->priority,
-            'title' => (string) $task->title,
+            'title' => $this->compact((string) $safeTitle, 191),
             'prompt' => $this->localAgentPromptForTask($task, $acceptanceCriteria, $normalization, $bugIntake),
             'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
             'requires_memory_entry' => true,
@@ -224,6 +228,13 @@ final class HadesKanbanTaskIntakeService
             'acceptance_criteria' => $acceptanceCriteria,
             'normalized_problem' => $normalization['normalized_problem'],
         ];
+        $redactedEvidence = $this->policy->redactBugEvidenceMaterial(
+            'Kanban task evidence: '.(string) $task->title,
+            $evidencePayload,
+        );
+        $evidencePayload = $redactedEvidence['payload'];
+        $evidenceSummary = (string) $redactedEvidence['summary'];
+        $evidenceRedactions = (int) $redactedEvidence['redactions'];
         $evidenceJson = json_encode($evidencePayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
 
         DB::table('hades_bug_reports')->insert([
@@ -231,8 +242,8 @@ final class HadesKanbanTaskIntakeService
             'project_id' => $projectId,
             'hades_agent_id' => $binding->hades_agent_id,
             'workspace_binding_id' => $binding->id,
-            'title' => $this->compact((string) $task->title, 191),
-            'symptom' => $this->compact((string) $normalization['normalized_problem'], 8000),
+            'title' => $this->compact((string) ($evidencePayload['title'] ?? $task->title), 191),
+            'symptom' => $this->compact((string) ($evidencePayload['normalized_problem'] ?? $normalization['normalized_problem']), 8000),
             'severity' => $this->severityFromRisk((string) $task->risk_level),
             'status' => 'open',
             'environment' => json_encode([
@@ -256,11 +267,11 @@ final class HadesKanbanTaskIntakeService
             'hades_agent_id' => $binding->hades_agent_id,
             'workspace_binding_id' => $binding->id,
             'kind' => 'user_steps',
-            'summary' => $this->compact('Kanban task evidence: '.(string) $task->title, 4000),
+            'summary' => $this->compact($evidenceSummary, 4000),
             'payload' => $evidenceJson,
             'source' => 'dashboard_kanban_task:'.(string) $task->id,
             'sha256' => hash('sha256', $evidenceJson),
-            'redactions' => 0,
+            'redactions' => $evidenceRedactions,
             'retention_class' => 'runtime_evidence',
             'occurred_at' => $now,
             'created_at' => $now,
@@ -292,7 +303,7 @@ final class HadesKanbanTaskIntakeService
      */
     private function workPayload(object $task, string $projectId, ?string $repositoryId, array $acceptanceCriteria, array $normalization, array $bugIntake, int $userId, Carbon $now): array
     {
-        return [
+        $payload = [
             'schema' => 'hades.kanban_task_work.v1',
             'source' => 'dashboard_kanban',
             'task_id' => (string) $task->id,
@@ -328,6 +339,13 @@ final class HadesKanbanTaskIntakeService
                 'normalized_at' => $now->toJSON(),
             ],
         ];
+        $redacted = $this->policy->redactBugEvidenceMaterial('kanban task work payload', $payload);
+        $payload = $redacted['payload'];
+        if ($redacted['redactions'] > 0) {
+            $payload['redactions'] = $redacted['redactions'];
+        }
+
+        return $payload;
     }
 
     /**
@@ -364,7 +382,9 @@ final class HadesKanbanTaskIntakeService
         $lines[] = '';
         $lines[] = 'Before final response, record useful shared memory or evidence refs for future agents.';
 
-        return implode(PHP_EOL, $lines);
+        $redacted = $this->policy->redactTextMaterial(implode(PHP_EOL, $lines));
+
+        return $redacted['text'];
     }
 
     private function severityFromRisk(string $risk): string
