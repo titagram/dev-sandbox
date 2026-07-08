@@ -239,6 +239,35 @@ it('renews the active lease on heartbeat so completion works after the original 
     $this->travelBack();
 });
 
+it('returns a structured error when completing with an expired lease', function () {
+    $start = now()->startOfSecond();
+    $this->travelTo($start);
+
+    $token = pluginSharedMemoryTokenWithDevice();
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $workspaceId = pluginSharedMemoryWorkspace($repositoryId, $token['device_id']);
+    $workItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId);
+    $leaseToken = pluginSharedMemoryClaim($this, $token, $workItemId, $workspaceId);
+
+    $this->travelTo($start->copy()->addMinutes(31));
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/complete", [
+        'protocol_version' => 'v1',
+        'lease_token' => $leaseToken,
+        'memory_entry' => [
+            'kind' => 'implementation',
+            'summary' => 'This completion should be rejected.',
+            'payload' => pluginSharedMemoryCompletionPayload(),
+        ],
+    ], pluginSharedMemoryHeaders($token))
+        ->assertConflict()
+        ->assertJsonPath('error.code', 'lease_expired')
+        ->assertJsonPath('error.next_step', 'Claim the work item again to receive a fresh lease token.');
+
+    $this->travelBack();
+});
+
 it('marks required-memory completion incomplete when no memory entry is supplied', function () {
     $token = pluginSharedMemoryTokenWithDevice();
     $projectId = pluginSharedMemoryProjectId();
@@ -294,7 +323,9 @@ it('prevents a second device from claiming or completing another device claim', 
         'protocol_version' => 'v1',
         'local_workspace_id' => $secondWorkspaceId,
     ], pluginSharedMemoryHeaders($secondToken))
-        ->assertConflict();
+        ->assertConflict()
+        ->assertJsonPath('error.code', 'work_item_already_claimed')
+        ->assertJsonPath('error.next_step', 'Wait for the active lease to expire, or choose another queued work item.');
 
     $this->postJson("/api/plugin/v1/agent-work-items/{$workItemId}/complete", [
         'protocol_version' => 'v1',
@@ -305,7 +336,9 @@ it('prevents a second device from claiming or completing another device claim', 
             'payload' => pluginSharedMemoryCompletionPayload(),
         ],
     ], pluginSharedMemoryHeaders($secondToken))
-        ->assertConflict();
+        ->assertConflict()
+        ->assertJsonPath('error.code', 'work_item_not_claimed_by_device')
+        ->assertJsonPath('error.next_step', 'Claim the work item from this device before heartbeat, complete, or fail.');
 });
 
 it('does not create a replacement lease when same-device reclaim loses the conditional update', function () {
@@ -366,7 +399,9 @@ it('rejects claiming project-scoped work from a workspace in another project', f
         'protocol_version' => 'v1',
         'local_workspace_id' => $workspaceId,
     ], pluginSharedMemoryHeaders($token))
-        ->assertUnprocessable();
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'workspace_project_mismatch')
+        ->assertJsonPath('error.next_step', 'Switch to a checkout for this project and rerun hades backend worker-setup.');
 
     expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('queued')
         ->and(DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->exists())->toBeFalse();

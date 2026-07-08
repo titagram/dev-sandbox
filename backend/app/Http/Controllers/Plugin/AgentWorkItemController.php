@@ -122,7 +122,12 @@ class AgentWorkItemController extends Controller
             ->first();
 
         if (! $workspace) {
-            return $this->error('workspace_not_found', 'Local workspace is not registered for this device.', Response::HTTP_NOT_FOUND);
+            return $this->error(
+                'workspace_not_found',
+                'Local workspace is not registered for this device.',
+                Response::HTTP_NOT_FOUND,
+                'Run hades backend worker-setup in this checkout, then retry the claim.',
+            );
         }
 
         $leaseToken = Str::random(64);
@@ -143,15 +148,30 @@ class AgentWorkItemController extends Controller
             }
 
             if ($item->repository_id !== null && (string) $workspace->repository_id !== (string) $item->repository_id) {
-                abort(Response::HTTP_UNPROCESSABLE_ENTITY, 'Local workspace does not match the work item repository.');
+                throw new HttpResponseException($this->error(
+                    'workspace_repository_mismatch',
+                    'Local workspace does not match the work item repository.',
+                    Response::HTTP_UNPROCESSABLE_ENTITY,
+                    'Run hades backend worker-setup with the matching repository id in the matching checkout.',
+                ));
             }
 
             if ($item->repository_id === null && (string) $workspace->workspace_project_id !== (string) $item->project_id) {
-                throw new HttpResponseException($this->error('workspace_project_mismatch', 'Local workspace project does not match the work item project.', Response::HTTP_UNPROCESSABLE_ENTITY));
+                throw new HttpResponseException($this->error(
+                    'workspace_project_mismatch',
+                    'Local workspace project does not match the work item project.',
+                    Response::HTTP_UNPROCESSABLE_ENTITY,
+                    'Switch to a checkout for this project and rerun hades backend worker-setup.',
+                ));
             }
 
             if (in_array((string) $item->status, self::TERMINAL_STATUSES, true)) {
-                abort(Response::HTTP_CONFLICT, 'Work item is already terminal.');
+                throw new HttpResponseException($this->error(
+                    'work_item_terminal',
+                    'Work item is already terminal.',
+                    Response::HTTP_CONFLICT,
+                    'Run hades backend tasks list --status queued to find claimable work.',
+                ));
             }
 
             $now = now();
@@ -169,7 +189,14 @@ class AgentWorkItemController extends Controller
                         'updated_at' => $now,
                     ]);
 
-                abort_if($updated === 0, Response::HTTP_CONFLICT, 'Work item could not be claimed.');
+                if ($updated === 0) {
+                    throw new HttpResponseException($this->error(
+                        'work_item_claim_conflict',
+                        'Work item could not be claimed.',
+                        Response::HTTP_CONFLICT,
+                        'Refresh task work with hades backend tasks list --json and retry unclaimed queued items.',
+                    ));
+                }
             } elseif (in_array((string) $item->status, ['claimed', 'running'], true) && (string) $item->claimed_by_device_id === (string) $device->id) {
                 $updated = DB::table('agent_work_items')
                     ->where('id', $workItem)
@@ -181,10 +208,20 @@ class AgentWorkItemController extends Controller
                     ]);
 
                 if ($updated === 0) {
-                    throw new HttpResponseException($this->error('work_item_claim_conflict', 'Work item could not be claimed.', Response::HTTP_CONFLICT));
+                    throw new HttpResponseException($this->error(
+                        'work_item_claim_conflict',
+                        'Work item could not be claimed.',
+                        Response::HTTP_CONFLICT,
+                        'Refresh task work with hades backend tasks list --json and retry unclaimed queued items.',
+                    ));
                 }
             } else {
-                abort(Response::HTTP_CONFLICT, 'Work item is already claimed.');
+                throw new HttpResponseException($this->error(
+                    'work_item_already_claimed',
+                    'Work item is already claimed.',
+                    Response::HTTP_CONFLICT,
+                    'Wait for the active lease to expire, or choose another queued work item.',
+                ));
             }
 
             $this->releaseActiveLeases($workItem, $now);
@@ -241,7 +278,14 @@ class AgentWorkItemController extends Controller
                     'updated_at' => $now,
                 ]);
 
-            abort_if($updated === 0, Response::HTTP_CONFLICT, 'Work item heartbeat was rejected.');
+            if ($updated === 0) {
+                throw new HttpResponseException($this->error(
+                    'work_item_heartbeat_rejected',
+                    'Work item heartbeat was rejected.',
+                    Response::HTTP_CONFLICT,
+                    'Refresh the work item; it may have been reclaimed, completed, or canceled.',
+                ));
+            }
 
             $this->renewLease($workItem, (string) $device->id, $validated['lease_token'], $now);
             $this->recordEvent($workItem, 'heartbeat', null, (string) $device->id, 'Local agent heartbeat.', [], $now);
@@ -328,7 +372,14 @@ class AgentWorkItemController extends Controller
                     'updated_at' => $now,
                 ]);
 
-            abort_if($updated === 0, Response::HTTP_CONFLICT, 'Work item completion was rejected.');
+            if ($updated === 0) {
+                throw new HttpResponseException($this->error(
+                    'work_item_completion_rejected',
+                    'Work item completion was rejected.',
+                    Response::HTTP_CONFLICT,
+                    'Refresh the work item; it may have been reclaimed, completed, or canceled.',
+                ));
+            }
 
             $this->releaseActiveLeases($workItem, $now);
             $this->recordEvent(
@@ -390,7 +441,14 @@ class AgentWorkItemController extends Controller
                     'updated_at' => $now,
                 ]);
 
-            abort_if($updated === 0, Response::HTTP_CONFLICT, 'Work item failure was rejected.');
+            if ($updated === 0) {
+                throw new HttpResponseException($this->error(
+                    'work_item_failure_rejected',
+                    'Work item failure was rejected.',
+                    Response::HTTP_CONFLICT,
+                    'Refresh the work item; it may have been reclaimed, completed, or canceled.',
+                ));
+            }
 
             $this->releaseActiveLeases($workItem, $now);
             $this->recordEvent($workItem, 'failed', null, (string) $device->id, $validated['failure_reason'], [], $now);
@@ -411,7 +469,12 @@ class AgentWorkItemController extends Controller
         $device = is_array($auth) ? ($auth['device'] ?? null) : null;
 
         if (! $device || $request->header('X-DevBoard-Device-Id') !== (string) $device->id) {
-            return $this->error('device_required', 'A registered active plugin device is required.', Response::HTTP_UNAUTHORIZED);
+            return $this->error(
+                'device_required',
+                'A registered active plugin device is required.',
+                Response::HTTP_UNAUTHORIZED,
+                'Run hades backend worker-setup to register this device and send X-DevBoard-Device-Id.',
+            );
         }
 
         return $device;
@@ -427,12 +490,15 @@ class AgentWorkItemController extends Controller
 
     private function assertOwnedRunningItem(object $item, object $device): void
     {
-        abort_unless(
-            in_array((string) $item->status, ['claimed', 'running'], true)
-            && (string) $item->claimed_by_device_id === (string) $device->id,
-            Response::HTTP_CONFLICT,
-            'Work item is not claimed by this device.',
-        );
+        if (! in_array((string) $item->status, ['claimed', 'running'], true)
+            || (string) $item->claimed_by_device_id !== (string) $device->id) {
+            throw new HttpResponseException($this->error(
+                'work_item_not_claimed_by_device',
+                'Work item is not claimed by this device.',
+                Response::HTTP_CONFLICT,
+                'Claim the work item from this device before heartbeat, complete, or fail.',
+            ));
+        }
     }
 
     private function assertValidLease(string $workItem, string $deviceId, string $leaseToken): void
@@ -444,7 +510,14 @@ class AgentWorkItemController extends Controller
             ->orderByDesc('created_at')
             ->first();
 
-        abort_unless($lease, Response::HTTP_CONFLICT, 'Active lease is required.');
+        if (! $lease) {
+            throw new HttpResponseException($this->error(
+                'lease_required',
+                'Active lease is required.',
+                Response::HTTP_CONFLICT,
+                'Claim the work item again to receive a fresh lease token.',
+            ));
+        }
 
         if (Carbon::parse($lease->expires_at)->isPast()) {
             DB::table('agent_work_item_leases')->where('id', $lease->id)->update([
@@ -452,14 +525,22 @@ class AgentWorkItemController extends Controller
                 'updated_at' => now(),
             ]);
 
-            abort(Response::HTTP_CONFLICT, 'Active lease has expired.');
+            throw new HttpResponseException($this->error(
+                'lease_expired',
+                'Active lease has expired.',
+                Response::HTTP_CONFLICT,
+                'Claim the work item again to receive a fresh lease token.',
+            ));
         }
 
-        abort_unless(
-            hash_equals((string) $lease->lease_token_hash, hash('sha256', $leaseToken)),
-            Response::HTTP_CONFLICT,
-            'Lease token is invalid.',
-        );
+        if (! hash_equals((string) $lease->lease_token_hash, hash('sha256', $leaseToken))) {
+            throw new HttpResponseException($this->error(
+                'lease_invalid',
+                'Lease token is invalid.',
+                Response::HTTP_CONFLICT,
+                'Use the lease_token returned by the latest successful claim response.',
+            ));
+        }
     }
 
     private function createLease(string $workItem, string $deviceId, string $leaseToken, mixed $now): void
@@ -489,7 +570,12 @@ class AgentWorkItemController extends Controller
             ]);
 
         if ($updated === 0) {
-            throw new HttpResponseException($this->error('lease_renewal_conflict', 'Active lease could not be renewed.', Response::HTTP_CONFLICT));
+            throw new HttpResponseException($this->error(
+                'lease_renewal_conflict',
+                'Active lease could not be renewed.',
+                Response::HTTP_CONFLICT,
+                'Claim the work item again to receive a fresh lease token.',
+            ));
         }
     }
 
@@ -740,11 +826,12 @@ class AgentWorkItemController extends Controller
     /**
      * @param  array<string, mixed>  $details
      */
-    private function error(string $code, string $message, int $status, array $details = []): JsonResponse
+    private function error(string $code, string $message, int $status, string $nextStep, array $details = []): JsonResponse
     {
         $error = [
             'code' => $code,
             'message' => $message,
+            'next_step' => $nextStep,
         ];
 
         if ($details !== []) {
