@@ -50,6 +50,46 @@ it('lets a pm create a project-scoped task with acceptance criteria and reposito
         ->assertJsonPath('repositories.0.name', 'demo-repository');
 });
 
+
+it('queues local agent work when explicitly requested from a kanban task', function () {
+    $pm = kanbanTaskCreateEditApiUserWithRole('PM');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = (string) DB::table('repositories')->where('project_id', $projectId)->value('id');
+
+    $taskId = $this->actingAs($pm)
+        ->postJson("/api/dashboard/projects/{$projectId}/tasks", [
+            'title' => 'Diagnose intermittent checkout failure',
+            'description' => 'Checkout sometimes returns HTTP 500 after coupon validation.',
+            'priority' => 'high',
+            'risk' => 'high',
+            'repository_ids' => [$repositoryId],
+            'acceptance_criteria' => ['Root cause is identified with evidence refs.'],
+            'assign_to_local_agent' => true,
+        ])
+        ->assertCreated()
+        ->json('id');
+
+    $workItem = DB::table('agent_work_items')->where('task_id', $taskId)->first();
+    $payload = json_decode((string) $workItem->payload, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($workItem)->not->toBeNull()
+        ->and($workItem->assigned_agent_key)->toBe('local_agent')
+        ->and($workItem->status)->toBe('queued')
+        ->and($workItem->repository_id)->toBe($repositoryId)
+        ->and($workItem->requires_memory_entry)->toBe(1)
+        ->and($payload['schema'])->toBe('hades.kanban_task_work.v1')
+        ->and($payload['task_id'])->toBe($taskId)
+        ->and($payload['acceptance_criteria'][0])->toBe('Root cause is identified with evidence refs.')
+        ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem->id)->where('event_type', 'queued_from_kanban_task')->exists())->toBeTrue();
+
+    $this->actingAs($pm)
+        ->patchJson("/api/dashboard/tasks/{$taskId}", ['assign_to_local_agent' => true])
+        ->assertOk();
+
+    expect(DB::table('agent_work_items')->where('task_id', $taskId)->where('assigned_agent_key', 'local_agent')->count())
+        ->toBe(1);
+});
+
 it('edits task detail fields without moving the card when column is omitted', function () {
     $pm = kanbanTaskCreateEditApiUserWithRole('PM');
     $owner = User::factory()->create(['status' => 'active']);
