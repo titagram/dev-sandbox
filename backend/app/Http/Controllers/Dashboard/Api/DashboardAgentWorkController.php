@@ -8,6 +8,7 @@ use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Models\User;
 use App\Projects\ProjectLifecycleService;
 use App\Services\ServerAgentWorkService;
+use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -58,7 +59,15 @@ final class DashboardAgentWorkController extends Controller
                 'string',
                 Rule::exists('tasks', 'id')->where(fn ($query) => $query->where('project_id', $project)),
             ],
-            'assigned_agent_key' => ['required', 'string', Rule::in(['socrates', 'platon', 'aristoteles', 'local_agent'])],
+            'assigned_agent_key' => [
+                'required',
+                'string',
+                function (string $attribute, mixed $value, Closure $fail) use ($serverAgentWork, $project): void {
+                    if (! is_string($value) || ! $serverAgentWork->isAssignableAgentKey($value, $project)) {
+                        $fail('The selected assigned agent key is invalid.');
+                    }
+                },
+            ],
             'priority' => ['sometimes', 'string', Rule::in(['low', 'normal', 'high', 'urgent'])],
             'title' => ['required', 'string', 'min:4', 'max:180'],
             'prompt' => ['required', 'string', 'min:8', 'max:8000'],
@@ -98,7 +107,7 @@ final class DashboardAgentWorkController extends Controller
             );
         });
 
-        if ($serverAgentWork->shouldHandle((string) $validated['assigned_agent_key'])) {
+        if ($serverAgentWork->shouldHandle((string) $validated['assigned_agent_key'], $project)) {
             $serverAgentWork->process($workItemId);
         }
 

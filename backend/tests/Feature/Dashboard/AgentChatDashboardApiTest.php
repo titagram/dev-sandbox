@@ -100,6 +100,45 @@ it('runs a server agent chat turn and appends the assistant answer to the same t
         && $request->hasHeader('Authorization', 'Bearer sk-opencode-test'));
 });
 
+it('starts a project chat with a custom server agent profile', function () {
+    Http::fake([
+        'https://opencode.ai/zen/go/v1/chat/completions' => Http::response([
+            'choices' => [['message' => ['content' => 'Custom chat response.']]],
+        ]),
+    ]);
+
+    $developer = agentChatDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    agentChatDashboardApiConfigureProvider();
+
+    DB::table('ai_agent_profiles')->insert([
+        'id' => (string) Str::ulid(),
+        'agent_key' => 'release_planner',
+        'display_name' => 'Release Planner',
+        'description' => 'Plans releases from DevBoard context.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id'),
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+        'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+        'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-chats", [
+            'agent_key' => 'release_planner',
+            'initial_message' => 'Prepara una nota di rilascio sintetica.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('thread.agent_key', 'release_planner')
+        ->assertJsonPath('thread.messages.1.content', 'Custom chat response.');
+});
+
 it('continues a persistent thread with new user turns', function () {
     $developer = agentChatDashboardApiUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');

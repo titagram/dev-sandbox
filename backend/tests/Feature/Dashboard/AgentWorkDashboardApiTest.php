@@ -143,6 +143,67 @@ it('runs socrates work through the configured OpenAI compatible provider and sto
         && $request->hasHeader('Authorization', 'Bearer sk-opencode-test'));
 });
 
+it('runs a custom enabled backend agent profile through agent work', function () {
+    Http::fake([
+        'https://opencode.ai/zen/go/v1/chat/completions' => Http::response([
+            'choices' => [['message' => ['content' => 'Custom reviewer answer.']]],
+        ]),
+    ]);
+
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    agentWorkDashboardApiConfigureSocratesProvider();
+
+    DB::table('ai_agent_profiles')->insert([
+        'id' => (string) Str::ulid(),
+        'agent_key' => 'design_reviewer',
+        'display_name' => 'Design Reviewer',
+        'description' => 'Reviews product and architecture decisions from DevBoard context.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id'),
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+        'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+        'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $workItem = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => 'design_reviewer',
+            'title' => 'Ask custom reviewer',
+            'prompt' => 'Valuta il contesto disponibile e rispondi in modo sintetico.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assigned_agent_key', 'design_reviewer')
+        ->assertJsonPath('status', 'completed')
+        ->json();
+
+    expect(DB::table('project_memory_entries')->where('id', $workItem['result_memory_entry_id'])->value('agent_key'))
+        ->toBe('design_reviewer');
+
+    Http::assertSent(fn ($request): bool => $request->url() === 'https://opencode.ai/zen/go/v1/chat/completions'
+        && str_contains($request->body(), 'Design Reviewer (design_reviewer)'));
+});
+
+it('rejects unknown dashboard agent work keys', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => 'missing_agent',
+            'title' => 'Unknown agent',
+            'prompt' => 'This should not queue.',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['assigned_agent_key']);
+});
+
 it('fails socrates work visibly when the configured provider rejects the request', function () {
     Http::fake([
         'https://opencode.ai/zen/go/v1/chat/completions' => Http::response(['error' => ['message' => 'unauthorized']], 401),

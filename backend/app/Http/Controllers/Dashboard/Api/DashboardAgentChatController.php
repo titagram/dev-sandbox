@@ -8,6 +8,7 @@ use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Models\User;
 use App\Projects\ProjectLifecycleService;
 use App\Services\ServerAgentWorkService;
+use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,8 +18,6 @@ use Illuminate\Validation\Rule;
 final class DashboardAgentChatController extends Controller
 {
     use ChecksDashboardRoles;
-
-    private const AGENT_KEYS = ['socrates', 'platon', 'aristoteles', 'local_agent'];
 
     public function __construct(
         private readonly DashboardApiReader $reader,
@@ -49,7 +48,15 @@ final class DashboardAgentChatController extends Controller
         }
 
         $data = $request->validate([
-            'agent_key' => ['required', 'string', Rule::in(self::AGENT_KEYS)],
+            'agent_key' => [
+                'required',
+                'string',
+                function (string $attribute, mixed $value, Closure $fail) use ($project): void {
+                    if (! is_string($value) || ! $this->serverAgentWork->isAssignableAgentKey($value, $project)) {
+                        $fail('The selected agent key is invalid.');
+                    }
+                },
+            ],
             'title' => ['sometimes', 'nullable', 'string', 'max:180'],
             'repository_id' => [
                 'sometimes',
@@ -172,7 +179,7 @@ final class DashboardAgentChatController extends Controller
         abort_unless($thread, 404);
 
         $agentKey = (string) $thread->agent_key;
-        $serverHandled = $this->serverAgentWork->shouldHandle($agentKey);
+        $serverHandled = $this->serverAgentWork->shouldHandle($agentKey, $projectId);
         $workItemId = (string) Str::ulid();
         $messageId = (string) Str::ulid();
         $now = now();

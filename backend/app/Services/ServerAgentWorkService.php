@@ -11,17 +11,47 @@ use Throwable;
 
 final class ServerAgentWorkService
 {
-    private const SERVER_AGENT_KEYS = ['socrates', 'platon', 'aristoteles'];
-
-    private const PROFILE_KEY_BY_AGENT = [
+    private const LEGACY_PROFILE_KEY_BY_AGENT = [
         'socrates' => 'socrate_supervisor',
         'platon' => 'task_clarifier',
         'aristoteles' => 'backlog_triage',
     ];
 
-    public function shouldHandle(string $agentKey): bool
+    public function isAssignableAgentKey(string $agentKey, ?string $projectId = null): bool
     {
-        return in_array($agentKey, self::SERVER_AGENT_KEYS, true);
+        if ($agentKey === 'local_agent') {
+            return true;
+        }
+
+        return $this->shouldHandle($agentKey, $projectId);
+    }
+
+    public function shouldHandle(string $agentKey, ?string $projectId = null): bool
+    {
+        $profileKey = $this->profileKeyForAgentKey($agentKey);
+
+        if ($profileKey === null) {
+            return false;
+        }
+
+        return DB::table('ai_agent_profiles')
+            ->where('agent_key', $profileKey)
+            ->where('enabled', true)
+            ->whereNotNull('default_model_profile_id')
+            ->exists();
+    }
+
+    public function profileKeyForAgentKey(string $agentKey): ?string
+    {
+        if ($agentKey === 'local_agent') {
+            return null;
+        }
+
+        if (isset(self::LEGACY_PROFILE_KEY_BY_AGENT[$agentKey])) {
+            return self::LEGACY_PROFILE_KEY_BY_AGENT[$agentKey];
+        }
+
+        return preg_match('/^[a-z0-9][a-z0-9_.-]*$/', $agentKey) === 1 ? $agentKey : null;
     }
 
     public function process(string $workItemId): void
@@ -82,7 +112,7 @@ final class ServerAgentWorkService
     private function modelProfileForWorkItem(object $workItem): object
     {
         $agentKey = (string) $workItem->assigned_agent_key;
-        $profileKey = self::PROFILE_KEY_BY_AGENT[$agentKey] ?? null;
+        $profileKey = $this->profileKeyForAgentKey($agentKey);
 
         if ($profileKey === null) {
             throw new RuntimeException("Server-side agent {$agentKey} is not configured yet.");
