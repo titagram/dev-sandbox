@@ -37,6 +37,7 @@ class CapabilitiesController extends Controller
                 'memory_snapshot' => '/api/hades/v1/memory/snapshot',
                 'memory_proposals' => '/api/hades/v1/memory/proposals',
                 'project_awareness_status' => '/api/hades/v1/project-awareness/status',
+                'project_awareness_bootstrap' => '/api/hades/v1/project-awareness/bootstrap',
                 'bug_reports' => '/api/hades/v1/bug-reports',
                 'bug_report' => '/api/hades/v1/bug-reports/{bug_report_id}',
                 'bug_evidence' => '/api/hades/v1/bug-evidence',

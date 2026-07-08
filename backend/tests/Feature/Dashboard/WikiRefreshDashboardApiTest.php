@@ -116,6 +116,22 @@ it('applies a Hades wiki refresh result through the wiki revision service', func
     expect($page)->not->toBeNull()
         ->and(DB::table('wiki_revisions')->where('wiki_page_id', $page->id)->value('source_type'))->toBe('hades_wiki_refresh')
         ->and(DB::table('hades_agent_jobs')->where('id', $jobId)->value('result_applied_at'))->not->toBeNull();
+
+    $memory = DB::table('project_memory_entries')
+        ->where('project_id', $projectId)
+        ->where('source', 'hades_wiki_refresh')
+        ->where('kind', 'project_awareness')
+        ->first();
+    $payload = json_decode((string) $memory->payload, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($memory)->not->toBeNull()
+        ->and($payload['schema'])->toBe('hades.project_awareness_memory.v1')
+        ->and($payload['wiki_pages'][0]['slug'])->toBe('hades-wiki-refresh')
+        ->and(DB::table('project_memory_links')
+            ->where('memory_entry_id', $memory->id)
+            ->where('target_type', 'wiki_page')
+            ->where('target_id', $page->id)
+            ->exists())->toBeTrue();
 });
 
 it('applies legacy local-agent wiki_revisions results and records written page titles', function () {

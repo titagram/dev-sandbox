@@ -20,6 +20,7 @@ use App\Http\Controllers\Hades\MemoryProposalController as HadesMemoryProposalCo
 use App\Http\Controllers\Hades\MemorySearchController as HadesMemorySearchController;
 use App\Http\Controllers\Hades\MemorySnapshotController as HadesMemorySnapshotController;
 use App\Http\Controllers\Hades\PersephoneController as HadesPersephoneController;
+use App\Http\Controllers\Hades\ProjectAwarenessBootstrapController as HadesProjectAwarenessBootstrapController;
 use App\Http\Controllers\Hades\ProjectAwarenessStatusController as HadesProjectAwarenessStatusController;
 use App\Http\Controllers\Hades\SourceSliceController as HadesSourceSliceController;
 use App\Http\Controllers\Hades\TokenVerifyController as HadesTokenVerifyController;
@@ -185,6 +186,9 @@ Route::prefix('hades/v1')->group(function () {
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/project-awareness/status', HadesProjectAwarenessStatusController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/project-awareness/bootstrap', HadesProjectAwarenessBootstrapController::class)
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/bug-reports', [HadesBugReportController::class, 'store'])

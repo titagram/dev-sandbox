@@ -115,6 +115,45 @@ it('marks non terminal jobs unlinked when the workspace binding is unlinked', fu
         ->assertJsonPath('error.code', 'workspace_binding_unlinked');
 });
 
+
+it('lets linked agents enqueue an idempotent project awareness wiki bootstrap job', function () {
+    $agent = hadesM4RegisteredAgent();
+    $binding = hadesM4WorkspaceBinding($agent);
+
+    $response = $this->postJson('/api/hades/v1/project-awareness/bootstrap', [
+        'project_id' => $agent['project_id'],
+        'agent_id' => $agent['external_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'reason' => 'CLI bootstrap-awareness smoke',
+    ], hadesM4Headers($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('project_id', $agent['project_id'])
+        ->assertJsonPath('workspace_binding_id', $binding['workspace_binding_id'])
+        ->assertJsonPath('job.capability', 'populate_project_wiki')
+        ->assertJsonPath('job.status', 'queued')
+        ->assertJsonPath('job.policy', 'auto')
+        ->assertJsonPath('job.payload.schema', 'devboard.wiki_refresh_request.v1')
+        ->assertJsonPath('created', true);
+
+    $jobId = $response->json('job.id');
+
+    $this->postJson('/api/hades/v1/project-awareness/bootstrap', [
+        'project_id' => $agent['project_id'],
+        'agent_id' => $agent['external_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ], hadesM4Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('job.id', $jobId)
+        ->assertJsonPath('created', false);
+
+    expect(DB::table('hades_agent_jobs')
+        ->where('project_id', $agent['project_id'])
+        ->where('workspace_binding_id', $binding['workspace_binding_id'])
+        ->where('capability', 'populate_project_wiki')
+        ->count())->toBe(1);
+});
+
 function hadesM4Headers(?string $token = null): array
 {
     return $token === null ? [] : ['Authorization' => 'Bearer '.$token];
