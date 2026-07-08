@@ -20,6 +20,7 @@ use App\Http\Controllers\Dashboard\Api\DashboardTaskAttachmentController;
 use App\Http\Controllers\Dashboard\Api\DashboardWikiPageController;
 use App\Http\Controllers\Dashboard\Api\DashboardWikiRefreshController;
 use App\Http\Controllers\Dashboard\Api\DashboardWorkspaceBindingController;
+use App\Http\Controllers\Dashboard\Api\IntakeNormalizerController;
 use App\Http\Controllers\Dashboard\Api\TaskClarifierController;
 use App\Http\Controllers\Dashboard\ArtifactDownloadController;
 use App\Http\Controllers\Dashboard\ArtifactRetentionRunController;
@@ -92,6 +93,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/projects/{project}/agent-chats/{thread}/messages', [DashboardAgentChatController::class, 'storeMessage']);
         Route::delete('/projects/{project}/agent-chats/{thread}', [DashboardAgentChatController::class, 'destroy']);
         Route::post('/projects/{project}/assistant/backlog-triage', BacklogTriageController::class);
+        Route::post('/projects/{project}/intake/normalize', IntakeNormalizerController::class);
         Route::post('/projects/{project}/archive', [DashboardProjectLifecycleController::class, 'archive']);
         Route::post('/projects/{project}/restore', [DashboardProjectLifecycleController::class, 'restore']);
         Route::post('/projects/{project}/delete', [DashboardProjectLifecycleController::class, 'delete']);

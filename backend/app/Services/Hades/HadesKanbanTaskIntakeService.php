@@ -13,6 +13,89 @@ final class HadesKanbanTaskIntakeService
         private readonly HadesEvidencePolicy $policy,
     ) {}
 
+    /**
+     * Normalize raw free-text input into a structured preview without persisting anything.
+     *
+     * @return array{task_type: string, suggested_title: string, suggested_description: string, clarifying_questions: list<string>, requires_root_cause: bool, confidence: float, execution_mode: string}
+     */
+    public function normalizeFreeText(string $rawText, bool $projectContextKnown = false): array
+    {
+        $rawText = trim($rawText);
+        $haystack = mb_strtolower($rawText);
+        $isBug = str_contains($haystack, 'bug')
+            || str_contains($haystack, 'fix')
+            || str_contains($haystack, 'errore')
+            || str_contains($haystack, 'error')
+            || str_contains($haystack, 'exception')
+            || str_contains($haystack, 'stack trace')
+            || str_contains($haystack, 'stacktrace')
+            || str_contains($haystack, 'http 500')
+            || str_contains($haystack, 'crash')
+            || str_contains($haystack, 'failure')
+            || str_contains($haystack, 'failing')
+            || str_contains($haystack, 'intermittent')
+            || str_contains($haystack, 'regression')
+            || str_contains($haystack, 'root cause')
+            || str_contains($haystack, 'diagnose')
+            || str_contains($haystack, 'diagnosi');
+        $isAnalysis = ! $isBug && (str_contains($haystack, 'analyze')
+            || str_contains($haystack, 'analysis')
+            || str_contains($haystack, 'analisi')
+            || str_contains($haystack, 'investigate')
+            || str_contains($haystack, 'inspect'));
+        $isFeature = ! $isBug && ! $isAnalysis && (str_contains($haystack, 'feature')
+            || str_contains($haystack, 'add')
+            || str_contains($haystack, 'implement')
+            || str_contains($haystack, 'create')
+            || str_contains($haystack, 'build')
+            || str_contains($haystack, 'new'));
+        $isQuestion = ! $isBug && ! $isAnalysis && ! $isFeature && (str_contains($rawText, '?')
+            || str_contains($haystack, 'how')
+            || str_contains($haystack, 'what')
+            || str_contains($haystack, 'why')
+            || str_contains($haystack, 'explain')
+            || str_contains($haystack, 'documentation'));
+        $taskType = $isBug ? "bug" : ($isFeature ? "feature" : ($isQuestion ? "question" : "task"));
+        $questions = [];
+        $lines = array_values(array_filter(explode("\n", $rawText), fn (string $line): bool => trim($line) !== ''));
+        $firstLine = $lines[0] ?? $rawText;
+        $title = $this->compact($firstLine, 180);
+        $description = count($lines) > 1
+            ? $this->compact(implode("\n", array_slice($lines, 1)), 1800)
+            : '';
+        $textLen = mb_strlen($rawText);
+
+        if ($textLen < 20) {
+            $questions[] = 'What observable symptom, workflow, or expected behavior should the team verify?';
+        }
+
+        if ($textLen < 60) {
+            $questions[] = 'Which acceptance criteria prove that the work is complete?';
+        }
+
+        if (! $projectContextKnown && ! str_contains($haystack, "project") && ! str_contains($haystack, "repo")) {
+            $questions[] = 'Which project or repository does this apply to?';
+        }
+
+        if ($isBug && ! str_contains($haystack, 'steps') && ! str_contains($haystack, 'reproduce')) {
+            $questions[] = 'What are the reproduction steps for this bug?';
+        }
+
+        if ($isBug && ! str_contains($haystack, 'version') && ! str_contains($haystack, 'branch') && ! str_contains($haystack, 'commit')) {
+            $questions[] = 'Which version, branch, or commit is affected?';
+        }
+
+        return [
+            'task_type' => $taskType,
+            'suggested_title' => $title,
+            'suggested_description' => $description !== '' ? $description : $rawText,
+            'clarifying_questions' => $questions,
+            "requires_root_cause" => str_contains($haystack, "root cause") || str_contains($haystack, "diagnose") || str_contains($haystack, "diagnosi"),
+            'confidence' => $questions === [] ? 0.70 : 0.40,
+            'execution_mode' => 'deterministic_fallback',
+        ];
+    }
+
     public function queueLocalAgentWorkForTask(string $taskId, string $projectId, int $userId): ?string
     {
         $existingId = DB::table('agent_work_items')
