@@ -133,6 +133,9 @@ Route::middleware('auth')->group(function () {
         Route::post('/admin/ai-model-profiles', [DashboardAiAgentController::class, 'storeModelProfile']);
         Route::put('/admin/ai-model-profiles/{profile}', [DashboardAiAgentController::class, 'updateModelProfile']);
         Route::delete('/admin/ai-model-profiles/{profile}', [DashboardAiAgentController::class, 'destroyModelProfile']);
+        Route::post('/admin/ai-agent-profiles', [DashboardAiAgentController::class, 'storeAgentProfile']);
+        Route::put('/admin/ai-agent-profiles/{agent}', [DashboardAiAgentController::class, 'replaceAgentProfile']);
+        Route::delete('/admin/ai-agent-profiles/{agent}', [DashboardAiAgentController::class, 'destroyAgentProfile']);
         Route::patch('/admin/ai-agent-profiles/{agent}', [DashboardAiAgentController::class, 'updateAgentProfile']);
         Route::get('/system', [DashboardSystemController::class, 'show']);
         Route::post('/system/artifact-retention', [DashboardSystemController::class, 'retention']);

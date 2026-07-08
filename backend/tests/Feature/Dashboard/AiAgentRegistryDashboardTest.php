@@ -312,6 +312,106 @@ it('lets an admin assign a model profile to a controlled agent', function () {
             ->exists())->toBeTrue();
 });
 
+it('lets an admin create replace and delete a custom agent profile', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    $created = $this->actingAs($admin)->postJson('/api/dashboard/admin/ai-agent-profiles', [
+        'agent_key' => 'security_reviewer',
+        'display_name' => 'Security Reviewer',
+        'description' => 'Reviews project memory for security-sensitive decisions.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => ['search_project_memory'],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+    ])->assertCreated()
+        ->assertJsonPath('agent_profile.agent_key', 'security_reviewer')
+        ->assertJsonPath('agent_profile.allowed_tools.0', 'search_project_memory')
+        ->assertJsonPath('agent_profile.output_schema.type', 'object')
+        ->json('agent_profile');
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-agent-profiles/security_reviewer', [
+        'display_name' => 'Security Reviewer',
+        'description' => 'Updated description.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => false,
+        'enabled' => true,
+        'allowed_tools' => ['search_project_memory', 'query_project_graph'],
+        'output_schema' => ['type' => 'object', 'required' => ['answer']],
+        'trigger_events' => ['manual_chat', 'scheduled_scan'],
+    ])->assertOk()
+        ->assertJsonPath('agent_profile.description', 'Updated description.')
+        ->assertJsonPath('agent_profile.requires_human_approval', false)
+        ->assertJsonPath('agent_profile.allowed_tools.1', 'query_project_graph')
+        ->assertJsonPath('agent_profile.output_schema.required.0', 'answer');
+
+    $this->actingAs($admin)
+        ->deleteJson('/api/dashboard/admin/ai-agent-profiles/security_reviewer')
+        ->assertNoContent();
+
+    expect(DB::table('ai_agent_profiles')->where('id', $created['id'])->exists())->toBeFalse()
+        ->and(DB::table('audit_logs')->where('action', 'ai_agent_profile.created')->exists())->toBeTrue()
+        ->and(DB::table('audit_logs')->where('action', 'ai_agent_profile.replaced')->exists())->toBeTrue()
+        ->and(DB::table('audit_logs')->where('action', 'ai_agent_profile.deleted')->exists())->toBeTrue();
+});
+
+it('rejects duplicate custom agent profile keys', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    $payload = [
+        'agent_key' => 'duplicate_reviewer',
+        'display_name' => 'Duplicate Reviewer',
+        'description' => 'First profile.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => [],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+    ];
+
+    $this->actingAs($admin)->postJson('/api/dashboard/admin/ai-agent-profiles', $payload)->assertCreated();
+    $this->actingAs($admin)->postJson('/api/dashboard/admin/ai-agent-profiles', $payload)
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['agent_key']);
+});
+
+it('prevents non-admin users from managing custom agent profiles', function () {
+    $sysadmin = aiAgentRegistryUserWithRole('Sysadmin');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    $payload = [
+        'agent_key' => 'forbidden_reviewer',
+        'display_name' => 'Forbidden Reviewer',
+        'description' => 'Sysadmin cannot create this.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => [],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+    ];
+
+    $this->actingAs($sysadmin)->postJson('/api/dashboard/admin/ai-agent-profiles', $payload)->assertForbidden();
+    $this->actingAs($sysadmin)->putJson('/api/dashboard/admin/ai-agent-profiles/task_clarifier', array_diff_key($payload, ['agent_key' => true]))->assertForbidden();
+    $this->actingAs($sysadmin)->deleteJson('/api/dashboard/admin/ai-agent-profiles/task_clarifier')->assertForbidden();
+});
+
 it('prevents non-admin users from managing model profiles and agent model selection', function () {
     $sysadmin = aiAgentRegistryUserWithRole('Sysadmin');
     $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');

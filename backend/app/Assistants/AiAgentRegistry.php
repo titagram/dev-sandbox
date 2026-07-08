@@ -242,6 +242,107 @@ final class AiAgentRegistry
     }
 
     /**
+     * @param  array{
+     *     agent_key: string,
+     *     display_name: string,
+     *     description: string,
+     *     agent_type: string,
+     *     delegation_mode: string,
+     *     parent_agent_key?: string|null,
+     *     default_model_profile_id?: string|null,
+     *     requires_human_approval: bool,
+     *     enabled: bool,
+     *     allowed_tools?: array<int, string>,
+     *     output_schema?: array<string, mixed>|array<int, mixed>,
+     *     trigger_events?: array<int, string>,
+     * } $input
+     * @return array<string, mixed>
+     */
+    public function createAgentProfile(array $input): array
+    {
+        $this->validateAgentKey($input['agent_key']);
+
+        if (DB::table('ai_agent_profiles')->where('agent_key', $input['agent_key'])->exists()) {
+            throw new InvalidArgumentException('Agent profile already exists.');
+        }
+
+        $agentId = (string) Str::ulid();
+        $now = now();
+
+        DB::table('ai_agent_profiles')->insert([
+            'id' => $agentId,
+            'agent_key' => $input['agent_key'],
+            'display_name' => $input['display_name'],
+            'description' => $input['description'],
+            'agent_type' => $input['agent_type'],
+            'delegation_mode' => $input['delegation_mode'],
+            'parent_agent_key' => $input['parent_agent_key'] ?? null,
+            'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
+            'requires_human_approval' => $input['requires_human_approval'],
+            'enabled' => $input['enabled'],
+            'allowed_tools' => json_encode(array_values($input['allowed_tools'] ?? []), JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode($input['output_schema'] ?? (object) [], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(array_values($input['trigger_events'] ?? []), JSON_THROW_ON_ERROR),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        return $this->agentProfileById($agentId);
+    }
+
+    /**
+     * @param  array{
+     *     display_name: string,
+     *     description: string,
+     *     agent_type: string,
+     *     delegation_mode: string,
+     *     parent_agent_key?: string|null,
+     *     default_model_profile_id?: string|null,
+     *     requires_human_approval: bool,
+     *     enabled: bool,
+     *     allowed_tools?: array<int, string>,
+     *     output_schema?: array<string, mixed>|array<int, mixed>,
+     *     trigger_events?: array<int, string>,
+     * } $input
+     * @return array<string, mixed>
+     */
+    public function replaceAgentProfile(string $agentKey, array $input): array
+    {
+        $agent = $this->agentProfileRecordByKey($agentKey);
+        $now = now();
+
+        DB::table('ai_agent_profiles')->where('id', $agent->id)->update([
+            'display_name' => $input['display_name'],
+            'description' => $input['description'],
+            'agent_type' => $input['agent_type'],
+            'delegation_mode' => $input['delegation_mode'],
+            'parent_agent_key' => $input['parent_agent_key'] ?? null,
+            'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
+            'requires_human_approval' => $input['requires_human_approval'],
+            'enabled' => $input['enabled'],
+            'allowed_tools' => json_encode(array_values($input['allowed_tools'] ?? []), JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode($input['output_schema'] ?? (object) [], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(array_values($input['trigger_events'] ?? []), JSON_THROW_ON_ERROR),
+            'updated_at' => $now,
+        ]);
+
+        return $this->agentProfileById((string) $agent->id);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function deleteAgentProfile(string $agentKey): array
+    {
+        $agent = $this->agentProfileRecordByKey($agentKey);
+        $payload = $this->agentProfileById((string) $agent->id);
+
+        DB::table('ai_agent_profiles')->where('id', $agent->id)->delete();
+
+        return $payload;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function validateProvider(string $providerKey): array
@@ -504,15 +605,7 @@ final class AiAgentRegistry
      */
     public function updateAgentProfile(string $agentKey, array $input): array
     {
-        if (! preg_match('/^[a-z0-9][a-z0-9_.-]*$/', $agentKey)) {
-            throw new InvalidArgumentException('Invalid agent key.');
-        }
-
-        $agent = DB::table('ai_agent_profiles')->where('agent_key', $agentKey)->first();
-
-        if (! $agent) {
-            throw new InvalidArgumentException('Agent profile not found.');
-        }
+        $agent = $this->agentProfileRecordByKey($agentKey);
 
         DB::table('ai_agent_profiles')->where('id', $agent->id)->update([
             'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
@@ -569,6 +662,37 @@ final class AiAgentRegistry
             ->first();
 
         return $this->modelProfilePayload($profile);
+    }
+
+    private function agentProfileById(string $agentId): array
+    {
+        $agent = DB::table('ai_agent_profiles')->where('id', $agentId)->first();
+
+        if (! $agent) {
+            throw new InvalidArgumentException('Agent profile not found.');
+        }
+
+        return $this->agentProfilePayload($agent);
+    }
+
+    private function agentProfileRecordByKey(string $agentKey): object
+    {
+        $this->validateAgentKey($agentKey);
+
+        $agent = DB::table('ai_agent_profiles')->where('agent_key', $agentKey)->first();
+
+        if (! $agent) {
+            throw new InvalidArgumentException('Agent profile not found.');
+        }
+
+        return $agent;
+    }
+
+    private function validateAgentKey(string $agentKey): void
+    {
+        if (! preg_match('/^[a-z0-9][a-z0-9_.-]*$/', $agentKey)) {
+            throw new InvalidArgumentException('Invalid agent key.');
+        }
     }
 
     /**

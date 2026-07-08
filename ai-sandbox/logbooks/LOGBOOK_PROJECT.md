@@ -2,6 +2,19 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-08 - Custom AI agent admin API
+
+- Request: add backend-only admin API endpoints to create, fully replace, and delete custom `ai_agent_profiles` rows while preserving the existing `PATCH /api/dashboard/admin/ai-agent-profiles/{agent}` behavior that only updates `default_model_profile_id` and `enabled`.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/wiki/README.md`, `routes/web.php`, `app/Assistants/AiAgentRegistry.php`, `app/Http/Controllers/Dashboard/Api/DashboardAiAgentController.php`, and `tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php`.
+- Work performed: added focused dashboard tests for custom agent-profile create/replace/delete, duplicate-key rejection, and non-admin forbidden access; added `POST`, `PUT`, and `DELETE` admin routes for `/api/dashboard/admin/ai-agent-profiles`; implemented `AiAgentRegistry::createAgentProfile()`, `replaceAgentProfile()`, and `deleteAgentProfile()` with defensive agent-key validation, JSON_THROW_ON_ERROR encoding for JSON fields, and payload reuse through `agentProfilePayload()`; added controller actions with admin guards, full payload validation, 201/200/204 responses, and audit-log inserts for `ai_agent_profile.created`, `ai_agent_profile.replaced`, and `ai_agent_profile.deleted`; preserved the existing `PATCH` route and its two-field behavior by routing it through the unchanged `updateAgentProfile()` contract.
+- Verification commands and result:
+  - `docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='custom agent profile|duplicate custom agent|non-admin users from managing custom agent'"` -> red before implementation with `404` on the missing `/api/dashboard/admin/ai-agent-profiles` routes; green after implementation with `3 passed / 22 assertions`.
+  - `docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='assign a model profile|non-admin users from managing model profiles'"` -> passed, `2 passed / 9 assertions`.
+  - `docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "php -l routes/web.php && php -l app/Assistants/AiAgentRegistry.php && php -l app/Http/Controllers/Dashboard/Api/DashboardAiAgentController.php && php -l tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php"` -> passed, no syntax errors.
+  - `git diff --check` -> passed.
+- Files changed: `routes/web.php`, `app/Assistants/AiAgentRegistry.php`, `app/Http/Controllers/Dashboard/Api/DashboardAiAgentController.php`, `tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: I did not run the full backend suite for this slice, only the focused registry regressions. I also did not add optional canonical-profile delete protection, because the requested CRUD surface was already satisfied without widening scope.
+
 ## 2026-07-08 - Dynamic runtime agent resolution
 
 - Request: let enabled backend agent profiles in `ai_agent_profiles` run dynamically through the existing server-agent work path, preserve legacy visible keys `socrates`, `platon`, and `aristoteles`, keep `local_agent` assignable but out of `ServerAgentWorkService`, and tighten dashboard validation around assignable runtime keys.
