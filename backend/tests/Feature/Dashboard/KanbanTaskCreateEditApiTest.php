@@ -112,6 +112,96 @@ it('does not queue ambiguous local agent work before clarification', function ()
     expect(DB::table('agent_work_items')->where('task_id', $taskId)->count())->toBe(0);
 });
 
+it('normalizes natural-language local agent task cases with stable invariants', function (array $case) {
+    $pm = kanbanTaskCreateEditApiUserWithRole('PM');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = (string) DB::table('repositories')->where('project_id', $projectId)->value('id');
+    $payload = array_merge([
+        'priority' => 'normal',
+        'risk' => 'medium',
+        'assign_to_local_agent' => true,
+    ], $case['request']);
+
+    if (($case['with_repository'] ?? true) === true) {
+        $payload['repository_ids'] = [$repositoryId];
+    }
+
+    $taskId = $this->actingAs($pm)
+        ->postJson("/api/dashboard/projects/{$projectId}/tasks", $payload)
+        ->assertCreated()
+        ->json('id');
+
+    $workItem = DB::table('agent_work_items')->where('task_id', $taskId)->first();
+
+    if (($case['queued'] ?? true) === false) {
+        expect($workItem)->toBeNull();
+
+        return;
+    }
+
+    $payload = json_decode((string) $workItem->payload, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($workItem)->not->toBeNull()
+        ->and($payload['schema'])->toBe('hades.kanban_task_work.v1')
+        ->and($payload['task_type'])->toBe($case['task_type'])
+        ->and($payload['clarification_status'])->toBe('ready')
+        ->and($payload['ready_for_agent_work'])->toBeTrue()
+        ->and($payload['acceptance_criteria'])->toBe($case['request']['acceptance_criteria'])
+        ->and($payload['required_context'])->toContain('shared_project_memory', 'project_awareness_status', 'repository_scope');
+
+    if (($case['requires_bug_evidence'] ?? false) === true) {
+        expect($payload['required_context'])->toContain('bug_evidence')
+            ->and($payload['bug_intake']['status'])->toBe('missing_workspace_binding');
+    } else {
+        expect($payload['required_context'])->not->toContain('bug_evidence')
+            ->and($payload['bug_intake']['status'])->toBe('not_applicable');
+    }
+})->with([
+    'english bug root-cause request' => [[
+        'task_type' => 'bug',
+        'requires_bug_evidence' => true,
+        'request' => [
+            'title' => 'Diagnose checkout HTTP 500 regression',
+            'description' => 'Checkout returns HTTP 500 after coupon validation when an existing customer is selected.',
+            'acceptance_criteria' => [
+                'Root cause is identified with evidence refs.',
+                'A regression check is named.',
+            ],
+        ],
+    ]],
+    'italian analysis request' => [[
+        'task_type' => 'analysis',
+        'request' => [
+            'title' => 'Analisi dipendenze import fatture',
+            'description' => 'Analisi del flusso di import fatture per capire quali servizi e job vengono coinvolti.',
+            'acceptance_criteria' => [
+                'Elenco dei servizi coinvolti.',
+                'Rischi principali documentati.',
+            ],
+        ],
+    ]],
+    'implementation request' => [[
+        'task_type' => 'implementation',
+        'request' => [
+            'title' => 'Add invoice export filter',
+            'description' => 'Add a paid status filter to the invoice export workflow and keep existing exports unchanged.',
+            'acceptance_criteria' => [
+                'Paid status can be selected before export.',
+                'Existing export defaults remain unchanged.',
+            ],
+        ],
+    ]],
+    'ambiguous request without repository' => [[
+        'queued' => false,
+        'with_repository' => false,
+        'request' => [
+            'title' => 'Fix dashboard problem',
+            'description' => 'The dashboard flow should be better but the affected repository is not selected.',
+            'acceptance_criteria' => ['The relevant repository is clarified before agent work.'],
+        ],
+    ]],
+]);
+
 it('creates idempotent Hades bug intake when a ready bug task is assigned locally', function () {
     $pm = kanbanTaskCreateEditApiUserWithRole('PM');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
