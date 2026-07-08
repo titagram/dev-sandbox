@@ -112,6 +112,15 @@ it('creates lists shows and replays a valid causal evidence pack', function () {
         ->assertJsonPath('replay.replayable', true)
         ->assertJsonPath('replay.missing_refs', []);
 
+    $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+    ]), $headers)
+        ->assertOk()
+        ->assertJsonPath('coverage.causal_packs.status', 'ready')
+        ->assertJsonPath('coverage.causal_packs.valid', 1)
+        ->assertJsonPath('coverage.causal_packs.missing_for_open_bugs', 0);
+
     expect(DB::table('hades_search_documents')
         ->where('domain', 'causal_packs')
         ->where('source_table', 'hades_causal_packs')

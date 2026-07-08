@@ -33,6 +33,7 @@ class HadesProjectAwareness
         $sourceSlices = $this->sourceSliceCoverage((string) $binding->project_id, (string) $binding->id, $this->blankToNull($binding->head_commit ?? null));
         $sourceSliceCandidates = $this->sourceSliceCandidateCoverage((string) $binding->project_id, (string) $binding->id);
         $evidencePacks = $this->evidencePackCoverage((string) $binding->project_id, (string) $binding->id);
+        $causalPacks = $this->causalPackCoverage((string) $binding->project_id, (string) $binding->id);
         $freshness = $this->freshness($binding, $artifacts, $bugEvidence);
 
         $artifacts['status'] = $this->artifactStatusFromFreshness($freshness['status']);
@@ -43,6 +44,7 @@ class HadesProjectAwareness
             'source_slices' => $sourceSlices,
             'source_slice_candidates' => $sourceSliceCandidates,
             'evidence_packs' => $evidencePacks,
+            'causal_packs' => $causalPacks,
             'code_graph' => $this->codeGraphCoverage($artifacts),
         ];
         $actions = $this->actions($freshness, $coverage);
@@ -125,6 +127,67 @@ class HadesProjectAwareness
             'status' => $count > 0 ? 'current' : 'missing',
             'count' => $count,
             'updated_at' => $this->toIsoString($row->updated_at ?? null),
+        ];
+    }
+
+    private function causalPackCoverage(string $projectId, string $bindingId): array
+    {
+        if (! DB::getSchemaBuilder()->hasTable('hades_causal_packs')) {
+            return [
+                'status' => 'missing',
+                'valid' => 0,
+                'invalid' => 0,
+                'missing_for_open_bugs' => 0,
+                'reason' => 'causal_pack_store_missing',
+            ];
+        }
+
+        $rows = DB::table('hades_causal_packs')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->selectRaw("SUM(CASE WHEN status = 'valid' THEN 1 ELSE 0 END) as valid_count")
+            ->selectRaw("SUM(CASE WHEN status != 'valid' THEN 1 ELSE 0 END) as invalid_count")
+            ->selectRaw('COUNT(*) as aggregate_count, MAX(updated_at) as updated_at')
+            ->first();
+        $valid = (int) ($rows->valid_count ?? 0);
+        $invalid = (int) ($rows->invalid_count ?? 0);
+        $openBugIds = DB::table('hades_bug_evidence_items')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->whereNotNull('bug_report_id')
+            ->distinct()
+            ->pluck('bug_report_id')
+            ->filter()
+            ->map(fn (mixed $value): string => (string) $value)
+            ->values()
+            ->all();
+        $packedBugIds = DB::table('hades_causal_packs')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->where('status', 'valid')
+            ->whereNotNull('bug_report_id')
+            ->pluck('bug_report_id')
+            ->filter()
+            ->map(fn (mixed $value): string => (string) $value)
+            ->values()
+            ->all();
+        $missingForOpenBugs = count(array_values(array_diff($openBugIds, $packedBugIds)));
+        $status = 'none';
+        if ($missingForOpenBugs > 0) {
+            $status = $valid > 0 ? 'partial' : 'missing';
+        } elseif ($valid > 0) {
+            $status = 'ready';
+        } elseif ($invalid > 0) {
+            $status = 'invalid';
+        }
+
+        return [
+            'status' => $status,
+            'valid' => $valid,
+            'invalid' => $invalid,
+            'count' => (int) ($rows->aggregate_count ?? 0),
+            'missing_for_open_bugs' => $missingForOpenBugs,
+            'updated_at' => $this->toIsoString($rows->updated_at ?? null),
         ];
     }
 
@@ -383,6 +446,10 @@ class HadesProjectAwareness
 
         if ($coverage['source_slices']['status'] !== 'current') {
             $actions[] = 'Index policy-compliant source slices before claiming exact line-level causes without source access.';
+        }
+
+        if ((int) ($coverage['causal_packs']['missing_for_open_bugs'] ?? 0) > 0) {
+            $actions[] = 'Create replayable causal packs for open bug evidence before final high/medium source-free diagnoses.';
         }
 
         return array_values(array_unique($actions));
