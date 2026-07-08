@@ -341,6 +341,64 @@ it('prevents a second device from claiming or completing another device claim', 
         ->assertJsonPath('error.next_step', 'Claim the work item from this device before heartbeat, complete, or fail.');
 });
 
+it('lets another registered device continue from memory written by the first device', function () {
+    $firstToken = pluginSharedMemoryTokenWithDevice('first-continuity-secret');
+    $secondToken = pluginSharedMemoryTokenWithDevice('second-continuity-secret');
+    $projectId = pluginSharedMemoryProjectId();
+    $repositoryId = pluginSharedMemoryRepositoryId();
+    $firstWorkspaceId = pluginSharedMemoryWorkspace($repositoryId, $firstToken['device_id'], 'sha256:first-continuity-device');
+    $secondWorkspaceId = pluginSharedMemoryWorkspace($repositoryId, $secondToken['device_id'], 'sha256:second-continuity-device');
+    $firstWorkItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId, ['title' => 'Capture root cause memory']);
+    $firstLeaseToken = pluginSharedMemoryClaim($this, $firstToken, $firstWorkItemId, $firstWorkspaceId);
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$firstWorkItemId}/complete", [
+        'protocol_version' => 'v1',
+        'lease_token' => $firstLeaseToken,
+        'memory_entry' => [
+            'kind' => 'implementation',
+            'summary' => 'Device A captured checkout root cause.',
+            'payload' => pluginSharedMemoryCompletionPayload([
+                'why' => 'Device A verified the checkout root cause for later devices.',
+            ]),
+        ],
+    ], pluginSharedMemoryHeaders($firstToken))
+        ->assertOk()
+        ->assertJsonPath('item.status', 'completed');
+
+    $entries = $this->getJson(
+        "/api/plugin/v1/projects/{$projectId}/shared-memory-pack?repository_id={$repositoryId}",
+        pluginSharedMemoryHeaders($secondToken),
+    )
+        ->assertOk()
+        ->json('entries');
+
+    expect(collect($entries)->pluck('summary')->all())
+        ->toContain('Device A captured checkout root cause.');
+
+    $secondWorkItemId = pluginSharedMemoryWorkItem($projectId, $repositoryId, ['title' => 'Continue from shared memory']);
+
+    $visibleItems = $this->getJson(
+        "/api/plugin/v1/agent-work-items?project_id={$projectId}&repository_id={$repositoryId}",
+        pluginSharedMemoryHeaders($secondToken),
+    )
+        ->assertOk()
+        ->json('items');
+
+    expect(collect($visibleItems)->pluck('id')->all())->toContain($secondWorkItemId);
+
+    $secondLeaseToken = pluginSharedMemoryClaim($this, $secondToken, $secondWorkItemId, $secondWorkspaceId);
+
+    $this->postJson("/api/plugin/v1/agent-work-items/{$secondWorkItemId}/heartbeat", [
+        'protocol_version' => 'v1',
+        'lease_token' => $secondLeaseToken,
+    ], pluginSharedMemoryHeaders($secondToken))
+        ->assertOk()
+        ->assertJsonPath('item.status', 'running');
+
+    expect(DB::table('agent_work_items')->where('id', $secondWorkItemId)->value('claimed_by_device_id'))
+        ->toBe($secondToken['device_id']);
+});
+
 it('does not create a replacement lease when same-device reclaim loses the conditional update', function () {
     $token = pluginSharedMemoryTokenWithDevice();
     $projectId = pluginSharedMemoryProjectId();
