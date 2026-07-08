@@ -146,7 +146,7 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
         ->assertJsonPath('items.0.id', $evidencePackId)
         ->assertJsonPath('items.0.source_slice_ids.0', $sourceSliceId);
 
-    $this->postJson('/api/hades/v1/diagnosis-reports', [
+    $diagnosisId = $this->postJson('/api/hades/v1/diagnosis-reports', [
         'project_id' => $projectId,
         'workspace_binding_id' => $bindingId,
         'bug_report_id' => $bugReportId,
@@ -160,6 +160,9 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
             ['type' => 'evidence_pack', 'id' => $evidencePackId],
         ],
         'freshness' => $awareness['freshness'],
+        'root_cause_id' => 'rc.order.customer_relation_nullable',
+        'bug_class' => 'missing_null_guard',
+        'affected_refs' => ['route:orders.show', 'symbol:App\\Http\\Controllers\\OrderController@show'],
         'payload' => [
             'affected_symbols' => ['App\\Http\\Controllers\\OrderController@show'],
             'next_verification' => 'Run the order detail missing-customer regression test.',
@@ -168,7 +171,33 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
     ], $headers)
         ->assertCreated()
         ->assertJsonPath('diagnosis_report.confidence', 'high')
-        ->assertJsonPath('diagnosis_report.status', 'final');
+        ->assertJsonPath('diagnosis_report.status', 'final')
+        ->assertJsonPath('diagnosis_report.payload.root_cause_id', 'rc.order.customer_relation_nullable')
+        ->assertJsonPath('diagnosis_report.payload.bug_class', 'missing_null_guard')
+        ->json('diagnosis_report.id');
+
+    $memoryId = $this->postJson('/api/hades/v1/diagnosis-reports/'.$diagnosisId.'/promote', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'verification_status' => 'manual_review',
+    ], $headers)
+        ->assertCreated()
+        ->assertJsonPath('resolved_bug_memory.payload.root_cause_id', 'rc.order.customer_relation_nullable')
+        ->assertJsonPath('resolved_bug_memory.payload.bug_class', 'missing_null_guard')
+        ->assertJsonPath('resolved_bug_memory.payload.affected_refs.0', 'route:orders.show')
+        ->json('resolved_bug_memory.id');
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'query' => 'rc.order.customer_relation_nullable',
+        'domain' => 'project_memory',
+        'kind' => 'resolved_bug',
+        'schema' => 'hades.resolved_bug.v1',
+    ]), $headers)
+        ->assertOk()
+        ->assertJsonPath('items.0.id', $memoryId)
+        ->assertJsonPath('items.0.kind', 'resolved_bug');
 });
 
 it('rejects precise source-free diagnosis when coverage is insufficient', function () {

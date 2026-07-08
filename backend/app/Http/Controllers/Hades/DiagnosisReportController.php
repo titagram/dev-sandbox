@@ -41,15 +41,22 @@ class DiagnosisReportController extends Controller
             'evidence_refs' => ['nullable', 'array'],
             'freshness' => ['nullable', 'array'],
             'payload' => ['nullable', 'array'],
+            'root_cause_id' => ['nullable', 'string', 'max:191'],
+            'bug_class' => ['nullable', 'string', 'max:128'],
+            'failure_classification' => ['nullable', 'string', 'max:128'],
+            'affected_refs' => ['nullable', 'array'],
+            'affected_refs.*' => ['string', 'max:500'],
             'redactions' => ['nullable', 'integer', 'min:0', 'max:100000'],
         ]);
+
+        $diagnosisPayload = $this->diagnosisPayloadWithTaxonomy($validated);
 
         if ($policyError = $this->policy->validateDiagnosisReport(
             $validated['root_cause'],
             $validated['mechanism'] ?? null,
             $validated['evidence_refs'] ?? [],
             $validated['freshness'] ?? [],
-            $validated['payload'] ?? [],
+            $diagnosisPayload,
         )) {
             return $this->error($policyError['code'], $policyError['message'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
@@ -114,7 +121,7 @@ class DiagnosisReportController extends Controller
             'mechanism' => $validated['mechanism'] ?? null,
             'evidence_refs' => isset($validated['evidence_refs']) ? json_encode($validated['evidence_refs'], JSON_THROW_ON_ERROR) : null,
             'freshness' => isset($validated['freshness']) ? json_encode($validated['freshness'], JSON_THROW_ON_ERROR) : null,
-            'payload' => isset($validated['payload']) ? json_encode($validated['payload'], JSON_THROW_ON_ERROR) : null,
+            'payload' => $diagnosisPayload !== [] ? json_encode($diagnosisPayload, JSON_THROW_ON_ERROR) : null,
             'redactions' => (int) ($validated['redactions'] ?? 0),
             'created_at' => $now,
             'updated_at' => $now,
@@ -236,7 +243,7 @@ class DiagnosisReportController extends Controller
             $validity['stale_reason'] = 'workspace_head_changed';
         }
 
-        $memory = DB::transaction(function () use ($affectedSymbols, $agent, $binding, $bugReport, $evidenceRefs, $freshness, $now, $promotionPayload, $regressionTests, $report, $validated, $validity) {
+        $memory = DB::transaction(function () use ($affectedSymbols, $agent, $binding, $bugReport, $evidenceRefs, $freshness, $now, $promotionPayload, $regressionTests, $report, $reportPayload, $validated, $validity) {
             $memoryEntryId = (string) Str::ulid();
             $summary = self::compact('Resolved bug: '.($bugReport?->symptom ? $bugReport->symptom.' -> ' : '').$report->root_cause, 4000);
             $payload = [
@@ -245,10 +252,14 @@ class DiagnosisReportController extends Controller
                 'bug_report_id' => $report->bug_report_id,
                 'symptom' => $bugReport?->symptom,
                 'root_cause' => (string) $report->root_cause,
+                'root_cause_id' => $reportPayload['root_cause_id'] ?? null,
+                'bug_class' => $reportPayload['bug_class'] ?? null,
+                'failure_classification' => $reportPayload['failure_classification'] ?? null,
                 'mechanism' => $report->mechanism,
                 'confidence' => (string) $report->confidence,
                 'verification_status' => $validated['verification_status'],
                 'affected_symbols' => $affectedSymbols,
+                'affected_refs' => self::normaliseStringList($reportPayload['affected_refs'] ?? []),
                 'fix_commit' => $validated['fix_commit'] ?? null,
                 'fix_pr_url' => $validated['fix_pr_url'] ?? null,
                 'regression_tests' => $regressionTests,
@@ -358,6 +369,29 @@ class DiagnosisReportController extends Controller
             'updated_at' => self::toIsoString($entry->updated_at),
             'version' => 'mem_'.hash('sha256', $entry->id.'|'.$entry->updated_at),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function diagnosisPayloadWithTaxonomy(array $validated): array
+    {
+        $payload = isset($validated['payload']) && is_array($validated['payload']) ? $validated['payload'] : [];
+
+        foreach (['root_cause_id', 'bug_class', 'failure_classification'] as $key) {
+            $value = trim((string) ($validated[$key] ?? ''));
+            if ($value !== '') {
+                $payload[$key] = self::compact($value, $key === 'root_cause_id' ? 191 : 128);
+            }
+        }
+
+        $affectedRefs = self::normaliseStringList($validated['affected_refs'] ?? []);
+        if ($affectedRefs !== []) {
+            $payload['affected_refs'] = $affectedRefs;
+        }
+
+        return $payload;
     }
 
     /**
