@@ -182,7 +182,7 @@ final class ServerAgentWorkService
 
         return <<<PROMPT
 You are {$displayName} ({$agentKey}) inside DevBoard.
-Answer only from the provided project context. If information is missing, say what is missing and what evidence would be needed.
+Answer only from the provided project context. Start from memory_search_status and recent_memory; cite memory refs when they influence the answer. If information is missing, say what is missing and what evidence would be needed.
 Do not claim to have inspected files unless the context contains that evidence.
 Reply in the same language as the user's question when practical.
 Keep the answer concise, actionable, and suitable for saving as project memory.
@@ -254,6 +254,8 @@ PROMPT;
             ->where('id', $workItem->project_id)
             ->first();
 
+        $recentMemory = $this->recentMemory((string) $workItem->project_id);
+
         return [
             'project' => $project ? [
                 'id' => (string) $project->id,
@@ -268,8 +270,9 @@ PROMPT;
                 'prompt' => (string) $workItem->prompt,
                 'payload' => $this->decodeJsonObject($workItem->payload),
             ],
+            'memory_search_status' => $this->memorySearchStatus($recentMemory),
             'repositories' => $this->repositories((string) $workItem->project_id),
-            'recent_memory' => $this->recentMemory((string) $workItem->project_id),
+            'recent_memory' => $recentMemory,
             'wiki_pages' => $this->wikiPages((string) $workItem->project_id),
             'open_tasks' => $this->openTasks((string) $workItem->project_id),
         ];
@@ -318,6 +321,28 @@ PROMPT;
                 'occurred_at' => (string) $entry->occurred_at,
             ])
             ->all();
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $recentMemory
+     * @return array<string, mixed>
+     */
+    private function memorySearchStatus(array $recentMemory): array
+    {
+        $refs = array_map(
+            fn (array $entry): array => [
+                'type' => 'project_memory',
+                'id' => (string) $entry['id'],
+                'source' => (string) ($entry['source'] ?? ''),
+                'agent_key' => $entry['agent_key'] ?? null,
+            ],
+            array_slice($recentMemory, 0, 8),
+        );
+
+        return [
+            'status' => $refs === [] ? 'empty' : 'available',
+            'refs' => $refs,
+        ];
     }
 
     /**
@@ -415,10 +440,12 @@ PROMPT;
                     'answer' => $answer,
                     'provider_key' => (string) $modelProfile->provider_key,
                     'model_name' => (string) $modelProfile->model_name,
+                    'memory_search_status' => $context['memory_search_status'] ?? ['status' => 'unknown', 'refs' => []],
                     'context_counts' => [
                         'repositories' => count($context['repositories'] ?? []),
                         'recent_memory' => count($context['recent_memory'] ?? []),
                         'wiki_pages' => count($context['wiki_pages'] ?? []),
+                        'memory_refs' => count(data_get($context, 'memory_search_status.refs', [])),
                         'open_tasks' => count($context['open_tasks'] ?? []),
                     ],
                 ], JSON_THROW_ON_ERROR),
@@ -446,6 +473,7 @@ PROMPT;
                     'profile_agent_key' => (string) $modelProfile->profile_agent_key,
                     'agent_work_item_id' => (string) $workItem->id,
                     'memory_entry_id' => $memoryEntryId,
+                    'memory_search_status' => $context['memory_search_status'] ?? ['status' => 'unknown', 'refs' => []],
                 ], JSON_THROW_ON_ERROR),
                 'started_at' => $workItem->claimed_at ?: $now,
                 'finished_at' => $now,
@@ -491,6 +519,7 @@ PROMPT;
                     'memory_entry_id' => $memoryEntryId,
                     'provider_key' => (string) $modelProfile->provider_key,
                     'model_name' => (string) $modelProfile->model_name,
+                    'memory_search_status' => $context['memory_search_status'] ?? ['status' => 'unknown', 'refs' => []],
                 ],
                 now: $now,
             );

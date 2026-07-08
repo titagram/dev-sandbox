@@ -286,7 +286,7 @@ class DevBoardSeeder extends Seeder
                 'description' => 'Reviews PM task drafts and proposes questions, acceptance criteria, risks, dependencies, and test hints.',
                 'agent_type' => 'specialist',
                 'parent_agent_key' => 'socrate_supervisor',
-                'allowed_tools' => ['read_task_detail', 'read_project_summary', 'search_wiki_revisions', 'append_assistant_suggestion'],
+                'allowed_tools' => ['read_task_detail', 'read_project_summary', 'search_project_memory', 'search_wiki_revisions', 'append_assistant_suggestion'],
                 'trigger_events' => ['task_created', 'task_updated', 'manual_review'],
                 'output_schema' => [
                     'type' => 'object',
@@ -306,7 +306,7 @@ class DevBoardSeeder extends Seeder
                 'description' => 'Finds vague, duplicate, stale, oversized, or inconsistent backlog work and emits recommendations only.',
                 'agent_type' => 'specialist',
                 'parent_agent_key' => 'socrate_supervisor',
-                'allowed_tools' => ['read_project_tasks', 'read_project_summary', 'append_assistant_suggestion'],
+                'allowed_tools' => ['read_project_tasks', 'read_project_summary', 'search_project_memory', 'append_assistant_suggestion'],
                 'trigger_events' => ['manual_triage', 'scheduled_triage'],
                 'output_schema' => [
                     'type' => 'object',

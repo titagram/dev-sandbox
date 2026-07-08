@@ -100,6 +100,7 @@ it('runs socrates work through the configured OpenAI compatible provider and sto
 
     $developer = agentWorkDashboardApiUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $memoryId = agentWorkDashboardApiProjectMemory($projectId, 'Existing checkout memory for Socrates.');
     agentWorkDashboardApiConfigureSocratesProvider();
 
     $workItem = $this->actingAs($developer)
@@ -127,12 +128,18 @@ it('runs socrates work through the configured OpenAI compatible provider and sto
         ->and($memoryEntry->source)->toBe('server_agent')
         ->and($memoryEntry->kind)->toBe('agent_note')
         ->and($memoryPayload['answer'])->toContain('wiki aggiornata')
+        ->and($memoryPayload['memory_search_status']['status'])->toBe('available')
+        ->and($memoryPayload['memory_search_status']['refs'][0]['id'])->toBe($memoryId)
+        ->and($memoryPayload['context_counts']['memory_refs'])->toBe(1)
+        ->and(json_decode((string) DB::table('assistant_runs')->where('target_id', $workItem['id'])->value('metadata'), true, flags: JSON_THROW_ON_ERROR)['memory_search_status']['refs'][0]['id'])->toBe($memoryId)
         ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem['id'])->where('event_type', 'running')->exists())->toBeTrue()
         ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem['id'])->where('event_type', 'completed')->exists())->toBeTrue();
 
     Http::assertSent(fn ($request): bool => $request->url() === 'https://opencode.ai/zen/go/v1/chat/completions'
         && $request['model'] === 'deepseek-v4-flash'
         && str_contains($request->body(), 'Dimmi cosa sai sul progetto')
+        && str_contains($request->body(), 'memory_search_status')
+        && str_contains($request->body(), $memoryId)
         && $request->hasHeader('Authorization', 'Bearer sk-opencode-test'));
 });
 
@@ -851,4 +858,30 @@ function agentWorkDashboardApiConfigureSocratesProvider(): void
         'enabled' => true,
         'updated_at' => now(),
     ]);
+}
+
+function agentWorkDashboardApiProjectMemory(string $projectId, string $summary): string
+{
+    $memoryId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $projectId,
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'manual',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => $summary,
+        'payload' => json_encode(['summary' => $summary], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return $memoryId;
 }

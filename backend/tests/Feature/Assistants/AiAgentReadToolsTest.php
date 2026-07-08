@@ -34,8 +34,8 @@ it('registers read-only tools matching the controlled task clarifier profile', f
     $toolNames = array_map(fn (Tool $tool): string => $tool->name(), $tools);
     $allowedTools = json_decode((string) DB::table('ai_agent_profiles')->where('agent_key', 'task_clarifier')->value('allowed_tools'), true, flags: JSON_THROW_ON_ERROR);
 
-    expect($tools)->toHaveCount(3)
-        ->and($toolNames)->toEqualCanonicalizing(['read_project_summary', 'read_task_detail', 'search_wiki_revisions'])
+    expect($tools)->toHaveCount(4)
+        ->and($toolNames)->toEqualCanonicalizing(['read_project_summary', 'read_task_detail', 'search_project_memory', 'search_wiki_revisions'])
         ->and(array_values(array_intersect($allowedTools, $toolNames)))->toEqualCanonicalizing($toolNames)
         ->and(TaskClarifierAgent::make())->toBeInstanceOf(HasTools::class)
         ->and(array_map(fn (Tool $tool): string => $tool->name(), [...TaskClarifierAgent::make()->tools()]))
@@ -50,8 +50,8 @@ it('registers read-only tools matching the controlled backlog triage profile', f
     $toolNames = array_map(fn (Tool $tool): string => $tool->name(), $tools);
     $allowedTools = json_decode((string) DB::table('ai_agent_profiles')->where('agent_key', 'backlog_triage')->value('allowed_tools'), true, flags: JSON_THROW_ON_ERROR);
 
-    expect($tools)->toHaveCount(2)
-        ->and($toolNames)->toEqualCanonicalizing(['read_project_summary', 'read_project_tasks'])
+    expect($tools)->toHaveCount(3)
+        ->and($toolNames)->toEqualCanonicalizing(['read_project_summary', 'read_project_tasks', 'search_project_memory'])
         ->and(array_values(array_intersect($allowedTools, $toolNames)))->toEqualCanonicalizing($toolNames)
         ->and(BacklogTriageAgent::make())->toBeInstanceOf(HasTools::class)
         ->and(array_map(fn (Tool $tool): string => $tool->name(), [...BacklogTriageAgent::make()->tools()]))

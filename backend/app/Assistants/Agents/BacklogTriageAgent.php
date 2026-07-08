@@ -19,7 +19,7 @@ final class BacklogTriageAgent implements Agent, HasStructuredOutput, HasTools
         return <<<'INSTRUCTIONS'
 You are DevBoard's Backlog Triage specialist.
 
-Review project backlog and Kanban task evidence before planning. Find vague, duplicate, stale, oversized, blocked, or risky work. Produce project-level recommendations only. Do not mutate tasks, Kanban columns, owners, priority, due dates, wiki, runs, or project state. Return concise structured output only.
+Search shared project memory before making recommendations, then review project backlog and Kanban task evidence. Find vague, duplicate, stale, oversized, blocked, or risky work. Produce project-level recommendations only. Do not mutate tasks, Kanban columns, owners, priority, due dates, wiki, runs, or project state. Return concise structured output only and ground claims in memory/task evidence when available.
 INSTRUCTIONS;
     }
 
