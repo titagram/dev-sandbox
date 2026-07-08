@@ -113,6 +113,7 @@ class KanbanController extends Controller
                     ->exists()
                     ? 'needs_review'
                     : 'current';
+                $agentWork = $this->taskAgentWork((string) $task->id);
 
                 return [
                     'id' => $task->id,
@@ -128,9 +129,94 @@ class KanbanController extends Controller
                         'href' => "/runs/{$latestRun->id}",
                     ] : null,
                     'wiki_source_status' => $wikiStatus,
+                    'agent_work' => $agentWork,
                     'blocked' => $task->risk_level === 'high',
                 ];
             })
             ->all();
     }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function taskAgentWork(string $taskId): array
+    {
+        $items = DB::table('agent_work_items')
+            ->where('task_id', $taskId)
+            ->whereNull('archived_at')
+            ->orderByDesc('created_at')
+            ->get();
+
+        if ($items->isEmpty()) {
+            return [
+                'status' => 'not_assigned',
+                'label' => 'Not assigned',
+                'count' => 0,
+                'by_status' => [],
+                'latest_work_item_id' => null,
+                'latest_status' => null,
+                'assigned_agent_key' => null,
+                'next_step' => 'Assign local agent when the task is ready for agent work.',
+            ];
+        }
+
+        $byStatus = [];
+        foreach ($items as $item) {
+            $status = (string) $item->status;
+            $byStatus[$status] = ($byStatus[$status] ?? 0) + 1;
+        }
+
+        $latest = $items->first();
+        $status = $this->agentWorkAggregateStatus($byStatus, (string) $latest->status);
+
+        return [
+            'status' => $status,
+            'label' => $this->agentWorkStatusLabel($status),
+            'count' => $items->count(),
+            'by_status' => $byStatus,
+            'latest_work_item_id' => (string) $latest->id,
+            'latest_status' => (string) $latest->status,
+            'assigned_agent_key' => (string) $latest->assigned_agent_key,
+            'next_step' => $this->agentWorkNextStep($status),
+        ];
+    }
+
+    /**
+     * @param  array<string, int>  $byStatus
+     */
+    private function agentWorkAggregateStatus(array $byStatus, string $fallback): string
+    {
+        foreach (['failed', 'claimed', 'running', 'queued', 'completed', 'canceled'] as $status) {
+            if (($byStatus[$status] ?? 0) > 0) {
+                return $status;
+            }
+        }
+
+        return $fallback !== '' ? $fallback : 'unknown';
+    }
+
+    private function agentWorkStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'queued' => 'Queued for local agent',
+            'claimed', 'running' => 'Local agent running',
+            'completed' => 'Agent work completed',
+            'failed' => 'Agent work failed',
+            'canceled' => 'Agent work canceled',
+            default => 'Agent work '.$status,
+        };
+    }
+
+    private function agentWorkNextStep(string $status): string
+    {
+        return match ($status) {
+            'queued' => 'Run the local Hades task worker to claim this task.',
+            'claimed', 'running' => 'Wait for heartbeat or inspect the active local worker.',
+            'completed' => 'Review the agent result and linked memory/evidence.',
+            'failed' => 'Open the work item events and retry after fixing the failure.',
+            'canceled' => 'Reassign the task if agent work is still needed.',
+            default => 'Assign local agent when the task is ready for agent work.',
+        };
+    }
+
 }

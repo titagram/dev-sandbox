@@ -67,6 +67,8 @@ it('queues local agent work when explicitly requested from a kanban task', funct
             'assign_to_local_agent' => true,
         ])
         ->assertCreated()
+        ->assertJsonPath('agent_work.status', 'queued')
+        ->assertJsonPath('agent_work.label', 'Queued for local agent')
         ->json('id');
 
     $workItem = DB::table('agent_work_items')->where('task_id', $taskId)->first();
@@ -107,6 +109,7 @@ it('does not queue ambiguous local agent work before clarification', function ()
             'assign_to_local_agent' => true,
         ])
         ->assertCreated()
+        ->assertJsonPath('agent_work.status', 'not_assigned')
         ->json('id');
 
     expect(DB::table('agent_work_items')->where('task_id', $taskId)->count())->toBe(0);

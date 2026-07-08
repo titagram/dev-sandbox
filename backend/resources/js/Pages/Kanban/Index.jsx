@@ -1,5 +1,5 @@
 import { Link } from '@inertiajs/react';
-import { CircleAlert, Filter, GitBranch, ShieldCheck } from 'lucide-react';
+import { Bot, CircleAlert, Filter, GitBranch, ShieldCheck } from 'lucide-react';
 import AppLayout from '../../Layouts/AppLayout';
 
 const filters = ['Owner', 'Risk', 'Repository', 'Run status', 'Source status'];
@@ -56,6 +56,17 @@ export default function KanbanIndex({ project, columns, recentRuns, health, dash
                         </Link>
                       ) : 'none'}
                     </div>
+                    {task.agent_work ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <span className={`inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] ${agentWorkTone(task.agent_work.status)}`} title={task.agent_work.next_step}>
+                          <Bot size={11} />
+                          {task.agent_work.label}
+                        </span>
+                        {task.agent_work.count > 1 ? (
+                          <span className="text-[11px] text-zinc-500">{task.agent_work.count} items</span>
+                        ) : null}
+                      </div>
+                    ) : null}
                     <div className="mt-1 inline-flex items-center gap-1 text-zinc-500">
                       <ShieldCheck size={12} />
                       wiki: {task.wiki_source_status}
@@ -88,4 +99,23 @@ export default function KanbanIndex({ project, columns, recentRuns, health, dash
       </section>
     </AppLayout>
   );
+}
+
+
+function agentWorkTone(status) {
+  switch (status) {
+    case 'failed':
+      return 'bg-red-100 text-red-800';
+    case 'queued':
+      return 'bg-blue-100 text-blue-800';
+    case 'claimed':
+    case 'running':
+      return 'bg-amber-100 text-amber-800';
+    case 'completed':
+      return 'bg-emerald-100 text-emerald-800';
+    case 'canceled':
+      return 'bg-zinc-200 text-zinc-700';
+    default:
+      return 'bg-zinc-100 text-zinc-600';
+  }
 }
