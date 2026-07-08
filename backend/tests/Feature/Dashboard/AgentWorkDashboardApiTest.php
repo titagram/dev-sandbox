@@ -190,6 +190,23 @@ it('runs a custom enabled backend agent profile through agent work', function ()
         && str_contains($request->body(), 'Design Reviewer (design_reviewer)'));
 });
 
+it('rejects project-scoped agent work for projects without visibility', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = agentWorkDashboardApiProject('Project Scoped Agent Work Project', 'project-scoped-agent-work-project');
+
+    agentWorkDashboardApiProjectScopedAgent('project_limited_worker', 'Project Limited Worker', $projectA);
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectB['project_id']}/agent-work", [
+            'assigned_agent_key' => 'project_limited_worker',
+            'title' => 'Scoped project work',
+            'prompt' => 'This work should be blocked when the agent is not visible.',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['assigned_agent_key']);
+});
+
 it('rejects unknown dashboard agent work keys', function () {
     $developer = agentWorkDashboardApiUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
@@ -227,6 +244,31 @@ it('fails socrates work visibly when the configured provider rejects the request
         ->and($workItem['result_memory_entry_id'])->toBeNull()
         ->and(DB::table('project_memory_entries')->where('project_id', $projectId)->where('agent_key', 'socrates')->exists())->toBeFalse()
         ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem['id'])->where('event_type', 'failed')->exists())->toBeTrue();
+});
+
+it('fails project-scoped agent work execution when visibility is missing', function () {
+    Http::fake([
+        'https://opencode.ai/zen/go/v1/chat/completions' => Http::response([
+            'choices' => [['message' => ['content' => 'This should not be returned.']]],
+        ]),
+    ]);
+
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = agentWorkDashboardApiProject('Project Scoped Agent Work Execution Project', 'project-scoped-agent-work-execution-project');
+
+    agentWorkDashboardApiConfigureSocratesProvider();
+    agentWorkDashboardApiProjectScopedAgent('project_limited_worker', 'Project Limited Worker', $projectA);
+
+    $workItemId = agentWorkDashboardApiWorkItem($projectB['project_id'], [
+        'assigned_agent_key' => 'project_limited_worker',
+        'title' => 'Scoped execution work',
+        'prompt' => 'This work should fail when executed outside the visibility project.',
+    ]);
+
+    app(\App\Services\ServerAgentWorkService::class)->process($workItemId);
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('failed')
+        ->and((string) DB::table('agent_work_items')->where('id', $workItemId)->value('failure_reason'))->toContain('not visible');
 });
 
 it('runs platon and aristoteles work through controlled backend agent profiles', function (string $agentKey, string $answer) {
@@ -919,6 +961,42 @@ function agentWorkDashboardApiConfigureSocratesProvider(): void
         'enabled' => true,
         'updated_at' => now(),
     ]);
+}
+
+function agentWorkDashboardApiProjectScopedAgent(string $agentKey, string $displayName, string $projectId): string
+{
+    $agentProfileId = (string) Str::ulid();
+    $modelProfileId = (string) DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+    $now = now();
+
+    DB::table('ai_agent_profiles')->insert([
+        'id' => $agentProfileId,
+        'agent_key' => $agentKey,
+        'display_name' => $displayName,
+        'description' => "{$displayName} is limited to one project.",
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $modelProfileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+        'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+        'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+        'visibility_scope' => 'project',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('ai_agent_project_visibility')->insert([
+        'id' => (string) Str::ulid(),
+        'ai_agent_profile_id' => $agentProfileId,
+        'project_id' => $projectId,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return $agentProfileId;
 }
 
 function agentWorkDashboardApiProjectMemory(string $projectId, string $summary): string

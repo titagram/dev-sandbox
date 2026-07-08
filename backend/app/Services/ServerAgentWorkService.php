@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Assistants\AiAgentRegistry;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -16,6 +17,10 @@ final class ServerAgentWorkService
         'platon' => 'task_clarifier',
         'aristoteles' => 'backlog_triage',
     ];
+
+    public function __construct(
+        private readonly AiAgentRegistry $agentRegistry,
+    ) {}
 
     public function isAssignableAgentKey(string $agentKey, ?string $projectId = null): bool
     {
@@ -38,7 +43,8 @@ final class ServerAgentWorkService
             ->where('agent_key', $profileKey)
             ->where('enabled', true)
             ->whereNotNull('default_model_profile_id')
-            ->exists();
+            ->exists()
+            && $this->agentRegistry->agentVisibleForProject($agentKey, $projectId);
     }
 
     public function profileKeyForAgentKey(string $agentKey): ?string
@@ -146,6 +152,10 @@ final class ServerAgentWorkService
 
         if (! $profile) {
             throw new RuntimeException("Agent profile {$profileKey} is not enabled or has no model profile.");
+        }
+
+        if (! $this->agentRegistry->agentVisibleForProject($agentKey, (string) $workItem->project_id)) {
+            throw new RuntimeException("Server-side agent {$agentKey} is not visible for project {$workItem->project_id}.");
         }
 
         if (! (bool) $profile->model_profile_enabled || ! (bool) $profile->provider_enabled) {

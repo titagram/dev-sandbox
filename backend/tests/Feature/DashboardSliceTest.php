@@ -165,6 +165,20 @@ it('shows repositories and Genesis status on project detail', function () {
         );
 });
 
+it('shows agent options on project detail', function () {
+    $pm = dashboardUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $this->actingAs($pm)->get("/projects/{$projectId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Projects/Show')
+            ->where('assistant.agent_options.0.agent_key', 'socrates')
+            ->where('assistant.agent_options.0.label', 'Socrates')
+            ->where('assistant.agent_options.0.runtime', 'server_agent')
+        );
+});
+
 it('shows artifacts risk and source labels on run detail', function () {
     $pm = dashboardUserWithRole('PM');
     $runId = createDashboardRun();

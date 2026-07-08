@@ -139,6 +139,21 @@ it('starts a project chat with a custom server agent profile', function () {
         ->assertJsonPath('thread.messages.1.content', 'Custom chat response.');
 });
 
+it('rejects project-scoped agent chat for projects without visibility', function () {
+    $developer = agentChatDashboardApiUserWithRole('Developer');
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = agentChatDashboardApiProject('Project Scoped Agent Chat Project', 'project-scoped-agent-chat-project');
+
+    agentChatDashboardApiProjectScopedAgent('project_limited_chatter', 'Project Limited Chatter', $projectA);
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectB['project_id']}/agent-chats", [
+            'agent_key' => 'project_limited_chatter',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['agent_key']);
+});
+
 it('continues a persistent thread with new user turns', function () {
     $developer = agentChatDashboardApiUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
@@ -459,4 +474,40 @@ function agentChatDashboardApiConfigureProvider(): void
         'enabled' => true,
         'updated_at' => now(),
     ]);
+}
+
+function agentChatDashboardApiProjectScopedAgent(string $agentKey, string $displayName, string $projectId): string
+{
+    $agentProfileId = (string) Str::ulid();
+    $modelProfileId = (string) DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+    $now = now();
+
+    DB::table('ai_agent_profiles')->insert([
+        'id' => $agentProfileId,
+        'agent_key' => $agentKey,
+        'display_name' => $displayName,
+        'description' => "{$displayName} is limited to one project.",
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $modelProfileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+        'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+        'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+        'visibility_scope' => 'project',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('ai_agent_project_visibility')->insert([
+        'id' => (string) Str::ulid(),
+        'ai_agent_profile_id' => $agentProfileId,
+        'project_id' => $projectId,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return $agentProfileId;
 }
