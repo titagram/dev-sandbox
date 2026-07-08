@@ -1,0 +1,914 @@
+version: 1
+metadata:
+  source_status: inferred
+  description: "Initial route registry. Route existence is verified from Laravel route output; safety classifications are conservative and must be reviewed before any smoke command executes them."
+
+routes:
+  - id: dashboard.api.login
+    method: POST
+    uri: /api/dashboard/login
+    source_status: verified_from_code
+    classification: AUTH
+    classification_status: inferred
+    actor: guest
+    smoke:
+      enabled: false
+      reason: "Authentication endpoint requires credentials and mutates the session."
+
+  - id: dashboard.api.me
+    method: GET
+    uri: /api/dashboard/me
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.logout
+    method: POST
+    uri: /api/dashboard/logout
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    smoke:
+      enabled: false
+      reason: "Logout invalidates the dashboard session and must not run in default route smoke."
+
+  - id: dashboard.api.overview
+    method: GET
+    uri: /api/dashboard/overview
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.kanban
+    method: GET
+    uri: /api/dashboard/kanban
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.task.update
+    method: PATCH
+    uri: /api/dashboard/tasks/{task}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      task: seeded_task
+    smoke:
+      enabled: false
+      reason: "Moves a Kanban task and must not run in default route smoke."
+
+  - id: dashboard.api.task.show
+    method: GET
+    uri: /api/dashboard/tasks/{task}
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      task: seeded_task
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit task parameter provider execution."
+
+  - id: dashboard.api.task.assistant.clarify
+    method: POST
+    uri: /api/dashboard/tasks/{task}/assistant/clarify
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_pm
+    parameter_provider:
+      task: seeded_task
+    smoke:
+      enabled: false
+      reason: "Creates assistant run and suggestion records; must not run in default route smoke."
+
+  - id: dashboard.api.assistant_suggestions.update
+    method: PATCH
+    uri: /api/dashboard/assistant-suggestions/{suggestion}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_pm
+    parameter_provider:
+      suggestion: seeded_assistant_suggestion
+    smoke:
+      enabled: false
+      reason: "Resolves assistant suggestion records; must not run in default route smoke."
+
+  - id: dashboard.api.assistant_suggestions.apply
+    method: POST
+    uri: /api/dashboard/assistant-suggestions/{suggestion}/apply
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_pm
+    parameter_provider:
+      suggestion: seeded_accepted_assistant_suggestion
+    smoke:
+      enabled: false
+      reason: "Applies accepted assistant suggestions to task descriptions; must not run in default route smoke."
+
+  - id: dashboard.api.task_attachments.store
+    method: POST
+    uri: /api/dashboard/tasks/{task}/attachments
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: dashboard_task_mutator
+    parameter_provider:
+      task: seeded_task
+    smoke:
+      enabled: false
+      reason: "Uploads private task attachment bytes and must not run in default route smoke."
+
+  - id: dashboard.api.task_attachments.destroy
+    method: DELETE
+    uri: /api/dashboard/tasks/{task}/attachments/{attachment}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: dashboard_task_mutator
+    parameter_providers:
+      task: seeded_task
+      attachment: seeded_task_attachment
+    smoke:
+      enabled: false
+      reason: "Soft-deletes private task attachment metadata and must not run in default route smoke."
+
+  - id: dashboard.api.task_attachments.download
+    method: GET
+    uri: /api/dashboard/tasks/{task}/attachments/{attachment}/download
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_providers:
+      task: seeded_task
+      attachment: seeded_task_attachment
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized private attachment download. Requires explicit task and attachment providers."
+
+  - id: dashboard.api.projects.index
+    method: GET
+    uri: /api/dashboard/projects
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.projects.store
+    method: POST
+    uri: /api/dashboard/projects
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    smoke:
+      enabled: false
+      reason: "Creates a project and default Kanban board; must not run in default route smoke."
+
+  - id: dashboard.api.projects.show
+    method: GET
+    uri: /api/dashboard/projects/{project}
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.projects.update
+    method: PATCH
+    uri: /api/dashboard/projects/{project}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Updates project identity fields and must not run in default route smoke."
+
+  - id: dashboard.api.projects.repositories.store
+    method: POST
+    uri: /api/dashboard/projects/{project}/repositories
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: project_repository_declarer
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Declares logical repository metadata and must not run in default route smoke."
+
+  - id: dashboard.api.projects.assistant.backlog_triage
+    method: POST
+    uri: /api/dashboard/projects/{project}/assistant/backlog-triage
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_pm
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Creates assistant run and backlog triage suggestion records; must not run in default route smoke."
+
+  - id: dashboard.api.projects.archive
+    method: POST
+    uri: /api/dashboard/projects/{project}/archive
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: project_lifecycle_mutator
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Archives a project and must not run in default route smoke."
+
+  - id: dashboard.api.projects.restore
+    method: POST
+    uri: /api/dashboard/projects/{project}/restore
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: project_lifecycle_mutator
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Restores project lifecycle state and must not run in default route smoke."
+
+  - id: dashboard.api.projects.delete
+    method: POST
+    uri: /api/dashboard/projects/{project}/delete
+    source_status: verified_from_code
+    classification: DESTRUCTIVE
+    classification_status: inferred
+    actor: project_lifecycle_mutator
+    parameter_provider:
+      project: seeded_project
+    smoke:
+      enabled: false
+      reason: "Soft-deletes a project into trash and must not run in default route smoke."
+
+  - id: dashboard.api.projects.kanban
+    method: GET
+    uri: /api/dashboard/projects/{project}/kanban
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.projects.runs
+    method: GET
+    uri: /api/dashboard/projects/{project}/runs
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.projects.wiki
+    method: GET
+    uri: /api/dashboard/projects/{project}/wiki
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.projects.artifacts
+    method: GET
+    uri: /api/dashboard/projects/{project}/artifacts
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      project: seeded_project
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit project parameter provider execution."
+
+  - id: dashboard.api.runs.index
+    method: GET
+    uri: /api/dashboard/runs
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.runs.show
+    method: GET
+    uri: /api/dashboard/runs/{run}
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      run: seeded_run
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit run parameter provider execution."
+
+  - id: dashboard.api.runs.retry_import
+    method: POST
+    uri: /api/dashboard/runs/{run}/retry-import
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: developer_or_admin
+    parameter_provider:
+      run: failed_import_run
+    smoke:
+      enabled: false
+      reason: "Retries graph import state and must not run in default route smoke."
+
+  - id: dashboard.api.runs.review
+    method: POST
+    uri: /api/dashboard/runs/{run}/review
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      run: reviewable_run
+    smoke:
+      enabled: false
+      reason: "Writes developer review metadata and must not run in default route smoke."
+
+  - id: dashboard.api.wiki.index
+    method: GET
+    uri: /api/dashboard/wiki
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.wiki.show
+    method: GET
+    uri: /api/dashboard/wiki/pages/{page}
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      page: seeded_wiki_page
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit wiki page parameter provider execution."
+
+  - id: dashboard.api.graph
+    method: GET
+    uri: /api/dashboard/graph
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.artifacts.index
+    method: GET
+    uri: /api/dashboard/artifacts
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.artifacts.download
+    method: GET
+    uri: /api/dashboard/runs/{run}/artifacts/{artifact}/download
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_providers:
+      run: seeded_run
+      artifact: seeded_artifact
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized artifact route. Requires explicit run and artifact provider execution."
+
+  - id: dashboard.api.admin.plugin_tokens.index
+    method: GET
+    uri: /api/dashboard/admin/plugin-tokens
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only admin API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.admin.plugin_tokens.store
+    method: POST
+    uri: /api/dashboard/admin/plugin-tokens
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    smoke:
+      enabled: false
+      reason: "Creates plugin credentials and must not run in default route smoke."
+
+  - id: dashboard.api.admin.plugin_tokens.rotate
+    method: POST
+    uri: /api/dashboard/admin/plugin-tokens/{token}/rotate
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      token: seeded_plugin_token
+    smoke:
+      enabled: false
+      reason: "Rotates plugin credentials and must not run in default route smoke."
+
+  - id: dashboard.api.admin.plugin_tokens.destroy
+    method: DELETE
+    uri: /api/dashboard/admin/plugin-tokens/{token}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      token: seeded_plugin_token
+    smoke:
+      enabled: false
+      reason: "Revokes plugin credentials and must not run in default route smoke."
+
+  - id: dashboard.api.admin.devices.index
+    method: GET
+    uri: /api/dashboard/admin/devices
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only admin API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.admin.devices.destroy
+    method: DELETE
+    uri: /api/dashboard/admin/devices/{device}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      device: seeded_plugin_device
+    smoke:
+      enabled: false
+      reason: "Revokes plugin device trust and must not run in default route smoke."
+
+  - id: dashboard.api.admin.ai_agents.index
+    method: GET
+    uri: /api/dashboard/admin/ai-agents
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only AI agent registry API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.admin.ai_model_providers.update
+    method: PUT
+    uri: /api/dashboard/admin/ai-model-providers/{provider}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      provider: seeded_ai_model_provider
+    smoke:
+      enabled: false
+      reason: "Stores encrypted model provider credentials and must not run in default route smoke."
+
+  - id: dashboard.api.admin.ai_model_profiles.update
+    method: PUT
+    uri: /api/dashboard/admin/ai-model-profiles/{profile}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      profile: seeded_ai_model_profile
+    smoke:
+      enabled: false
+      reason: "Updates model runtime profile settings and must not run in default route smoke."
+
+  - id: dashboard.api.admin.ai_agent_profiles.update
+    method: PATCH
+    uri: /api/dashboard/admin/ai-agent-profiles/{agent}
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin
+    parameter_provider:
+      agent: seeded_ai_agent_profile
+    smoke:
+      enabled: false
+      reason: "Updates controlled agent model selection and must not run in default route smoke."
+
+  - id: dashboard.api.system.show
+    method: GET
+    uri: /api/dashboard/system
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only system API smoke expects JSON authentication failure."
+
+  - id: dashboard.api.system.artifact_retention
+    method: POST
+    uri: /api/dashboard/system/artifact-retention
+    source_status: verified_from_code
+    classification: DESTRUCTIVE
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    smoke:
+      enabled: false
+      reason: "Retention can purge artifact contents when explicitly enabled. Never run by default."
+
+  - id: dashboard.api.system.audit_exports
+    method: POST
+    uri: /api/dashboard/system/audit-exports
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    smoke:
+      enabled: false
+      reason: "Creates audit export artifacts and must not run in default route smoke."
+
+  - id: dashboard.api.system.backups.readiness
+    method: GET
+    uri: /api/dashboard/system/backups/readiness
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only backup readiness smoke expects JSON authentication failure."
+
+  - id: dashboard.api.system.backups.export
+    method: POST
+    uri: /api/dashboard/system/backups/export
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    smoke:
+      enabled: false
+      reason: "Creates a downloadable DevBoard backup bundle and must not run in default route smoke."
+
+  - id: dashboard.api.system.backups.download
+    method: GET
+    uri: /api/dashboard/system/backups/{backup}/download
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    parameter_provider:
+      backup: seeded_backup_bundle
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized private backup download. Requires an explicit backup bundle fixture."
+
+  - id: dashboard.api.system.backups.validate
+    method: POST
+    uri: /api/dashboard/system/backups/validate
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    smoke:
+      enabled: false
+      reason: "Uploads and validates a backup bundle dry-run; must not run in default route smoke."
+
+  - id: dashboard.kanban.index
+    method: GET
+    uri: /kanban
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 302
+    smoke:
+      enabled: true
+      reason: "Guest-safe GET smoke expects redirect to login."
+
+  - id: dashboard.runs.index
+    method: GET
+    uri: /runs
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 302
+    smoke:
+      enabled: true
+      reason: "Guest-safe GET smoke expects redirect to login."
+
+  - id: dashboard.wiki.index
+    method: GET
+    uri: /wiki
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 302
+    smoke:
+      enabled: true
+      reason: "Guest-safe GET smoke expects redirect to login."
+
+  - id: dashboard.run.review
+    method: POST
+    uri: /runs/{run}/review
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    smoke:
+      enabled: false
+      reason: "Mutating dashboard route. Requires explicit configured test run id and approval."
+
+  - id: dashboard.admin.ai_agents
+    method: GET
+    uri: /admin/ai-agents
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: admin
+    expected_status:
+      authenticated: 200
+      guest: 302
+    smoke:
+      enabled: true
+      reason: "Guest-safe GET smoke expects redirect to login."
+
+  - id: dashboard.system.artifact_retention
+    method: POST
+    uri: /system/artifact-retention
+    source_status: verified_from_code
+    classification: DESTRUCTIVE
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    smoke:
+      enabled: false
+      reason: "Retention may purge artifact contents. Never run by default."
+
+  - id: dashboard.quality.overview
+    method: GET
+    uri: /api/dashboard/quality/overview
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.quality.current_state
+    method: GET
+    uri: /api/dashboard/quality/current-state
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.quality.reports
+    method: GET
+    uri: /api/dashboard/quality/reports
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.quality.route_inventory
+    method: GET
+    uri: /api/dashboard/quality/route-inventory
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.quality.route_smoke
+    method: GET
+    uri: /api/dashboard/quality/route-smoke
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.quality.gate
+    method: GET
+    uri: /api/dashboard/quality/gates/{gate}
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    parameter_provider:
+      gate: pull_request
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: false
+      reason: "Parameterized dashboard API route. Requires explicit gate parameter provider."
+
+  - id: dashboard.quality.roadmap
+    method: GET
+    uri: /api/dashboard/quality/roadmap
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: authenticated_dashboard_user
+    expected_status:
+      authenticated: 200
+      guest: 401
+    smoke:
+      enabled: true
+      reason: "Guest-safe read-only dashboard API smoke expects JSON authentication failure."
+
+  - id: dashboard.quality.run
+    method: POST
+    uri: /api/dashboard/quality/runs
+    source_status: verified_from_code
+    classification: MUTATING
+    classification_status: inferred
+    actor: admin_or_sysadmin
+    smoke:
+      enabled: false
+      reason: "Runs Artisan quality commands and writes reports. Only explicit dashboard operation requests may execute it."
+
+  - id: plugin.projects.index
+    method: GET
+    uri: /api/plugin/v1/projects
+    source_status: verified_from_code
+    classification: SAFE_READ
+    classification_status: inferred
+    actor: plugin_token
+    smoke:
+      enabled: false
+      reason: "Plugin API is reserved for local CLI/MCP use and is not a browser dashboard route."

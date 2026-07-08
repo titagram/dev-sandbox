@@ -1,0 +1,7 @@
+parameters:
+    level: 0
+    paths:
+        - app
+        - bootstrap/app.php
+        - config
+    tmpDir: var/quality/tmp/phpstan

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devboard-plugin"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+  "mcp>=1.27,<2",
+  "pydantic>=2",
+  "typer>=0.12",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8,<10",
+]
+
+[project.scripts]
+devboard = "devboard_plugin.cli:app"
+devboard-mcp = "devboard_plugin.mcp_server:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

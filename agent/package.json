@@ -1,0 +1,12 @@
+{
+  "name": "devboard-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "devboard-agent": "./bin/devboard-agent.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

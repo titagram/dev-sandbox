@@ -1,0 +1,23 @@
+{
+  "name": "devboard",
+  "version": "0.1.0",
+  "description": "DevBoard local plugin for Codex and Claude MCP clients.",
+  "author": {
+    "name": "DevBoard"
+  },
+  "keywords": ["devboard", "mcp", "codex", "claude", "genesis"],
+  "interface": {
+    "displayName": "DevBoard",
+    "shortDescription": "Link local repositories to DevBoard.",
+    "longDescription": "DevBoard exposes local repository onboarding, Genesis Import, run lifecycle, artifact upload, and wiki revision tools to Codex and Claude through MCP.",
+    "developerName": "DevBoard",
+    "category": "Productivity",
+    "capabilities": ["MCP", "Local tools", "Repository analysis"],
+    "defaultPrompt": [
+      "Check my DevBoard plugin status.",
+      "Run Genesis Import for this repo.",
+      "Upload the current Genesis bundle."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

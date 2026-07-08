@@ -1,0 +1,67 @@
+version: 1
+metadata:
+  source_status: verified_from_code
+  description: "Initial actor registry based on seeded DevBoard roles and dashboard navigation."
+
+actors:
+  - id: guest
+    label: Guest
+    source_status: inferred
+    auth_strategy: none
+    permissions: []
+    quality_smoke_enabled: true
+    notes: "Useful for public/redirect assertions only."
+
+  - id: admin
+    label: Admin
+    source_status: verified_from_code
+    auth_strategy: seeded_user
+    seeded_role: Admin
+    permissions_source: "backend/database/seeders/DevBoardSeeder.php"
+    quality_smoke_enabled: false
+    notes: "Full seeded permission set. Deterministic test login is not implemented in quality runner yet."
+
+  - id: pm
+    label: PM
+    source_status: verified_from_code
+    auth_strategy: seeded_role
+    seeded_role: PM
+    permissions_source: "backend/database/seeders/DevBoardSeeder.php"
+    quality_smoke_enabled: false
+    notes: "PM role exists in seed permissions, but no dedicated seeded PM user is currently declared in the inspected seeder."
+
+  - id: developer
+    label: Developer
+    source_status: verified_from_code
+    auth_strategy: seeded_role
+    seeded_role: Developer
+    permissions_source: "backend/database/seeders/DevBoardSeeder.php"
+    quality_smoke_enabled: false
+    notes: "Developer role exists in seed permissions, but no dedicated seeded Developer user is currently declared in the inspected seeder."
+
+  - id: sysadmin
+    label: Sysadmin
+    source_status: verified_from_code
+    auth_strategy: seeded_role
+    seeded_role: Sysadmin
+    permissions_source: "backend/database/seeders/DevBoardSeeder.php"
+    quality_smoke_enabled: false
+    notes: "Sysadmin role exists in seed permissions, but no dedicated seeded Sysadmin user is currently declared in the inspected seeder."
+
+  - id: agent
+    label: Agent
+    source_status: verified_from_code
+    auth_strategy: plugin_token_or_seeded_role
+    seeded_role: Agent
+    permissions_source: "backend/database/seeders/DevBoardSeeder.php"
+    quality_smoke_enabled: false
+    notes: "Dashboard navigation returns no items for a user with only Agent role."
+
+  - id: plugin_token
+    label: Local plugin token
+    source_status: verified_from_code
+    auth_strategy: plugin_token
+    middleware: plugin.token
+    quality_smoke_enabled: false
+    notes: "Reserved for /api/plugin/v1. Browser UI must not use this actor."
+

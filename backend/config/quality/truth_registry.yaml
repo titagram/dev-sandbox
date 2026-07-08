@@ -1,0 +1,73 @@
+version: 1
+metadata:
+  source_status: inferred
+  description: "Initial DevBoard truth registry for quality planning. Entries must be backed by code, tests, or developer-provided source before they become blocking gate rules."
+
+entries:
+  - id: admin.plugin_tokens
+    title: "Plugin token lifecycle"
+    domain: admin
+    source_status: inferred
+    evidence:
+      - "backend/routes/web.php"
+      - "backend/app/Http/Controllers/Dashboard/PluginTokenController.php"
+    expectations:
+      - "Plugin token list responses never expose plaintext token secrets."
+      - "Create and rotate operations may return plaintext token material once."
+      - "Revoked tokens must not authenticate plugin requests."
+    gate_relevance:
+      pull_request: warning
+
+  - id: admin.plugin_devices
+    title: "Plugin device revocation"
+    domain: admin
+    source_status: inferred
+    evidence:
+      - "backend/routes/web.php"
+      - "backend/app/Services/PluginTokenService.php"
+    expectations:
+      - "Revoked plugin devices must not be reactivated implicitly."
+      - "Tokens bound to revoked devices must not authenticate."
+    gate_relevance:
+      pull_request: warning
+
+  - id: runs.review
+    title: "Run review workflow"
+    domain: runs
+    source_status: inferred
+    evidence:
+      - "backend/routes/web.php"
+      - "backend/app/Http/Controllers/Dashboard/RunReviewController.php"
+    expectations:
+      - "Human review is recorded as a run event."
+      - "Review actions are dashboard operations, not plugin API operations."
+    gate_relevance:
+      pull_request: warning
+
+  - id: system.artifact_retention
+    title: "Artifact retention operation"
+    domain: system
+    source_status: inferred
+    evidence:
+      - "backend/routes/web.php"
+      - "backend/app/Services/ArtifactRetentionService.php"
+    expectations:
+      - "Retention purge is an explicit system operation."
+      - "Generated reports and temporary files are not committed."
+      - "Artifact metadata is preserved when contents are purged."
+    gate_relevance:
+      pull_request: warning
+
+  - id: quality.control_plane_boundary
+    title: "Control plane execution boundary"
+    domain: quality
+    source_status: developer_provided
+    evidence:
+      - "user request 2026-06-23"
+    expectations:
+      - "DevBoard backend does not contain target repository source code."
+      - "Target-code tests and scanners run near the target repository through the plugin or a local agent."
+      - "DevBoard receives reports, evidence, artifacts, and gate status for normalization and display."
+    gate_relevance:
+      pull_request: warning
+

@@ -1,0 +1,75 @@
+version: 1
+metadata:
+  source_status: inferred
+  description: "Initial dashboard authorization expectations. Treat as planning data until backed by policy tests."
+
+decisions:
+  - capability: dashboard.projects.read
+    source_status: inferred
+    allowed:
+      - Admin
+      - PM
+      - Developer
+      - Sysadmin
+    denied:
+      - Agent
+      - Guest
+    evidence:
+      - "backend/app/Http/Controllers/Dashboard/Concerns/ChecksDashboardRoles.php"
+
+  - capability: dashboard.quality.read
+    source_status: developer_provided
+    allowed:
+      - Admin
+      - Sysadmin
+    read_only:
+      - Developer
+    denied:
+      - PM
+      - Agent
+      - Guest
+    evidence:
+      - "docs/superpowers/plans/2026-06-23-devboard-frontend-quality-control.md"
+
+  - capability: dashboard.run.retry_import
+    source_status: inferred
+    allowed:
+      - Admin
+      - Developer
+    denied:
+      - PM
+      - Sysadmin
+      - Agent
+      - Guest
+    evidence:
+      - "backend/resources/js/Pages/Runs/Show.jsx"
+      - "backend/app/Http/Controllers/Dashboard/RunRetryImportController.php"
+
+  - capability: dashboard.admin.plugin_tokens.manage
+    source_status: inferred
+    allowed:
+      - Admin
+    denied:
+      - PM
+      - Developer
+      - Sysadmin
+      - Agent
+      - Guest
+    evidence:
+      - "backend/app/Http/Controllers/Dashboard/Concerns/ChecksDashboardRoles.php"
+      - "backend/routes/web.php"
+
+  - capability: dashboard.system.operate
+    source_status: inferred
+    allowed:
+      - Admin
+      - Sysadmin
+    denied:
+      - PM
+      - Developer
+      - Agent
+      - Guest
+    evidence:
+      - "backend/app/Http/Controllers/Dashboard/Concerns/ChecksDashboardRoles.php"
+      - "backend/routes/web.php"
+

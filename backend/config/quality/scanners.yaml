@@ -1,0 +1,145 @@
+version: 1
+metadata:
+  source_status: inferred
+  description: "Scanner readiness registry. Optional scanners are disabled by default and must not run without explicit configuration and approval."
+
+scanners:
+  composer_audit:
+    label: Composer audit
+    source_status: verified_from_code
+    state: configured
+    destructive: false
+    default_enabled: true
+    command: "composer quality:audit"
+    approval_required: false
+    notes: "Non-destructive dependency advisory check. Report ingestion is future work."
+
+  laravel_pint:
+    label: Laravel Pint
+    source_status: verified_from_code
+    state: configured_disabled
+    destructive: false
+    default_enabled: false
+    command: "vendor/bin/pint --test"
+    approval_required: false
+    notes: "Pint is a direct dev dependency. Auto-fix mode is not a default quality run."
+
+  phpstan:
+    label: PHPStan
+    source_status: verified_from_code
+    state: configured
+    destructive: false
+    default_enabled: true
+    command: "vendor/bin/phpstan analyse --memory-limit=-1"
+    approval_required: false
+    notes: "Direct dev dependency from Task 7. Initial phpstan.neon.dist uses level 5 scoped to the backend quality layer."
+
+  playwright:
+    label: Playwright browser smoke
+    source_status: verified_from_code
+    state: missing_setup
+    destructive: false
+    default_enabled: false
+    command: "npx playwright test"
+    approval_required: false
+    notes: "Not declared in inspected frontend package files at Task 2."
+
+  semgrep:
+    label: Semgrep
+    source_status: inferred
+    state: missing_setup
+    destructive: false
+    default_enabled: false
+    command: "semgrep"
+    approval_required: true
+    notes: "Ruleset and target repository scope must be explicit."
+
+  trivy:
+    label: Trivy
+    source_status: inferred
+    state: missing_setup
+    destructive: false
+    default_enabled: false
+    command: "trivy"
+    approval_required: true
+    notes: "Filesystem, image, or dependency scope must be explicit."
+
+  infection:
+    label: Infection mutation testing
+    source_status: inferred
+    state: missing_setup
+    destructive: false
+    default_enabled: false
+    command: "infection"
+    approval_required: true
+    notes: "Requires dedicated setup and runtime budget. Not a default quality run."
+
+  schemathesis:
+    label: Schemathesis API fuzzing
+    source_status: inferred
+    state: missing_setup
+    destructive: false
+    default_enabled: false
+    command: "schemathesis"
+    approval_required: true
+    notes: "Requires an explicit API schema, target environment, and rate limits."
+
+  k6:
+    label: k6 load testing
+    source_status: inferred
+    state: missing_setup
+    destructive: true
+    default_enabled: false
+    command: "k6 run"
+    approval_required: true
+    notes: "Load tests are never default and require explicit non-production targets."
+
+  zap_baseline:
+    label: ZAP baseline scan
+    source_status: inferred
+    state: missing_setup
+    destructive: false
+    default_enabled: false
+    command: "zap-baseline.py"
+    approval_required: true
+    notes: "Only passive baseline scanning in non-production environments."
+
+  zap_active:
+    label: ZAP active scan
+    source_status: developer_provided
+    state: configured_disabled
+    destructive: true
+    default_enabled: false
+    command: "zap-full-scan.py"
+    approval_required: true
+    notes: "Never run by default."
+
+  nuclei:
+    label: Nuclei
+    source_status: developer_provided
+    state: configured_disabled
+    destructive: true
+    default_enabled: false
+    command: "nuclei"
+    approval_required: true
+    notes: "Never run by default."
+
+  wapiti:
+    label: Wapiti web vulnerability scan
+    source_status: developer_provided
+    state: configured_disabled
+    destructive: true
+    default_enabled: false
+    command: "wapiti"
+    approval_required: true
+    notes: "Never run by default."
+
+  greenbone_openvas:
+    label: Greenbone/OpenVAS scan
+    source_status: developer_provided
+    state: configured_disabled
+    destructive: true
+    default_enabled: false
+    command: "openvas"
+    approval_required: true
+    notes: "Never run by default."

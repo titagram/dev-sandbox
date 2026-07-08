@@ -1,0 +1,12 @@
+services:
+  app:
+    platform: linux/amd64
+
+  node:
+    platform: linux/amd64
+
+  postgres:
+    platform: linux/amd64
+
+  neo4j:
+    platform: linux/amd64
