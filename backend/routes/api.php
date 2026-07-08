@@ -8,6 +8,7 @@ use App\Http\Controllers\Hades\ArtifactController as HadesArtifactController;
 use App\Http\Controllers\Hades\BugEvidenceController as HadesBugEvidenceController;
 use App\Http\Controllers\Hades\BugReportController as HadesBugReportController;
 use App\Http\Controllers\Hades\CapabilitiesController as HadesCapabilitiesController;
+use App\Http\Controllers\Hades\CausalPackController as HadesCausalPackController;
 use App\Http\Controllers\Hades\DataPrivacyController as HadesDataPrivacyController;
 use App\Http\Controllers\Hades\DiagnosisReportController as HadesDiagnosisReportController;
 use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportController;
@@ -211,6 +212,18 @@ Route::prefix('hades/v1')->group(function () {
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/evidence-packs', [HadesEvidencePackController::class, 'index'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/causal-packs', [HadesCausalPackController::class, 'store'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/causal-packs', [HadesCausalPackController::class, 'index'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/causal-packs/{causalPack}', [HadesCausalPackController::class, 'show'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/causal-packs/{causalPack}/replay', [HadesCausalPackController::class, 'replay'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/diagnosis-reports', [HadesDiagnosisReportController::class, 'store'])

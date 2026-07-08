@@ -236,6 +236,52 @@ class HadesSearchDocumentIndexer
         );
     }
 
+    public function indexCausalPack(object $pack): void
+    {
+        $body = trim(implode("\n", array_filter([
+            (string) $pack->bug_id,
+            (string) $pack->root_cause_id,
+            (string) $pack->bug_class,
+            (string) $pack->failure_classification,
+            (string) $pack->affected_refs,
+            (string) $pack->freshness,
+            (string) $pack->awareness,
+            (string) $pack->evidence_refs,
+            (string) $pack->graph_refs,
+            (string) $pack->source_slice_refs,
+            (string) $pack->replay,
+            (string) $pack->status,
+            (string) $pack->blockers,
+        ])));
+
+        DB::table('hades_search_documents')->updateOrInsert(
+            [
+                'source_table' => 'hades_causal_packs',
+                'source_id' => $pack->id,
+            ],
+            [
+                'id' => (string) Str::ulid(),
+                'project_id' => $pack->project_id,
+                'workspace_binding_id' => $pack->workspace_binding_id,
+                'domain' => 'causal_packs',
+                'kind' => 'causal_pack',
+                'source_schema' => 'hades.causal_pack.v1',
+                'title' => $this->compact((string) $pack->root_cause_id, 255),
+                'body' => $this->compact($body, 200000),
+                'metadata' => json_encode([
+                    'bug_report_id' => $pack->bug_report_id,
+                    'pack_key' => $pack->pack_key,
+                    'bug_class' => $pack->bug_class,
+                    'failure_classification' => $pack->failure_classification,
+                    'status' => $pack->status,
+                ], JSON_THROW_ON_ERROR),
+                'checksum' => hash('sha256', (string) $pack->pack_key.'|'.$body),
+                'created_at' => $pack->created_at,
+                'updated_at' => now(),
+            ],
+        );
+    }
+
     /**
      * @param  list<string>  $domains
      * @param  array<string, string>  $filters
