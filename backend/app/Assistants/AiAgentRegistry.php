@@ -11,6 +11,12 @@ use Throwable;
 
 final class AiAgentRegistry
 {
+    private const LEGACY_VISIBLE_AGENT_KEYS = [
+        'socrate_supervisor' => ['agent_key' => 'socrates', 'label' => 'Socrates'],
+        'task_clarifier' => ['agent_key' => 'platon', 'label' => 'Platon'],
+        'backlog_triage' => ['agent_key' => 'aristoteles', 'label' => 'Aristoteles'],
+    ];
+
     /**
      * @return array{providers: list<array<string, mixed>>, modelProfiles: list<array<string, mixed>>, agentProfiles: list<array<string, mixed>>}
      */
@@ -74,6 +80,52 @@ final class AiAgentRegistry
             ->get()
             ->map(fn (object $agent): array => $this->agentProfilePayload($agent))
             ->all();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function agentOptionsForProject(?string $projectId): array
+    {
+        $options = [];
+
+        foreach ($this->visibleServerAgentsForProject($projectId) as $agent) {
+            $visibleKey = $this->visibleAgentKeyFor((string) $agent->agent_key);
+
+            if (isset($options[$visibleKey])) {
+                continue;
+            }
+
+            $options[$visibleKey] = [
+                'agent_key' => $visibleKey,
+                'label' => $this->visibleAgentLabelFor((string) $agent->agent_key, (string) $agent->display_name),
+                'description' => (string) $agent->description,
+                'runtime' => 'server_agent',
+            ];
+        }
+
+        $options['local_agent'] = [
+            'agent_key' => 'local_agent',
+            'label' => 'Local agent',
+            'description' => 'Local plugin work queue.',
+            'runtime' => 'local_agent',
+        ];
+
+        return array_values($options);
+    }
+
+    public function agentVisibleForProject(string $agentKey, ?string $projectId): bool
+    {
+        if ($agentKey === 'local_agent') {
+            return true;
+        }
+
+        $agent = $this->agentProfileRecordForVisibilityKey($agentKey);
+        if (! $agent || ! $agent->enabled || $agent->default_model_profile_id === null) {
+            return false;
+        }
+
+        return $this->agentIsVisibleByScope($agent, $projectId);
     }
 
     /**
@@ -597,6 +649,67 @@ final class AiAgentRegistry
         }
 
         return 'Provider configuration is incomplete or disabled.';
+    }
+
+    /**
+     * @return list<object>
+     */
+    private function visibleServerAgentsForProject(?string $projectId): array
+    {
+        return DB::table('ai_agent_profiles')
+            ->where('enabled', true)
+            ->whereNotNull('default_model_profile_id')
+            ->orderByRaw("case when agent_key = 'socrate_supervisor' then 0 when agent_key = 'task_clarifier' then 1 when agent_key = 'backlog_triage' then 2 else 3 end")
+            ->orderBy('display_name')
+            ->get()
+            ->filter(fn (object $agent): bool => $this->agentIsVisibleByScope($agent, $projectId))
+            ->values()
+            ->all();
+    }
+
+    private function agentIsVisibleByScope(object $agent, ?string $projectId): bool
+    {
+        $visibilityScope = (string) ($agent->visibility_scope ?? 'global');
+
+        if ($visibilityScope === 'global') {
+            return true;
+        }
+
+        if ($visibilityScope !== 'project' || $projectId === null) {
+            return false;
+        }
+
+        return DB::table('ai_agent_project_visibility')
+            ->where('ai_agent_profile_id', $agent->id)
+            ->where('project_id', $projectId)
+            ->exists();
+    }
+
+    private function visibleAgentKeyFor(string $agentKey): string
+    {
+        return self::LEGACY_VISIBLE_AGENT_KEYS[$agentKey]['agent_key'] ?? $agentKey;
+    }
+
+    private function visibleAgentLabelFor(string $agentKey, string $displayName): string
+    {
+        return self::LEGACY_VISIBLE_AGENT_KEYS[$agentKey]['label'] ?? $displayName;
+    }
+
+    private function agentProfileRecordForVisibilityKey(string $agentKey): ?object
+    {
+        $backingAgentKey = $this->backingAgentKeyForVisibility($agentKey);
+
+        return DB::table('ai_agent_profiles')->where('agent_key', $backingAgentKey)->first();
+    }
+
+    private function backingAgentKeyForVisibility(string $agentKey): string
+    {
+        return match ($agentKey) {
+            'socrates' => 'socrate_supervisor',
+            'platon' => 'task_clarifier',
+            'aristoteles' => 'backlog_triage',
+            default => $agentKey,
+        };
     }
 
     /**

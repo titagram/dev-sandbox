@@ -312,6 +312,177 @@ it('lets an admin assign a model profile to a controlled agent', function () {
             ->exists())->toBeTrue();
 });
 
+it('returns agent options for project with scoped visibility and legacy aliases', function () {
+    $registry = app(\App\Assistants\AiAgentRegistry::class);
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $ownerId = (int) DB::table('users')->value('id');
+    $projectB = (string) Str::ulid();
+    $modelProfileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('projects')->insert([
+        'id' => $projectB,
+        'name' => 'Other Visibility Project',
+        'slug' => 'other-visibility-project',
+        'description' => null,
+        'status' => 'active',
+        'default_code_exposure_policy' => 'full_code_artifacts',
+        'created_by_user_id' => $ownerId,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('ai_agent_profiles')->insert([
+        [
+            'id' => (string) Str::ulid(),
+            'agent_key' => 'global_visibility_reviewer',
+            'display_name' => 'Global Visibility Reviewer',
+            'description' => 'A global custom profile.',
+            'agent_type' => 'specialist',
+            'delegation_mode' => 'controlled_registry',
+            'parent_agent_key' => null,
+            'default_model_profile_id' => $modelProfileId,
+            'requires_human_approval' => true,
+            'enabled' => true,
+            'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+            'visibility_scope' => 'global',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+        [
+            'id' => (string) Str::ulid(),
+            'agent_key' => 'project_visibility_reviewer',
+            'display_name' => 'Project Visibility Reviewer',
+            'description' => 'A project-scoped custom profile.',
+            'agent_type' => 'specialist',
+            'delegation_mode' => 'controlled_registry',
+            'parent_agent_key' => null,
+            'default_model_profile_id' => $modelProfileId,
+            'requires_human_approval' => true,
+            'enabled' => true,
+            'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+            'visibility_scope' => 'project',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+    ]);
+
+    DB::table('ai_agent_project_visibility')->insert([
+        'id' => (string) Str::ulid(),
+        'ai_agent_profile_id' => DB::table('ai_agent_profiles')->where('agent_key', 'project_visibility_reviewer')->value('id'),
+        'project_id' => $projectA,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $projectAOptions = collect($registry->agentOptionsForProject($projectA));
+    $projectAKeys = $projectAOptions->pluck('agent_key')->all();
+
+    expect($projectAKeys)->toContain('socrates')
+        ->and($projectAKeys)->toContain('platon')
+        ->and($projectAKeys)->toContain('aristoteles')
+        ->and($projectAKeys)->toContain('wiki_query')
+        ->and($projectAKeys)->toContain('watchman')
+        ->and($projectAKeys)->toContain('intake_normalizer')
+        ->and($projectAKeys)->toContain('global_visibility_reviewer')
+        ->and($projectAKeys)->toContain('project_visibility_reviewer')
+        ->and($projectAKeys)->toContain('local_agent')
+        ->and($projectAKeys)->not->toContain('socrate_supervisor')
+        ->and($projectAKeys)->not->toContain('task_clarifier')
+        ->and($projectAKeys)->not->toContain('backlog_triage');
+
+    expect($projectAOptions->firstWhere('agent_key', 'socrates')['label'])->toBe('Socrates')
+        ->and($projectAOptions->firstWhere('agent_key', 'platon')['label'])->toBe('Platon')
+        ->and($projectAOptions->firstWhere('agent_key', 'aristoteles')['label'])->toBe('Aristoteles')
+        ->and($projectAOptions->firstWhere('agent_key', 'global_visibility_reviewer')['label'])->toBe('Global Visibility Reviewer')
+        ->and($projectAOptions->firstWhere('agent_key', 'project_visibility_reviewer')['label'])->toBe('Project Visibility Reviewer')
+        ->and($projectAOptions->firstWhere('agent_key', 'local_agent')['runtime'])->toBe('local_agent');
+
+    $projectBOptions = collect($registry->agentOptionsForProject($projectB));
+    $projectBKeys = $projectBOptions->pluck('agent_key')->all();
+
+    expect($projectBKeys)->toContain('socrates')
+        ->and($projectBKeys)->toContain('global_visibility_reviewer')
+        ->and($projectBKeys)->toContain('local_agent')
+        ->and($projectBKeys)->not->toContain('project_visibility_reviewer');
+});
+
+it('returns agent visibility for a project', function () {
+    $registry = app(\App\Assistants\AiAgentRegistry::class);
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = (string) Str::ulid();
+    $ownerId = (int) DB::table('users')->value('id');
+    $modelProfileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('projects')->insert([
+        'id' => $projectB,
+        'name' => 'Other Visibility Project 2',
+        'slug' => 'other-visibility-project-2',
+        'description' => null,
+        'status' => 'active',
+        'default_code_exposure_policy' => 'full_code_artifacts',
+        'created_by_user_id' => $ownerId,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('ai_agent_profiles')->insert([
+        [
+            'id' => (string) Str::ulid(),
+            'agent_key' => 'global_visibility_checker',
+            'display_name' => 'Global Visibility Checker',
+            'description' => 'A global custom profile.',
+            'agent_type' => 'specialist',
+            'delegation_mode' => 'controlled_registry',
+            'parent_agent_key' => null,
+            'default_model_profile_id' => $modelProfileId,
+            'requires_human_approval' => true,
+            'enabled' => true,
+            'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+            'visibility_scope' => 'global',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+        [
+            'id' => (string) Str::ulid(),
+            'agent_key' => 'project_visibility_checker',
+            'display_name' => 'Project Visibility Checker',
+            'description' => 'A project-scoped custom profile.',
+            'agent_type' => 'specialist',
+            'delegation_mode' => 'controlled_registry',
+            'parent_agent_key' => null,
+            'default_model_profile_id' => $modelProfileId,
+            'requires_human_approval' => true,
+            'enabled' => true,
+            'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+            'visibility_scope' => 'project',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+    ]);
+
+    DB::table('ai_agent_project_visibility')->insert([
+        'id' => (string) Str::ulid(),
+        'ai_agent_profile_id' => DB::table('ai_agent_profiles')->where('agent_key', 'project_visibility_checker')->value('id'),
+        'project_id' => $projectA,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    expect($registry->agentVisibleForProject('global_visibility_checker', $projectA))->toBeTrue()
+        ->and($registry->agentVisibleForProject('project_visibility_checker', $projectA))->toBeTrue()
+        ->and($registry->agentVisibleForProject('project_visibility_checker', $projectB))->toBeFalse()
+        ->and($registry->agentVisibleForProject('socrates', $projectA))->toBeTrue()
+        ->and($registry->agentVisibleForProject('local_agent', $projectA))->toBeTrue();
+});
+
 it('lets an admin create replace and delete a custom agent profile', function () {
     $admin = aiAgentRegistryUserWithRole('Admin');
     $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');

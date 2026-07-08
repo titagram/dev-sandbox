@@ -2,6 +2,19 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-08 - Project-scoped agent visibility registry
+
+- Request: add backend schema and registry support so agent profiles can be global or project-scoped, and expose project-specific dashboard options while preserving legacy visible keys for `socrates`, `platon`, and `aristoteles`.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/wiki/README.md`, `app/Assistants/AiAgentRegistry.php`, `tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php`, `database/migrations/2026_06_28_000001_create_ai_agent_registry_tables.php`, and `database/seeders/DevBoardSeeder.php`.
+- Work performed: added RED tests for `agentOptionsForProject()` and `agentVisibleForProject()` using a project-scoped custom profile plus a global custom profile; added `visibility_scope` and `ai_agent_project_visibility` schema; implemented registry helpers to filter enabled server profiles by visibility, map legacy visible aliases to `socrates`/`platon`/`aristoteles`, and always append `local_agent`; kept the change isolated to the registry and schema only.
+- Verification commands and result:
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='agent visibility|agent options'"` -> RED first run failed as expected on `table ai_agent_profiles has no column named visibility_scope`; rerun after implementation passed with `2 passed / 27 assertions`.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='custom agent profile|assign a model profile'"` -> passed with `4 passed / 28 assertions`.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "php -l /workspace/backend/database/migrations/2026_07_09_000003_add_project_visibility_to_ai_agent_profiles.php && php -l /workspace/backend/app/Assistants/AiAgentRegistry.php && php -l /workspace/backend/tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php"` -> passed, no syntax errors.
+  - `cd /home/ubuntu/dev-sandbox/backend && git diff --check` -> passed.
+- Files changed: `backend/database/migrations/2026_07_09_000003_add_project_visibility_to_ai_agent_profiles.php`, `backend/app/Assistants/AiAgentRegistry.php`, `backend/tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: `ProjectShowController`, `ServerAgentWorkService`, chat wiring, and agent-work controllers are intentionally untouched for the next tasks. I did not run any production/runtime migrations.
+
 ## 2026-07-08 - Custom AI agent admin API
 
 - Request: add backend-only admin API endpoints to create, fully replace, and delete custom `ai_agent_profiles` rows while preserving the existing `PATCH /api/dashboard/admin/ai-agent-profiles/{agent}` behavior that only updates `default_model_profile_id` and `enabled`.
