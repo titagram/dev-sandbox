@@ -1,0 +1,90 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * This file is part of the Neo4j PHP Client and Driver package.
+ *
+ * (c) Nagels <https://nagels.tech>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Laudis\Neo4j\Authentication;
+
+use Exception;
+use Laudis\Neo4j\Bolt\BoltConnection;
+use Laudis\Neo4j\Bolt\BoltMessageFactory;
+use Laudis\Neo4j\Common\Neo4jLogger;
+use Laudis\Neo4j\Contracts\AuthenticateInterface;
+use Psr\Http\Message\UriInterface;
+
+/**
+ * Authenticates connections using a basic username and password.
+ */
+final class BasicAuth implements AuthenticateInterface
+{
+    public function __construct(
+        private readonly string $username,
+        private readonly string $password,
+        private readonly ?Neo4jLogger $logger,
+    ) {
+    }
+
+    /**
+     * @throws Exception
+     *
+     * @return array{server: string, connection_id: string, hints: list}
+     */
+    public function authenticateBolt(BoltConnection $connection, string $userAgent): array
+    {
+        $factory = $this->createMessageFactory($connection);
+
+        $protocol = $connection->protocol();
+        if (method_exists($protocol, 'logon')) {
+            $helloMetadata = ['user_agent' => $userAgent];
+
+            $responseHello = $factory->createHelloMessage($helloMetadata)->send()->getResponse();
+
+            $credentials = [
+                'scheme' => 'basic',
+                'principal' => $this->username,
+                'credentials' => $this->password,
+            ];
+
+            $response = $factory->createLogonMessage($credentials)->send()->getResponse();
+
+            /** @var array{server: string, connection_id: string, hints: list} */
+            return array_merge($responseHello->content, $response->content);
+        }
+
+        $helloMetadata = [
+            'user_agent' => $userAgent,
+            'scheme' => 'basic',
+            'principal' => $this->username,
+            'credentials' => $this->password,
+        ];
+
+        $response = $factory->createHelloMessage($helloMetadata)->send()->getResponse();
+
+        /** @var array{server: string, connection_id: string, hints: list} */
+        return $response->content;
+    }
+
+    /**
+     * @throws Exception
+     */
+    public function toString(UriInterface $uri): string
+    {
+        return sprintf('Basic %s:%s@%s:%s', $this->username, '######', $uri->getHost(), $uri->getPort() ?? '');
+    }
+
+    /**
+     * Helper to create message factory.
+     */
+    private function createMessageFactory(BoltConnection $connection): BoltMessageFactory
+    {
+        return new BoltMessageFactory($connection, $this->logger);
+    }
+}

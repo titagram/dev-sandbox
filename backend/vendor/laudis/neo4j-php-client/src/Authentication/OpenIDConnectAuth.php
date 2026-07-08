@@ -1,0 +1,81 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * This file is part of the Neo4j PHP Client and Driver package.
+ *
+ * (c) Nagels <https://nagels.tech>
+ *
+ * For the full copyright and license information, please view the LICENSE
+ * file that was distributed with this source code.
+ */
+
+namespace Laudis\Neo4j\Authentication;
+
+use Exception;
+use Laudis\Neo4j\Bolt\BoltConnection;
+use Laudis\Neo4j\Bolt\BoltMessageFactory;
+use Laudis\Neo4j\Common\Neo4jLogger;
+use Laudis\Neo4j\Contracts\AuthenticateInterface;
+use Psr\Http\Message\RequestInterface;
+use Psr\Http\Message\UriInterface;
+use Psr\Log\LogLevel;
+
+use function sprintf;
+
+class OpenIDConnectAuth implements AuthenticateInterface
+{
+    public function __construct(
+        private readonly string $token,
+        private readonly ?Neo4jLogger $logger,
+    ) {
+    }
+
+    public function authenticateHttp(RequestInterface $request, UriInterface $uri, string $userAgent): RequestInterface
+    {
+        $this->logger?->log(LogLevel::DEBUG, 'Authenticating using OpenIDConnectAuth');
+
+        return $request->withHeader('Authorization', 'Bearer '.$this->token)
+            ->withHeader('User-Agent', $userAgent);
+    }
+
+    /**
+     * @throws Exception
+     *
+     * @return array{server: string, connection_id: string, hints: list}
+     */
+    public function authenticateBolt(BoltConnection $connection, string $userAgent): array
+    {
+        $factory = $this->createMessageFactory($connection);
+
+        $this->logger?->log(LogLevel::DEBUG, 'HELLO', ['user_agent' => $userAgent]);
+
+        $factory->createHelloMessage(['user_agent' => $userAgent])->send()->getResponse();
+
+        $this->logger?->log(LogLevel::DEBUG, 'LOGON', ['scheme' => 'bearer']);
+
+        $response = $factory->createLogonMessage([
+            'scheme' => 'bearer',
+            'credentials' => $this->token,
+        ])->send()->getResponse();
+
+        /**
+         * @var array{server: string, connection_id: string, hints: list}
+         */
+        return $response->content;
+    }
+
+    public function toString(UriInterface $uri): string
+    {
+        return sprintf('OpenId %s@%s:%s', $this->token, $uri->getHost(), $uri->getPort() ?? '');
+    }
+
+    /**
+     * Helper to create the message factory.
+     */
+    public function createMessageFactory(BoltConnection $connection): BoltMessageFactory
+    {
+        return new BoltMessageFactory($connection, $this->logger);
+    }
+}
