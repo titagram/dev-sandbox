@@ -20,12 +20,13 @@ export default function ProjectShow({ project, repositories, recentRuns, artifac
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [memoryError, setMemoryError] = useState(null);
 
-  const agentOptions = [
-    { key: 'socrates', label: 'Socrates' },
-    { key: 'platon', label: 'Platon' },
-    { key: 'aristoteles', label: 'Aristoteles' },
-    { key: 'local_agent', label: 'Local agent' },
-  ];
+  const agentOptions = (assistant?.agent_options ?? [
+    { agent_key: 'local_agent', label: 'Local agent' },
+  ]).map((agent) => ({
+    key: agent.agent_key,
+    label: agent.label,
+    description: agent.description ?? '',
+  }));
 
   async function runBacklogTriage() {
     setTriaging(true);
@@ -69,7 +70,7 @@ export default function ProjectShow({ project, repositories, recentRuns, artifac
     setChatSubmitting(true);
     setChatError(null);
 
-    const title = chatForm.title.trim() || `${agentLabel(chatForm.agent)} chat`;
+    const title = chatForm.title.trim() || `${agentLabel(chatForm.agent, agentOptions)} chat`;
     const response = await fetch(assistant.agent_work_href, {
       method: 'POST',
       headers: jsonHeaders(),
@@ -271,7 +272,7 @@ export default function ProjectShow({ project, repositories, recentRuns, artifac
               type="button"
               onClick={() => loadWorkDetail(item.id)}
             >
-              <div className="text-xs text-zinc-500">{agentLabel(item.assigned_agent_key)}</div>
+              <div className="text-xs text-zinc-500">{agentLabel(item.assigned_agent_key, agentOptions)}</div>
               <div>
                 <div className="font-medium text-zinc-900">{item.title}</div>
                 <div className="mt-1 line-clamp-1 text-xs text-zinc-500">{item.prompt}</div>
@@ -440,7 +441,12 @@ function jsonHeaders() {
   };
 }
 
-function agentLabel(agentKey) {
+function agentLabel(agentKey, agentOptions = []) {
+  const dynamicLabel = agentOptions.find((agent) => agent.key === agentKey)?.label;
+  if (dynamicLabel) {
+    return dynamicLabel;
+  }
+
   return {
     socrates: 'Socrates',
     platon: 'Platon',

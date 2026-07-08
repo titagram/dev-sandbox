@@ -2,6 +2,21 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-08 - Project page uses backend agent options
+
+- Request: make `resources/js/Pages/Projects/Show.jsx` use backend-provided `assistant.agent_options` on the project page while preserving a local-agent fallback, and keep the Admin AI Agents page untouched.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/DOCKER.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `resources/js/Pages/Projects/Show.jsx`, and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: ran the requested RED source-contract check before any code change and confirmed it failed because the project page did not consume `assistant.agent_options`; replaced the hardcoded project-page agent option array with `assistant?.agent_options` plus a local-agent fallback; added dynamic label resolution for agent chat title generation and agent work list rows while leaving `WorkDetail` fallback labels unchanged.
+- Verification commands and result:
+  - `node - <<'NODE' ... NODE` from `backend/` -> failed as expected with `Error: Project page does not consume assistant.agent_options yet.`
+  - `node - <<'NODE' ... NODE` from `backend/` -> passed after implementation.
+  - `npm run build` from `backend/` -> passed.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/DashboardSliceTest.php --filter='agent options'"` -> passed with `1 passed / 14 assertions`.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "php -l tests/Feature/DashboardSliceTest.php"` -> passed with no syntax errors.
+  - `git diff --check` -> passed.
+- Files changed: `backend/resources/js/Pages/Projects/Show.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: only the project page was updated; the Admin AI Agents page remains hardcoded for now by design. The dynamic label helper still falls back to legacy labels for older rows, and `WorkDetail` continues to use the legacy fallback map until a later cleanup slice.
+
 ## 2026-07-08 - Project-scoped agent visibility wiring
 
 - Request: wire project-scoped agent visibility into runtime validation, server execution safety, and the project page `assistant.agent_options` prop without adding frontend changes or admin CRUD persistence.
