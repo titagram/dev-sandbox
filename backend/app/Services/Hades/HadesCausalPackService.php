@@ -104,14 +104,18 @@ class HadesCausalPackService
             $query->where('root_cause_id', $rootCauseId);
         }
 
+        $requestedRefs = array_map(fn (mixed $ref): string => $this->refFingerprint($ref), $refs);
         foreach ($query->get() as $pack) {
             $replay = $this->replay($pack);
             if (! $replay['replayable']) {
                 continue;
             }
 
+            if (in_array((string) $pack->id, $requestedRefs, true) || in_array('causal_pack:'.(string) $pack->id, $requestedRefs, true)) {
+                return true;
+            }
+
             $packRefs = array_map(fn (mixed $ref): string => $this->refFingerprint($ref), $replay['checked_refs']);
-            $requestedRefs = array_map(fn (mixed $ref): string => $this->refFingerprint($ref), $refs);
             if ($requestedRefs === [] || array_diff($requestedRefs, $packRefs) === []) {
                 return true;
             }
@@ -191,8 +195,12 @@ class HadesCausalPackService
 
         $type = Str::lower(trim((string) ($ref['type'] ?? '')));
         $id = trim((string) ($ref['id'] ?? ''));
-        if ($type === '' || $id === '') {
+        $logicalRef = trim((string) ($ref['ref'] ?? ''));
+        if ($type === '') {
             return false;
+        }
+        if ($id === '') {
+            return $logicalRef !== '' && in_array($type, ['edge', 'graph', 'route', 'symbol', 'table'], true);
         }
 
         return match ($type) {

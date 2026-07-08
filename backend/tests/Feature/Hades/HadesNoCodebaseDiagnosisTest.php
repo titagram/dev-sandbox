@@ -173,6 +173,31 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
         ->assertJsonPath('items.0.id', $evidencePackId)
         ->assertJsonPath('items.0.source_slice_ids.0', $sourceSliceId);
 
+    $causalPackId = $this->postJson('/api/hades/v1/causal-packs', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'bug_id' => 'order_detail_missing_customer',
+        'root_cause_id' => 'rc.order.customer_relation_nullable',
+        'bug_class' => 'missing_null_guard',
+        'failure_classification' => 'confirmed',
+        'affected_refs' => ['route:orders.show', 'symbol:App\Http\Controllers\OrderController@show'],
+        'freshness' => $awareness['freshness'],
+        'awareness' => ['diagnosable_without_source' => true],
+        'evidence_refs' => [
+            ['type' => 'bug_evidence', 'id' => $evidenceId],
+            ['type' => 'evidence_pack', 'id' => $evidencePackId],
+        ],
+        'graph_refs' => [
+            ['type' => 'artifact', 'id' => $artifactId, 'ref' => 'route:orders.show'],
+            ['type' => 'edge', 'ref' => 'route:orders.show -> App\Http\Controllers\OrderController@show'],
+        ],
+        'source_slice_refs' => [['type' => 'source_slice', 'id' => $sourceSliceId]],
+    ], $headers)
+        ->assertCreated()
+        ->assertJsonPath('causal_pack.status', 'valid')
+        ->json('causal_pack.id');
+
     $diagnosisId = $this->postJson('/api/hades/v1/diagnosis-reports', [
         'project_id' => $projectId,
         'workspace_binding_id' => $bindingId,
@@ -190,6 +215,7 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
         'root_cause_id' => 'rc.order.customer_relation_nullable',
         'bug_class' => 'missing_null_guard',
         'affected_refs' => ['route:orders.show', 'symbol:App\\Http\\Controllers\\OrderController@show'],
+        'causal_pack_refs' => [$causalPackId],
         'payload' => [
             'affected_symbols' => ['App\\Http\\Controllers\\OrderController@show'],
             'next_verification' => 'Run the order detail missing-customer regression test.',
@@ -225,6 +251,90 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
         ->assertOk()
         ->assertJsonPath('items.0.id', $memoryId)
         ->assertJsonPath('items.0.kind', 'resolved_bug');
+});
+
+it('rejects precise source-free diagnosis without a replayable causal pack', function () {
+    $agent = hadesNoCodebaseRegisteredAgent();
+    $binding = hadesNoCodebaseWorkspaceBinding($agent);
+    $headers = hadesNoCodebaseHeaders($agent['agent_token']);
+    $projectId = $agent['project_id'];
+    $bindingId = $binding['workspace_binding_id'];
+    $head = str_repeat('f', 40);
+
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => hadesNoCodebaseGraphArtifact($head),
+        'truncated' => false,
+        'redactions' => 0,
+    ], $headers)->assertCreated();
+
+    $bugReportId = $this->postJson('/api/hades/v1/bug-reports', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'title' => 'Order detail causal pack missing',
+        'symptom' => 'GET /orders/123 returns 500 with current graph and source slice.',
+    ], $headers)->assertCreated()->json('bug_report.id');
+
+    $evidenceId = $this->postJson('/api/hades/v1/bug-evidence', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'kind' => 'stack_trace',
+        'summary' => 'Null customer relation in OrderController@show at line 43.',
+        'payload' => ['frames' => [['path' => 'app/Http/Controllers/OrderController.php', 'line' => 43]]],
+        'source' => 'laravel.log',
+        'retention_class' => 'stack_trace',
+    ], $headers)->assertCreated()->json('evidence.id');
+
+    $sourceSliceId = $this->postJson('/api/hades/v1/source-slices', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'path' => 'app/Http/Controllers/OrderController.php',
+        'start_line' => 41,
+        'end_line' => 44,
+        'language' => 'php',
+        'symbol' => 'App\Http\Controllers\OrderController@show',
+        'head_commit' => $head,
+        'content_redacted' => '41: public function show(int $id)
+42: $order = $this->orders->findVisible($id);
+43: return $order->customer->active();
+44: }',
+        'redactions' => 0,
+        'truncated' => false,
+        'retention_class' => 'source_slice',
+        'policy' => 'manual_review',
+    ], $headers)->assertCreated()->json('source_slice.id');
+
+    $awareness = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+    ]), $headers)
+        ->assertOk()
+        ->assertJsonPath('diagnosable_without_source', true)
+        ->json();
+
+    $this->postJson('/api/hades/v1/diagnosis-reports', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'status' => 'final',
+        'confidence' => 'high',
+        'root_cause' => 'OrderController@show dereferences the nullable customer relation before checking it exists.',
+        'mechanism' => 'The stack trace and source slice show the failing customer->active call.',
+        'evidence_refs' => [
+            ['type' => 'bug_evidence', 'id' => $evidenceId],
+            ['type' => 'source_slice', 'id' => $sourceSliceId],
+        ],
+        'freshness' => $awareness['freshness'],
+        'root_cause_id' => 'rc.order.customer_relation_nullable',
+        'bug_class' => 'missing_null_guard',
+        'failure_classification' => 'confirmed',
+        'affected_refs' => ['route:orders.show', 'symbol:App\Http\Controllers\OrderController@show'],
+    ], $headers)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'diagnosis_causal_pack_required');
 });
 
 it('rejects precise source-free diagnosis when coverage is insufficient', function () {

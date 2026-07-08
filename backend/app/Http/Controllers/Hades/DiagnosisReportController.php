@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesCausalPackService;
 use App\Services\Hades\HadesEvidencePolicy;
 use App\Services\Hades\HadesProjectAwareness;
 use App\Services\Hades\HadesSearchDocumentIndexer;
@@ -17,6 +18,7 @@ use Symfony\Component\HttpFoundation\Response;
 class DiagnosisReportController extends Controller
 {
     public function __construct(
+        private readonly HadesCausalPackService $causalPacks,
         private readonly HadesEvidencePolicy $policy,
         private readonly HadesProjectAwareness $awareness,
         private readonly HadesSearchDocumentIndexer $searchIndexer,
@@ -46,6 +48,8 @@ class DiagnosisReportController extends Controller
             'failure_classification' => ['nullable', 'string', 'max:128'],
             'affected_refs' => ['nullable', 'array'],
             'affected_refs.*' => ['string', 'max:500'],
+            'causal_pack_refs' => ['nullable', 'array'],
+            'causal_pack_refs.*' => ['string', 'max:500'],
             'redactions' => ['nullable', 'integer', 'min:0', 'max:100000'],
         ]);
 
@@ -101,6 +105,28 @@ class DiagnosisReportController extends Controller
                 return $this->error(
                     'diagnosis_awareness_not_diagnosable',
                     'High or medium confidence diagnosis reports require current graph, bug evidence, and source slice coverage.',
+                    Response::HTTP_UNPROCESSABLE_ENTITY,
+                );
+            }
+
+            $causalPackRefs = self::normaliseStringList($validated['causal_pack_refs'] ?? ($diagnosisPayload['causal_pack_refs'] ?? []));
+            if ($causalPackRefs === []) {
+                return $this->error(
+                    'diagnosis_causal_pack_required',
+                    'High or medium confidence source-free diagnosis reports require replayable causal pack refs.',
+                    Response::HTTP_UNPROCESSABLE_ENTITY,
+                );
+            }
+
+            $project = (object) ['id' => $validated['project_id']];
+            if (! $this->causalPacks->hasReplayablePackForRefs(
+                $project,
+                $causalPackRefs,
+                $diagnosisPayload['root_cause_id'] ?? null,
+            )) {
+                return $this->error(
+                    'diagnosis_causal_pack_not_replayable',
+                    'High or medium confidence source-free diagnosis reports require at least one replayable causal pack.',
                     Response::HTTP_UNPROCESSABLE_ENTITY,
                 );
             }
@@ -389,6 +415,11 @@ class DiagnosisReportController extends Controller
         $affectedRefs = self::normaliseStringList($validated['affected_refs'] ?? []);
         if ($affectedRefs !== []) {
             $payload['affected_refs'] = $affectedRefs;
+        }
+
+        $causalPackRefs = self::normaliseStringList($validated['causal_pack_refs'] ?? []);
+        if ($causalPackRefs !== []) {
+            $payload['causal_pack_refs'] = $causalPackRefs;
         }
 
         return $payload;
