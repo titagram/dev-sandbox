@@ -31,6 +31,7 @@ class HadesProjectAwareness
         $artifacts = $this->artifactCoverage((string) $binding->project_id, (string) $binding->id);
         $bugEvidence = $this->bugEvidenceCoverage((string) $binding->project_id, (string) $binding->id);
         $sourceSlices = $this->sourceSliceCoverage((string) $binding->project_id, (string) $binding->id, $this->blankToNull($binding->head_commit ?? null));
+        $sourceSliceCandidates = $this->sourceSliceCandidateCoverage((string) $binding->project_id, (string) $binding->id);
         $evidencePacks = $this->evidencePackCoverage((string) $binding->project_id, (string) $binding->id);
         $freshness = $this->freshness($binding, $artifacts, $bugEvidence);
 
@@ -40,6 +41,7 @@ class HadesProjectAwareness
             'artifacts' => $artifacts,
             'bug_evidence' => $bugEvidence,
             'source_slices' => $sourceSlices,
+            'source_slice_candidates' => $sourceSliceCandidates,
             'evidence_packs' => $evidencePacks,
             'code_graph' => $this->codeGraphCoverage($artifacts),
         ];
@@ -254,6 +256,41 @@ class HadesProjectAwareness
         ];
     }
 
+    private function sourceSliceCandidateCoverage(string $projectId, string $bindingId): array
+    {
+        if (! DB::getSchemaBuilder()->hasTable('hades_source_slice_candidates')) {
+            return [
+                'status' => 'missing',
+                'count' => 0,
+                'waiting_jobs' => 0,
+                'reason' => 'source_slice_candidate_store_missing',
+            ];
+        }
+
+        $rows = DB::table('hades_source_slice_candidates')
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->selectRaw('COUNT(*) as aggregate_count, MAX(updated_at) as updated_at')
+            ->selectRaw("SUM(CASE WHEN status IN ('job_created', 'queued') THEN 1 ELSE 0 END) as waiting_jobs")
+            ->first();
+
+        $count = (int) ($rows->aggregate_count ?? 0);
+        $waiting = (int) ($rows->waiting_jobs ?? 0);
+        $status = 'none';
+        if ($waiting > 0) {
+            $status = 'pending';
+        } elseif ($count > 0) {
+            $status = 'present';
+        }
+
+        return [
+            'status' => $status,
+            'count' => $count,
+            'waiting_jobs' => $waiting,
+            'updated_at' => $this->toIsoString($rows->updated_at ?? null),
+        ];
+    }
+
     private function codeGraphCoverage(array $artifacts): array
     {
         $schemas = is_array($artifacts['schemas'] ?? null) ? $artifacts['schemas'] : [];
@@ -338,6 +375,10 @@ class HadesProjectAwareness
 
         if ($coverage['code_graph']['status'] !== 'current') {
             $actions[] = 'Index a current code graph before claiming exact call paths or owner methods without source access.';
+        }
+
+        if (($coverage['source_slice_candidates']['status'] ?? null) === 'pending') {
+            $actions[] = 'Approve pending source-slice jobs before precise source-free diagnosis.';
         }
 
         if ($coverage['source_slices']['status'] !== 'current') {

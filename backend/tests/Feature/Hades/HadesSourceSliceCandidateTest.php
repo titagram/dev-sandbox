@@ -77,6 +77,47 @@ it('creates deduped read source slice jobs from artifact candidates', function (
     expect($candidateRow->source_slice_id)->toBeString();
 });
 
+it('reports pending source slice candidates in project awareness', function () {
+    [$projectId, $agent, $token, $workspaceBindingId] = hadesSourceCandidateAgent();
+
+    $candidate = [
+        'candidate_key' => hash('sha256', 'abc123|app/Http/Controllers/BookingController.php|1|25|BookingController|laravel_controller'),
+        'path' => 'app/Http/Controllers/BookingController.php',
+        'start_line' => 1,
+        'end_line' => 25,
+        'symbol' => 'BookingController',
+        'reason' => 'laravel_controller',
+        'priority' => 10,
+        'head_commit' => str_repeat('a', 40),
+        'raw_source_included' => false,
+        'retention_class' => 'source_slice_candidate',
+    ];
+
+    $this
+        ->postJson('/api/hades/v1/artifacts', [
+            'project_id' => $projectId,
+            'workspace_binding_id' => $workspaceBindingId,
+            'schema' => 'hades.php_graph.v1',
+            'artifact' => ['schema' => 'hades.php_graph.v1', 'source_slice_candidates' => [$candidate]],
+            'sha256' => hash('sha256', json_encode(['source_slice_candidates' => [$candidate], 'routes' => []], JSON_THROW_ON_ERROR)),
+        ], hadesSourceCandidateHeaders($token))
+        ->assertCreated();
+
+    $status = $this->getJson('/api/hades/v1/project-awareness/status?'.http_build_query([
+        'project_id' => $projectId,
+        'workspace_binding_id' => $workspaceBindingId,
+    ]), hadesSourceCandidateHeaders($token))
+        ->assertOk()
+        ->assertJsonPath('coverage.source_slice_candidates.status', 'pending')
+        ->assertJsonPath('coverage.source_slice_candidates.count', 1)
+        ->assertJsonPath('coverage.source_slice_candidates.waiting_jobs', 1)
+        ->assertJsonPath('coverage.source_slices.status', 'missing')
+        ->assertJsonPath('diagnosable_without_source', false)
+        ->json();
+
+    expect($status['actions'])->toContain('Approve pending source-slice jobs before precise source-free diagnosis.');
+});
+
 /**
  * @return array{0: string, 1: array<string, string>, 2: string, 3: string}
  */
