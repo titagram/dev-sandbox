@@ -307,6 +307,8 @@ final class AiAgentRegistry
      *     allowed_tools?: array<int, string>,
      *     output_schema?: array<string, mixed>|array<int, mixed>,
      *     trigger_events?: array<int, string>,
+     *     visibility_scope?: string,
+     *     project_ids?: array<int, string>,
      * } $input
      * @return array<string, mixed>
      */
@@ -320,24 +322,31 @@ final class AiAgentRegistry
 
         $agentId = (string) Str::ulid();
         $now = now();
+        $visibilityScope = (string) ($input['visibility_scope'] ?? 'global');
+        $projectIds = $input['project_ids'] ?? [];
 
-        DB::table('ai_agent_profiles')->insert([
-            'id' => $agentId,
-            'agent_key' => $input['agent_key'],
-            'display_name' => $input['display_name'],
-            'description' => $input['description'],
-            'agent_type' => $input['agent_type'],
-            'delegation_mode' => $input['delegation_mode'],
-            'parent_agent_key' => $input['parent_agent_key'] ?? null,
-            'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
-            'requires_human_approval' => $input['requires_human_approval'],
-            'enabled' => $input['enabled'],
-            'allowed_tools' => json_encode(array_values($input['allowed_tools'] ?? []), JSON_THROW_ON_ERROR),
-            'output_schema' => json_encode($input['output_schema'] ?? (object) [], JSON_THROW_ON_ERROR),
-            'trigger_events' => json_encode(array_values($input['trigger_events'] ?? []), JSON_THROW_ON_ERROR),
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
+        DB::transaction(function () use ($agentId, $input, $now, $projectIds, $visibilityScope): void {
+            DB::table('ai_agent_profiles')->insert([
+                'id' => $agentId,
+                'agent_key' => $input['agent_key'],
+                'display_name' => $input['display_name'],
+                'description' => $input['description'],
+                'agent_type' => $input['agent_type'],
+                'delegation_mode' => $input['delegation_mode'],
+                'parent_agent_key' => $input['parent_agent_key'] ?? null,
+                'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
+                'requires_human_approval' => $input['requires_human_approval'],
+                'enabled' => $input['enabled'],
+                'allowed_tools' => json_encode(array_values($input['allowed_tools'] ?? []), JSON_THROW_ON_ERROR),
+                'output_schema' => json_encode($input['output_schema'] ?? (object) [], JSON_THROW_ON_ERROR),
+                'trigger_events' => json_encode(array_values($input['trigger_events'] ?? []), JSON_THROW_ON_ERROR),
+                'visibility_scope' => $visibilityScope,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $this->syncAgentProjectVisibility($agentId, $visibilityScope, $projectIds, $now);
+        });
 
         return $this->agentProfileById($agentId);
     }
@@ -355,6 +364,8 @@ final class AiAgentRegistry
      *     allowed_tools?: array<int, string>,
      *     output_schema?: array<string, mixed>|array<int, mixed>,
      *     trigger_events?: array<int, string>,
+     *     visibility_scope?: string,
+     *     project_ids?: array<int, string>,
      * } $input
      * @return array<string, mixed>
      */
@@ -362,21 +373,28 @@ final class AiAgentRegistry
     {
         $agent = $this->agentProfileRecordByKey($agentKey);
         $now = now();
+        $visibilityScope = (string) ($input['visibility_scope'] ?? 'global');
+        $projectIds = $input['project_ids'] ?? [];
 
-        DB::table('ai_agent_profiles')->where('id', $agent->id)->update([
-            'display_name' => $input['display_name'],
-            'description' => $input['description'],
-            'agent_type' => $input['agent_type'],
-            'delegation_mode' => $input['delegation_mode'],
-            'parent_agent_key' => $input['parent_agent_key'] ?? null,
-            'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
-            'requires_human_approval' => $input['requires_human_approval'],
-            'enabled' => $input['enabled'],
-            'allowed_tools' => json_encode(array_values($input['allowed_tools'] ?? []), JSON_THROW_ON_ERROR),
-            'output_schema' => json_encode($input['output_schema'] ?? (object) [], JSON_THROW_ON_ERROR),
-            'trigger_events' => json_encode(array_values($input['trigger_events'] ?? []), JSON_THROW_ON_ERROR),
-            'updated_at' => $now,
-        ]);
+        DB::transaction(function () use ($agent, $input, $now, $projectIds, $visibilityScope): void {
+            DB::table('ai_agent_profiles')->where('id', $agent->id)->update([
+                'display_name' => $input['display_name'],
+                'description' => $input['description'],
+                'agent_type' => $input['agent_type'],
+                'delegation_mode' => $input['delegation_mode'],
+                'parent_agent_key' => $input['parent_agent_key'] ?? null,
+                'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
+                'requires_human_approval' => $input['requires_human_approval'],
+                'enabled' => $input['enabled'],
+                'allowed_tools' => json_encode(array_values($input['allowed_tools'] ?? []), JSON_THROW_ON_ERROR),
+                'output_schema' => json_encode($input['output_schema'] ?? (object) [], JSON_THROW_ON_ERROR),
+                'trigger_events' => json_encode(array_values($input['trigger_events'] ?? []), JSON_THROW_ON_ERROR),
+                'visibility_scope' => $visibilityScope,
+                'updated_at' => $now,
+            ]);
+
+            $this->syncAgentProjectVisibility((string) $agent->id, $visibilityScope, $projectIds, $now);
+        });
 
         return $this->agentProfileById((string) $agent->id);
     }
@@ -845,10 +863,58 @@ final class AiAgentRegistry
             'default_model_profile_id' => $agent->default_model_profile_id ? (string) $agent->default_model_profile_id : null,
             'requires_human_approval' => (bool) $agent->requires_human_approval,
             'enabled' => (bool) $agent->enabled,
+            'visibility_scope' => (string) ($agent->visibility_scope ?? 'global'),
+            'project_ids' => $this->agentProjectIds((string) $agent->id),
             'allowed_tools' => $this->decodeJsonList($agent->allowed_tools),
             'output_schema' => $this->decodeJsonObject($agent->output_schema),
             'trigger_events' => $this->decodeJsonList($agent->trigger_events),
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function agentProjectIds(string $agentId): array
+    {
+        return DB::table('ai_agent_project_visibility')
+            ->where('ai_agent_profile_id', $agentId)
+            ->orderBy('project_id')
+            ->pluck('project_id')
+            ->map(fn (mixed $projectId): string => (string) $projectId)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  list<string>  $projectIds
+     */
+    private function syncAgentProjectVisibility(string $agentId, string $visibilityScope, array $projectIds, mixed $now): void
+    {
+        DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->delete();
+
+        if ($visibilityScope !== 'project') {
+            return;
+        }
+
+        $distinctProjectIds = array_values(array_unique(array_map(
+            fn (mixed $projectId): string => (string) $projectId,
+            $projectIds,
+        )));
+
+        if ($distinctProjectIds === []) {
+            return;
+        }
+
+        DB::table('ai_agent_project_visibility')->insert(array_map(
+            fn (string $projectId): array => [
+                'id' => (string) Str::ulid(),
+                'ai_agent_profile_id' => $agentId,
+                'project_id' => $projectId,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            $distinctProjectIds,
+        ));
     }
 
     /**

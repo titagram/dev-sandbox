@@ -534,6 +534,89 @@ it('lets an admin create replace and delete a custom agent profile', function ()
         ->and(DB::table('audit_logs')->where('action', 'ai_agent_profile.deleted')->exists())->toBeTrue();
 });
 
+it('project visibility persistence for custom agent profiles', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = (string) Str::ulid();
+    $ownerId = (int) DB::table('users')->value('id');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('projects')->insert([
+        'id' => $projectB,
+        'name' => 'Visibility Project B',
+        'slug' => 'visibility-project-b',
+        'description' => null,
+        'status' => 'active',
+        'default_code_exposure_policy' => 'full_code_artifacts',
+        'created_by_user_id' => $ownerId,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $createResponse = $this->actingAs($admin)->postJson('/api/dashboard/admin/ai-agent-profiles', [
+        'agent_key' => 'scoped_dashboard_reviewer',
+        'display_name' => 'Scoped Dashboard Reviewer',
+        'description' => 'A custom agent visible only to selected projects.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => ['search_project_memory'],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+        'visibility_scope' => 'project',
+        'project_ids' => [$projectA],
+    ]);
+
+    $createResponse
+        ->assertCreated()
+        ->assertJsonPath('agent_profile.visibility_scope', 'project')
+        ->assertJsonPath('agent_profile.project_ids.0', $projectA);
+
+    $agentId = DB::table('ai_agent_profiles')->where('agent_key', 'scoped_dashboard_reviewer')->value('id');
+
+    expect(DB::table('ai_agent_profiles')->where('agent_key', 'scoped_dashboard_reviewer')->value('visibility_scope'))
+        ->toBe('project')
+        ->and(DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->count())
+        ->toBe(1)
+        ->and(DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->where('project_id', $projectA)->exists())
+        ->toBeTrue();
+
+    $registry = app(\App\Assistants\AiAgentRegistry::class);
+
+    expect($registry->agentVisibleForProject('scoped_dashboard_reviewer', $projectA))->toBeTrue()
+        ->and($registry->agentVisibleForProject('scoped_dashboard_reviewer', $projectB))->toBeFalse();
+
+    $updateResponse = $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-agent-profiles/scoped_dashboard_reviewer', [
+        'display_name' => 'Scoped Dashboard Reviewer',
+        'description' => 'A custom agent visible to all projects.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => ['search_project_memory'],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+        'visibility_scope' => 'global',
+        'project_ids' => [],
+    ]);
+
+    $updateResponse
+        ->assertOk()
+        ->assertJsonPath('agent_profile.visibility_scope', 'global')
+        ->assertJsonPath('agent_profile.project_ids', []);
+
+    expect(DB::table('ai_agent_profiles')->where('agent_key', 'scoped_dashboard_reviewer')->value('visibility_scope'))
+        ->toBe('global')
+        ->and(DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->count())
+        ->toBe(0)
+        ->and($registry->agentVisibleForProject('scoped_dashboard_reviewer', $projectB))->toBeTrue();
+});
+
 it('rejects duplicate custom agent profile keys', function () {
     $admin = aiAgentRegistryUserWithRole('Admin');
     $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');

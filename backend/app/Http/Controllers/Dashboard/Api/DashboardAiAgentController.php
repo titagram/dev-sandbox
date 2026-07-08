@@ -12,6 +12,7 @@ use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Illuminate\Validation\Rule;
 
 final class DashboardAiAgentController extends Controller
 {
@@ -231,6 +232,8 @@ final class DashboardAiAgentController extends Controller
                 'allowed_tools' => $payload['allowed_tools'],
                 'output_schema' => $payload['output_schema'],
                 'trigger_events' => $payload['trigger_events'],
+                'visibility_scope' => $payload['visibility_scope'],
+                'project_ids' => $payload['project_ids'],
             ], JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
@@ -273,6 +276,8 @@ final class DashboardAiAgentController extends Controller
                 'allowed_tools' => $payload['allowed_tools'],
                 'output_schema' => $payload['output_schema'],
                 'trigger_events' => $payload['trigger_events'],
+                'visibility_scope' => $payload['visibility_scope'],
+                'project_ids' => $payload['project_ids'],
             ], JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
@@ -408,6 +413,9 @@ final class DashboardAiAgentController extends Controller
             'output_schema' => ['sometimes', 'array'],
             'trigger_events' => ['sometimes', 'array'],
             'trigger_events.*' => ['string', 'max:120', 'regex:/^[a-z0-9][a-z0-9_.-]*$/'],
+            'visibility_scope' => ['sometimes', 'string', Rule::in(['global', 'project'])],
+            'project_ids' => ['sometimes', 'array'],
+            'project_ids.*' => ['string', 'exists:projects,id'],
         ];
 
         if ($includeAgentKey) {

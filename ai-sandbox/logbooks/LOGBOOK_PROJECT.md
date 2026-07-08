@@ -2,6 +2,19 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-08 - Custom agent visibility persistence in dashboard API
+
+- Request: persist custom agent `visibility_scope` and `project_ids` through the dashboard admin API for create/replace, keep the change backend-only, avoid migrations, and preserve the existing `PATCH /api/dashboard/admin/ai-agent-profiles/{agent}` behavior.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/instructions/workflows/BUGFIX.md`, `ai-sandbox/instructions/policies/DOCKER.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `app/Assistants/AiAgentRegistry.php`, `app/Http/Controllers/Dashboard/Api/DashboardAiAgentController.php`, and `tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php`.
+- Work performed: added a focused feature test covering project-scoped custom agent creation, pivot persistence, registry visibility, and replacement back to global visibility; updated the registry to store `visibility_scope`, replace `ai_agent_project_visibility` rows transactionally, expose `visibility_scope` and `project_ids` in payloads, and derive project IDs from the pivot table; updated the dashboard controller to validate `visibility_scope`/`project_ids` and to include both fields in `ai_agent_profile.created` and `ai_agent_profile.replaced` audit payloads; kept the patch-only agent update path unchanged.
+- Verification commands and result:
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='project visibility persistence'"` -> red first with `Failed asserting that null is identical to 'project'.`, then green after implementation with `1 passed / 14 assertions`.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='custom agent profile|duplicate custom agent|non-admin users from managing custom agent|agent visibility|agent options'"` -> passed with `6 passed / 63 assertions`.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc 'php -l app/Assistants/AiAgentRegistry.php && php -l app/Http/Controllers/Dashboard/Api/DashboardAiAgentController.php && php -l tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php'` -> passed, no syntax errors.
+  - `git diff --check` -> passed.
+- Files changed: `backend/app/Assistants/AiAgentRegistry.php`, `backend/app/Http/Controllers/Dashboard/Api/DashboardAiAgentController.php`, `backend/tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: I did not change the `PATCH` agent-update endpoint, frontend React files, or any migrations. The new `project_ids` ordering is stable but not semantically significant beyond the validated IDs.
+
 ## 2026-07-08 - Project page uses backend agent options
 
 - Request: make `resources/js/Pages/Projects/Show.jsx` use backend-provided `assistant.agent_options` on the project page while preserving a local-agent fallback, and keep the Admin AI Agents page untouched.
