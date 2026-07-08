@@ -87,13 +87,40 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
             ['type' => 'edge', 'from' => 'route:orders.show', 'to' => 'App\Http\Controllers\OrderController@show'],
         ],
         'source_slice_ids' => [$sourceSliceId],
-        'payload' => ['next_verification' => 'Run OrderControllerTest::test_show_missing_customer'],
+        'payload' => [
+            'reproduction_steps' => ['Open booking form', 'Submit order without a customer relation'],
+            'expected_behavior' => 'The request returns a validation error.',
+            'actual_behavior' => 'The controller dereferences the nullable customer relation.',
+            'runtime_context' => ['php' => '8.3', 'queue' => 'sync'],
+            'deploy_context' => ['commit' => $head],
+            'minimal_input' => ['route' => 'orders.show', 'id' => 123],
+            'last_changed_refs' => ['symbol:App\\Http\\Controllers\\OrderController@show'],
+            'missing_evidence' => [],
+            'next_verification' => 'Run OrderControllerTest::test_show_missing_customer',
+        ],
         'redactions' => 0,
         'retention_class' => 'diagnosis_evidence',
         'head_commit' => $head,
     ], $headers)
         ->assertCreated()
+        ->assertJsonPath('evidence_pack.payload.reproduction_steps.0', 'Open booking form')
+        ->assertJsonPath('evidence_pack.payload.deploy_context.commit', $head)
+        ->assertJsonPath('evidence_pack.source_slice_ids.0', $sourceSliceId)
         ->json('evidence_pack.id');
+
+    $this->postJson('/api/hades/v1/evidence-packs', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $bindingId,
+        'bug_report_id' => $bugReportId,
+        'title' => 'Unsafe evidence pack',
+        'summary' => 'This pack should be rejected by evidence policy.',
+        'source_slice_ids' => [$sourceSliceId],
+        'payload' => [
+            'runtime_context' => ['env' => 'OPENAI_API_KEY=sk-live-secret123'],
+        ],
+    ], $headers)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'unredacted_secret_detected');
 
     expect(DB::table('hades_search_documents')->where('domain', 'bug_evidence')->where('source_table', 'hades_bug_evidence_items')->where('source_id', $evidenceId)->where('body', 'like', '%OrderController@show%')->exists())->toBeTrue()
         ->and(DB::table('hades_search_documents')->where('domain', 'source_slices')->where('source_table', 'hades_source_slices')->where('source_id', $sourceSliceId)->where('body', 'like', '%customer->active%')->exists())->toBeTrue()
