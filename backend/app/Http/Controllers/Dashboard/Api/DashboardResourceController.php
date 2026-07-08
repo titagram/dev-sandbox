@@ -6,12 +6,12 @@ use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Projects\ProjectLifecycleService;
+use App\Services\Hades\HadesKanbanTaskIntakeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
-use Illuminate\Validation\ValidationException;
 
 final class DashboardResourceController extends Controller
 {
@@ -38,7 +38,7 @@ final class DashboardResourceController extends Controller
         return response()->json($reader->kanban($project));
     }
 
-    public function storeProjectTask(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, string $project): JsonResponse
+    public function storeProjectTask(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, HadesKanbanTaskIntakeService $taskIntake, string $project): JsonResponse
     {
         $this->abortUnlessDashboardMutator($request);
 
@@ -50,7 +50,7 @@ final class DashboardResourceController extends Controller
         $taskId = (string) Str::ulid();
         $now = now();
 
-        DB::transaction(function () use ($validated, $project, $taskId, $request, $now): void {
+        DB::transaction(function () use ($validated, $project, $taskId, $request, $now, $taskIntake): void {
             DB::table('tasks')->insert([
                 'id' => $taskId,
                 'project_id' => $project,
@@ -70,14 +70,14 @@ final class DashboardResourceController extends Controller
             $this->syncTaskRepositories($taskId, $project, $validated['repository_ids'] ?? []);
 
             if (($validated['assign_to_local_agent'] ?? false) === true) {
-                $this->queueLocalAgentWorkForTask($taskId, $project, $request->user()->id);
+                $taskIntake->queueLocalAgentWorkForTask($taskId, $project, $request->user()->id);
             }
         });
 
         return response()->json($reader->task($taskId), 201);
     }
 
-    public function updateTask(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, string $task): JsonResponse
+    public function updateTask(Request $request, DashboardApiReader $reader, ProjectLifecycleService $lifecycle, HadesKanbanTaskIntakeService $taskIntake, string $task): JsonResponse
     {
         $this->abortUnlessDashboardMutator($request);
 
@@ -112,7 +112,7 @@ final class DashboardResourceController extends Controller
             $updates['acceptance_criteria'] = json_encode($validated['acceptance_criteria'], JSON_THROW_ON_ERROR);
         }
 
-        DB::transaction(function () use ($updates, $validated, $task, $row, $request): void {
+        DB::transaction(function () use ($updates, $validated, $task, $row, $request, $taskIntake): void {
             if ($updates !== [] || array_key_exists('repository_ids', $validated)) {
                 DB::table('tasks')->where('id', $task)->update([
                     ...$updates,
@@ -125,7 +125,7 @@ final class DashboardResourceController extends Controller
             }
 
             if (($validated['assign_to_local_agent'] ?? false) === true) {
-                $this->queueLocalAgentWorkForTask($task, (string) $row->project_id, $request->user()->id);
+                $taskIntake->queueLocalAgentWorkForTask($task, (string) $row->project_id, $request->user()->id);
             }
         });
 
@@ -210,107 +210,6 @@ final class DashboardResourceController extends Controller
                 'updated_at' => $now,
             ]);
         }
-    }
-
-    private function queueLocalAgentWorkForTask(string $taskId, string $projectId, int $userId): void
-    {
-        $hasActiveWorkItem = DB::table('agent_work_items')
-            ->where('task_id', $taskId)
-            ->where('assigned_agent_key', 'local_agent')
-            ->whereIn('status', ['draft', 'queued', 'claimed', 'running'])
-            ->exists();
-
-        if ($hasActiveWorkItem) {
-            return;
-        }
-
-        $task = DB::table('tasks')->where('id', $taskId)->first();
-
-        if (! $task) {
-            return;
-        }
-
-        $repositoryId = DB::table('repository_task')
-            ->where('task_id', $taskId)
-            ->orderBy('created_at')
-            ->value('repository_id');
-        $acceptanceCriteria = json_decode((string) $task->acceptance_criteria, true, 512, JSON_THROW_ON_ERROR);
-        $workItemId = (string) Str::ulid();
-        $now = now();
-        $payload = [
-            'schema' => 'hades.kanban_task_work.v1',
-            'source' => 'dashboard_kanban',
-            'task_id' => $taskId,
-            'project_id' => $projectId,
-            'repository_id' => $repositoryId,
-            'title' => (string) $task->title,
-            'description' => $task->description,
-            'acceptance_criteria' => is_array($acceptanceCriteria) ? $acceptanceCriteria : [],
-            'priority' => (string) $task->priority,
-            'risk' => (string) $task->risk_level,
-            'memory_required' => true,
-            'created_from' => 'kanban_task',
-        ];
-
-        DB::table('agent_work_items')->insert([
-            'id' => $workItemId,
-            'project_id' => $projectId,
-            'repository_id' => $repositoryId,
-            'task_id' => $taskId,
-            'requested_by_user_id' => $userId,
-            'assigned_agent_key' => 'local_agent',
-            'status' => 'queued',
-            'priority' => (string) $task->priority,
-            'title' => (string) $task->title,
-            'prompt' => $this->localAgentPromptForTask($task, $payload['acceptance_criteria']),
-            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-            'requires_memory_entry' => true,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
-
-        DB::table('agent_work_item_events')->insert([
-            'id' => (string) Str::ulid(),
-            'agent_work_item_id' => $workItemId,
-            'actor_user_id' => $userId,
-            'actor_device_id' => null,
-            'event_type' => 'queued_from_kanban_task',
-            'message' => 'Dashboard task queued for the local Hades agent.',
-            'payload' => json_encode(['task_id' => $taskId, 'schema' => 'hades.kanban_task_work.v1'], JSON_THROW_ON_ERROR),
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
-    }
-
-    /**
-     * @param  list<string>  $acceptanceCriteria
-     */
-    private function localAgentPromptForTask(object $task, array $acceptanceCriteria): string
-    {
-        $lines = [
-            'Work on this backend Kanban task using shared Hades project memory before making claims.',
-            '',
-            'Task: '.(string) $task->title,
-        ];
-
-        if ($task->description) {
-            $lines[] = '';
-            $lines[] = 'Description:';
-            $lines[] = (string) $task->description;
-        }
-
-        if ($acceptanceCriteria !== []) {
-            $lines[] = '';
-            $lines[] = 'Acceptance criteria:';
-            foreach ($acceptanceCriteria as $criterion) {
-                $lines[] = '- '.(string) $criterion;
-            }
-        }
-
-        $lines[] = '';
-        $lines[] = 'Return a concise implementation/diagnosis summary and write a memory entry with evidence references when useful.';
-
-        return implode(PHP_EOL, $lines);
     }
 
     public function task(Request $request, DashboardApiReader $reader, string $task): JsonResponse

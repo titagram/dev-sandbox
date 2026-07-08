@@ -79,6 +79,13 @@ it('queues local agent work when explicitly requested from a kanban task', funct
         ->and($workItem->requires_memory_entry)->toBe(1)
         ->and($payload['schema'])->toBe('hades.kanban_task_work.v1')
         ->and($payload['task_id'])->toBe($taskId)
+        ->and($payload['task_type'])->toBe('bug')
+        ->and($payload['normalized_problem'])->toContain('Checkout sometimes returns HTTP 500')
+        ->and($payload['clarification_status'])->toBe('ready')
+        ->and($payload['ready_for_agent_work'])->toBeTrue()
+        ->and($payload['project_awareness_required'])->toBeTrue()
+        ->and($payload['source_access_policy']['mode'])->toBe('source_free_first')
+        ->and($payload['bug_intake']['status'])->toBe('missing_workspace_binding')
         ->and($payload['acceptance_criteria'][0])->toBe('Root cause is identified with evidence refs.')
         ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem->id)->where('event_type', 'queued_from_kanban_task')->exists())->toBeTrue();
 
@@ -88,6 +95,62 @@ it('queues local agent work when explicitly requested from a kanban task', funct
 
     expect(DB::table('agent_work_items')->where('task_id', $taskId)->where('assigned_agent_key', 'local_agent')->count())
         ->toBe(1);
+});
+
+it('does not queue ambiguous local agent work before clarification', function () {
+    $pm = kanbanTaskCreateEditApiUserWithRole('PM');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $taskId = $this->actingAs($pm)
+        ->postJson("/api/dashboard/projects/{$projectId}/tasks", [
+            'title' => 'Fix thing',
+            'assign_to_local_agent' => true,
+        ])
+        ->assertCreated()
+        ->json('id');
+
+    expect(DB::table('agent_work_items')->where('task_id', $taskId)->count())->toBe(0);
+});
+
+it('creates idempotent Hades bug intake when a ready bug task is assigned locally', function () {
+    $pm = kanbanTaskCreateEditApiUserWithRole('PM');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = (string) DB::table('repositories')->where('project_id', $projectId)->value('id');
+    $binding = kanbanTaskCreateEditApiHadesWorkspaceBinding($projectId);
+
+    $taskId = $this->actingAs($pm)
+        ->postJson("/api/dashboard/projects/{$projectId}/tasks", [
+            'title' => 'Fix invoice export HTTP 500',
+            'description' => 'Invoice export returns HTTP 500 after the totals service receives a missing customer tax code.',
+            'priority' => 'urgent',
+            'risk' => 'critical',
+            'repository_ids' => [$repositoryId],
+            'acceptance_criteria' => ['Root cause and regression check are documented with Hades evidence refs.'],
+            'assign_to_local_agent' => true,
+        ])
+        ->assertCreated()
+        ->json('id');
+
+    $workItem = DB::table('agent_work_items')->where('task_id', $taskId)->first();
+    $payload = json_decode((string) $workItem->payload, true, flags: JSON_THROW_ON_ERROR);
+    $bugReportId = $payload['bug_report_id'];
+    $evidenceId = $payload['evidence_refs'][0]['id'];
+
+    expect($payload['workspace_binding_id'])->toBe($binding['workspace_binding_id'])
+        ->and($payload['bug_intake']['status'])->toBe('created')
+        ->and($payload['bug_report_id'])->toBeString()
+        ->and($payload['evidence_refs'][0]['type'])->toBe('bug_evidence')
+        ->and(DB::table('hades_bug_reports')->where('id', $bugReportId)->where('workspace_binding_id', $binding['workspace_binding_id'])->where('severity', 'critical')->exists())->toBeTrue()
+        ->and(DB::table('hades_bug_evidence_items')->where('id', $evidenceId)->where('bug_report_id', $bugReportId)->where('source', 'dashboard_kanban_task:'.$taskId)->exists())->toBeTrue()
+        ->and(DB::table('hades_search_documents')->where('source_table', 'hades_bug_evidence_items')->where('source_id', $evidenceId)->exists())->toBeTrue();
+
+    $this->actingAs($pm)
+        ->patchJson("/api/dashboard/tasks/{$taskId}", ['assign_to_local_agent' => true])
+        ->assertOk();
+
+    expect(DB::table('agent_work_items')->where('task_id', $taskId)->where('assigned_agent_key', 'local_agent')->count())->toBe(1)
+        ->and(DB::table('hades_bug_reports')->where('project_id', $projectId)->count())->toBe(1)
+        ->and(DB::table('hades_bug_evidence_items')->where('project_id', $projectId)->count())->toBe(1);
 });
 
 it('edits task detail fields without moving the card when column is omitted', function () {
@@ -441,4 +504,54 @@ function kanbanTaskCreateEditApiInsertColumns(string $boardId, mixed $now): arra
     }
 
     return $columns;
+}
+
+/**
+ * @return array{backend_agent_id: string, workspace_binding_id: string}
+ */
+function kanbanTaskCreateEditApiHadesWorkspaceBinding(string $projectId): array
+{
+    $agentId = (string) Str::ulid();
+    $bindingId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('hades_agents')->insert([
+        'id' => $agentId,
+        'project_id' => $projectId,
+        'external_agent_id' => 'kanban-test-local-agent-'.Str::lower(Str::random(8)),
+        'label' => 'Kanban Test Local Agent',
+        'platform' => 'testing',
+        'version' => 'test',
+        'declared_capabilities' => json_encode(['shared_memory', 'bug_evidence'], JSON_THROW_ON_ERROR),
+        'effective_capabilities' => json_encode(['shared_memory', 'bug_evidence'], JSON_THROW_ON_ERROR),
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_workspace_bindings')->insert([
+        'id' => $bindingId,
+        'project_id' => $projectId,
+        'hades_agent_id' => $agentId,
+        'external_agent_id' => 'kanban-test-local-agent',
+        'local_project_id' => null,
+        'workspace_fingerprint' => 'wf_kanban_'.Str::lower(Str::random(12)),
+        'display_path' => '~/Code/kanban-test',
+        'git_remote_display' => 'github.com/acme/kanban-test.git',
+        'git_remote_hash' => hash('sha256', 'github.com/acme/kanban-test.git'),
+        'head_commit' => str_repeat('a', 40),
+        'platform' => 'testing',
+        'status' => 'linked',
+        'linked_at' => $now,
+        'unlinked_at' => null,
+        'last_seen_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return [
+        'backend_agent_id' => $agentId,
+        'workspace_binding_id' => $bindingId,
+    ];
 }
