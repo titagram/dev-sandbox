@@ -250,7 +250,7 @@ it('redacts task-derived Hades evidence and local work payloads', function () {
     $pm = kanbanTaskCreateEditApiUserWithRole('PM');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
     $repositoryId = (string) DB::table('repositories')->where('project_id', $projectId)->value('id');
-    kanbanTaskCreateEditApiHadesWorkspaceBinding($projectId);
+    $binding = kanbanTaskCreateEditApiHadesWorkspaceBinding($projectId);
 
     $rawBearer = 'rawBearerTokenValue12345';
     $rawAccessToken = 'rawAccessTokenValue12345';
@@ -287,6 +287,57 @@ it('redacts task-derived Hades evidence and local work payloads', function () {
         ->and($combinedPersisted)->toContain('[redacted]')
         ->and($combinedPersisted)->not->toContain($rawBearer)
         ->and($combinedPersisted)->not->toContain($rawAccessToken);
+
+    $metadataOnly = $this->getJson('/api/hades/v1/privacy/export?'.http_build_query([
+        'project_id' => $projectId,
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'include_content' => false,
+    ]), kanbanTaskCreateEditApiHadesHeaders($binding['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('counts.bug_reports', 1)
+        ->assertJsonPath('counts.bug_evidence', 1)
+        ->assertJsonPath('collections.bug_evidence.0.id', (string) $evidence->id)
+        ->json();
+
+    expect($metadataOnly['collections']['bug_evidence'][0])->not->toHaveKey('payload')
+        ->and($metadataOnly['collections']['bug_evidence'][0])->not->toHaveKey('summary')
+        ->and(json_encode($metadataOnly, JSON_THROW_ON_ERROR))->not->toContain($rawBearer)
+        ->and(json_encode($metadataOnly, JSON_THROW_ON_ERROR))->not->toContain($rawAccessToken);
+
+    $withContent = $this->getJson('/api/hades/v1/privacy/export?'.http_build_query([
+        'project_id' => $projectId,
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ]), kanbanTaskCreateEditApiHadesHeaders($binding['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('collections.bug_evidence.0.source', 'dashboard_kanban_task:'.$taskId)
+        ->assertJsonPath('collections.bug_evidence.0.payload.schema', 'hades.kanban_task_bug_evidence.v1')
+        ->json();
+
+    expect(json_encode($withContent, JSON_THROW_ON_ERROR))->not->toContain($rawBearer)
+        ->and(json_encode($withContent, JSON_THROW_ON_ERROR))->not->toContain($rawAccessToken);
+
+    DB::table('hades_bug_reports')->where('id', $payload['bug_report_id'])->update([
+        'created_at' => now()->subDays(45),
+        'updated_at' => now()->subDays(45),
+    ]);
+    DB::table('hades_bug_evidence_items')->where('id', $evidence->id)->update([
+        'created_at' => now()->subDays(45),
+        'updated_at' => now()->subDays(45),
+    ]);
+
+    $this->postJson('/api/hades/v1/privacy/retention-cleanup', [
+        'project_id' => $projectId,
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'retention_days' => 30,
+        'dry_run' => false,
+        'confirm' => true,
+    ], kanbanTaskCreateEditApiHadesHeaders($binding['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('deleted.hades_bug_reports', 1)
+        ->assertJsonPath('deleted.hades_bug_evidence_items', 1);
+
+    expect(DB::table('hades_bug_reports')->where('id', $payload['bug_report_id'])->exists())->toBeFalse()
+        ->and(DB::table('hades_bug_evidence_items')->where('id', $evidence->id)->exists())->toBeFalse();
 });
 
 it('edits task detail fields without moving the card when column is omitted', function () {
@@ -643,18 +694,19 @@ function kanbanTaskCreateEditApiInsertColumns(string $boardId, mixed $now): arra
 }
 
 /**
- * @return array{backend_agent_id: string, workspace_binding_id: string}
+ * @return array{backend_agent_id: string, workspace_binding_id: string, agent_token: string}
  */
 function kanbanTaskCreateEditApiHadesWorkspaceBinding(string $projectId): array
 {
     $agentId = (string) Str::ulid();
+    $externalAgentId = 'kanban-test-local-agent-'.Str::lower(Str::random(8));
     $bindingId = (string) Str::ulid();
     $now = now();
 
     DB::table('hades_agents')->insert([
         'id' => $agentId,
         'project_id' => $projectId,
-        'external_agent_id' => 'kanban-test-local-agent-'.Str::lower(Str::random(8)),
+        'external_agent_id' => $externalAgentId,
         'label' => 'Kanban Test Local Agent',
         'platform' => 'testing',
         'version' => 'test',
@@ -664,6 +716,12 @@ function kanbanTaskCreateEditApiHadesWorkspaceBinding(string $projectId): array
         'status' => 'active',
         'created_at' => $now,
         'updated_at' => $now,
+    ]);
+
+    $token = app(\App\Services\Hades\HadesTokenService::class)->createAgentToken((object) [
+        'id' => $agentId,
+        'project_id' => $projectId,
+        'external_agent_id' => $externalAgentId,
     ]);
 
     DB::table('hades_workspace_bindings')->insert([
@@ -689,5 +747,17 @@ function kanbanTaskCreateEditApiHadesWorkspaceBinding(string $projectId): array
     return [
         'backend_agent_id' => $agentId,
         'workspace_binding_id' => $bindingId,
+        'agent_token' => $token['plain_token'],
+    ];
+}
+
+/**
+ * @return array<string, string>
+ */
+function kanbanTaskCreateEditApiHadesHeaders(string $token): array
+{
+    return [
+        'Authorization' => 'Bearer '.$token,
+        'Accept' => 'application/json',
     ];
 }
