@@ -1521,6 +1521,7 @@ it('stores diagnosis reports with evidence refs for linked workspaces', function
     $binding = hadesM3WorkspaceBinding($agent);
     $dataset = hadesM3PrivacyDataset($agent, $binding);
     hadesM3CurrentGraphArtifact($agent, $binding);
+    $causalPackId = hadesM3CausalPack($agent, $binding, $dataset, 'rc.order.null_dependency');
 
     $response = $this->postJson('/api/hades/v1/diagnosis-reports', [
         'project_id' => $agent['project_id'],
@@ -1534,6 +1535,7 @@ it('stores diagnosis reports with evidence refs for linked workspaces', function
             ['type' => 'source_slice', 'id' => $dataset['source_slice_id']],
         ],
         'freshness' => ['status' => 'current', 'workspace_head_commit' => str_repeat('f', 40)],
+        'causal_pack_refs' => [$causalPackId],
         'payload' => ['next_verification' => 'Run the failing feature test.'],
     ], hadesM3Headers($agent['agent_token']))
         ->assertCreated()
@@ -1592,6 +1594,7 @@ it('promotes final diagnosis reports to resolved bug memory and search surfaces 
     $binding = hadesM3WorkspaceBinding($agent);
     $dataset = hadesM3PrivacyDataset($agent, $binding);
     hadesM3CurrentGraphArtifact($agent, $binding);
+    $causalPackId = hadesM3CausalPack($agent, $binding, $dataset, 'rc.order.customer_relation_nullable');
 
     $bugReport = $this->postJson('/api/hades/v1/bug-reports', [
         'project_id' => $agent['project_id'],
@@ -1615,6 +1618,7 @@ it('promotes final diagnosis reports to resolved bug memory and search surfaces 
             ['type' => 'source_slice', 'id' => $dataset['source_slice_id']],
         ],
         'freshness' => ['status' => 'current', 'workspace_head_commit' => str_repeat('f', 40)],
+        'causal_pack_refs' => [$causalPackId],
         'payload' => ['next_verification' => 'Run OrderControllerTest::test_archived_customer_show.'],
     ], hadesM3Headers($agent['agent_token']))
         ->assertCreated()
@@ -2205,6 +2209,38 @@ function hadesM3PrivacyDataset(array $agent, array $binding, ?Carbon $createdAt 
         'evidence_pack_id' => $evidencePackId,
         'diagnosis_report_id' => $diagnosisReportId,
     ];
+}
+
+function hadesM3CausalPack(array $agent, array $binding, array $dataset, string $rootCauseId): string
+{
+    $now = now();
+    $id = (string) Str::ulid();
+
+    DB::table('hades_causal_packs')->insert([
+        'id' => $id,
+        'project_id' => $agent['project_id'],
+        'bug_report_id' => $dataset['bug_report_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'bug_id' => 'order-show-null-customer',
+        'root_cause_id' => $rootCauseId,
+        'bug_class' => 'missing_null_guard',
+        'failure_classification' => 'confirmed',
+        'affected_refs' => json_encode(['route:orders.show', 'symbol:OrderController@show'], JSON_THROW_ON_ERROR),
+        'freshness' => json_encode(['status' => 'current', 'head_commit' => str_repeat('f', 40)], JSON_THROW_ON_ERROR),
+        'awareness' => json_encode(['diagnosable_without_source' => true], JSON_THROW_ON_ERROR),
+        'evidence_refs' => json_encode([['type' => 'bug_evidence', 'id' => $dataset['bug_evidence_id']]], JSON_THROW_ON_ERROR),
+        'graph_refs' => json_encode([['type' => 'route', 'ref' => 'route:orders.show'], ['type' => 'symbol', 'ref' => 'OrderController@show']], JSON_THROW_ON_ERROR),
+        'source_slice_refs' => json_encode([['type' => 'source_slice', 'id' => $dataset['source_slice_id']]], JSON_THROW_ON_ERROR),
+        'replay' => json_encode(['replayable' => true, 'required_refs' => []], JSON_THROW_ON_ERROR),
+        'status' => 'valid',
+        'blockers' => json_encode([], JSON_THROW_ON_ERROR),
+        'pack_key' => hash('sha256', $rootCauseId.'|'.$dataset['bug_report_id']),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return $id;
 }
 
 /**
