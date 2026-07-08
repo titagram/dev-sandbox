@@ -378,6 +378,26 @@ class DevBoardSeeder extends Seeder
                     ],
                 ],
             ],
+            [
+                'agent_key' => 'intake_normalizer',
+                'display_name' => 'Intake Normalizer',
+                'description' => 'Classifies raw free-text input (bug, task, feature, question) and extracts a normalized title, description, and clarifying questions.',
+                'agent_type' => 'specialist',
+                'parent_agent_key' => 'socrate_supervisor',
+                'allowed_tools' => [],
+                'trigger_events' => ['manual_intake'],
+                'output_schema' => [
+                    'type' => 'object',
+                    'required' => ['task_type', 'suggested_title', 'suggested_description', 'clarifying_questions', 'confidence'],
+                    'properties' => [
+                        'task_type' => ['type' => 'string', 'enum' => ['bug', 'task', 'feature', 'question']],
+                        'suggested_title' => ['type' => 'string'],
+                        'suggested_description' => ['type' => 'string'],
+                        'clarifying_questions' => ['type' => 'array'],
+                        'confidence' => ['type' => 'number'],
+                    ],
+                ],
+            ],
         ];
     }
 

@@ -2,6 +2,18 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-08 - Default AI agent registry repair
+
+- Request: repair the default AI agent registry data only. Create missing canonical `ai_agent_profiles`, normalize the broken `opencode_go_default` model name, keep the seeded registry aligned for fresh installs, and verify the focused/broader `DomainSchemaTest` coverage.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/instructions/workflows/BUGFIX.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `database/migrations/2026_06_28_000001_create_ai_agent_registry_tables.php`, `database/migrations/2026_07_01_000007_ensure_opencode_go_provider.php`, `database/migrations/2026_07_01_000008_add_memory_graph_wiki_tools_to_agent_profiles.php`, `database/seeders/DevBoardSeeder.php`, `tests/Feature/DomainSchemaTest.php`, and the current AI agent registry/dashboard tests.
+- Work performed: added a repair migration that backfills the six default agent registry rows, uses an existing model profile when present, and rewrites `opencode_go_default.model_name` from `opencode-go` to `glm-5.2`; updated `DevBoardSeeder` to keep the canonical agent registry list in sync by including `intake_normalizer`; expanded `DomainSchemaTest` with a repair scenario that seeds the broken `opencode_go_default` row, clears `ai_agent_profiles`, invokes the repair migration directly, and asserts the default agent rows plus JSON payload validity.
+- Verification commands and result:
+  - `docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/DomainSchemaTest.php --filter='repair'"` -> passed, `1 passed / 21 assertions`.
+  - `docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/DomainSchemaTest.php"` -> passed, `3 passed / 52 assertions`.
+  - `docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "php -l database/migrations/2026_07_09_000002_repair_ai_agent_registry_defaults.php && php -l database/seeders/DevBoardSeeder.php && php -l tests/Feature/DomainSchemaTest.php"` -> passed.
+- Files changed: `database/migrations/2026_07_09_000002_repair_ai_agent_registry_defaults.php`, `database/seeders/DevBoardSeeder.php`, `tests/Feature/DomainSchemaTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: the repair test exercises the migration class directly rather than invoking `artisan migrate --path` inside the in-memory test database. I did not run the broader backend suite or non-DomainSchema tests for this slice.
+
 ## 2026-07-06 - Project memory test data reset
 
 - Request: delete all test memories and verify that users can delete project memory entries.
