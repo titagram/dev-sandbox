@@ -49,6 +49,7 @@ class SourceSliceController extends Controller
             'truncated' => ['nullable', 'boolean'],
             'retention_class' => ['nullable', 'string', Rule::in(self::RETENTION_CLASSES)],
             'policy' => ['nullable', 'string', 'max:191'],
+            'candidate_key' => ['nullable', 'string', 'size:64'],
         ]);
 
         if (((int) $validated['end_line'] - (int) $validated['start_line'] + 1) > self::MAX_LINE_WINDOW) {
@@ -108,6 +109,18 @@ class SourceSliceController extends Controller
             'created_at' => $now,
             'updated_at' => $now,
         ]);
+
+        $candidateKey = trim((string) ($validated['candidate_key'] ?? ''));
+        if ($candidateKey !== '') {
+            DB::table('hades_source_slice_candidates')
+                ->where('workspace_binding_id', $binding->id)
+                ->where('candidate_key', $candidateKey)
+                ->update([
+                    'status' => 'slice_uploaded',
+                    'source_slice_id' => $id,
+                    'updated_at' => $now,
+                ]);
+        }
 
         $slice = DB::table('hades_source_slices')->where('id', $id)->first();
         $this->searchIndexer->indexSourceSlice($slice);

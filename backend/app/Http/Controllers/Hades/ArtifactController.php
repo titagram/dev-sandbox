@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesSearchDocumentIndexer;
+use App\Services\Hades\HadesSourceSliceCandidateService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,7 +13,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ArtifactController extends Controller
 {
-    public function __construct(private readonly HadesSearchDocumentIndexer $searchIndexer) {}
+    public function __construct(
+        private readonly HadesSearchDocumentIndexer $searchIndexer,
+        private readonly HadesSourceSliceCandidateService $sourceSliceCandidates,
+    ) {}
 
     public function lookup(Request $request): JsonResponse
     {
@@ -131,6 +135,12 @@ class ArtifactController extends Controller
 
         $artifact = DB::table('hades_agent_artifacts')->where('id', $id)->first();
         $this->searchIndexer->indexArtifact($artifact, $artifactPayload, $artifactJson);
+        $sourceSliceCandidates = $this->sourceSliceCandidates->ingestArtifactCandidates(
+            $agent,
+            $binding,
+            $artifactPayload,
+            $artifactPayload['head_commit'] ?? $artifactPayload['workspace_head_commit'] ?? null,
+        );
 
         return response()->json([
             'protocol_version' => 'v1',
