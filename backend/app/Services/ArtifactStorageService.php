@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Support\DevBoardUlid;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class ArtifactStorageService
 {
@@ -86,12 +87,23 @@ class ArtifactStorageService
                 'updated_at' => now(),
             ]);
 
+            app(AuditLogger::class)->record('artifact.uploaded', 'artifact', $artifact->id, [
+                'artifact_type' => $artifact->artifact_type,
+                'size_bytes' => $artifact->size_bytes,
+                'sha256' => $artifact->sha256,
+            ], ['type' => 'plugin']);
+
             return $artifact->storage_path;
         } catch (\Throwable $e) {
             if (is_resource($target)) {
                 fclose($target);
             }
             @unlink($targetPath);
+
+            app(AuditLogger::class)->record('artifact.rejected', 'artifact', $artifact->id, [
+                'artifact_type' => $artifact->artifact_type,
+                'reason' => $e->getMessage(),
+            ], ['type' => 'plugin']);
 
             throw $e;
         }

@@ -252,6 +252,7 @@ it('allows finalize with blocked findings only when explicitly approved', functi
 /**
  * @return array<string, string>
  */
+if (! function_exists('createGenesisUploadContext')) {
 function createGenesisUploadContext(): array
 {
     $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
@@ -340,11 +341,13 @@ function createGenesisUploadContext(): array
         'run_id' => $runId,
     ];
 }
+}
 
 /**
  * @param list<array<string, mixed>> $artifacts
  * @return array<string, mixed>
  */
+if (! function_exists('genesisManifest')) {
 function genesisManifest(array $artifacts): array
 {
     return [
@@ -354,10 +357,12 @@ function genesisManifest(array $artifacts): array
         'artifacts' => array_map(fn (array $artifact): array => Arr::except($artifact, ['content']), $artifacts),
     ];
 }
+}
 
 /**
  * @return array<string, mixed>
  */
+if (! function_exists('genesisArtifact')) {
 function genesisArtifact(string $type, string $filename, string $content, int $chunkCount = 1): array
 {
     return [
@@ -376,7 +381,9 @@ function genesisArtifact(string $type, string $filename, string $content, int $c
         'content' => $content,
     ];
 }
+}
 
+if (! function_exists('genesisStart')) {
 function genesisStart(array $context, array $manifest): Illuminate\Testing\TestResponse
 {
     return test()->postJson("/api/plugin/v1/repositories/{$context['repository_id']}/genesis-imports", [
@@ -386,7 +393,9 @@ function genesisStart(array $context, array $manifest): Illuminate\Testing\TestR
         'manifest' => $manifest,
     ], genesisUploadHeaders($context));
 }
+}
 
+if (! function_exists('genesisChunk')) {
 function genesisChunk(
     array $context,
     ?string $importId,
@@ -409,17 +418,21 @@ function genesisChunk(
         $content,
     );
 }
+}
 
+if (! function_exists('genesisFinalize')) {
 function genesisFinalize(array $context, ?string $importId, array $payload = []): Illuminate\Testing\TestResponse
 {
     return test()->postJson("/api/plugin/v1/genesis-imports/{$importId}/finalize", array_merge([
         'protocol_version' => 'v1',
     ], $payload), genesisUploadHeaders($context));
 }
+}
 
 /**
  * @return array<string, string>
  */
+if (! function_exists('genesisUploadHeaders')) {
 function genesisUploadHeaders(array $context): array
 {
     return [
@@ -429,10 +442,12 @@ function genesisUploadHeaders(array $context): array
         'X-DevBoard-Device-Id' => $context['device_id'],
     ];
 }
+}
 
 /**
  * @return array<string, string>
  */
+if (! function_exists('genesisUploadRawHeaders')) {
 function genesisUploadRawHeaders(array $context): array
 {
     return [
@@ -441,4 +456,5 @@ function genesisUploadRawHeaders(array $context): array
         'HTTP_X_DEVBOARD_PLUGIN_VERSION' => '0.1.0',
         'HTTP_X_DEVBOARD_DEVICE_ID' => $context['device_id'],
     ];
+}
 }

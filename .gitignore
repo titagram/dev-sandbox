@@ -15,6 +15,9 @@ ai-sandbox/graph/*.cypher
 ai-sandbox/graph/*.html
 ai-sandbox/docs/discovery.json
 ai-sandbox/docs/discovery.md
+backend/.env
+backend/.env.*
+!backend/.env.example
 /backend/var/quality/reports/
 /backend/var/quality/tmp/
 /backend/test-results/

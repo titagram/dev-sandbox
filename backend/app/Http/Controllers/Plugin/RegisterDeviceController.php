@@ -24,6 +24,7 @@ class RegisterDeviceController extends Controller
         $auth = $request->attributes->get('plugin_auth');
         $token = $auth['token'];
         $now = now();
+        $isNewDevice = false;
 
         $device = DB::table('devices')
             ->where('user_id', $token->user_id)
@@ -52,7 +53,10 @@ class RegisterDeviceController extends Controller
 
             $deviceId = $device->id;
         } else {
+            $isNewDevice = true;
             $deviceId = (string) Str::ulid();
+            $plainSecret = bin2hex(random_bytes(32));
+            $secretHash = hash('sha256', $plainSecret);
 
             DB::table('devices')->insert([
                 'id' => $deviceId,
@@ -62,6 +66,7 @@ class RegisterDeviceController extends Controller
                 'platform_os' => $validated['platform_os'],
                 'platform_arch' => $validated['platform_arch'],
                 'plugin_version' => $validated['plugin_version'],
+                'signing_secret_hash' => $secretHash,
                 'last_seen_at' => $now,
                 'status' => 'active',
                 'created_at' => $now,
@@ -75,10 +80,16 @@ class RegisterDeviceController extends Controller
             'updated_at' => $now,
         ]);
 
-        return response()->json([
+        $response = [
             'device_id' => $deviceId,
             'status' => 'active',
             'server_time' => $now->toISOString(),
-        ]);
+        ];
+
+        if ($isNewDevice) {
+            $response['device_secret'] = $plainSecret;
+        }
+
+        return response()->json($response);
     }
 }

@@ -12,6 +12,7 @@ class Credentials:
     server_url: str
     token: str
     device_id: str | None = None
+    device_secret: str | None = None
 
 
 def credentials_path() -> Path:
@@ -30,6 +31,7 @@ def load_credentials(path: Path | None = None) -> Credentials:
         server_url=data["server_url"],
         token=data["token"],
         device_id=data.get("device_id"),
+        device_secret=data.get("device_secret"),
     )
 
 
@@ -52,6 +54,7 @@ def credentials_from_options(server_url: str | None, token: str | None) -> Crede
         server_url=server_url or loaded.server_url,
         token=token or loaded.token,
         device_id=loaded.device_id,
+        device_secret=loaded.device_secret,
     )
 
 

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import hmac
+import json
+import time
 from typing import Any
 from urllib.parse import urlencode
 
@@ -20,6 +23,7 @@ class DevBoardClient:
     base_url: str
     token: str
     device_id: str | None = None
+    device_secret: str | None = None
     plugin_version: str = "0.1.0"
     transport: httpx.BaseTransport | None = None
 
@@ -31,16 +35,20 @@ class DevBoardClient:
         if payload:
             body.update(payload)
 
-        return self.request("POST", path, json=body)
+        return self.request("POST", path, body=body)
 
-    def request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
+    def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        body_bytes = b""
+        if body is not None:
+            body_bytes = json.dumps(body, separators=(",", ":")).encode()
+
         with httpx.Client(
             base_url=self.base_url.rstrip("/"),
-            headers=self.headers(),
+            headers=self.headers(method, path, body_bytes),
             transport=self.transport,
             timeout=30.0,
         ) as client:
-            response = client.request(method, path, json=json)
+            response = client.request(method, path, content=body_bytes if body_bytes else None)
 
         if response.is_error:
             self._raise_api_error(response)
@@ -51,7 +59,7 @@ class DevBoardClient:
         return {}
 
     def request_bytes(self, method: str, path: str, content: bytes, headers: dict[str, str]) -> dict[str, Any]:
-        merged_headers = self.headers()
+        merged_headers = self.headers(method, path, content)
         merged_headers.update(headers)
         with httpx.Client(
             base_url=self.base_url.rstrip("/"),
@@ -66,7 +74,7 @@ class DevBoardClient:
 
         return response.json() if response.content else {}
 
-    def headers(self) -> dict[str, str]:
+    def headers(self, method: str = "GET", path: str = "/", body_bytes: bytes = b"") -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json",
@@ -78,13 +86,30 @@ class DevBoardClient:
         if self.device_id:
             headers["X-DevBoard-Device-Id"] = self.device_id
 
+            if self.device_secret:
+                timestamp = int(time.time())
+                signing_key = hashlib.sha256(self.device_secret.encode()).hexdigest()
+                body_hash = hashlib.sha256(body_bytes).hexdigest()
+                canonical = f"{method}\n{path}\n{timestamp}\n{body_hash}"
+                signature = "v1=" + hmac.new(signing_key.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+
+                headers["X-DevBoard-Timestamp"] = str(timestamp)
+                headers["X-DevBoard-Content-SHA256"] = body_hash
+                headers["X-DevBoard-Signature"] = signature
+
         return headers
 
     def auth_check(self) -> dict[str, Any]:
         return self.post("/api/plugin/v1/auth/check")
 
     def register_device(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.post("/api/plugin/v1/devices/register", payload)
+        response = self.post("/api/plugin/v1/devices/register", payload)
+
+        device_secret = response.get("device_secret")
+        if device_secret:
+            self.device_secret = device_secret
+
+        return response
 
     def list_projects(self) -> dict[str, Any]:
         return self.get("/api/plugin/v1/projects")

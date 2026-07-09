@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Dashboard;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -113,6 +114,19 @@ class PluginTokenController extends Controller
             'updated_at' => $now,
         ]);
 
+        app(AuditLogger::class)->record(
+            'token.created',
+            'api_token',
+            $id,
+            ['name' => $validated['name'], 'scopes' => $validated['scopes']],
+            [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ],
+        );
+
         return response()->json([
             'plain_token' => $plainToken,
             'token' => [
@@ -135,6 +149,19 @@ class PluginTokenController extends Controller
                 'revoked_at' => now(),
                 'updated_at' => now(),
             ]);
+
+        app(AuditLogger::class)->record(
+            'token.revoked',
+            'api_token',
+            $token,
+            [],
+            [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ],
+        );
 
         if ($request->expectsJson()) {
             return response()->json(['revoked' => true]);
