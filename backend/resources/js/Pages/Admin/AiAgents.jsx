@@ -49,6 +49,36 @@ function defaultModelProfileForm(profile) {
   };
 }
 
+function listText(value) {
+  return Array.isArray(value) ? value.join('\n') : '';
+}
+
+function jsonObjectText(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '{ "type": "object" }';
+  }
+
+  return JSON.stringify(value, null, 2);
+}
+
+function defaultAgentProfileForm(agent) {
+  return {
+    display_name: agent.display_name,
+    description: agent.description,
+    agent_type: agent.agent_type,
+    delegation_mode: agent.delegation_mode,
+    parent_agent_key: agent.parent_agent_key ?? '',
+    default_model_profile_id: agent.default_model_profile_id ?? '',
+    requires_human_approval: agent.requires_human_approval,
+    enabled: agent.enabled,
+    visibility_scope: agent.visibility_scope ?? 'global',
+    project_ids: listText(agent.project_ids),
+    allowed_tools: listText(agent.allowed_tools),
+    output_schema: jsonObjectText(agent.output_schema),
+    trigger_events: listText(agent.trigger_events),
+  };
+}
+
 function listFromLines(value) {
   if (typeof value !== 'string' || value.length === 0) {
     return [];
@@ -100,10 +130,7 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
   ])));
   const [agentForms, setAgentForms] = useState(() => Object.fromEntries(agentProfiles.map((agent) => [
     agent.agent_key,
-    {
-      default_model_profile_id: agent.default_model_profile_id ?? '',
-      enabled: agent.enabled,
-    },
+    defaultAgentProfileForm(agent),
   ])));
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(null);
@@ -355,10 +382,7 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
     )));
     setAgentForms((current) => ({
       ...current,
-      [payload.agent_profile.agent_key]: {
-        default_model_profile_id: payload.agent_profile.default_model_profile_id ?? '',
-        enabled: payload.agent_profile.enabled,
-      },
+      [payload.agent_profile.agent_key]: defaultAgentProfileForm(payload.agent_profile),
     }));
     setNewAgentForm(defaultNewAgentForm());
     setSavedAgent(payload.agent_profile.agent_key);

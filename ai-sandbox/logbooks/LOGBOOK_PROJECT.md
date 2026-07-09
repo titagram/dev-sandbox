@@ -2,6 +2,18 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-09 - Admin AI Agents full agent profile edit state prep
+
+- Request: prepare `resources/js/Pages/Admin/AiAgents.jsx` so every existing and newly created agent profile has complete editable form state for the later full PUT edit UI, while preserving the visible table's current save behavior.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, the existing `resources/js/Pages/Admin/AiAgents.jsx`, and the requested source contract check.
+- Intended write paths before project edits: `backend/resources/js/Pages/Admin/AiAgents.jsx` and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added `listText(value)`, `jsonObjectText(value)`, and `defaultAgentProfileForm(agent)` helpers; initialized `agentForms` from `defaultAgentProfileForm(agent)` for all existing profiles; changed `createAgentProfile()` to initialize newly created agent state with `defaultAgentProfileForm(payload.agent_profile)`; left `saveAgentProfile()` behavior unchanged so it still patches only `default_model_profile_id` and `enabled`; did not add any new rendered edit fields or delete controls.
+- Verification commands and result:
+  - `python3 - <<'PY' ... PY` from `backend/` before edits -> failed as expected with the missing full agent form-state tokens.
+  - `python3 - <<'PY' ... PY` from `backend/` after edits -> passed.
+- Files changed: `backend/resources/js/Pages/Admin/AiAgents.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: `npm run build` and the targeted backend regression slice are still pending after this patch. The earlier `python3 ai-sandbox/scripts/bootstrap_dependencies.py` step failed because the vendored bootstrap cannot currently resolve `rapidfuzz` for `graphifyy`; that did not block this frontend-only state prep.
+
 ## 2026-07-09 - Admin AI Agents model profile create form
 
 - Request: add a compact model profile creation form to `resources/js/Pages/Admin/AiAgents.jsx` that uses the existing dashboard POST endpoint and preserves the existing model-profile edit flow.
