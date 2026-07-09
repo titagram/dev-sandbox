@@ -356,6 +356,7 @@ class _SymbolCollector(ast.NodeVisitor):
     def __init__(self, relative_path: str):
         self.relative_path = relative_path
         self.name_index: dict[str, str] = {}
+        self._seen_names: set[str] = set()
         self.name_stack: list[str] = []
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Any:
@@ -377,7 +378,11 @@ class _SymbolCollector(ast.NodeVisitor):
         qualname = ".".join([*self.name_stack, name])
         symbol_id = f"symbol:{self.relative_path}:{qualname}"
         self.name_index[qualname] = symbol_id
-        self.name_index[name] = symbol_id
+        if name in self._seen_names:
+            self.name_index.pop(name, None)
+        else:
+            self._seen_names.add(name)
+            self.name_index[name] = symbol_id
 
 
 class _PythonGraphExtractor(ast.NodeVisitor):

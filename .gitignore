@@ -22,3 +22,4 @@ backend/.env.*
 /backend/var/quality/tmp/
 /backend/test-results/
 /backend/playwright-report/
+backend/vendor/pestphp/pest/.temp/test-results

@@ -167,3 +167,69 @@ def test_genesis_bundle_records_graph_extraction_metadata_in_manifest(tmp_path):
     assert graph_artifact["graph_extraction_mode"] == "lightweight_fallback"
     assert graph_artifact["graph_parser"] == "regex"
     assert graph_artifact["graph_analyzer"] == "lightweight_fallback"
+
+
+def test_ambiguous_simple_name_remains_external(tmp_path):
+    source = (
+        "class ServiceA:\n"
+        "    def run(self):\n"
+        "        return 1\n\n"
+        "class ServiceB:\n"
+        "    def run(self):\n"
+        "        return 2\n\n"
+        "def start():\n"
+        "    return ServiceA().run()\n"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app = repo / "app.py"
+    app.write_text(source)
+
+    graph = build_code_graph(repo, [app], {"repository_id": "repo_123"})
+
+    service_a_run = next(
+        (n for n in graph["nodes"] if n["properties"].get("name") == "run" and n["id"].endswith(":ServiceA.run")),
+        None,
+    )
+    service_b_run = next(
+        (n for n in graph["nodes"] if n["properties"].get("name") == "run" and n["id"].endswith(":ServiceB.run")),
+        None,
+    )
+    start_node = next(
+        n for n in graph["nodes"] if n["properties"].get("name") == "start" and n["properties"].get("kind") == "function"
+    )
+
+    calls_rels = [r for r in graph["relationships"] if r["type"] == "CALLS" and r["source_id"] == start_node["id"]]
+
+    for rel in calls_rels:
+        assert rel["target_id"] != service_b_run["id"], "start() call should not resolve to ServiceB.run"
+
+
+def test_unique_simple_name_still_resolves_internally(tmp_path):
+    source = (
+        "class Service:\n"
+        "    def unique_helper(self):\n"
+        "        return 1\n\n"
+        "def caller():\n"
+        "    return Service().unique_helper()\n"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app = repo / "app.py"
+    app.write_text(source)
+
+    graph = build_code_graph(repo, [app], {"repository_id": "repo_123"})
+
+    helper_node = next(
+        n for n in graph["nodes"]
+        if n["properties"].get("name") == "unique_helper"
+    )
+    caller_node = next(
+        n for n in graph["nodes"]
+        if n["properties"].get("name") == "caller" and n["properties"].get("kind") == "function"
+    )
+    calls_rels = [r for r in graph["relationships"] if r["type"] == "CALLS" and r["source_id"] == caller_node["id"]]
+
+    assert len(calls_rels) >= 1
+    assert calls_rels[0]["target_id"] == helper_node["id"]
+    assert not calls_rels[0]["target_id"].startswith("external:")

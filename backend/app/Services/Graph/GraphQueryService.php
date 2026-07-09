@@ -4,6 +4,7 @@ namespace App\Services\Graph;
 
 use App\Services\Neo4j\Neo4jClient;
 use App\Services\Neo4jClientFactory;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 class GraphQueryService
@@ -11,23 +12,15 @@ class GraphQueryService
     private const ALLOWED_TYPES = ['callers', 'callees', 'path'];
 
     private const CALLERS_CYPHER = <<<'CYPHER'
-    MATCH (caller)-[:CALLS]->(n {symbol_id: $symbol_id})
+    MATCH (caller:CodeNode)-[:CALLS]->(n:CodeNode {external_id: $external_id, snapshot_id: $snapshot_id})
     RETURN properties(caller) AS node, labels(caller) AS labels, id(caller) AS internal_id
     LIMIT $limit
     CYPHER;
 
     private const CALLEES_CYPHER = <<<'CYPHER'
-    MATCH (n {symbol_id: $symbol_id})-[:CALLS]->(callee)
+    MATCH (n:CodeNode {external_id: $external_id, snapshot_id: $snapshot_id})-[:CALLS]->(callee:CodeNode)
     RETURN properties(callee) AS node, labels(callee) AS labels, id(callee) AS internal_id
     LIMIT $limit
-    CYPHER;
-
-    private const PATH_CYPHER = <<<'CYPHER'
-    MATCH (from {symbol_id: $from_symbol_id}), (to {symbol_id: $to_symbol_id})
-    MATCH p = shortestPath((from)-[:CALLS*1..$max_depth]-(to))
-    UNWIND nodes(p) AS n
-    RETURN properties(n) AS node, labels(n) AS labels, id(n) AS internal_id
-    LIMIT 100
     CYPHER;
 
     private ?Neo4jClient $client = null;
@@ -42,6 +35,16 @@ class GraphQueryService
     {
         $this->guardType($type);
 
+        $snapshotId = $this->resolveSnapshotId((string) ($params['project_id'] ?? ''));
+
+        if ($snapshotId === null) {
+            return [
+                'found' => false,
+                'reason' => 'graph_snapshot_not_found',
+                'results' => [],
+            ];
+        }
+
         try {
             $client = $this->resolveClient();
         } catch (\Throwable $e) {
@@ -54,9 +57,9 @@ class GraphQueryService
 
         try {
             $rows = match ($type) {
-                'callers' => $this->runCallers($client, $params),
-                'callees' => $this->runCallees($client, $params),
-                'path' => $this->runPath($client, $params),
+                'callers' => $this->runCallers($client, $params, $snapshotId),
+                'callees' => $this->runCallees($client, $params, $snapshotId),
+                'path' => $this->runPath($client, $params, $snapshotId),
             };
         } catch (\Throwable $e) {
             return [
@@ -73,13 +76,14 @@ class GraphQueryService
     }
 
     /** @param array<string, mixed> $params */
-    private function runCallers(Neo4jClient $client, array $params): array
+    private function runCallers(Neo4jClient $client, array $params, string $snapshotId): array
     {
-        $symbolId = (string) ($params['symbol_id'] ?? '');
+        $externalId = (string) ($params['symbol_id'] ?? '');
         $limit = $this->boundedLimit($params);
 
         $result = $client->run(self::CALLERS_CYPHER, [
-            'symbol_id' => $symbolId,
+            'external_id' => $externalId,
+            'snapshot_id' => $snapshotId,
             'limit' => $limit,
         ]);
 
@@ -87,13 +91,14 @@ class GraphQueryService
     }
 
     /** @param array<string, mixed> $params */
-    private function runCallees(Neo4jClient $client, array $params): array
+    private function runCallees(Neo4jClient $client, array $params, string $snapshotId): array
     {
-        $symbolId = (string) ($params['symbol_id'] ?? '');
+        $externalId = (string) ($params['symbol_id'] ?? '');
         $limit = $this->boundedLimit($params);
 
         $result = $client->run(self::CALLEES_CYPHER, [
-            'symbol_id' => $symbolId,
+            'external_id' => $externalId,
+            'snapshot_id' => $snapshotId,
             'limit' => $limit,
         ]);
 
@@ -101,16 +106,22 @@ class GraphQueryService
     }
 
     /** @param array<string, mixed> $params */
-    private function runPath(Neo4jClient $client, array $params): array
+    private function runPath(Neo4jClient $client, array $params, string $snapshotId): array
     {
-        $fromId = (string) ($params['from_symbol_id'] ?? '');
-        $toId = (string) ($params['to_symbol_id'] ?? '');
+        $fromExternalId = (string) ($params['from_symbol_id'] ?? '');
+        $toExternalId = (string) ($params['to_symbol_id'] ?? '');
         $maxDepth = max(1, min(10, (int) ($params['max_depth'] ?? 5)));
 
-        $result = $client->run(self::PATH_CYPHER, [
-            'from_symbol_id' => $fromId,
-            'to_symbol_id' => $toId,
-            'max_depth' => $maxDepth,
+        $cypher = 'MATCH (from:CodeNode {external_id: $from_external_id, snapshot_id: $snapshot_id}), (to:CodeNode {external_id: $to_external_id, snapshot_id: $snapshot_id}) '
+            .'MATCH p = shortestPath((from)-[:CALLS*1..'.$maxDepth.']-(to)) '
+            .'UNWIND nodes(p) AS n '
+            .'RETURN properties(n) AS node, labels(n) AS labels, id(n) AS internal_id '
+            .'LIMIT 100';
+
+        $result = $client->run($cypher, [
+            'from_external_id' => $fromExternalId,
+            'to_external_id' => $toExternalId,
+            'snapshot_id' => $snapshotId,
         ]);
 
         return $this->normaliseRows($result);
@@ -140,7 +151,7 @@ class GraphQueryService
 
             $props = $row['node'] ?? [];
             $labels = $row['labels'] ?? [];
-            $id = isset($row['node']['id']) ? (string) $row['node']['id'] : null;
+            $id = isset($row['node']['external_id']) ? (string) $row['node']['external_id'] : null;
 
             if ($id === null && isset($row['node']['symbol_id'])) {
                 $id = (string) $row['node']['symbol_id'];
@@ -183,5 +194,20 @@ class GraphQueryService
         }
 
         return app(Neo4jClientFactory::class)->client();
+    }
+
+    private function resolveSnapshotId(string $projectId): ?string
+    {
+        if ($projectId === '') {
+            return null;
+        }
+
+        $snapshot = DB::table('snapshots')
+            ->where('project_id', $projectId)
+            ->whereNotNull('graph_snapshot_artifact_id')
+            ->orderByDesc('created_at')
+            ->first();
+
+        return $snapshot?->id;
     }
 }

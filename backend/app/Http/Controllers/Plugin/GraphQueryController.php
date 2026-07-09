@@ -46,6 +46,8 @@ class GraphQueryController extends Controller
             $params['max_depth'] = (int) ($validated['max_depth'] ?? 5);
         }
 
+        $params['project_id'] = $project;
+
         $result = $this->queryService->query($type, $params);
 
         return response()->json([
