@@ -50,7 +50,7 @@ function jsonObjectFromText(value) {
   }
 }
 
-export default function AiAgents({ providers, modelProfiles, agentProfiles, dashboard }) {
+export default function AiAgents({ providers, modelProfiles, agentProfiles, project, dashboard }) {
   const [providerRows, setProviderRows] = useState(providers);
   const [modelProfileRows, setModelProfileRows] = useState(modelProfiles);
   const [agentRows, setAgentRows] = useState(agentProfiles);
@@ -354,6 +354,8 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, dash
         </div>
       </section>
 
+      {renderErrors(errors)}
+
       <section className="mt-5 rounded border border-zinc-200 bg-white p-4">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <KeyRound size={16} />
@@ -459,8 +461,6 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, dash
         <p className="mt-1 text-sm text-zinc-500">
           Create a backend agent profile from the dashboard without leaving this page.
         </p>
-
-        {renderErrors(errors)}
 
         <form className="mt-4 grid gap-4" onSubmit={createAgentProfile}>
           <div className="grid gap-3 xl:grid-cols-3">
@@ -577,7 +577,7 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, dash
               <span className="mb-1 block text-xs text-zinc-500">Project IDs</span>
               <textarea
                 className="min-h-20 w-full rounded border border-zinc-300 px-3 py-2 text-sm"
-                placeholder="demo-project, staging-project"
+                placeholder={project?.id ?? '01HXPROJECTIDEXAMPLE'}
                 value={newAgentForm.project_ids}
                 onChange={(event) => updateNewAgentForm({ project_ids: event.target.value })}
               />

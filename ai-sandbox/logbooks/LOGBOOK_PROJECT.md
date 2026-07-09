@@ -2,6 +2,20 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-09 - Admin AI Agents custom-agent create form polish
+
+- Request: keep Task 5D frontend-only and polish the Admin AI Agents custom-agent create form so the `Project IDs` placeholder does not suggest slugs and the shared error panel appears once near the top of the page for all admin actions.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, the current `resources/js/Pages/Admin/AiAgents.jsx`, and the existing project logbook entries.
+- Work performed: ran the requested RED source-contract check before edits and confirmed it failed because `AiAgents` did not yet accept `project`; updated the page signature to accept `project`, moved `renderErrors(errors)` to the shared page-level area directly below the header section, removed the create-form-local error panel so there is only one shared panel, and changed the `Project IDs` textarea placeholder to use `project?.id` with an ID-shaped fallback instead of slug examples.
+- Verification commands and result:
+  - `node --input-type=module <<'NODE' ... NODE` from `backend/` before edits -> failed as expected with `Error: AiAgents does not accept the project prop yet.`
+  - `node --input-type=module <<'NODE' ... NODE` from `backend/` after edits -> passed.
+  - `npm run build` from `backend/` -> passed.
+  - `git diff --check` -> passed.
+  - `git status --short` after build -> showed tracked `public/build` artifacts dirtied by Vite; restored them before commit with `git restore public/build/manifest.json public/build/assets/app-CV9C8z26.css public/build/assets/app-CZ4fWiHF.js`.
+- Files changed: `backend/resources/js/Pages/Admin/AiAgents.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: no backend PHP, routes, migrations, seeders, or tests were changed, per task boundary. The placeholder now prefers `project.id`, so if the controller ever stops supplying `project`, the fallback remains ID-shaped rather than slug-shaped.
+
 ## 2026-07-08 - Admin AI Agents custom agent create form
 
 - Request: add a compact frontend-only create form to the Admin AI Agents page so admins can create custom backend agent profiles from the UI, without changing backend PHP, routes, migrations, seeders, or tests in this slice.
