@@ -2,6 +2,21 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-08 - Admin AI Agents custom agent create form
+
+- Request: add a compact frontend-only create form to the Admin AI Agents page so admins can create custom backend agent profiles from the UI, without changing backend PHP, routes, migrations, seeders, or tests in this slice.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `resources/js/Pages/Admin/AiAgents.jsx`, and the current project logbook entries.
+- Work performed: ran the required RED source-contract check before edits and confirmed it failed as expected; added `defaultNewAgentForm()`, `listFromLines()`, and `jsonObjectFromText()` helpers; added `newAgentForm` state plus a `createAgentProfile()` POST handler for `/api/dashboard/admin/ai-agent-profiles`; parsed list and JSON fields per contract, sent empty `project_ids` outside project visibility, normalized empty parent/model selections to `null`, appended the returned `agent_profile` into `agentRows` sorted by `display_name`, initialized matching `agentForms` state, reset the create form after success, and kept the existing provider/model/agent update flows unchanged; rendered a compact create form above the controlled-agent table using the existing visual style.
+- Verification commands and result:
+  - `node --input-type=module <<'NODE' ... NODE` from `backend/` before edits -> failed as expected with missing create-form tokens.
+  - `node --input-type=module <<'NODE' ... NODE` from `backend/` after edits -> passed.
+  - `npm run build` from `backend/` -> passed.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='custom agent profile|project visibility persistence'"` -> passed with `4 passed / 36 assertions`.
+  - `git diff --check` -> passed.
+  - Build artifacts under `backend/public/build` and `backend/vendor/pestphp/pest/.temp/test-results` were restored after verification.
+- Files changed: `backend/resources/js/Pages/Admin/AiAgents.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: this slice intentionally avoided backend API, route, migration, seeder, and test changes. The create form depends on the existing dashboard admin create endpoint contract and does not add edit/delete UI yet.
+
 ## 2026-07-08 - Custom agent visibility persistence in dashboard API
 
 - Request: persist custom agent `visibility_scope` and `project_ids` through the dashboard admin API for create/replace, keep the change backend-only, avoid migrations, and preserve the existing `PATCH /api/dashboard/admin/ai-agent-profiles/{agent}` behavior.

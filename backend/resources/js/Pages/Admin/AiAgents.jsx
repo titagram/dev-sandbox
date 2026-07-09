@@ -2,10 +2,59 @@ import { Bot, KeyRound, Power, Save, ShieldCheck, SlidersHorizontal, Workflow } 
 import { useState } from 'react';
 import AppLayout from '../../Layouts/AppLayout';
 
+function defaultNewAgentForm() {
+  return {
+    agent_key: '',
+    display_name: '',
+    description: '',
+    agent_type: 'specialist',
+    delegation_mode: 'controlled_registry',
+    parent_agent_key: '',
+    default_model_profile_id: '',
+    requires_human_approval: true,
+    enabled: true,
+    visibility_scope: 'global',
+    project_ids: '',
+    allowed_tools: 'search_project_memory',
+    output_schema: '{ "type": "object" }',
+    trigger_events: 'manual_chat',
+  };
+}
+
+function listFromLines(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return [];
+  }
+
+  return value
+    .split(/[\n,]/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function jsonObjectFromText(value) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
 export default function AiAgents({ providers, modelProfiles, agentProfiles, dashboard }) {
   const [providerRows, setProviderRows] = useState(providers);
   const [modelProfileRows, setModelProfileRows] = useState(modelProfiles);
   const [agentRows, setAgentRows] = useState(agentProfiles);
+  const [newAgentForm, setNewAgentForm] = useState(() => defaultNewAgentForm());
   const [forms, setForms] = useState(() => Object.fromEntries(providers.map((provider) => [
     provider.provider_key,
     {
@@ -69,6 +118,13 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, dash
         ...current[agentKey],
         ...patch,
       },
+    }));
+  }
+
+  function updateNewAgentForm(patch) {
+    setNewAgentForm((current) => ({
+      ...current,
+      ...patch,
     }));
   }
 
@@ -209,6 +265,78 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, dash
     setSavedAgent(agentKey);
   }
 
+  async function createAgentProfile(event) {
+    event.preventDefault();
+    setSaving('create-agent');
+    setErrors({});
+    setSavedProvider(null);
+    setSavedModelProfile(null);
+    setSavedAgent(null);
+
+    const outputSchemaText = newAgentForm.output_schema;
+    let outputSchema;
+
+    try {
+      const parsedOutputSchema = JSON.parse(outputSchemaText);
+
+      if (!parsedOutputSchema || typeof parsedOutputSchema !== 'object' || Array.isArray(parsedOutputSchema)) {
+        throw new Error('invalid');
+      }
+
+      outputSchema = jsonObjectFromText(outputSchemaText);
+    } catch {
+      setSaving(null);
+      setErrors({ output_schema: ['Output schema must be valid JSON object.'] });
+      return;
+    }
+
+    const response = await fetch('/api/dashboard/admin/ai-agent-profiles', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
+      body: JSON.stringify({
+        agent_key: newAgentForm.agent_key,
+        display_name: newAgentForm.display_name,
+        description: newAgentForm.description,
+        agent_type: newAgentForm.agent_type,
+        delegation_mode: newAgentForm.delegation_mode,
+        parent_agent_key: newAgentForm.parent_agent_key || null,
+        default_model_profile_id: newAgentForm.default_model_profile_id || null,
+        requires_human_approval: newAgentForm.requires_human_approval,
+        enabled: newAgentForm.enabled,
+        visibility_scope: newAgentForm.visibility_scope,
+        project_ids: newAgentForm.visibility_scope === 'project' ? listFromLines(newAgentForm.project_ids) : [],
+        allowed_tools: listFromLines(newAgentForm.allowed_tools),
+        output_schema: outputSchema,
+        trigger_events: listFromLines(newAgentForm.trigger_events),
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    setSaving(null);
+
+    if (!response.ok) {
+      setErrors(payload.errors ?? { general: ['Agent profile create failed.'] });
+      return;
+    }
+
+    setAgentRows((current) => [...current, payload.agent_profile].sort((left, right) => (
+      left.display_name.localeCompare(right.display_name)
+    )));
+    setAgentForms((current) => ({
+      ...current,
+      [payload.agent_profile.agent_key]: {
+        default_model_profile_id: payload.agent_profile.default_model_profile_id ?? '',
+        enabled: payload.agent_profile.enabled,
+      },
+    }));
+    setNewAgentForm(defaultNewAgentForm());
+    setSavedAgent(payload.agent_profile.agent_key);
+  }
+
   return (
     <AppLayout title="Admin / AI Agents" dashboard={dashboard}>
       <section className="rounded border border-zinc-200 bg-white p-4">
@@ -234,8 +362,6 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, dash
         <p className="mt-1 text-sm text-zinc-500">
           API keys are encrypted server-side. Saved keys are never returned to the browser.
         </p>
-
-        {renderErrors(errors)}
 
         <div className="mt-4 grid gap-4">
           {providerRows.map((provider) => {
@@ -323,6 +449,178 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, dash
             );
           })}
         </div>
+      </section>
+
+      <section className="mt-5 rounded border border-zinc-200 bg-white p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <ShieldCheck size={16} />
+          Create custom agent
+        </div>
+        <p className="mt-1 text-sm text-zinc-500">
+          Create a backend agent profile from the dashboard without leaving this page.
+        </p>
+
+        {renderErrors(errors)}
+
+        <form className="mt-4 grid gap-4" onSubmit={createAgentProfile}>
+          <div className="grid gap-3 xl:grid-cols-3">
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Key</span>
+              <input
+                className="h-9 w-full rounded border border-zinc-300 px-3 text-sm"
+                value={newAgentForm.agent_key}
+                onChange={(event) => updateNewAgentForm({ agent_key: event.target.value })}
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Display name</span>
+              <input
+                className="h-9 w-full rounded border border-zinc-300 px-3 text-sm"
+                value={newAgentForm.display_name}
+                onChange={(event) => updateNewAgentForm({ display_name: event.target.value })}
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Type</span>
+              <input
+                className="h-9 w-full rounded border border-zinc-300 px-3 text-sm"
+                value={newAgentForm.agent_type}
+                onChange={(event) => updateNewAgentForm({ agent_type: event.target.value })}
+              />
+            </label>
+          </div>
+
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-zinc-500">Description</span>
+            <textarea
+              className="min-h-20 w-full rounded border border-zinc-300 px-3 py-2 text-sm"
+              value={newAgentForm.description}
+              onChange={(event) => updateNewAgentForm({ description: event.target.value })}
+            />
+          </label>
+
+          <div className="grid gap-3 xl:grid-cols-3">
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Delegation mode</span>
+              <input
+                className="h-9 w-full rounded border border-zinc-300 px-3 text-sm"
+                value={newAgentForm.delegation_mode}
+                onChange={(event) => updateNewAgentForm({ delegation_mode: event.target.value })}
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Parent agent</span>
+              <select
+                className="h-9 w-full rounded border border-zinc-300 px-2 text-sm"
+                value={newAgentForm.parent_agent_key}
+                onChange={(event) => updateNewAgentForm({ parent_agent_key: event.target.value })}
+              >
+                <option value="">No parent</option>
+                {agentRows.map((agent) => (
+                  <option key={agent.id} value={agent.agent_key}>
+                    {agent.display_name} ({agent.agent_key})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Default model profile</span>
+              <select
+                className="h-9 w-full rounded border border-zinc-300 px-2 text-sm"
+                value={newAgentForm.default_model_profile_id}
+                onChange={(event) => updateNewAgentForm({ default_model_profile_id: event.target.value })}
+              >
+                <option value="">No default</option>
+                {modelProfileRows.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.display_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="grid gap-3 xl:grid-cols-3">
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Visibility scope</span>
+              <select
+                className="h-9 w-full rounded border border-zinc-300 px-2 text-sm"
+                value={newAgentForm.visibility_scope}
+                onChange={(event) => updateNewAgentForm({ visibility_scope: event.target.value })}
+              >
+                <option value="global">global</option>
+                <option value="project">project</option>
+              </select>
+            </label>
+            <label className="flex items-end gap-2 text-sm">
+              <input
+                checked={Boolean(newAgentForm.enabled)}
+                className="mb-2 h-4 w-4 rounded border-zinc-300"
+                type="checkbox"
+                onChange={(event) => updateNewAgentForm({ enabled: event.target.checked })}
+              />
+              <span className="mb-1">Enabled</span>
+            </label>
+            <label className="flex items-end gap-2 text-sm">
+              <input
+                checked={Boolean(newAgentForm.requires_human_approval)}
+                className="mb-2 h-4 w-4 rounded border-zinc-300"
+                type="checkbox"
+                onChange={(event) => updateNewAgentForm({ requires_human_approval: event.target.checked })}
+              />
+              <span className="mb-1">Requires approval</span>
+            </label>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Project IDs</span>
+              <textarea
+                className="min-h-20 w-full rounded border border-zinc-300 px-3 py-2 text-sm"
+                placeholder="demo-project, staging-project"
+                value={newAgentForm.project_ids}
+                onChange={(event) => updateNewAgentForm({ project_ids: event.target.value })}
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Allowed tools</span>
+              <textarea
+                className="min-h-20 w-full rounded border border-zinc-300 px-3 py-2 text-sm"
+                placeholder="search_project_memory"
+                value={newAgentForm.allowed_tools}
+                onChange={(event) => updateNewAgentForm({ allowed_tools: event.target.value })}
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Trigger events</span>
+              <textarea
+                className="min-h-20 w-full rounded border border-zinc-300 px-3 py-2 text-sm"
+                placeholder="manual_chat"
+                value={newAgentForm.trigger_events}
+                onChange={(event) => updateNewAgentForm({ trigger_events: event.target.value })}
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs text-zinc-500">Output schema</span>
+              <textarea
+                className="min-h-20 w-full rounded border border-zinc-300 px-3 py-2 text-sm"
+                value={newAgentForm.output_schema}
+                onChange={(event) => updateNewAgentForm({ output_schema: event.target.value })}
+              />
+            </label>
+          </div>
+
+          <div className="flex items-center justify-end gap-3">
+            <button
+              className="inline-flex h-9 items-center gap-2 rounded bg-zinc-950 px-3 text-sm font-medium text-white disabled:opacity-60"
+              disabled={saving === 'create-agent'}
+              type="submit"
+            >
+              <Save size={14} />
+              {saving === 'create-agent' ? 'Creating' : 'Create agent'}
+            </button>
+          </div>
+        </form>
       </section>
 
       <section className="mt-5 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
