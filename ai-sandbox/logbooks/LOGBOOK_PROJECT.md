@@ -2,6 +2,22 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-09 - Admin AI Agents full PUT save for custom agent profiles
+
+- Request: change the existing agent-row Save action in `resources/js/Pages/Admin/AiAgents.jsx` so it sends a full `PUT` replacement payload to `/api/dashboard/admin/ai-agent-profiles/{agentKey}` using the complete form state prepared in Task 5F, while keeping the task small and leaving backend controllers, migrations, delete UI, and expanded edit fields untouched.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, the current `resources/js/Pages/Admin/AiAgents.jsx`, and the existing project logbook entries.
+- Intended write paths before project edits: `backend/resources/js/Pages/Admin/AiAgents.jsx` and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added `agentProfilePayloadFromForm(form, outputSchema)` to serialize the full agent form; replaced `saveAgentProfile(agentKey)` with `replaceAgentProfile(agentKey)`; validated `output_schema` with `JSON.parse` and rejected non-object/array JSON with the inline error `Output schema must be valid JSON object.`; switched the agent-row save request to `PUT`; sent the full payload including `project_ids`, `allowed_tools`, `output_schema`, and `trigger_events`; refreshed `agentRows` and `agentForms` from the returned `payload.agent_profile`; and rewired the compact table Save button to call `replaceAgentProfile(agent.agent_key)`.
+- Verification commands and result:
+  - `python3 - <<'PY' ... PY` from `backend/` before edits -> failed as expected with missing full-agent PUT tokens.
+  - `python3 - <<'PY' ... PY` from `backend/` after edits -> passed.
+  - `npm run build` from `backend/` -> passed.
+  - `docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='assign a model profile|create replace and delete a custom agent profile|project visibility persistence'"` -> passed with `3 passed / 35 assertions`.
+  - `cd /home/ubuntu/dev-sandbox && git restore backend/public/build/manifest.json backend/public/build/assets 2>/dev/null || true` -> restored generated frontend build artifacts.
+  - `cd /home/ubuntu/dev-sandbox && sudo git -c safe.directory=/home/ubuntu/dev-sandbox restore backend/vendor/pestphp/pest/.temp/test-results 2>/dev/null || true` -> no-op restore for Pest temp output.
+- Files changed: `backend/resources/js/Pages/Admin/AiAgents.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: this slice intentionally does not add expanded edit fields, delete UI, delete handlers, backend controller changes, or migrations. Browser smoke was not run; the verification relied on the source contract, Vite build, and the focused dashboard regression slice.
+
 ## 2026-07-09 - Admin AI Agents full agent profile edit state prep
 
 - Request: prepare `resources/js/Pages/Admin/AiAgents.jsx` so every existing and newly created agent profile has complete editable form state for the later full PUT edit UI, while preserving the visible table's current save behavior.

@@ -108,6 +108,24 @@ function jsonObjectFromText(value) {
   }
 }
 
+function agentProfilePayloadFromForm(form, outputSchema) {
+  return {
+    display_name: form.display_name,
+    description: form.description,
+    agent_type: form.agent_type,
+    delegation_mode: form.delegation_mode,
+    parent_agent_key: form.parent_agent_key || null,
+    default_model_profile_id: form.default_model_profile_id || null,
+    requires_human_approval: form.requires_human_approval,
+    enabled: form.enabled,
+    visibility_scope: form.visibility_scope,
+    project_ids: form.visibility_scope === 'project' ? listFromLines(form.project_ids) : [],
+    allowed_tools: listFromLines(form.allowed_tools),
+    output_schema: outputSchema,
+    trigger_events: listFromLines(form.trigger_events),
+  };
+}
+
 export default function AiAgents({ providers, modelProfiles, agentProfiles, project, dashboard }) {
   const [providerRows, setProviderRows] = useState(providers);
   const [modelProfileRows, setModelProfileRows] = useState(modelProfiles);
@@ -280,7 +298,7 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
     setSavedModelProfile(profileKey);
   }
 
-  async function saveAgentProfile(agentKey) {
+  async function replaceAgentProfile(agentKey) {
     setSaving(`agent:${agentKey}`);
     setErrors({});
     setSavedProvider(null);
@@ -288,17 +306,28 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
     setSavedAgent(null);
 
     const form = agentForms[agentKey];
+    let outputSchema;
+
+    try {
+      outputSchema = JSON.parse(form.output_schema);
+
+      if (!outputSchema || typeof outputSchema !== 'object' || Array.isArray(outputSchema)) {
+        throw new Error('invalid');
+      }
+    } catch {
+      setSaving(null);
+      setErrors({ output_schema: ['Output schema must be valid JSON object.'] });
+      return;
+    }
+
     const response = await fetch(`/api/dashboard/admin/ai-agent-profiles/${agentKey}`, {
-      method: 'PATCH',
+      method: 'PUT',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
         'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
       },
-      body: JSON.stringify({
-        default_model_profile_id: form.default_model_profile_id || null,
-        enabled: form.enabled,
-      }),
+      body: JSON.stringify(agentProfilePayloadFromForm(form, outputSchema)),
     });
 
     const payload = await response.json().catch(() => ({}));
@@ -312,10 +341,10 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
     setAgentRows((current) => current.map((agent) => (
       agent.agent_key === agentKey ? payload.agent_profile : agent
     )));
-    updateAgentForm(agentKey, {
-      default_model_profile_id: payload.agent_profile.default_model_profile_id ?? '',
-      enabled: payload.agent_profile.enabled,
-    });
+    setAgentForms((current) => ({
+      ...current,
+      [payload.agent_profile.agent_key]: defaultAgentProfileForm(payload.agent_profile),
+    }));
     setSavedAgent(agentKey);
   }
 
@@ -788,7 +817,7 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
                           className="inline-flex h-9 items-center gap-2 rounded border border-zinc-300 px-3 text-sm font-medium text-zinc-700 disabled:opacity-60"
                           disabled={isSaving}
                           type="button"
-                          onClick={() => saveAgentProfile(agent.agent_key)}
+                          onClick={() => replaceAgentProfile(agent.agent_key)}
                         >
                           <Power size={14} />
                           {isSaving ? 'Saving' : 'Save'}
