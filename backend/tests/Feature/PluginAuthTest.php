@@ -27,6 +27,33 @@ it('accepts a valid dashboard generated plugin token', function () {
     expect(DB::table('api_tokens')->where('id', $token['id'])->value('last_used_at'))->not->toBeNull();
 });
 
+it('rejects device registration with missing fingerprint_hash', function () {
+    $token = createPluginToken();
+
+    $this->postJson('/api/plugin/v1/devices/register', [
+        'protocol_version' => 'v1',
+        'name' => 'No Fingerprint Device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+    ], pluginHeaders($token['plain_token']))
+        ->assertStatus(422);
+});
+
+it('rejects device registration with oversize plugin_version', function () {
+    $token = createPluginToken();
+
+    $this->postJson('/api/plugin/v1/devices/register', [
+        'protocol_version' => 'v1',
+        'name' => 'Oversize Version Device',
+        'fingerprint_hash' => 'sha256:oversize-version-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => str_repeat('v', 65),
+    ], pluginHeaders($token['plain_token']))
+        ->assertStatus(422);
+});
+
 it('registers a device and binds it to the active token', function () {
     $token = createPluginToken();
 

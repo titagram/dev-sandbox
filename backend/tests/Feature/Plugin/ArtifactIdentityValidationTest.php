@@ -49,6 +49,76 @@ it('rejects Delta artifact ids that are not strict ULIDs', function () {
         ->assertStatus(422);
 });
 
+it('rejects Genesis with chunk_count of zero', function () {
+    $context = createUnsafeGenesisContext();
+
+    genesisStartWith($context, genesisManifestWith(['chunk_count' => 0]))
+        ->assertStatus(422);
+});
+
+it('rejects Genesis with negative chunk_count', function () {
+    $context = createUnsafeGenesisContext();
+
+    genesisStartWith($context, genesisManifestWith(['chunk_count' => -1]))
+        ->assertStatus(422);
+});
+
+it('rejects Genesis with chunk_count above max', function () {
+    $context = createUnsafeGenesisContext();
+
+    genesisStartWith($context, genesisManifestWith(['chunk_count' => (int) config('devboard.artifacts.max_chunks') + 1]))
+        ->assertStatus(422);
+});
+
+it('rejects Genesis with negative size_bytes', function () {
+    $context = createUnsafeGenesisContext();
+
+    genesisStartWith($context, genesisManifestWith(['size_bytes' => -1]))
+        ->assertStatus(422);
+});
+
+it('rejects Genesis with size_bytes above max', function () {
+    $context = createUnsafeGenesisContext();
+
+    genesisStartWith($context, genesisManifestWith(['size_bytes' => (int) config('devboard.artifacts.max_artifact_bytes') + 1]))
+        ->assertStatus(422);
+});
+
+it('rejects Delta with chunk_count of zero', function () {
+    $context = createUnsafeDeltaContext();
+
+    deltaStartWith($context, deltaManifestWith(['chunk_count' => 0]))
+        ->assertStatus(422);
+});
+
+it('rejects Delta with negative chunk_count', function () {
+    $context = createUnsafeDeltaContext();
+
+    deltaStartWith($context, deltaManifestWith(['chunk_count' => -1]))
+        ->assertStatus(422);
+});
+
+it('rejects Delta with chunk_count above max', function () {
+    $context = createUnsafeDeltaContext();
+
+    deltaStartWith($context, deltaManifestWith(['chunk_count' => (int) config('devboard.artifacts.max_chunks') + 1]))
+        ->assertStatus(422);
+});
+
+it('rejects Delta with negative size_bytes', function () {
+    $context = createUnsafeDeltaContext();
+
+    deltaStartWith($context, deltaManifestWith(['size_bytes' => -1]))
+        ->assertStatus(422);
+});
+
+it('rejects Delta with size_bytes above max', function () {
+    $context = createUnsafeDeltaContext();
+
+    deltaStartWith($context, deltaManifestWith(['size_bytes' => (int) config('devboard.artifacts.max_artifact_bytes') + 1]))
+        ->assertStatus(422);
+});
+
 it('rejects storage path construction for unsafe artifact ids', function () {
     $storage = app(\App\Services\ArtifactStorageService::class);
 

@@ -3,10 +3,10 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Plugin\StartGenesisImportRequest;
 use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageService;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -19,7 +19,7 @@ class GenesisStartController extends Controller
     {
     }
 
-    public function __invoke(Request $request, string $repository): JsonResponse
+    public function __invoke(StartGenesisImportRequest $request, string $repository): JsonResponse
     {
         $repositoryRow = DB::table('repositories')->where('id', $repository)->first();
         abort_unless($repositoryRow, 404);
@@ -28,20 +28,7 @@ class GenesisStartController extends Controller
             return $error;
         }
 
-        $validated = $request->validate([
-            'run_id' => ['required', 'string', 'exists:runs,id'],
-            'local_workspace_id' => ['required', 'string', 'exists:local_workspaces,id'],
-            'manifest' => ['required', 'array'],
-            'manifest.artifacts' => ['required', 'array'],
-            'manifest.artifacts.*.artifact_id' => ['required', 'string', 'regex:'.\App\Support\DevBoardUlid::REGEX],
-            'manifest.artifacts.*.artifact_type' => ['required', 'string'],
-            'manifest.artifacts.*.sha256' => ['required', 'string'],
-            'manifest.artifacts.*.size_bytes' => ['required', 'integer', 'min:0', 'max:'.config('devboard.artifacts.max_artifact_bytes')],
-            'manifest.artifacts.*.mime_type' => ['nullable', 'string'],
-            'manifest.artifacts.*.schema_version' => ['nullable', 'string'],
-            'manifest.artifacts.*.producer' => ['nullable', 'string'],
-            'manifest.artifacts.*.chunk_count' => ['required', 'integer', 'min:1', 'max:'.config('devboard.artifacts.max_chunks')],
-        ]);
+        $validated = $request->validated();
 
         $run = DB::table('runs')->where('id', $validated['run_id'])->first();
         $artifactRows = $validated['manifest']['artifacts'];

@@ -3,23 +3,17 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Plugin\RegisterDeviceRequest;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
 class RegisterDeviceController extends Controller
 {
-    public function __invoke(Request $request): JsonResponse
+    public function __invoke(RegisterDeviceRequest $request): JsonResponse
     {
-        $validated = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'fingerprint_hash' => ['required', 'string', 'max:255'],
-            'platform_os' => ['required', 'string', 'max:64'],
-            'platform_arch' => ['required', 'string', 'max:64'],
-            'plugin_version' => ['required', 'string', 'max:64'],
-        ]);
+        $validated = $request->validated();
 
         $auth = $request->attributes->get('plugin_auth');
         $token = $auth['token'];

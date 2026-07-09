@@ -2,16 +2,15 @@
 
 namespace App\Services;
 
+use App\Jobs\ImportGraphToNeo4j;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use Throwable;
 
 class DeltaFinalizeService
 {
     public function __construct(
         private readonly ArtifactStorageService $storage,
         private readonly WikiRevisionService $wiki,
-        private readonly GenesisGraphImportService $graph,
     )
     {
     }
@@ -92,19 +91,6 @@ class DeltaFinalizeService
             ->where('repository_id', $delta->repository_id)
             ->update(['status' => 'imported', 'updated_at' => $now]);
 
-        if ($graphSnapshot) {
-            try {
-                $this->importGraph($snapshotId, $delta, $graphSnapshot->id);
-            } catch (Throwable $exception) {
-                DB::table('delta_syncs')->where('id', $deltaId)->update([
-                    'status' => 'failed',
-                    'updated_at' => now(),
-                ]);
-
-                throw $exception;
-            }
-        }
-
         DB::table('delta_syncs')->where('id', $deltaId)->update([
             'status' => 'active',
             'finished_at' => now(),
@@ -147,6 +133,10 @@ class DeltaFinalizeService
             'payload' => json_encode(['snapshot_id' => $snapshotId], JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
+
+        if ($graphSnapshot) {
+            ImportGraphToNeo4j::dispatch('delta', $deltaId);
+        }
 
         return ['status' => 'active', 'snapshot_id' => $snapshotId];
     }
@@ -214,32 +204,6 @@ class DeltaFinalizeService
             'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
-    }
-
-    private function importGraph(string $snapshotId, object $delta, string $artifactId): void
-    {
-        $mode = config('services.devboard.graph_import_mode', 'neo4j');
-        $client = null;
-
-        if ($mode === 'fake') {
-            $client = new class
-            {
-                public function run(string $cypher, array $params): void
-                {
-                }
-            };
-        }
-
-        $this->graph->importGraphArtifact(
-            $snapshotId,
-            $delta->repository_id,
-            $delta->run_id,
-            $artifactId,
-            $client,
-            $mode,
-            'Delta graph import validated in fake mode.',
-            'Delta graph imported into Neo4j.',
-        );
     }
 
     private function writeWikiRevisions(object $artifacts, object $delta): void

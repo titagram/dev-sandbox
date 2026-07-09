@@ -847,6 +847,40 @@ it('returns 404 for unknown provider on models endpoint', function () {
         ->assertNotFound();
 });
 
+it('rejects private loopback and link-local provider base URLs to block SSRF', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $invalidUrls = [
+        'http://127.0.0.1:8000',
+        'http://localhost:11434',
+        'http://169.254.169.254/latest/meta-data',
+        'http://10.0.0.5',
+        'http://172.16.0.5',
+        'http://192.168.1.2',
+    ];
+
+    foreach ($invalidUrls as $url) {
+        $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+            'display_name' => 'SSRF Test',
+            'base_url' => $url,
+            'enabled' => true,
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['base_url']);
+    }
+});
+
+it('accepts a valid public HTTPS endpoint for provider base URL', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'OpenAI Gateway',
+        'base_url' => 'https://api.openai.com/v1',
+        'api_key' => 'sk-test-devboard-secret-123456',
+        'enabled' => true,
+    ])->assertOk()
+        ->assertJsonPath('provider.base_url', 'https://api.openai.com/v1');
+});
+
 function aiAgentRegistryUserWithRole(string $roleName): User
 {
     $user = User::factory()->create();

@@ -1,8 +1,10 @@
 <?php
 
+use App\Jobs\ImportGraphToNeo4j;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -51,6 +53,8 @@ it('starts delta sync and creates artifact rows', function () {
 });
 
 it('finalizes a valid delta bundle and creates a new snapshot', function () {
+    Queue::fake();
+
     $context = createDeltaContext();
     $artifacts = [
         deltaArtifact('delta_manifest', 'delta-manifest.json', '{"protocol_version":"v1"}'),
@@ -70,6 +74,13 @@ it('finalizes a valid delta bundle and creates a new snapshot', function () {
         ->assertOk()
         ->assertJsonPath('status', 'active')
         ->assertJsonStructure(['snapshot_id']);
+
+    Queue::assertPushed(ImportGraphToNeo4j::class, function (ImportGraphToNeo4j $job) use ($deltaId): bool {
+        return $job->scope === 'delta' && $job->importOrDeltaId === $deltaId;
+    });
+
+    $job = new ImportGraphToNeo4j('delta', $deltaId);
+    $job->handle(app(\App\Services\GenesisGraphImportService::class));
 
     $newSnapshotId = DB::table('delta_syncs')->where('id', $deltaId)->value('new_snapshot_id');
 
@@ -173,6 +184,39 @@ it('allows delta finalize with blocked findings only when explicitly approved', 
         ->where('target_type', 'delta_sync')
         ->where('target_id', $deltaId)
         ->exists())->toBeTrue();
+});
+
+it('dispatches a graph import job instead of importing synchronously when finalizing a delta with a graph snapshot', function () {
+    Queue::fake();
+
+    $context = createDeltaContext();
+    $artifacts = [
+        deltaArtifact('delta_manifest', 'delta-manifest.json', '{"protocol_version":"v1"}'),
+        deltaArtifact('file_hashes', 'file-hashes.json', '{"hashes":[]}'),
+        deltaArtifact('diff_summary', 'diff-summary.json', '{"changed_file_count":1}'),
+        deltaArtifact('graph_snapshot', 'graph-snapshot.json', '{"nodes":[],"relationships":[]}'),
+        deltaArtifact('security_report', 'security-report.json', '{"blocked":[]}'),
+        deltaArtifact('wiki_pages', 'wiki-pages.json', '{"pages":[]}'),
+    ];
+    $deltaId = deltaStart($context, deltaManifest($artifacts))->json('delta_id');
+
+    foreach ($artifacts as $artifact) {
+        deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+    }
+
+    deltaFinalize($context, $deltaId)
+        ->assertOk()
+        ->assertJsonPath('status', 'active')
+        ->assertJsonStructure(['snapshot_id']);
+
+    Queue::assertPushed(ImportGraphToNeo4j::class, function (ImportGraphToNeo4j $job) use ($deltaId): bool {
+        return $job->scope === 'delta' && $job->importOrDeltaId === $deltaId;
+    });
+
+    expect(DB::table('run_events')
+        ->where('run_id', $context['run_id'])
+        ->where('event_type', 'graph.imported')
+        ->exists())->toBeFalse();
 });
 
 /**

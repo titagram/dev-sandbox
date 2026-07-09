@@ -1,5 +1,15 @@
 # Project Logbook
 
+## 2026-07-09 - Task 2.6: Make Python Client Reusable, Retryable, And Installable
+
+- Request: execute Task 2.6 from the DevBoard Operational Hardening plan using TDD. Make DevBoardClient reusable with shared httpx.Client lifecycle, add retries for ConnectError/TimeoutException/5xx with exponential backoff, wrap connect errors as DevBoardApiError, ensure credential load errors render cleanly in CLI, and declare devboard-analyzer as a plugin dependency.
+- Context read: `plugin/src/devboard_plugin/client.py`, `plugin/src/devboard_plugin/config.py`, `plugin/src/devboard_plugin/cli.py`, `plugin/pyproject.toml`, `plugin/tests/test_client.py`, `plugin/tests/test_config.py`, `plugin/tests/test_cli_smoke.py`, `analyzer/pyproject.toml`.
+- Intended write paths: `plugin/src/devboard_plugin/client.py`, `plugin/src/devboard_plugin/config.py`, `plugin/src/devboard_plugin/cli.py`, `plugin/pyproject.toml`, `plugin/tests/test_client.py`, `plugin/tests/test_config.py`, `plugin/tests/test_cli_smoke.py`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: TDD flow — wrote failing tests for retry, connect-error wrapping, credential load error handling, and analyzer dependency declaration.
+- Verification: `cd plugin && .venv/bin/python3 -m pytest -q` and `cd analyzer && .venv/bin/python3 -m pytest -q`.
+- Files changed: (to be listed after implementation)
+- Residual risks: (to be filled after implementation)
+
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
 ## 2026-07-09 - Task 2.5: Type The Neo4j Boundary And Raise Static Analysis One Level

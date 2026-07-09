@@ -2,6 +2,7 @@
 
 namespace App\Assistants;
 
+use App\Assistants\ProviderEndpointPolicy;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -470,6 +471,18 @@ final class AiAgentRegistry
     private function validateOpenCodeGoConnection(object $provider): array
     {
         $baseUrl = (string) $provider->base_url;
+
+        if (! ProviderEndpointPolicy::validate($baseUrl)) {
+            return [
+                'ok' => false,
+                'models_endpoint' => $this->modelsEndpoint($baseUrl),
+                'chat_completions_endpoint' => $this->chatCompletionsEndpoint($baseUrl),
+                'checked_model' => null,
+                'models' => [],
+                'redacted_error' => 'Provider endpoint URL is not allowed.',
+            ];
+        }
+
         $modelsEndpoint = $this->modelsEndpoint($baseUrl);
         $chatEndpoint = $this->chatCompletionsEndpoint($baseUrl);
         $apiKey = $this->decryptProviderApiKey($provider);
@@ -618,6 +631,17 @@ final class AiAgentRegistry
         }
 
         $baseUrl = (string) $provider->base_url;
+
+        if (! ProviderEndpointPolicy::validate($baseUrl)) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => now()->toISOString(),
+                'message' => 'Provider endpoint URL is not allowed.',
+            ];
+        }
+
         $modelsEndpoint = $this->modelsEndpoint($baseUrl);
         $now = now()->toISOString();
 

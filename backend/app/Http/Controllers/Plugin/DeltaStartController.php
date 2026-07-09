@@ -3,10 +3,10 @@
 namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Plugin\StartDeltaSyncRequest;
 use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageService;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -19,7 +19,7 @@ class DeltaStartController extends Controller
     {
     }
 
-    public function __invoke(Request $request, string $run): JsonResponse
+    public function __invoke(StartDeltaSyncRequest $request, string $run): JsonResponse
     {
         $runRow = DB::table('runs')->where('id', $run)->first();
         abort_unless($runRow && $runRow->repository_id, 404);
@@ -28,28 +28,7 @@ class DeltaStartController extends Controller
             return $error;
         }
 
-        $validated = $request->validate([
-            'local_workspace_id' => ['required', 'string', 'exists:local_workspaces,id'],
-            'base_snapshot_id' => ['required', 'string', 'exists:snapshots,id'],
-            'branch' => ['required', 'string', 'max:255'],
-            'base_sha' => ['required', 'string', 'max:255'],
-            'head_sha' => ['nullable', 'string', 'max:255'],
-            'dirty_status' => ['required', 'string', 'max:64'],
-            'manifest' => ['required', 'array'],
-            'manifest.changed_file_count' => ['nullable', 'integer', 'min:0'],
-            'manifest.changed_files' => ['nullable', 'array'],
-            'manifest.risk_report' => ['nullable', 'array'],
-            'manifest.risk_report.risk_level' => ['nullable', 'string'],
-            'manifest.artifacts' => ['required', 'array'],
-            'manifest.artifacts.*.artifact_id' => ['required', 'string', 'regex:'.\App\Support\DevBoardUlid::REGEX],
-            'manifest.artifacts.*.artifact_type' => ['required', 'string'],
-            'manifest.artifacts.*.sha256' => ['required', 'string'],
-            'manifest.artifacts.*.size_bytes' => ['required', 'integer', 'min:0', 'max:'.config('devboard.artifacts.max_artifact_bytes')],
-            'manifest.artifacts.*.mime_type' => ['nullable', 'string'],
-            'manifest.artifacts.*.schema_version' => ['nullable', 'string'],
-            'manifest.artifacts.*.producer' => ['nullable', 'string'],
-            'manifest.artifacts.*.chunk_count' => ['required', 'integer', 'min:1', 'max:'.config('devboard.artifacts.max_chunks')],
-        ]);
+        $validated = $request->validated();
 
         $deltaId = (string) Str::ulid();
         $artifactRows = [];

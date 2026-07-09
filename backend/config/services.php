@@ -44,6 +44,13 @@ return [
     ],
 
     'devboard' => [
+        /*
+        |----------------------------------------------------------------------
+        | AI provider endpoints are validated at runtime by ProviderEndpointPolicy
+        | before any HTTP call. The policy blocks private, loopback, and
+        | link-local IP ranges. See App\Assistants\ProviderEndpointPolicy.
+        |----------------------------------------------------------------------
+        */
         'graph_import_mode' => env('DEVBOARD_GRAPH_IMPORT_MODE', 'neo4j'),
         'graph_import_job_tries' => env('DEVBOARD_GRAPH_IMPORT_JOB_TRIES', 3),
         'graph_import_job_backoff_seconds' => array_map(

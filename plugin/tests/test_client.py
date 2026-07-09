@@ -8,6 +8,12 @@ import pytest
 
 from devboard_plugin.client import DevBoardApiError, DevBoardClient
 
+try:
+    from httpx import ConnectError, TimeoutException
+except ImportError:
+    ConnectError = httpx.ConnectError  # type: ignore[assignment,misc]
+    TimeoutException = httpx.TimeoutException  # type: ignore[assignment,misc]
+
 
 def test_client_sends_protocol_v1_header():
     captured_headers = {}
@@ -143,3 +149,83 @@ def test_credentials_round_trip_preserves_device_secret(tmp_path):
 
     assert loaded.device_id == "device_01ABC"
     assert loaded.device_secret == "b" * 64
+
+
+def test_client_retries_timeout_then_success():
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.TimeoutException("timed out")
+        return httpx.Response(200, json={"ok": True})
+
+    client = DevBoardClient(
+        base_url="https://devboard.test",
+        token="token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = client.get("/test")
+
+    assert result == {"ok": True}
+    assert attempts == 3
+
+
+def test_client_does_not_retry_4xx():
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(404, json={"error": {"code": "not_found", "message": "missing"}})
+
+    client = DevBoardClient(
+        base_url="https://devboard.test",
+        token="token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(DevBoardApiError):
+        client.get("/test")
+
+    assert attempts == 1
+
+
+def test_client_wraps_connect_error_as_devboard_api_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise ConnectError("connection refused")
+
+    client = DevBoardClient(
+        base_url="https://devboard.test",
+        token="token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(DevBoardApiError) as exc_info:
+        client.get("/test")
+
+    assert "connection refused" in str(exc_info.value)
+
+
+def test_client_retries_5xx_then_succeeds():
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            return httpx.Response(503, json={"error": {"code": "unavailable", "message": "try again"}})
+        return httpx.Response(200, json={"ok": True})
+
+    client = DevBoardClient(
+        base_url="https://devboard.test",
+        token="token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = client.get("/test")
+
+    assert result == {"ok": True}
+    assert attempts == 2

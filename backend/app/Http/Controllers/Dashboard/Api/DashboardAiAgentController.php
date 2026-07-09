@@ -12,6 +12,7 @@ use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use App\Rules\ProviderEndpointRule;
 use Illuminate\Validation\Rule;
 
 final class DashboardAiAgentController extends Controller
@@ -31,7 +32,7 @@ final class DashboardAiAgentController extends Controller
 
         $validated = $request->validate([
             'display_name' => ['required', 'string', 'max:120'],
-            'base_url' => ['nullable', 'url', 'max:2048'],
+            'base_url' => ['nullable', 'url', 'max:2048', new ProviderEndpointRule],
             'api_key' => ['nullable', 'string', 'max:4096'],
             'clear_api_key' => ['sometimes', 'boolean'],
             'enabled' => ['required', 'boolean'],

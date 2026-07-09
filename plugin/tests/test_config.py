@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 
-from devboard_plugin.config import credentials_path
+import pytest
+
+from devboard_plugin.client import DevBoardApiError
+from devboard_plugin.config import Credentials, credentials_path, load_credentials
 from devboard_plugin.state import write_repo_state
 
 
@@ -31,3 +34,12 @@ def test_repo_state_never_serializes_credentials(tmp_path):
         "local_workspace_id": "lw_123",
     }
     assert "devb_live_" not in state_path.read_text()
+
+
+def test_load_credentials_reports_missing_file_without_traceback():
+    missing = Path("/nonexistent/credentials.json")
+
+    with pytest.raises(DevBoardApiError) as exc_info:
+        load_credentials(missing)
+
+    assert "Credentials file not found" in str(exc_info.value)
