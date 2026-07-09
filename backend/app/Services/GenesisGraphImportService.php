@@ -49,6 +49,34 @@ class GenesisGraphImportService
     }
 
     /**
+     * @param list<string> $labels
+     */
+    private static function nodeLabelForLabels(array $labels): string
+    {
+        $first = strtolower($labels[0] ?? '');
+
+        return match ($first) {
+            'function', 'method' => 'Function',
+            'class' => 'Class',
+            'file' => 'File',
+            'module' => 'Module',
+            default => 'CodeNode',
+        };
+    }
+
+    private static function relationshipTypeForType(string $type): string
+    {
+        $upper = strtoupper($type);
+
+        return match ($upper) {
+            'CALLS' => 'CALLS',
+            'DECLARES' => 'DECLARES',
+            'IMPORTS' => 'IMPORTS',
+            default => 'RELATED',
+        };
+    }
+
+    /**
      * @param array<string, mixed> $node
      * @return array{cypher: string, params: array<string, mixed>}
      */
@@ -60,8 +88,10 @@ class GenesisGraphImportService
             'repository_id' => $repositoryId,
         ]);
 
+        $label = self::nodeLabelForLabels($node['labels'] ?? []);
+
         return [
-            'cypher' => 'MERGE (n:CodeNode {external_id: $id, snapshot_id: $snapshot_id}) SET n += $properties, n.labels = $labels',
+            'cypher' => "MERGE (n:CodeNode {external_id: \$id, snapshot_id: \$snapshot_id}) SET n:{$label}, n += \$properties, n.labels = \$labels",
             'params' => [
                 'id' => $node['id'],
                 'snapshot_id' => $snapshotId,
@@ -83,8 +113,10 @@ class GenesisGraphImportService
             'repository_id' => $repositoryId,
         ]);
 
+        $relType = self::relationshipTypeForType($relationship['type']);
+
         return [
-            'cypher' => 'MATCH (source:CodeNode {external_id: $source_id, snapshot_id: $snapshot_id}) MATCH (target:CodeNode {external_id: $target_id, snapshot_id: $snapshot_id}) MERGE (source)-[r:RELATED {external_id: $id, snapshot_id: $snapshot_id}]->(target) SET r.type = $type, r += $properties',
+            'cypher' => "MATCH (source:CodeNode {external_id: \$source_id, snapshot_id: \$snapshot_id}) MATCH (target:CodeNode {external_id: \$target_id, snapshot_id: \$snapshot_id}) MERGE (source)-[r:{$relType} {external_id: \$id, snapshot_id: \$snapshot_id}]->(target) SET r.type = \$type, r += \$properties",
             'params' => [
                 'id' => $relationship['id'] ?? (string) Str::ulid(),
                 'source_id' => $relationship['source_id'] ?? $relationship['source_symbol_id'],
@@ -98,56 +130,76 @@ class GenesisGraphImportService
 
     /**
      * @param list<array<string, mixed>> $nodes
-     * @return array{cypher: string, params: array<string, mixed>}
+     * @return list<array{cypher: string, params: array<string, mixed>}>
      */
-    public static function nodeBatchCommand(array $nodes, string $snapshotId, string $runId, string $repositoryId): array
+    public static function nodeBatchCommands(array $nodes, string $snapshotId, string $runId, string $repositoryId): array
     {
-        return [
-            'cypher' => 'UNWIND $nodes AS node MERGE (n:CodeNode {external_id: node.id, snapshot_id: $snapshot_id}) SET n += node.properties, n.labels = node.labels',
-            'params' => [
-                'snapshot_id' => $snapshotId,
-                'nodes' => array_map(
-                    static fn (array $node): array => [
-                        'id' => $node['id'],
-                        'labels' => $node['labels'] ?? [],
-                        'properties' => array_merge($node['properties'] ?? [], [
-                            'snapshot_id' => $snapshotId,
-                            'run_id' => $runId,
-                            'repository_id' => $repositoryId,
-                        ]),
-                    ],
-                    $nodes,
-                ),
-            ],
-        ];
+        $byLabel = [];
+
+        foreach ($nodes as $node) {
+            $label = self::nodeLabelForLabels($node['labels'] ?? []);
+            $byLabel[$label][] = [
+                'id' => $node['id'],
+                'labels' => $node['labels'] ?? [],
+                'properties' => array_merge($node['properties'] ?? [], [
+                    'snapshot_id' => $snapshotId,
+                    'run_id' => $runId,
+                    'repository_id' => $repositoryId,
+                ]),
+            ];
+        }
+
+        $commands = [];
+
+        foreach ($byLabel as $label => $groupedNodes) {
+            $commands[] = [
+                'cypher' => "UNWIND \$nodes AS node MERGE (n:CodeNode {external_id: node.id, snapshot_id: \$snapshot_id}) SET n:{$label}, n += node.properties, n.labels = node.labels",
+                'params' => [
+                    'snapshot_id' => $snapshotId,
+                    'nodes' => $groupedNodes,
+                ],
+            ];
+        }
+
+        return $commands;
     }
 
     /**
      * @param list<array<string, mixed>> $relationships
-     * @return array{cypher: string, params: array<string, mixed>}
+     * @return list<array{cypher: string, params: array<string, mixed>}>
      */
-    public static function relationshipBatchCommand(array $relationships, string $snapshotId, string $runId, string $repositoryId): array
+    public static function relationshipBatchCommands(array $relationships, string $snapshotId, string $runId, string $repositoryId): array
     {
-        return [
-            'cypher' => 'UNWIND $relationships AS relationship MATCH (source:CodeNode {external_id: relationship.source_id, snapshot_id: $snapshot_id}) MATCH (target:CodeNode {external_id: relationship.target_id, snapshot_id: $snapshot_id}) MERGE (source)-[r:RELATED {external_id: relationship.id, snapshot_id: $snapshot_id}]->(target) SET r.type = relationship.type, r += relationship.properties',
-            'params' => [
-                'snapshot_id' => $snapshotId,
-                'relationships' => array_map(
-                    static fn (array $relationship): array => [
-                        'id' => $relationship['id'] ?? (string) Str::ulid(),
-                        'source_id' => $relationship['source_id'] ?? $relationship['source_symbol_id'],
-                        'target_id' => $relationship['target_id'] ?? $relationship['target_symbol_id'],
-                        'type' => $relationship['type'],
-                        'properties' => array_merge($relationship['properties'] ?? [], [
-                            'snapshot_id' => $snapshotId,
-                            'run_id' => $runId,
-                            'repository_id' => $repositoryId,
-                        ]),
-                    ],
-                    $relationships,
-                ),
-            ],
-        ];
+        $byType = [];
+
+        foreach ($relationships as $relationship) {
+            $type = self::relationshipTypeForType($relationship['type']);
+            $byType[$type][] = [
+                'id' => $relationship['id'] ?? (string) Str::ulid(),
+                'source_id' => $relationship['source_id'] ?? $relationship['source_symbol_id'],
+                'target_id' => $relationship['target_id'] ?? $relationship['target_symbol_id'],
+                'type' => $relationship['type'],
+                'properties' => array_merge($relationship['properties'] ?? [], [
+                    'snapshot_id' => $snapshotId,
+                    'run_id' => $runId,
+                    'repository_id' => $repositoryId,
+                ]),
+            ];
+        }
+
+        $commands = [];
+
+        foreach ($byType as $relType => $groupedRelationships) {
+            $commands[] = [
+                'cypher' => "UNWIND \$relationships AS relationship MATCH (source:CodeNode {external_id: relationship.source_id, snapshot_id: \$snapshot_id}) MATCH (target:CodeNode {external_id: relationship.target_id, snapshot_id: \$snapshot_id}) MERGE (source)-[r:{$relType} {external_id: relationship.id, snapshot_id: \$snapshot_id}]->(target) SET r.type = relationship.type, r += relationship.properties",
+                'params' => [
+                    'snapshot_id' => $snapshotId,
+                    'relationships' => $groupedRelationships,
+                ],
+            ];
+        }
+
+        return $commands;
     }
 
     public function importGenesis(
@@ -214,13 +266,17 @@ class GenesisGraphImportService
 
         foreach (array_chunk($graph['nodes'] ?? [], self::BATCH_SIZE) as $nodes) {
             if ($nodes !== []) {
-                $this->runCommand($client, self::nodeBatchCommand($nodes, $snapshotId, $runId, $repositoryId));
+                foreach (self::nodeBatchCommands($nodes, $snapshotId, $runId, $repositoryId) as $cmd) {
+                    $this->runCommand($client, $cmd);
+                }
             }
         }
 
         foreach (array_chunk($graph['relationships'] ?? [], self::BATCH_SIZE) as $relationships) {
             if ($relationships !== []) {
-                $this->runCommand($client, self::relationshipBatchCommand($relationships, $snapshotId, $runId, $repositoryId));
+                foreach (self::relationshipBatchCommands($relationships, $snapshotId, $runId, $repositoryId) as $cmd) {
+                    $this->runCommand($client, $cmd);
+                }
             }
         }
 

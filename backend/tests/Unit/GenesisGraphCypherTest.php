@@ -81,3 +81,245 @@ it('FakeNeo4jClient records Cypher and parameters for assertion', function () {
         'run_id' => 'run_1',
     ]);
 });
+
+it('uses :Function label for function node kind', function () {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'function:health',
+            'labels' => ['Function'],
+            'properties' => ['name' => 'health'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':Function');
+    expect($command['cypher'])->not()->toContain('UNWIND $nodes');
+});
+
+it('uses :File label for file node kind', function () {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'file:app.py',
+            'labels' => ['File'],
+            'properties' => ['path' => 'app.py'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':File');
+});
+
+it('uses :Class label for class node kind', function () {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'class:Foo',
+            'labels' => ['Class'],
+            'properties' => ['name' => 'Foo'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':Class');
+});
+
+it('uses :Module label for module node kind', function () {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'module:mypkg',
+            'labels' => ['Module'],
+            'properties' => ['name' => 'mypkg'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':Module');
+});
+
+it('uses :CodeNode label for unknown node kind', function () {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'variable:x',
+            'labels' => ['Variable'],
+            'properties' => ['name' => 'x'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':CodeNode');
+});
+
+it('uses :CodeNode label when node has no labels', function () {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'orphan:1',
+            'labels' => [],
+            'properties' => [],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':CodeNode');
+});
+
+it('uses :CodeNode label when node labels key is missing', function () {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'unknown_1',
+            'properties' => ['name' => 'mystery'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':CodeNode');
+});
+
+it('uses :CALLS relationship type for CALLS type', function () {
+    $command = GenesisGraphImportService::relationshipCommand(
+        [
+            'id' => 'rel_1',
+            'type' => 'CALLS',
+            'source_id' => 'function:a',
+            'target_id' => 'function:b',
+            'properties' => [],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':CALLS');
+    expect($command['cypher'])->not()->toContain(':RELATED');
+});
+
+it('uses :DECLARES relationship type for DECLARES type', function () {
+    $command = GenesisGraphImportService::relationshipCommand(
+        [
+            'id' => 'rel_2',
+            'type' => 'DECLARES',
+            'source_id' => 'file:a',
+            'target_id' => 'function:b',
+            'properties' => [],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':DECLARES');
+    expect($command['cypher'])->not()->toContain(':RELATED');
+});
+
+it('uses :IMPORTS relationship type for IMPORTS type', function () {
+    $command = GenesisGraphImportService::relationshipCommand(
+        [
+            'id' => 'rel_3',
+            'type' => 'IMPORTS',
+            'source_id' => 'file:a',
+            'target_id' => 'module:b',
+            'properties' => [],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':IMPORTS');
+});
+
+it('uses :RELATED relationship type for unknown type', function () {
+    $command = GenesisGraphImportService::relationshipCommand(
+        [
+            'id' => 'rel_4',
+            'type' => 'EXTENDS',
+            'source_id' => 'class:a',
+            'target_id' => 'class:b',
+            'properties' => [],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain(':RELATED');
+});
+
+it('keeps type property on relationships even with typed relationships', function () {
+    $command = GenesisGraphImportService::relationshipCommand(
+        [
+            'id' => 'rel_5',
+            'type' => 'CALLS',
+            'source_id' => 'function:a',
+            'target_id' => 'function:b',
+            'properties' => ['confidence' => 'high'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['params']['type'])->toBe('CALLS');
+    expect($command['params']['properties']['confidence'])->toBe('high');
+});
+
+it('returns multiple node batch commands grouped by label', function () {
+    $nodes = [
+        ['id' => 'file:app.py', 'labels' => ['File'], 'properties' => ['path' => 'app.py']],
+        ['id' => 'function:health', 'labels' => ['Function'], 'properties' => ['name' => 'health']],
+        ['id' => 'function:main', 'labels' => ['Function'], 'properties' => ['name' => 'main']],
+        ['id' => 'class:Foo', 'labels' => ['Class'], 'properties' => ['name' => 'Foo']],
+    ];
+
+    $commands = GenesisGraphImportService::nodeBatchCommands($nodes, 'snap_123', 'run_123', 'repo_123');
+
+    expect($commands)->toHaveCount(3);
+
+    $cyphers = array_map(fn (array $cmd): string => $cmd['cypher'], $commands);
+
+    expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, ':File')))->not->toBeNull();
+    expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, ':Function')))->not->toBeNull();
+    expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, ':Class')))->not->toBeNull();
+    expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, 'UNWIND $nodes')))->not->toBeNull();
+});
+
+it('returns multiple relationship batch commands grouped by type', function () {
+    $relationships = [
+        ['id' => 'r1', 'type' => 'CALLS', 'source_id' => 'f:a', 'target_id' => 'f:b', 'properties' => []],
+        ['id' => 'r2', 'type' => 'DECLARES', 'source_id' => 'file:x', 'target_id' => 'f:y', 'properties' => []],
+        ['id' => 'r3', 'type' => 'CALLS', 'source_id' => 'f:c', 'target_id' => 'f:d', 'properties' => []],
+        ['id' => 'r4', 'type' => 'IMPORTS', 'source_id' => 'file:m', 'target_id' => 'module:n', 'properties' => []],
+    ];
+
+    $commands = GenesisGraphImportService::relationshipBatchCommands($relationships, 'snap_123', 'run_123', 'repo_123');
+
+    expect($commands)->toHaveCount(3);
+
+    $cyphers = array_map(fn (array $cmd): string => $cmd['cypher'], $commands);
+
+    expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, ':CALLS')))->not->toBeNull();
+    expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, ':DECLARES')))->not->toBeNull();
+    expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, ':IMPORTS')))->not->toBeNull();
+});
+
+it('uses [:RELATED] for unknown relationship types in batch commands', function () {
+    $relationships = [
+        ['id' => 'r1', 'type' => 'EXTENDS', 'source_id' => 'c:a', 'target_id' => 'c:b', 'properties' => []],
+    ];
+
+    $commands = GenesisGraphImportService::relationshipBatchCommands($relationships, 'snap_123', 'run_123', 'repo_123');
+
+    expect($commands[0]['cypher'])->toContain(':RELATED');
+});

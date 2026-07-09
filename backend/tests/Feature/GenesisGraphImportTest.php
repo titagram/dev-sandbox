@@ -51,14 +51,20 @@ it('imports file and function nodes with snapshot metadata', function () {
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
-    $nodeCommand = array_values(array_filter(
+    $nodeCommands = array_values(array_filter(
         $client->commands,
         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes'),
-    ))[0];
+    ));
 
-    expect($nodeCommand['params']['nodes'])->toHaveCount(2);
-    expect($nodeCommand['params']['nodes'][0]['properties']['snapshot_id'])->toBe($context['snapshot_id']);
-    expect($nodeCommand['params']['nodes'][1]['properties']['repository_id'])->toBe($context['repository_id']);
+    expect(count($nodeCommands))->toBeGreaterThanOrEqual(2);
+
+    $allNodes = collect($nodeCommands)->flatMap(
+        fn (array $cmd): array => $cmd['params']['nodes'],
+    )->all();
+
+    expect($allNodes)->toHaveCount(2);
+    expect($allNodes[0]['properties']['snapshot_id'])->toBe($context['snapshot_id']);
+    expect($allNodes[1]['properties']['repository_id'])->toBe($context['repository_id']);
 });
 
 it('imports relationships with run and repository metadata', function () {
@@ -93,8 +99,7 @@ it('imports nodes and relationships with batched Cypher commands', function () {
         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $relationships'),
     ));
 
-    expect($nodeBatchCommands)->toHaveCount(1);
-    expect($nodeBatchCommands[0]['params']['nodes'])->toHaveCount(2);
+    expect(count($nodeBatchCommands))->toBeGreaterThanOrEqual(2);
     expect($nodeBatchCommands[0]['params']['nodes'][0]['properties'])->toMatchArray([
         'snapshot_id' => $context['snapshot_id'],
         'run_id' => $context['run_id'],
@@ -108,6 +113,7 @@ it('imports nodes and relationships with batched Cypher commands', function () {
         'run_id' => $context['run_id'],
         'repository_id' => $context['repository_id'],
     ]);
+    expect($relationshipBatchCommands[0]['cypher'])->toContain(':DECLARES');
 });
 
 it('marks the import failed when Neo4j import fails', function () {

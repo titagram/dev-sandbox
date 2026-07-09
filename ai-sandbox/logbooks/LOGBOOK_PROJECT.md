@@ -1,5 +1,16 @@
 # Project Logbook
 
+## 2026-07-09 - Task 3.3: Emit Real Neo4j Labels And Relationship Types
+
+- Request: execute Task 3.3 from the DevBoard Operational Hardening plan using TDD. Map known node labels to specific Neo4j labels (`:Function`, `:File`, `:Class`, `:Module`) and known relationship types to specific types (`[:CALLS]`, `[:DECLARES]`, `[:IMPORTS]`), keeping `:CodeNode`/`[:RELATED]` as fallbacks for unknown kinds.
+- Context read: `GenesisGraphImportService.php`, `GenesisGraphCypherTest.php`, `GenesisGraphImportTest.php`, `LOGBOOK_PROJECT.md`.
+- Work performed: TDD flow — wrote failing Cypher tests asserting `:Function`, `:File`, `:Class`, `:Module` labels and `:CALLS`, `:DECLARES`, `:IMPORTS` relationship types appear in generated Cypher, plus fallback tests for unknown kinds. Added `nodeLabelForLabels()` and `relationshipTypeForType()` allowlist mapping methods. Updated `nodeCommand()` to produce specific labels via `SET n:Function` (keeping `:CodeNode` in MERGE for index compatibility). Updated `relationshipCommand()` to use specific relationship types (`[r:CALLS]`, `[r:DECLARES]`, `[r:IMPORTS]`) instead of always `[r:RELATED]`. Renamed `nodeBatchCommand()` → `nodeBatchCommands()` and `relationshipBatchCommand()` → `relationshipBatchCommands()`, returning multiple commands grouped by mapped label/type (since Cypher UNWIND can't have dynamic labels). Updated `importGraphArtifact()` to iterate over grouped commands. Updated feature tests for the new multi-command batch structure.
+- Verification:
+  - `docker exec devboard-app-1 ... php artisan test tests/Unit/GenesisGraphCypherTest.php tests/Feature/GenesisGraphImportTest.php --display-warnings` → GREEN (32 passed / 128 assertions).
+  - Broader regression: `docker exec devboard-app-1 ... php artisan test tests/Unit/GenesisGraphCypherTest.php tests/Feature/GenesisGraphImportTest.php tests/Feature/PluginAuthTest.php tests/Feature/GenesisUploadTest.php tests/Feature/DeltaSyncTest.php tests/Feature/DomainSchemaTest.php --display-warnings` → GREEN (68 passed / 387 assertions).
+- Files changed: `backend/app/Services/GenesisGraphImportService.php`, `backend/tests/Unit/GenesisGraphCypherTest.php`, `backend/tests/Feature/GenesisGraphImportTest.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: Nodes keep `:CodeNode` as a base label (used in MERGE for index/lookup) alongside the specific semantic label added via SET. The `Neo4jRebuildService::purgeSnapshot()` still uses `MATCH (n:CodeNode ...) DETACH DELETE n` which correctly matches all nodes. The old `nodeBatchCommand`/`relationshipBatchCommand` method names are no longer public — no other callers found outside import flow.
+
 ## 2026-07-09 - Task 3.1: Reconcile Genesis And Hades Memory Graph Planes
 
 - Request: execute Task 3.1 from the DevBoard Operational Hardening plan. Documentation-only task to reconcile the Genesis/Plugin Neo4j graph path with the Hades artifact-JSON graph path.
@@ -508,6 +519,16 @@ Record project code, behavior, architecture, build, deployment, and project docu
 - Verification: `git diff --check -- docs/ai-devboard/11_LARAVEL_AI_SDK_AGENT_EVALUATION.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` exited 0; targeted placeholder scan on the new document returned no matches; targeted `rg` confirmed the new document covers Laravel AI SDK, LangChain/LangGraph boundary, `make:agent`, `make:tool`, MCP, sub-agents, pgvector/RAG, failover, testing, events, and first safe adoption guidance.
 - Files changed: `docs/ai-devboard/11_LARAVEL_AI_SDK_AGENT_EVALUATION.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
 - Residual risks: no Laravel package was installed and no code was run against `laravel/ai`; all SDK behavior is documented from official external docs and marked `needs_verification` until validated inside this repository. External LangChain/LangGraph packages were not evaluated in this pass.
+
+## 2026-07-09 - Task 3.2: Resolve Python Internal CALLS Edges
+
+- Request: execute Task 3.2 from the DevBoard Operational Hardening plan using TDD. Make the Python AST analyzer resolve CALLS edges to internal symbol IDs instead of always using `external:<name>`.
+- Context read: `analyzer/src/devboard_analyzer/code_graph.py`, `analyzer/tests/test_code_graph.py`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Intended write paths: `analyzer/src/devboard_analyzer/code_graph.py`, `analyzer/tests/test_code_graph.py`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: TDD flow — wrote two failing tests: one asserting `helper()` call from `caller()` resolves to internal `symbol:{path}:helper` (not `external:helper`), and one asserting `json.dumps()` remains external. Created a two-pass symbol resolution in `_PythonGraphExtractor`: Pass 1 uses a `_SymbolCollector` visitor to scan the AST and build a name→symbol_id index mapping both qualified names (e.g., `Service.ok`) and simple names (e.g., `helper`). Pass 2 uses the existing `_PythonGraphExtractor` with the pre-built index — in `visit_Call`, it looks up the called name in the index first; if found, uses the internal symbol ID; if not, falls back to `external:<name>`.
+- Verification: `cd /home/ubuntu/dev-sandbox/analyzer && python3 -m pytest -q` → GREEN (21 passed).
+- Files changed: `analyzer/src/devboard_analyzer/code_graph.py`, `analyzer/tests/test_code_graph.py`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: forward-referenced calls (where the callee is defined after the caller in the source) are correctly resolved because the two-pass approach collects all symbols before any edge generation. Simple-name ambiguity (two symbols with the same simple name but different qualified names) resolves to whichever was collected first — typically the outer-scope definition since AST traversal visits outer scopes first.
 
 ## Current Handoff
 
