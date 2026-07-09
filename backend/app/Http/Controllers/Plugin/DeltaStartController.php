@@ -41,7 +41,7 @@ class DeltaStartController extends Controller
             'manifest.risk_report' => ['nullable', 'array'],
             'manifest.risk_report.risk_level' => ['nullable', 'string'],
             'manifest.artifacts' => ['required', 'array'],
-            'manifest.artifacts.*.artifact_id' => ['required', 'string'],
+            'manifest.artifacts.*.artifact_id' => ['required', 'string', 'regex:'.\App\Support\DevBoardUlid::REGEX],
             'manifest.artifacts.*.artifact_type' => ['required', 'string'],
             'manifest.artifacts.*.sha256' => ['required', 'string'],
             'manifest.artifacts.*.size_bytes' => ['required', 'integer'],

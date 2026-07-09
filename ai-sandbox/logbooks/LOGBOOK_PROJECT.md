@@ -2,6 +2,19 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-09 - Task 0.1: Confirm Runtime Baseline And Write Paths
+
+- Request: execute Wave 0 baseline confirmation from `docs/superpowers/plans/2026-07-09-devboard-operational-hardening.md`.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/config/project.yaml`, `claude_suggestions.md`, `docs/ai-devboard/03_DOMAIN_MODEL.md`, `docs/ai-devboard/04_PLUGIN_SERVER_CONTRACT.md`, `docs/ai-devboard/05_GENESIS_IMPORT.md`, `docs/ai-devboard/06_DELTA_SYNC.md`, `docs/ai-devboard/07_SECURITY_MODEL.md`, `docs/ai-devboard/10_RUNTIME_SEQUENCES.md`, implementation plan itself, all policy files.
+- Intended write paths for Wave 1: `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`, `.gitignore`, `docker-compose.devboard.yaml`, `docker-compose.devboard.traefik.yaml`, `docker-compose.devboard.prod.yaml`, `backend/config/services.php`, `backend/config/devboard.php` (new), `backend/app/Support/DevBoardUlid.php` (new), `backend/app/Http/Controllers/Plugin/GenesisStartController.php`, `backend/app/Http/Controllers/Plugin/DeltaStartController.php`, `backend/app/Http/Controllers/Plugin/GenesisChunkController.php`, `backend/app/Http/Controllers/Plugin/DeltaChunkController.php`, `backend/app/Http/Controllers/Plugin/RegisterDeviceController.php`, `backend/app/Services/ArtifactStorageService.php`, `backend/app/Services/PluginTokenService.php`, `backend/app/Http/Middleware/AuthenticatePluginToken.php`, `backend/app/Services/AuditLogger.php` (new), `backend/app/Assistants/ProviderEndpointPolicy.php` (new), `backend/app/Assistants/AiAgentRegistry.php`, `backend/database/migrations/*_add_signing_secret_to_devices.php` (new), `plugin/src/devboard_plugin/artifacts.py`, `plugin/src/devboard_plugin/client.py`, `plugin/src/devboard_plugin/config.py`, `plugin/src/devboard_plugin/cli.py`, and corresponding test files.
+- Work performed: git status confirmed clean working tree (only untracked plan file); baseline tests passed (25 passed / 179 assertions); hardcoded secrets confirmed in `docker-compose.devboard.yaml` (APP_KEY fallback, NEO4J_PASSWORD=graphify-sandbox) and `backend/config/services.php` (NEO4J_PASSWORD fallback).
+- Verification commands and result:
+  - `git status --short` -> `M ai-sandbox/logbooks/LOGBOOK_PROJECT.md`, untracked plan file only.
+  - `docker compose ... php artisan test tests/Feature/PluginAuthTest.php tests/Feature/GenesisUploadTest.php tests/Feature/DeltaSyncTest.php --display-warnings` -> 25 passed, 179 assertions.
+  - `rg -n "graphify-sandbox|base64:|APP_KEY=.*fallback|NEO4J_PASSWORD.*graphify" docker-compose.devboard*.yaml backend/config/services.php backend/.env .gitignore` -> confirmed 6 matches before implementation.
+- Files changed: `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: no code changes in this task; baseline serves as reference for Wave 1.
+
 ## 2026-07-09 - Admin AI Agents advanced profile edit fields
 
 - Request: expose the advanced agent profile fields already present in `agentForms` and already persisted by `replaceAgentProfile(agentKey)` in `resources/js/Pages/Admin/AiAgents.jsx`, while keeping the task small and avoiding delete UI, backend changes, migrations, new routes, or API-key exposure.
@@ -1459,7 +1472,7 @@ Operational rule: before project writes, record intended paths here, then follow
 - Context read: `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, sandbox policy files, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, Laravel TDD/migrations/routes skills, current Hades implementation plan, and backend conventions to be inspected before edits.
 - Intended write paths: `backend/routes/api.php`, `backend/bootstrap/app.php` if middleware aliases require it, `backend/app/Http/Controllers/Hades/**`, `backend/app/Http/Middleware/AuthenticateHadesToken.php`, `backend/app/Services/Hades/**`, `backend/app/Models/Hades*.php`, `backend/database/migrations/*hades*.php`, `backend/database/factories/Hades*.php`, `backend/tests/Feature/Hades/**`, `ai-sandbox/docs/hades-backend-m1-results-2026-06-30.md`, and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
 - Work performed: pending.
-- Verification: pending.
+- Verification: `git diff --check -- docs/superpowers/plans/2026-07-09-devboard-operational-hardening.md ai-sandbox/logbooks/LOGBOOK_PROJECT.md` exited 0; initial red-flag scans found only scan/self-review wording and one verification-step label, all removed; task-heading scan confirmed Wave 1 through Wave 4 task coverage.
 - Files changed: pending.
 - Residual risks: pending.
 
@@ -1492,3 +1505,35 @@ Operational rule: before project writes, record intended paths here, then follow
 - Verification: backend focused suite passed `30 passed (281 assertions)` for `ProjectMemoryDashboardApiTest`, `AiAgentRegistryDashboardTest`, and `DashboardApiContractTest`; PHP Pint `--test` passed on 9 touched PHP files; frontend `tsc --noEmit --pretty false` passed; frontend CRACO tests passed `3 passed, 30 tests`; frontend production build passed locally and in Docker, producing `main.e437acd6.js`; route-list spot check showed project graph, project wiki page, and memory PATCH routes; scoped `git diff --check` passed for backend/logbook and frontend files touched.
 - Files changed: `backend/routes/web.php`, `backend/app/Dashboard/DashboardApiReader.php`, `backend/app/Http/Controllers/Dashboard/Api/DashboardResourceController.php`, `backend/app/Http/Controllers/Dashboard/Api/DashboardMemoryController.php`, `backend/app/Http/Controllers/Dashboard/Api/DashboardAiAgentController.php`, `backend/app/Assistants/AiAgentRegistry.php`, `backend/tests/Feature/Dashboard/ProjectMemoryDashboardApiTest.php`, `backend/tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php`, `backend/tests/Feature/Dashboard/DashboardApiContractTest.php`, external frontend files under `/home/ubuntu/emergent_devboard_frontend/frontend/src/` for app routes, app shell, nav, API adapters/tests, types, Admin, Memory, Wiki, Graph, Engineering, Runs, Run detail, Kanban, and Task detail, plus `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
 - Residual risks: no browser/Playwright visual smoke was run because the Browser plugin is unavailable in this session; the external frontend repository remains broadly dirty with many pre-existing modified/untracked files, so no commit was made; global compatibility routes such as `/runs`, `/wiki`, and `/graph` remain available, but primary navigation and project-context links now prefer project-scoped routes.
+
+## 2026-07-09 - DevBoard operational hardening implementation plan
+
+- Request: transform the root analysis document into an operational plan with small, testable tasks.
+- Context read: `AGENTS.md` instructions supplied by the developer, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, sandbox policy files, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, `claude_suggestions.md`, existing Superpowers plan format, current project logbook context, backend plugin auth/upload/graph services and tests, Python plugin client/upload code and tests.
+- Intended write paths: `docs/superpowers/plans/2026-07-09-devboard-operational-hardening.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: created a phased implementation plan that converts the P0/P1/P2/P3 analysis into executable tasks with files, interfaces, TDD steps, verification commands, commit messages, per-wave quality gates, and explicit blockers preventing AI/RAG work before deterministic graph/query foundations.
+- Verification: pending.
+- Files changed: `docs/superpowers/plans/2026-07-09-devboard-operational-hardening.md`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: this is a planning-only change. Code fixes, test execution for implementation tasks, production secret rotation, and Postgres/Neo4j runtime verification remain deferred to plan execution.
+
+## 2026-07-09 - Task 1.1: Remove Default Secrets From Deploy Configuration
+
+- Request: remove default/fallback secrets from compose files and services config; use `${VAR:?message}` syntax; git-ignore `.env`.
+- Context read: `docker-compose.devboard.yaml`, `docker-compose.devboard.traefik.yaml`, `docker-compose.devboard.prod.yaml`, `backend/config/services.php`, `.gitignore`, `backend/.env`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: untracked `backend/.env` from git; added `backend/.env` and `backend/.env.*` to `.gitignore`; replaced `APP_KEY` fallback with `${APP_KEY:?APP_KEY is required}` in app/worker; replaced `NEO4J_PASSWORD: graphify-sandbox` with `${NEO4J_PASSWORD:?}` in app/worker; replaced `NEO4J_AUTH: neo4j/graphify-sandbox` with `neo4j/${NEO4J_PASSWORD:?}` in neo4j; replaced healthcheck hardcoded password with shell expansion on `NEO4J_AUTH` per prod pattern; replaced `DB_PASSWORD: devboard` with `${DB_PASSWORD:?}` in app/worker; replaced `POSTGRES_PASSWORD: devboard` with `${DB_PASSWORD:?}` in postgres; removed `graphify-sandbox` default from `backend/config/services.php` NEO4J_PASSWORD env() call.
+- Verification: safety grep zero matches post-change; prod+traefik compose config renders clean; dev compose fails fast without secrets; dev compose renders correctly with explicit env.
+- Files changed: `.gitignore`, `docker-compose.devboard.yaml`, `docker-compose.devboard.traefik.yaml`, `docker-compose.devboard.prod.yaml`, `backend/config/services.php`, `backend/.env` (untracked), `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: deployment/runtime scripts that assumed default fallbacks must now set all required secrets or compose will refuse to start.
+
+## 2026-07-09 - Task 1.2: Validate Artifact Identity Before Storage Paths
+
+- Request: validate artifact IDs are strict ULIDs before accepting them in genesis/delta start and before constructing storage paths.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, policy files, `ai-sandbox/config/project.yaml`, `backend/app/Http/Controllers/Plugin/GenesisStartController.php`, `backend/app/Http/Controllers/Plugin/DeltaStartController.php`, `backend/app/Services/ArtifactStorageService.php`, `backend/tests/Feature/GenesisUploadTest.php`, `backend/tests/Feature/DeltaSyncTest.php`, existing Plugin test conventions.
+- Work performed: added `App\Support\DevBoardUlid` with strict ULID regex validation; added `ArtifactIdentityValidationTest` with tests for ../outside traversal IDs, slash-delimited traversal IDs, and lowercase-cased ULID rejection at the genesis/delta start API boundary; added regex validation on `manifest.artifacts.*.artifact_id` in both GenesisStartController and DeltaStartController; added defense-in-depth `assertStrict()` calls in `ArtifactStorageService::chunkPath()` and `artifactPath()` before path interpolation.
+- Verification commands and result:
+  - `docker compose ... php artisan test tests/Feature/Plugin/ArtifactIdentityValidationTest.php tests/Feature/GenesisUploadTest.php tests/Feature/DeltaSyncTest.php --display-warnings` -> 21 passed / 169 assertions.
+  - `docker compose ... php artisan test tests/Feature/Plugin/ tests/Feature/PluginAuthTest.php --display-warnings` -> 33 passed / 194 assertions.
+  - `docker compose ... php -l app/Support/DevBoardUlid.php app/Http/Controllers/Plugin/GenesisStartController.php app/Http/Controllers/Plugin/DeltaStartController.php app/Services/ArtifactStorageService.php` -> passed, no syntax errors.
+- Files changed: `backend/app/Support/DevBoardUlid.php`, `backend/tests/Feature/Plugin/ArtifactIdentityValidationTest.php`, `backend/app/Http/Controllers/Plugin/GenesisStartController.php`, `backend/app/Http/Controllers/Plugin/DeltaStartController.php`, `backend/app/Services/ArtifactStorageService.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: none — strict ULID regex covers all 26 Crockford-base32 characters; defense-in-depth in storage service guards against future callers bypassing controller validation.
+

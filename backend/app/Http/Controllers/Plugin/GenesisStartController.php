@@ -33,7 +33,7 @@ class GenesisStartController extends Controller
             'local_workspace_id' => ['required', 'string', 'exists:local_workspaces,id'],
             'manifest' => ['required', 'array'],
             'manifest.artifacts' => ['required', 'array'],
-            'manifest.artifacts.*.artifact_id' => ['required', 'string'],
+            'manifest.artifacts.*.artifact_id' => ['required', 'string', 'regex:'.\App\Support\DevBoardUlid::REGEX],
             'manifest.artifacts.*.artifact_type' => ['required', 'string'],
             'manifest.artifacts.*.sha256' => ['required', 'string'],
             'manifest.artifacts.*.size_bytes' => ['required', 'integer'],

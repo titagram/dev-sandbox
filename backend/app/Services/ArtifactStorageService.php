@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\DevBoardUlid;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
@@ -9,11 +10,15 @@ class ArtifactStorageService
 {
     public function chunkPath(string $importId, string $artifactId, int $chunkIndex, string $scope = 'genesis'): string
     {
+        DevBoardUlid::assertStrict($artifactId, 'artifact_id');
+
         return "devboard/artifacts/{$scope}/{$importId}/{$artifactId}/chunks/{$chunkIndex}";
     }
 
     public function artifactPath(string $importId, string $artifactId, string $scope = 'genesis'): string
     {
+        DevBoardUlid::assertStrict($artifactId, 'artifact_id');
+
         return "devboard/artifacts/{$scope}/{$importId}/{$artifactId}/artifact";
     }
 
