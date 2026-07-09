@@ -2,6 +2,22 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-09 - Admin AI Agents model profile create form
+
+- Request: add a compact model profile creation form to `resources/js/Pages/Admin/AiAgents.jsx` that uses the existing dashboard POST endpoint and preserves the existing model-profile edit flow.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `resources/js/Pages/Admin/AiAgents.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`, and the requested UI contract check.
+- Intended write paths before project edits: `backend/resources/js/Pages/Admin/AiAgents.jsx` and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added `defaultNewModelProfileForm(providers = [])` and `defaultModelProfileForm(profile)` helpers, initialized `newModelProfileForm` state from the current providers, added `updateNewModelProfileForm(patch)`, implemented `createModelProfile(event)` against `POST /api/dashboard/admin/ai-model-profiles` with the requested JSON payload and success/error handling, reset the create form after success, appended the created profile into `modelProfileRows` sorted by `display_name`, initialized `modelForms[payload.model_profile.profile_key]`, and rendered a compact `Create model profile` form above the existing model-profile edit cards without changing those edit cards.
+- Verification commands and result:
+  - `node <<'NODE' ... NODE` from `backend/` before edits -> failed as expected because the create-model tokens were missing.
+  - `node <<'NODE' ... NODE` from `backend/` after edits -> passed.
+  - `npm run build` from `backend/` -> passed.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='create a model profile|update an existing model profile'"` -> passed with `2 passed / 18 assertions`.
+  - `git diff --check` -> passed.
+  - Generated build and Pest temp artifacts were restored after verification.
+- Files changed: `backend/resources/js/Pages/Admin/AiAgents.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: this slice intentionally avoids backend behavior changes, migrations, delete/edit UI additions, and any broader dashboard refactors. No browser smoke test was run beyond the build and feature-test coverage.
+
 ## 2026-07-09 - Admin AI Agents custom-agent create form polish
 
 - Request: keep Task 5D frontend-only and polish the Admin AI Agents custom-agent create form so the `Project IDs` placeholder does not suggest slugs and the shared error panel appears once near the top of the page for all admin actions.

@@ -21,6 +21,34 @@ function defaultNewAgentForm() {
   };
 }
 
+function defaultNewModelProfileForm(providers = []) {
+  return {
+    provider_key: providers[0]?.provider_key ?? '',
+    profile_key: '',
+    display_name: '',
+    model_name: '',
+    runtime_profile: 'text',
+    max_context: '',
+    max_output_tokens: 4096,
+    temperature: 0,
+    timeout_seconds: 60,
+    enabled: true,
+  };
+}
+
+function defaultModelProfileForm(profile) {
+  return {
+    display_name: profile.display_name,
+    model_name: profile.model_name,
+    runtime_profile: profile.runtime_profile,
+    max_context: profile.max_context ?? '',
+    max_output_tokens: profile.max_output_tokens,
+    temperature: profile.temperature,
+    timeout_seconds: profile.timeout_seconds,
+    enabled: profile.enabled,
+  };
+}
+
 function listFromLines(value) {
   if (typeof value !== 'string' || value.length === 0) {
     return [];
@@ -55,6 +83,7 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
   const [modelProfileRows, setModelProfileRows] = useState(modelProfiles);
   const [agentRows, setAgentRows] = useState(agentProfiles);
   const [newAgentForm, setNewAgentForm] = useState(() => defaultNewAgentForm());
+  const [newModelProfileForm, setNewModelProfileForm] = useState(() => defaultNewModelProfileForm(providers));
   const [forms, setForms] = useState(() => Object.fromEntries(providers.map((provider) => [
     provider.provider_key,
     {
@@ -67,16 +96,7 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
   ])));
   const [modelForms, setModelForms] = useState(() => Object.fromEntries(modelProfiles.map((profile) => [
     profile.profile_key,
-    {
-      display_name: profile.display_name,
-      model_name: profile.model_name,
-      runtime_profile: profile.runtime_profile,
-      max_context: profile.max_context ?? '',
-      max_output_tokens: profile.max_output_tokens,
-      temperature: profile.temperature,
-      timeout_seconds: profile.timeout_seconds,
-      enabled: profile.enabled,
-    },
+    defaultModelProfileForm(profile),
   ])));
   const [agentForms, setAgentForms] = useState(() => Object.fromEntries(agentProfiles.map((agent) => [
     agent.agent_key,
@@ -123,6 +143,13 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
 
   function updateNewAgentForm(patch) {
     setNewAgentForm((current) => ({
+      ...current,
+      ...patch,
+    }));
+  }
+
+  function updateNewModelProfileForm(patch) {
+    setNewModelProfileForm((current) => ({
       ...current,
       ...patch,
     }));
@@ -335,6 +362,54 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
     }));
     setNewAgentForm(defaultNewAgentForm());
     setSavedAgent(payload.agent_profile.agent_key);
+  }
+
+  async function createModelProfile(event) {
+    event.preventDefault();
+    setSaving('create-model');
+    setErrors({});
+    setSavedProvider(null);
+    setSavedModelProfile(null);
+    setSavedAgent(null);
+
+    const response = await fetch('/api/dashboard/admin/ai-model-profiles', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content ?? '',
+      },
+      body: JSON.stringify({
+        provider_key: newModelProfileForm.provider_key,
+        profile_key: newModelProfileForm.profile_key,
+        display_name: newModelProfileForm.display_name,
+        model_name: newModelProfileForm.model_name,
+        runtime_profile: newModelProfileForm.runtime_profile,
+        max_context: newModelProfileForm.max_context === '' ? null : Number.parseInt(newModelProfileForm.max_context, 10),
+        max_output_tokens: Number.parseInt(newModelProfileForm.max_output_tokens, 10),
+        temperature: Number.parseFloat(newModelProfileForm.temperature),
+        timeout_seconds: Number.parseInt(newModelProfileForm.timeout_seconds, 10),
+        enabled: newModelProfileForm.enabled,
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    setSaving(null);
+
+    if (!response.ok) {
+      setErrors(payload.errors ?? { general: ['Model profile create failed.'] });
+      return;
+    }
+
+    setModelProfileRows((current) => [...current, payload.model_profile].sort((left, right) => (
+      left.display_name.localeCompare(right.display_name)
+    )));
+    setModelForms((current) => ({
+      ...current,
+      [payload.model_profile.profile_key]: defaultModelProfileForm(payload.model_profile),
+    }));
+    setNewModelProfileForm(defaultNewModelProfileForm(providerRows));
+    setSavedModelProfile(payload.model_profile.profile_key);
   }
 
   return (
@@ -710,6 +785,90 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Workflow size={16} />
             Model profiles
+          </div>
+          <div className="mt-4 rounded border border-zinc-200 bg-zinc-50 p-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Create model profile</div>
+            <form className="mt-3 grid gap-4" onSubmit={createModelProfile}>
+              <div className="grid gap-3 xl:grid-cols-2">
+                <label className="text-sm">
+                  <span className="mb-1 block text-xs text-zinc-500">Provider</span>
+                  <select
+                    className="h-9 w-full rounded border border-zinc-300 px-2 text-sm"
+                    value={newModelProfileForm.provider_key}
+                    onChange={(event) => updateNewModelProfileForm({ provider_key: event.target.value })}
+                  >
+                    <option value="">Select provider</option>
+                    {providerRows.map((provider) => (
+                      <option key={provider.provider_key} value={provider.provider_key}>
+                        {provider.display_name} ({provider.provider_key})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-xs text-zinc-500">Profile key</span>
+                  <input
+                    className="h-9 w-full rounded border border-zinc-300 px-3 text-sm"
+                    value={newModelProfileForm.profile_key}
+                    onChange={(event) => updateNewModelProfileForm({ profile_key: event.target.value })}
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-3 xl:grid-cols-3">
+                <label className="text-sm">
+                  <span className="mb-1 block text-xs text-zinc-500">Display name</span>
+                  <input
+                    className="h-9 w-full rounded border border-zinc-300 px-3 text-sm"
+                    value={newModelProfileForm.display_name}
+                    onChange={(event) => updateNewModelProfileForm({ display_name: event.target.value })}
+                  />
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-xs text-zinc-500">Model</span>
+                  <input
+                    className="h-9 w-full rounded border border-zinc-300 px-3 text-sm"
+                    value={newModelProfileForm.model_name}
+                    onChange={(event) => updateNewModelProfileForm({ model_name: event.target.value })}
+                  />
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-xs text-zinc-500">Runtime profile</span>
+                  <input
+                    className="h-9 w-full rounded border border-zinc-300 px-3 text-sm"
+                    value={newModelProfileForm.runtime_profile}
+                    onChange={(event) => updateNewModelProfileForm({ runtime_profile: event.target.value })}
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <NumberField label="Max context" value={newModelProfileForm.max_context} onChange={(value) => updateNewModelProfileForm({ max_context: value })} />
+                <NumberField label="Max output" value={newModelProfileForm.max_output_tokens} onChange={(value) => updateNewModelProfileForm({ max_output_tokens: value })} />
+                <NumberField label="Temperature" step="0.1" value={newModelProfileForm.temperature} onChange={(value) => updateNewModelProfileForm({ temperature: value })} />
+                <NumberField label="Timeout seconds" value={newModelProfileForm.timeout_seconds} onChange={(value) => updateNewModelProfileForm({ timeout_seconds: value })} />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    checked={Boolean(newModelProfileForm.enabled)}
+                    className="h-4 w-4 rounded border-zinc-300"
+                    type="checkbox"
+                    onChange={(event) => updateNewModelProfileForm({ enabled: event.target.checked })}
+                  />
+                  Enabled
+                </label>
+                <button
+                  className="inline-flex h-9 items-center gap-2 rounded bg-zinc-950 px-3 text-sm font-medium text-white disabled:opacity-60"
+                  disabled={saving === 'create-model'}
+                  type="submit"
+                >
+                  <Save size={14} />
+                  {saving === 'create-model' ? 'Creating' : 'Create model'}
+                </button>
+              </div>
+            </form>
           </div>
           {modelProfileRows.length ? (
             <div className="mt-4 space-y-3">
