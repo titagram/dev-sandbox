@@ -779,12 +779,56 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
                   return (
                     <tr key={agent.id} className="border-t border-zinc-100 align-top">
                       <td className="p-3">
-                        <div className="font-medium">{agent.display_name}</div>
-                        <div className="mt-1 max-w-md text-xs text-zinc-500">{agent.description}</div>
+                        <label className="block text-xs text-zinc-500">
+                          Display name
+                          <input
+                            className="mt-1 h-9 w-full rounded border border-zinc-300 px-3 text-sm text-zinc-900"
+                            value={form.display_name ?? ''}
+                            onChange={(event) => updateAgentForm(agent.agent_key, { display_name: event.target.value })}
+                          />
+                        </label>
+                        <label className="mt-2 block text-xs text-zinc-500">
+                          Description
+                          <textarea
+                            className="mt-1 min-h-16 w-full rounded border border-zinc-300 px-3 py-2 text-sm text-zinc-900"
+                            value={form.description ?? ''}
+                            onChange={(event) => updateAgentForm(agent.agent_key, { description: event.target.value })}
+                          />
+                        </label>
                         <div className="mt-1 font-mono text-xs text-zinc-500">{agent.agent_key}</div>
                       </td>
-                      <td className="py-3">{agent.agent_type}</td>
-                      <td className="py-3">{agent.parent_agent_key ?? 'none'}</td>
+                      <td className="py-3">
+                        <label className="block text-xs text-zinc-500">
+                          Type
+                          <input
+                            className="mt-1 h-9 w-40 rounded border border-zinc-300 px-3 text-sm text-zinc-900"
+                            value={form.agent_type ?? ''}
+                            onChange={(event) => updateAgentForm(agent.agent_key, { agent_type: event.target.value })}
+                          />
+                        </label>
+                        <label className="mt-2 block text-xs text-zinc-500">
+                          Delegation
+                          <input
+                            className="mt-1 h-9 w-48 rounded border border-zinc-300 px-3 text-sm text-zinc-900"
+                            value={form.delegation_mode ?? ''}
+                            onChange={(event) => updateAgentForm(agent.agent_key, { delegation_mode: event.target.value })}
+                          />
+                        </label>
+                      </td>
+                      <td className="py-3">
+                        <select
+                          className="h-9 w-52 rounded border border-zinc-300 px-2 text-sm"
+                          value={form.parent_agent_key ?? ''}
+                          onChange={(event) => updateAgentForm(agent.agent_key, { parent_agent_key: event.target.value })}
+                        >
+                          <option value="">No parent</option>
+                          {agentRows.filter((option) => option.agent_key !== agent.agent_key).map((option) => (
+                            <option key={option.agent_key} value={option.agent_key}>
+                              {option.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
                       <td className="py-3 pr-3">
                         <select
                           className="h-9 w-52 rounded border border-zinc-300 px-2 text-sm"
@@ -800,7 +844,17 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
                         </select>
                       </td>
                       <td className="max-w-56 truncate py-3">{agent.trigger_events.join(', ')}</td>
-                      <td className="py-3">{agent.requires_human_approval ? 'required' : 'not required'}</td>
+                      <td className="py-3">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            checked={Boolean(form.requires_human_approval)}
+                            className="h-4 w-4 rounded border-zinc-300"
+                            type="checkbox"
+                            onChange={(event) => updateAgentForm(agent.agent_key, { requires_human_approval: event.target.checked })}
+                          />
+                          <span>{form.requires_human_approval ? 'required' : 'not required'}</span>
+                        </label>
+                      </td>
                       <td className="py-3">
                         <label className="inline-flex items-center gap-2">
                           <input

@@ -2,6 +2,20 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-09 - Admin AI Agents basic profile edit fields
+
+- Request: expose the existing basic agent profile fields in the compact Admin AI Agents table in `resources/js/Pages/Admin/AiAgents.jsx` while keeping the existing `replaceAgentProfile(agentKey)` save flow, the current model-profile selector, the enabled checkbox, and all advanced list/schema editors out of scope.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, the current `resources/js/Pages/Admin/AiAgents.jsx`, and the existing project logbook entries.
+- Intended write paths before project edits: `backend/resources/js/Pages/Admin/AiAgents.jsx` and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: replaced the read-only agent name/description cells with controlled inputs bound to `form.display_name` and `form.description`; replaced the read-only type cell with controlled `agent_type` and `delegation_mode` inputs; replaced the parent cell with a controlled select that excludes the current agent from the options list; replaced the approval text with a controlled checkbox bound to `form.requires_human_approval`; left the existing `default_model_profile_id` select, `enabled` checkbox, and `replaceAgentProfile(agent.agent_key)` save button unchanged.
+- Verification commands and result:
+  - `cd /home/ubuntu/dev-sandbox/backend && python3 - <<'PY' ... PY` -> passed after the edit; the source contract now finds all required basic edit controls and no forbidden delete/advanced edit controls.
+  - `cd /home/ubuntu/dev-sandbox/backend && npm run build` -> passed.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='assign a model profile|create replace and delete a custom agent profile|project visibility persistence'"` -> passed with `3 passed / 35 assertions`.
+  - Generated build artifacts under `backend/public/build` and Pest temp output under `backend/vendor/pestphp/pest/.temp/test-results` were restored after verification.
+- Files changed: `backend/resources/js/Pages/Admin/AiAgents.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: the table still shows `agent.trigger_events` as read-only text by design. I did not add advanced list/schema editors, delete UI, backend changes, migrations, or new routes.
+
 ## 2026-07-09 - Admin AI Agents full PUT save for custom agent profiles
 
 - Request: change the existing agent-row Save action in `resources/js/Pages/Admin/AiAgents.jsx` so it sends a full `PUT` replacement payload to `/api/dashboard/admin/ai-agent-profiles/{agentKey}` using the complete form state prepared in Task 5F, while keeping the task small and leaving backend controllers, migrations, delete UI, and expanded edit fields untouched.
