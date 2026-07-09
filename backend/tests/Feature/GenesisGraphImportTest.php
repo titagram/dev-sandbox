@@ -1,6 +1,8 @@
 <?php
 
 use App\Services\GenesisGraphImportService;
+use App\Services\Neo4j\FailingNeo4jClient;
+use App\Services\Neo4j\FakeNeo4jClient;
 use App\Services\Neo4jClientFactory;
 use App\Services\Neo4jRebuildService;
 use App\Jobs\ImportGenesisGraphToNeo4j;
@@ -222,24 +224,6 @@ it('does not purge an existing projection when the stored graph artifact is miss
     expect($result['failures'][0]['message'])->toContain('Stored graph artifact is not readable');
     expect($client->commands)->toBe([]);
 });
-
-class FakeNeo4jClient
-{
-    public array $commands = [];
-
-    public function run(string $cypher, array $params): void
-    {
-        $this->commands[] = ['cypher' => $cypher, 'params' => $params];
-    }
-}
-
-class FailingNeo4jClient
-{
-    public function run(string $cypher, array $params): void
-    {
-        throw new RuntimeException('neo4j unavailable');
-    }
-}
 
 /**
  * @return array<string, string>

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Neo4j\Neo4jClient;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -151,7 +152,7 @@ class GenesisGraphImportService
 
     public function importGenesis(
         string $importId,
-        ?object $client = null,
+        ?Neo4jClient $client = null,
         string $mode = 'neo4j',
         bool $markFailedOnException = true,
     ): void
@@ -195,7 +196,7 @@ class GenesisGraphImportService
         string $repositoryId,
         string $runId,
         string $artifactId,
-        ?object $client = null,
+        ?Neo4jClient $client = null,
         string $mode = 'neo4j',
         string $fakeMessage = 'Graph import validated in fake mode.',
         string $neo4jMessage = 'Graph imported into Neo4j.',
@@ -242,12 +243,12 @@ class GenesisGraphImportService
     /**
      * @param array{cypher: string, params: array<string, mixed>} $command
      */
-    private function runCommand(object $client, array $command): void
+    private function runCommand(Neo4jClient $client, array $command): void
     {
         $client->run($command['cypher'], $command['params']);
     }
 
-    private function ensureIndexes(object $client): void
+    private function ensureIndexes(Neo4jClient $client): void
     {
         foreach (self::indexCommands() as $command) {
             $this->runCommand($client, $command);
