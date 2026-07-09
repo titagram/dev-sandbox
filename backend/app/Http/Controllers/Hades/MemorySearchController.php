@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Hades;
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesProjectAwareness;
 use App\Services\Hades\HadesSearchDocumentIndexer;
+use App\Services\Search\EmbeddingIndexService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -24,6 +25,7 @@ class MemorySearchController extends Controller
     public function __construct(
         private readonly HadesProjectAwareness $awareness,
         private readonly HadesSearchDocumentIndexer $searchIndexer,
+        private readonly EmbeddingIndexService $embeddingIndex,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -93,6 +95,7 @@ class MemorySearchController extends Controller
 
         $candidateCount = count($items);
         $items = array_slice($items, 0, $limit);
+        $items = $this->annotateWithEvidenceRefs($items);
         $version = $this->searchVersion($validated['project_id'], $binding->id, $query, $domain, $filters, $items);
 
         return response()->json([
@@ -437,6 +440,9 @@ class MemorySearchController extends Controller
         }
 
         $tokens = $this->tokens($query);
+        $driver = DB::connection()->getDriverName();
+        $useFullText = $query !== '' && in_array($driver, ['mysql', 'pgsql'], true);
+
         $rows = DB::table('hades_search_documents')
             ->where('project_id', $projectId)
             ->where('workspace_binding_id', $bindingId)
@@ -444,7 +450,14 @@ class MemorySearchController extends Controller
             ->when(($filters['schema'] ?? '') !== '', function ($builder) use ($filters): void {
                 $builder->where('source_schema', 'like', '%'.$filters['schema'].'%');
             })
-            ->when($query !== '', function ($builder) use ($query, $tokens): void {
+            ->when($useFullText && $driver === 'pgsql', function ($builder) use ($query): void {
+                $builder->whereRaw("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(source_schema, '')) @@ plainto_tsquery('english', ?)", [$query]);
+            })
+            ->when($useFullText && $driver === 'mysql', function ($builder) use ($query, $tokens): void {
+                $fullTextQuery = implode(' ', array_map(fn (string $term): string => '+'.$term.'*', array_values(array_unique(array_map('strtolower', array_filter(preg_match_all('/[A-Za-z0-9]{2,}/', $query, $m) ? $m[0] : []))))));
+                $builder->whereRaw('MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE)', [$fullTextQuery]);
+            })
+            ->when($query !== '' && ! $useFullText, function ($builder) use ($query, $tokens): void {
                 $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
                 $builder->where(function ($nested) use ($patterns): void {
                     foreach ($patterns as $pattern) {
@@ -987,5 +1000,56 @@ class MemorySearchController extends Controller
     private function error(string $code, string $message, int $status): JsonResponse
     {
         return response()->json(['error' => ['code' => $code, 'message' => $message]], $status);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $items
+     * @return list<array<string, mixed>>
+     */
+    private function annotateWithEvidenceRefs(array $items): array
+    {
+        if (! $this->embeddingIndex->supportsEmbeddings()) {
+            return $items;
+        }
+
+        $annotated = [];
+
+        foreach ($items as $item) {
+            $sourceTable = $this->sourceTableForDomain($item['domain'] ?? '', $item['source'] ?? '', $item['kind'] ?? '');
+            $evidenceRefs = [];
+            $needsVerification = false;
+
+            if ($sourceTable !== '' && isset($item['id'])) {
+                $refs = $this->embeddingIndex->extractEvidenceRefsForSource($sourceTable, (string) $item['id']);
+
+                if ($refs !== []) {
+                    $evidenceRefs = $refs;
+                } else {
+                    $needsVerification = true;
+                }
+            } else {
+                $needsVerification = true;
+            }
+
+            $item['evidence_refs'] = $evidenceRefs;
+            $item['needs_verification'] = $needsVerification;
+            $annotated[] = $item;
+        }
+
+        return $annotated;
+    }
+
+    private function sourceTableForDomain(string $domain, string $source, string $kind): string
+    {
+        return match ($domain) {
+            'wiki' => 'wiki_revisions',
+            'artifacts' => 'hades_agent_artifacts',
+            'evidence_packs' => 'hades_evidence_packs',
+            'causal_packs' => 'hades_causal_packs',
+            'source_slices' => 'hades_source_slices',
+            'bug_evidence' => 'hades_bug_evidence_items',
+            'project_memory', 'logbook', 'agent_notes', 'source_chunks' => 'project_memory_entries',
+            default => '',
+        };
     }
 }

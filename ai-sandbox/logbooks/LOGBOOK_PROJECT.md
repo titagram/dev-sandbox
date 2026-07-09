@@ -1,5 +1,16 @@
 # Project Logbook
 
+## 2026-07-09 - Task 4.2: Add Pgvector Retrieval After Wiki Draft Evidence Exists
+
+- Request: execute Task 4.2 from the DevBoard Operational Hardening plan using TDD. Add pgvector-based embedding retrieval to the Hades search pipeline with evidence ref annotations.
+- Context read: `MemorySearchController.php`, `HadesSearchDocumentIndexer.php`, `hades_search_documents` migration, `HadesM3SharedMemoryTest.php`, `LOGBOOK_PROJECT.md`.
+- Work performed: TDD flow — wrote migration `2026_07_09_000007_add_embeddings_to_memory_search.php` that enables the `vector` extension on pgsql and adds `embedding vector(1536)` column to `hades_search_documents`. Wrote `EmbeddingIndexServiceTest.php` with SQLite fallback tests (passing) and pgsql-specific vector search tests (skipped on SQLite with clear message). Created `EmbeddingIndexService.php` with `indexDocument()` for storing embeddings, `searchSimilar()` for cosine similarity search with evidence ref extraction, and `supportsVectorSearch()`/`supportsEmbeddings()` for capability checks. Extracts evidence refs from source tables (wiki_revisions.evidence_refs) and marks entries without evidence refs as `needs_verification: true`. Updated `MemorySearchController.php` to inject `EmbeddingIndexService` and augment search results with embedding similarity scores and evidence metadata when available.
+- Verification:
+  - `docker exec devboard-app-1 ... php artisan test tests/Feature/Search/EmbeddingIndexServiceTest.php --display-warnings` → GREEN. SQLite fallback tests pass. Pgsql-specific tests properly skipped on SQLite.
+  - Broader regression: `docker exec devboard-app-1 ... php artisan test tests/Feature/Hades/ tests/Feature/Search/ tests/Feature/PluginAuthTest.php tests/Feature/GenesisUploadTest.php tests/Feature/DeltaSyncTest.php tests/Feature/DomainSchemaTest.php --display-warnings` → GREEN.
+- Files changed: `backend/database/migrations/2026_07_09_000007_add_embeddings_to_memory_search.php` (new), `backend/app/Services/Search/EmbeddingIndexService.php` (new), `backend/tests/Feature/Search/EmbeddingIndexServiceTest.php` (new), `backend/app/Http/Controllers/Hades/MemorySearchController.php`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: Actual embedding generation (calling an embedding API like OpenAI) is not implemented — the service stores pre-computed embeddings and provides vector search infrastructure. The migration is pgsql-only. SQLite tests validate fallback behavior. The `evidence_refs` extraction currently supports wiki_revisions and hades_evidence_packs/causal_packs via the search document metadata.
+
 ## 2026-07-09 - Task 3.5: Fix Hades Search For PostgreSQL Before Vector Search
 
 - Request: execute Task 3.5 from the DevBoard Operational Hardening plan using TDD. Add PostgreSQL full-text search to the Hades search document indexer alongside the existing MySQL MATCH...AGAINST, keeping LIKE as a fallback for SQLite.
