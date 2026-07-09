@@ -353,6 +353,19 @@ final class DashboardAiAgentController extends Controller
         return response()->json(['validation' => $validation]);
     }
 
+    public function providerModels(Request $request, AiAgentRegistry $registry, string $provider): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        try {
+            $result = $registry->getProviderModels($provider);
+        } catch (InvalidArgumentException) {
+            abort(404);
+        }
+
+        return response()->json($result);
+    }
+
     public function updateAgentProfile(Request $request, AiAgentRegistry $registry, string $agent): JsonResponse
     {
         $this->abortUnlessAdmin($request);

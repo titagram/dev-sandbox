@@ -604,6 +604,90 @@ final class AiAgentRegistry
     }
 
     /**
+     * @return array{provider_key: string, models: list<array{id: string}>, source: string, checked_at: string, message?: string}
+     */
+    public function getProviderModels(string $providerKey): array
+    {
+        if (! preg_match('/^[a-z0-9][a-z0-9_.-]*$/', $providerKey)) {
+            throw new InvalidArgumentException('Invalid provider key.');
+        }
+
+        $provider = DB::table('ai_model_providers')->where('provider_key', $providerKey)->first();
+        if (! $provider) {
+            throw new InvalidArgumentException('Model provider not found.');
+        }
+
+        $baseUrl = (string) $provider->base_url;
+        $modelsEndpoint = $this->modelsEndpoint($baseUrl);
+        $now = now()->toISOString();
+
+        if (! $provider->enabled) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'Provider is disabled.',
+            ];
+        }
+
+        $apiKey = $this->decryptProviderApiKey($provider);
+
+        if ($apiKey === null) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'API key not configured.',
+            ];
+        }
+
+        try {
+            $response = Http::withToken($apiKey)
+                ->acceptJson()
+                ->timeout(10)
+                ->get($modelsEndpoint);
+        } catch (Throwable) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'Could not reach the models endpoint.',
+            ];
+        }
+
+        if (! $response->successful()) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'Models endpoint returned an error.',
+            ];
+        }
+
+        $allModelIds = $this->modelIdsFromResponse($response->json());
+
+        $models = $allModelIds;
+        if ($providerKey === 'opencode_go') {
+            $models = array_values(array_filter(
+                $allModelIds,
+                fn (string $id): bool => $this->isOpenCodeGoChatModel($id),
+            ));
+        }
+
+        return [
+            'provider_key' => $providerKey,
+            'models' => array_map(fn (string $id): array => ['id' => $id], $models),
+            'source' => 'remote',
+            'checked_at' => $now,
+            'message' => count($models) > 0 ? null : 'No chat/completions-compatible models found.',
+        ];
+    }
+
+    /**
      * @return list<string>
      */
     private function modelIdsFromResponse(mixed $payload): array
@@ -629,7 +713,23 @@ final class AiAgentRegistry
      */
     private function firstOpenCodeGoChatModel(array $models): ?string
     {
-        $preferred = [
+        $preferred = $this->openCodeGoChatModelIds();
+
+        foreach ($preferred as $model) {
+            if (in_array($model, $models, true)) {
+                return $model;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function openCodeGoChatModelIds(): array
+    {
+        return [
             'glm-5.2',
             'glm-5.1',
             'kimi-k2.7-code',
@@ -639,14 +739,11 @@ final class AiAgentRegistry
             'mimo-v2.5',
             'mimo-v2.5-pro',
         ];
+    }
 
-        foreach ($preferred as $model) {
-            if (in_array($model, $models, true)) {
-                return $model;
-            }
-        }
-
-        return null;
+    private function isOpenCodeGoChatModel(string $modelId): bool
+    {
+        return in_array($modelId, $this->openCodeGoChatModelIds(), true);
     }
 
     /**

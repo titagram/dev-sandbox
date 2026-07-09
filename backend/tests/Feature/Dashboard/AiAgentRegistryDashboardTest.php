@@ -691,6 +691,162 @@ it('prevents non-admin users from managing model profiles and agent model select
         ->assertForbidden();
 });
 
+it('lists chat models for opencode go provider', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $secret = 'opencode-go-secret-123456';
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/opencode_go', [
+        'display_name' => 'OpenCode Go',
+        'base_url' => 'https://opencode.example.test/zen/go/v1/chat/completions',
+        'api_key' => $secret,
+        'enabled' => true,
+    ])->assertOk();
+
+    Http::fake([
+        'https://opencode.example.test/zen/go/v1/models' => Http::response([
+            'data' => [
+                ['id' => 'glm-5.2'],
+                ['id' => 'kimi-k2.7-code'],
+                ['id' => 'deepseek-v4-flash'],
+                ['id' => 'deepseek-r1-8k'], // /messages model, should be excluded
+                ['id' => 'kimi-k2.5'],       // /messages model, should be excluded
+            ],
+        ]),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/opencode_go/models')
+        ->assertOk();
+
+    $response->assertJsonPath('provider_key', 'opencode_go');
+    $response->assertJsonPath('source', 'remote');
+    $response->assertJsonMissing(['api_key' => $secret]);
+    $response->assertJsonMissing(['encrypted_api_key' => $secret]);
+
+    // Only chat/completions-compatible models returned
+    $models = $response->json('models');
+    expect($models)->toHaveCount(3);
+    expect($models[0]['id'])->toBe('glm-5.2');
+    expect($models[1]['id'])->toBe('kimi-k2.7-code');
+    expect($models[2]['id'])->toBe('deepseek-v4-flash');
+    expect($response->json('message'))->toBeNull();
+});
+
+it('lists all models for generic openai_compatible provider', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'OpenAI',
+        'base_url' => 'https://api.openai.com/v1',
+        'api_key' => 'sk-test-key-1234',
+        'enabled' => true,
+    ])->assertOk();
+
+    Http::fake([
+        'https://api.openai.com/v1/models' => Http::response([
+            'data' => [
+                ['id' => 'gpt-4o'],
+                ['id' => 'gpt-4o-mini'],
+                ['id' => 'gpt-5.4'],
+            ],
+        ]),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/openai/models')
+        ->assertOk();
+
+    $response->assertJsonPath('provider_key', 'openai');
+    expect($response->json('models'))->toHaveCount(3)
+        ->and($response->json('models.0.id'))->toBe('gpt-4o')
+        ->and($response->json('models.1.id'))->toBe('gpt-4o-mini')
+        ->and($response->json('models.2.id'))->toBe('gpt-5.4')
+        ->and($response->json('message'))->toBeNull();
+});
+
+it('returns safe empty response when provider has no api key', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    // Provider must be enabled to reach the API key check
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'OpenAI Enabled',
+        'base_url' => 'https://api.openai.com/v1',
+        'enabled' => true,
+    ])->assertOk();
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/openai/models')
+        ->assertOk();
+
+    expect($response->json('models'))->toBe([])
+        ->and($response->json('message'))->toBe('API key not configured.')
+        ->and($response->json('provider_key'))->toBe('openai')
+        ->and($response->json('source'))->toBe('remote')
+        ->and($response->json('checked_at'))->not->toBeNull();
+});
+
+it('returns safe empty response when provider is disabled', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'OpenAI Disabled',
+        'base_url' => 'https://api.openai.com/v1',
+        'api_key' => 'sk-test-key-1234',
+        'enabled' => false,
+    ])->assertOk();
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/openai/models')
+        ->assertOk();
+
+    expect($response->json('models'))->toBe([])
+        ->and($response->json('message'))->toBe('Provider is disabled.');
+});
+
+it('never exposes secrets in models endpoint response', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $secret = 'super-secret-key-never-shown';
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/opencode_go', [
+        'display_name' => 'OpenCode Go',
+        'base_url' => 'https://opencode.example.test/zen/go/v1/chat/completions',
+        'api_key' => $secret,
+        'enabled' => true,
+    ])->assertOk();
+
+    Http::fake([
+        'https://opencode.example.test/zen/go/v1/models' => Http::response([
+            'data' => [['id' => 'glm-5.2']],
+        ]),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/opencode_go/models')
+        ->assertOk();
+
+    $raw = $response->content();
+
+    expect($raw)->not->toContain($secret)
+        ->and($raw)->not->toContain('encrypted_api_key')
+        ->and($raw)->not->toContain('super-secret-key');
+});
+
+it('forbids non-admin access to models endpoint', function () {
+    $sysadmin = aiAgentRegistryUserWithRole('Sysadmin');
+
+    $this->actingAs($sysadmin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/opencode_go/models')
+        ->assertForbidden();
+});
+
+it('returns 404 for unknown provider on models endpoint', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/nonexistent/models')
+        ->assertNotFound();
+});
+
 function aiAgentRegistryUserWithRole(string $roleName): User
 {
     $user = User::factory()->create();

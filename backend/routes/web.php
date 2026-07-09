@@ -130,6 +130,7 @@ Route::middleware('auth')->group(function () {
         Route::get('/admin/ai-agents', [DashboardAiAgentController::class, 'index']);
         Route::put('/admin/ai-model-providers/{provider}', [DashboardAiAgentController::class, 'updateProvider']);
         Route::post('/admin/ai-model-providers/{provider}/validate', [DashboardAiAgentController::class, 'validateProvider']);
+        Route::get('/admin/ai-model-providers/{provider}/models', [DashboardAiAgentController::class, 'providerModels']);
         Route::post('/admin/ai-model-profiles', [DashboardAiAgentController::class, 'storeModelProfile']);
         Route::put('/admin/ai-model-profiles/{profile}', [DashboardAiAgentController::class, 'updateModelProfile']);
         Route::delete('/admin/ai-model-profiles/{profile}', [DashboardAiAgentController::class, 'destroyModelProfile']);
