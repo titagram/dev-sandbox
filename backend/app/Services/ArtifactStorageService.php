@@ -48,29 +48,53 @@ class ArtifactStorageService
     {
         $metadata = json_decode($artifact->metadata, true, 512, JSON_THROW_ON_ERROR);
         $chunkCount = (int) ($metadata['chunk_count'] ?? 0);
-        $content = '';
 
-        for ($index = 0; $index < $chunkCount; $index++) {
-            $chunkPath = $this->chunkPath($importId, $artifact->id, $index, $scope);
+        $disk = Storage::disk('local');
+        $targetPath = $disk->path($artifact->storage_path);
+        $targetDir = dirname($targetPath);
 
-            if (! Storage::disk('local')->exists($chunkPath)) {
-                throw new ArtifactStorageException('artifact_chunk_missing', 'Artifact upload is missing one or more chunks.');
+        if (! is_dir($targetDir)) {
+            mkdir($targetDir, 0755, true);
+        }
+
+        $target = fopen($targetPath, 'wb');
+
+        try {
+            $context = hash_init('sha256');
+
+            for ($index = 0; $index < $chunkCount; $index++) {
+                $chunkPath = $this->chunkPath($importId, $artifact->id, $index, $scope);
+
+                if (! $disk->exists($chunkPath)) {
+                    throw new ArtifactStorageException('artifact_chunk_missing', 'Artifact upload is missing one or more chunks.');
+                }
+
+                $chunkContent = $disk->get($chunkPath);
+                hash_update($context, $chunkContent);
+                fwrite($target, $chunkContent);
             }
 
-            $content .= Storage::disk('local')->get($chunkPath);
+            fclose($target);
+            $actualHash = hash_final($context);
+
+            if (! hash_equals($artifact->sha256, $actualHash)) {
+                throw new ArtifactStorageException('artifact_hash_mismatch', 'Uploaded artifact hash does not match manifest.');
+            }
+
+            DB::table('artifacts')->where('id', $artifact->id)->update([
+                'status' => 'validated',
+                'updated_at' => now(),
+            ]);
+
+            return $artifact->storage_path;
+        } catch (\Throwable $e) {
+            if (is_resource($target)) {
+                fclose($target);
+            }
+            @unlink($targetPath);
+
+            throw $e;
         }
-
-        if (! hash_equals($artifact->sha256, hash('sha256', $content))) {
-            throw new ArtifactStorageException('artifact_hash_mismatch', 'Uploaded artifact hash does not match manifest.');
-        }
-
-        Storage::disk('local')->put($artifact->storage_path, $content);
-        DB::table('artifacts')->where('id', $artifact->id)->update([
-            'status' => 'validated',
-            'updated_at' => now(),
-        ]);
-
-        return $artifact->storage_path;
     }
 
     public function artifactContents(object $artifact): string

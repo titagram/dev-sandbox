@@ -74,11 +74,11 @@ def upload_genesis_bundle(
 
     for artifact in manifest["artifacts"]:
         artifact_path = bundle / artifact["filename"]
-        content = artifact_path.read_bytes()
-
-        for chunk_index, offset in enumerate(range(0, len(content), chunk_size)):
-            chunk = content[offset : offset + chunk_size]
-            client.upload_genesis_chunk(import_id, artifact["artifact_id"], chunk_index, chunk)
+        with artifact_path.open("rb") as artifact_file:
+            chunk_index = 0
+            while chunk := artifact_file.read(chunk_size):
+                client.upload_genesis_chunk(import_id, artifact["artifact_id"], chunk_index, chunk)
+                chunk_index += 1
 
     finalized = client.finalize_genesis_import(import_id, allow_blocked_security_findings)
     client.finish_run(run_id, {"status": "finished", "summary": "Genesis import completed."})
@@ -107,11 +107,11 @@ def upload_delta_bundle(
 
     for artifact in manifest["artifacts"]:
         artifact_path = bundle / artifact["filename"]
-        content = artifact_path.read_bytes()
-
-        for chunk_index, offset in enumerate(range(0, len(content), chunk_size)):
-            chunk = content[offset : offset + chunk_size]
-            client.upload_delta_chunk(delta_id, artifact["artifact_id"], chunk_index, chunk)
+        with artifact_path.open("rb") as artifact_file:
+            chunk_index = 0
+            while chunk := artifact_file.read(chunk_size):
+                client.upload_delta_chunk(delta_id, artifact["artifact_id"], chunk_index, chunk)
+                chunk_index += 1
 
     finalized = client.finalize_delta_sync(delta_id, allow_blocked_security_findings)
     client.finish_run(run_id, {"status": "finished", "summary": "Delta sync completed."})

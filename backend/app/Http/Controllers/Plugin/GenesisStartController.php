@@ -36,11 +36,11 @@ class GenesisStartController extends Controller
             'manifest.artifacts.*.artifact_id' => ['required', 'string', 'regex:'.\App\Support\DevBoardUlid::REGEX],
             'manifest.artifacts.*.artifact_type' => ['required', 'string'],
             'manifest.artifacts.*.sha256' => ['required', 'string'],
-            'manifest.artifacts.*.size_bytes' => ['required', 'integer'],
+            'manifest.artifacts.*.size_bytes' => ['required', 'integer', 'min:0', 'max:'.config('devboard.artifacts.max_artifact_bytes')],
             'manifest.artifacts.*.mime_type' => ['nullable', 'string'],
             'manifest.artifacts.*.schema_version' => ['nullable', 'string'],
             'manifest.artifacts.*.producer' => ['nullable', 'string'],
-            'manifest.artifacts.*.chunk_count' => ['required', 'integer', 'min:1'],
+            'manifest.artifacts.*.chunk_count' => ['required', 'integer', 'min:1', 'max:'.config('devboard.artifacts.max_chunks')],
         ]);
 
         $run = DB::table('runs')->where('id', $validated['run_id'])->first();

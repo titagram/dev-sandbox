@@ -77,6 +77,26 @@ def test_upload_genesis_bundle_reads_manifest_uploads_chunks_and_finalizes(tmp_p
     assert result["status"] == "active"
 
 
+def test_upload_genesis_bundle_streams_large_file_in_chunks(tmp_path):
+    payload = b"x" * 100_000
+    bundle = _write_bundle(tmp_path, payload)
+    fake = FakeArtifactClient()
+
+    upload_genesis_bundle(
+        fake,
+        repository_id="repo_123",
+        run_id="run_123",
+        local_workspace_id="lw_123",
+        bundle_path=bundle,
+        chunk_size=8192,
+    )
+
+    uploaded = b"".join(chunk[3] for chunk in fake.chunks)
+    assert uploaded == payload
+    assert len(fake.chunks) == 13
+    assert [chunk[2] for chunk in fake.chunks] == list(range(13))
+
+
 def test_upload_genesis_bundle_finishes_run_after_successful_finalize(tmp_path):
     artifact_content = b'{"files":[]}'
     bundle = _write_bundle(tmp_path, artifact_content)

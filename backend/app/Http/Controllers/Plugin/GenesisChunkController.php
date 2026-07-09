@@ -28,6 +28,10 @@ class GenesisChunkController extends Controller
 
         abort_unless(DB::table('artifacts')->where('id', $artifact)->exists(), 404);
 
+        if (strlen($request->getContent()) > config('devboard.artifacts.max_chunk_bytes')) {
+            return $this->error('artifact_chunk_too_large', 'Chunk body exceeds max_chunk_bytes.', Response::HTTP_REQUEST_ENTITY_TOO_LARGE);
+        }
+
         try {
             $this->storage->storeChunk(
                 $genesisImport,
