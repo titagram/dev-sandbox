@@ -68,6 +68,82 @@ it('returns unauthorized for guest dashboard me requests', function () {
         ->assertUnauthorized();
 });
 
+it('denies non-admin dashboard users from creating plugin tokens', function () {
+    $developer = dashboardApiUserWithRole('Developer');
+
+    $this->actingAs($developer)
+        ->postJson('/api/dashboard/admin/plugin-tokens', [
+            'name' => 'unauthorized token',
+            'scopes' => ['projects.read'],
+        ])
+        ->assertForbidden();
+
+    expect(DB::table('audit_logs')
+        ->where('action', 'permission.denied')
+        ->where('target_id', 'manage-plugin-tokens')
+        ->exists())->toBeTrue();
+});
+
+it('denies non-admin dashboard users from revoking plugin tokens', function () {
+    $admin = dashboardApiUserWithRole('Admin');
+    $developer = dashboardApiUserWithRole('Developer');
+
+    $token = $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/plugin-tokens', [
+            'name' => 'token to be revoked',
+            'scopes' => ['projects.read'],
+        ])
+        ->assertOk()
+        ->json();
+
+    $this->actingAs($developer)
+        ->deleteJson("/api/dashboard/admin/plugin-tokens/{$token['id']}")
+        ->assertForbidden();
+
+    expect(DB::table('audit_logs')
+        ->where('action', 'permission.denied')
+        ->where('target_id', 'manage-plugin-tokens')
+        ->exists())->toBeTrue();
+});
+
+it('denies non-admin dashboard users from rotating plugin tokens', function () {
+    $admin = dashboardApiUserWithRole('Admin');
+    $pm = dashboardApiUserWithRole('PM');
+
+    $token = $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/plugin-tokens', [
+            'name' => 'token to rotate',
+            'scopes' => ['projects.read'],
+        ])
+        ->assertOk()
+        ->json();
+
+    $this->actingAs($pm)
+        ->postJson("/api/dashboard/admin/plugin-tokens/{$token['id']}/rotate")
+        ->assertForbidden();
+
+    expect(DB::table('audit_logs')
+        ->where('action', 'permission.denied')
+        ->where('target_id', 'manage-plugin-tokens')
+        ->exists())->toBeTrue();
+});
+
+it('permits admin users to manage plugin tokens through gates', function () {
+    $admin = dashboardApiUserWithRole('Admin');
+
+    $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/plugin-tokens', [
+            'name' => 'gate-managed token',
+            'scopes' => ['projects.read', 'runs.read'],
+        ])
+        ->assertOk()
+        ->assertJsonPath('name', 'gate-managed token');
+
+    expect(DB::table('audit_logs')
+        ->where('action', 'permission.denied')
+        ->exists())->toBeFalse();
+});
+
 it('configures credentialed cors for the generated frontend adapter', function () {
     expect(config('cors.supports_credentials'))->toBeTrue()
         ->and(config('cors.paths'))->toContain('api/*')

@@ -9,6 +9,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -19,7 +20,7 @@ class PluginTokenController extends Controller
 
     public function index(Request $request): Response
     {
-        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+        Gate::authorize('manage-plugin-tokens');
 
         return Inertia::render('Admin/Tokens', [
             'dashboard' => [
@@ -84,7 +85,7 @@ class PluginTokenController extends Controller
 
     public function store(Request $request): JsonResponse
     {
-        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+        Gate::authorize('manage-plugin-tokens');
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
@@ -140,7 +141,7 @@ class PluginTokenController extends Controller
 
     public function destroy(Request $request, string $token): JsonResponse|RedirectResponse
     {
-        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+        Gate::authorize('manage-plugin-tokens');
 
         DB::table('api_tokens')
             ->where('id', $token)
@@ -172,7 +173,7 @@ class PluginTokenController extends Controller
 
     public function rotate(Request $request, string $token): JsonResponse
     {
-        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+        Gate::authorize('manage-plugin-tokens');
 
         $validated = $request->validate([
             'confirm_rotate' => ['nullable', 'boolean'],
@@ -232,7 +233,7 @@ class PluginTokenController extends Controller
 
     public function revokeDevice(Request $request, string $device): JsonResponse
     {
-        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+        Gate::authorize('manage-plugin-tokens');
 
         $deviceRow = DB::table('devices')->where('id', $device)->first();
         abort_unless($deviceRow, 404);

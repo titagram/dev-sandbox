@@ -14,6 +14,52 @@ beforeEach(function () {
     $this->seed(DevBoardSeeder::class);
 });
 
+it('denies non-admin users from managing plugin tokens through gates', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $pm = dashboardApiContractUserWithRole('PM');
+    $developer = dashboardApiContractUserWithRole('Developer');
+    $ids = createDashboardApiContractScenario();
+
+    $this->actingAs($pm)
+        ->postJson('/api/dashboard/admin/plugin-tokens', [
+            'name' => 'pm token',
+            'scopes' => ['projects.read'],
+        ])
+        ->assertForbidden();
+
+    $this->actingAs($developer)
+        ->postJson('/api/dashboard/admin/plugin-tokens', [
+            'name' => 'dev token',
+            'scopes' => ['projects.read'],
+        ])
+        ->assertForbidden();
+
+    $token = $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/plugin-tokens', [
+            'name' => 'gate test token',
+            'scopes' => ['projects.read'],
+        ])
+        ->assertOk()
+        ->json();
+
+    $this->actingAs($pm)
+        ->deleteJson("/api/dashboard/admin/plugin-tokens/{$token['id']}")
+        ->assertForbidden();
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/admin/plugin-tokens/{$token['id']}/rotate")
+        ->assertForbidden();
+
+    $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/devices')
+        ->assertOk()
+        ->assertJsonPath('0.id', $ids['device_id']);
+
+    expect(DB::table('audit_logs')
+        ->where('action', 'permission.denied')
+        ->count())->toBeGreaterThanOrEqual(3);
+});
+
 it('serves the generated frontend dashboard read contract', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();
