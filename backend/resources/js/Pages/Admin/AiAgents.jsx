@@ -796,6 +796,54 @@ export default function AiAgents({ providers, modelProfiles, agentProfiles, proj
                           />
                         </label>
                         <div className="mt-1 font-mono text-xs text-zinc-500">{agent.agent_key}</div>
+                        <details className="mt-3">
+                          <summary className="cursor-pointer text-xs font-medium text-zinc-600">Advanced fields</summary>
+                          <div className="mt-3 grid gap-3">
+                            <label className="text-xs text-zinc-500">
+                              Visibility scope
+                              <select
+                                className="mt-1 h-9 w-full rounded border border-zinc-300 px-2 text-sm text-zinc-900"
+                                value={form.visibility_scope ?? 'global'}
+                                onChange={(event) => updateAgentForm(agent.agent_key, { visibility_scope: event.target.value })}
+                              >
+                                <option value="global">global</option>
+                                <option value="project">project</option>
+                              </select>
+                            </label>
+                            <label className="text-xs text-zinc-500">
+                              Project IDs
+                              <textarea
+                                className="mt-1 min-h-16 w-full rounded border border-zinc-300 px-3 py-2 text-sm text-zinc-900"
+                                value={form.project_ids ?? ''}
+                                onChange={(event) => updateAgentForm(agent.agent_key, { project_ids: event.target.value })}
+                              />
+                            </label>
+                            <label className="text-xs text-zinc-500">
+                              Allowed tools
+                              <textarea
+                                className="mt-1 min-h-16 w-full rounded border border-zinc-300 px-3 py-2 text-sm text-zinc-900"
+                                value={form.allowed_tools ?? ''}
+                                onChange={(event) => updateAgentForm(agent.agent_key, { allowed_tools: event.target.value })}
+                              />
+                            </label>
+                            <label className="text-xs text-zinc-500">
+                              Trigger events
+                              <textarea
+                                className="mt-1 min-h-16 w-full rounded border border-zinc-300 px-3 py-2 text-sm text-zinc-900"
+                                value={form.trigger_events ?? ''}
+                                onChange={(event) => updateAgentForm(agent.agent_key, { trigger_events: event.target.value })}
+                              />
+                            </label>
+                            <label className="text-xs text-zinc-500">
+                              Output schema
+                              <textarea
+                                className="mt-1 min-h-20 w-full rounded border border-zinc-300 px-3 py-2 font-mono text-xs text-zinc-900"
+                                value={form.output_schema ?? ''}
+                                onChange={(event) => updateAgentForm(agent.agent_key, { output_schema: event.target.value })}
+                              />
+                            </label>
+                          </div>
+                        </details>
                       </td>
                       <td className="py-3">
                         <label className="block text-xs text-zinc-500">

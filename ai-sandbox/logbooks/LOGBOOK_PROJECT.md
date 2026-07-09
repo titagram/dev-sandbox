@@ -2,6 +2,21 @@
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
+## 2026-07-09 - Admin AI Agents advanced profile edit fields
+
+- Request: expose the advanced agent profile fields already present in `agentForms` and already persisted by `replaceAgentProfile(agentKey)` in `resources/js/Pages/Admin/AiAgents.jsx`, while keeping the task small and avoiding delete UI, backend changes, migrations, new routes, or API-key exposure.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, `ai-sandbox/instructions/INDEX.md`, `ai-sandbox/instructions/workflows/FEATURE.md`, `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`, `ai-sandbox/instructions/policies/LOGBOOKS.md`, `ai-sandbox/instructions/policies/SOURCE_OF_TRUTH.md`, `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, and the current `resources/js/Pages/Admin/AiAgents.jsx`.
+- Work performed: inserted a compact `<details>` block below the immutable `agent.agent_key` inside the agent column; exposed editable controls for `visibility_scope`, `project_ids`, `allowed_tools`, `trigger_events`, and `output_schema`; kept the existing `replaceAgentProfile(agent.agent_key)` save button and save flow unchanged; did not add delete UI or expose API keys.
+- Verification commands and result:
+  - `cd /home/ubuntu/dev-sandbox/backend && python3 - <<'PY' ... PY` -> failed first as expected because the advanced-field controls were still missing.
+  - `cd /home/ubuntu/dev-sandbox/backend && python3 - <<'PY' ... PY` -> passed after the edit.
+  - `cd /home/ubuntu/dev-sandbox/backend && npm run build` -> passed.
+  - `cd /home/ubuntu/dev-sandbox && docker compose -f docker-compose.devboard.yaml exec -T app sh -lc "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php --filter='assign a model profile|create replace and delete a custom agent profile|project visibility persistence'"` -> passed with `3 passed / 35 assertions`.
+  - `cd /home/ubuntu/dev-sandbox && git restore backend/public/build/manifest.json backend/public/build/assets 2>/dev/null || true` -> restored generated frontend build artifacts.
+  - `cd /home/ubuntu/dev-sandbox && sudo bash -lc 'cd /home/ubuntu/dev-sandbox && git -c safe.directory=/home/ubuntu/dev-sandbox restore backend/vendor/pestphp/pest/.temp/test-results'` -> restored the root-owned Pest temp artifact.
+- Files changed: `backend/resources/js/Pages/Admin/AiAgents.jsx`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: no browser smoke test was run; the change intentionally keeps advanced editing compact and relies on the existing full-profile save handler and backend validation.
+
 ## 2026-07-09 - Admin AI Agents basic profile edit fields
 
 - Request: expose the existing basic agent profile fields in the compact Admin AI Agents table in `resources/js/Pages/Admin/AiAgents.jsx` while keeping the existing `replaceAgentProfile(agentKey)` save flow, the current model-profile selector, the enabled checkbox, and all advanced list/schema editors out of scope.
