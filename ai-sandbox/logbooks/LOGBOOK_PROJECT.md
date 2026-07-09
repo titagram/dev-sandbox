@@ -1,5 +1,15 @@
 # Project Logbook
 
+## 2026-07-09 - Task 4.3: Plan Multi-Tenancy As A Separate Migration Program
+
+- Request: execute Task 4.3 from the DevBoard Operational Hardening plan. Documentation-only task to plan multi-tenancy as a separate migration program.
+- Context read: all 36 migration files in `backend/database/migrations/`, core Eloquent models (Project, User, etc.), `DashboardApiReader`, `AuthenticatePluginToken`, `PluginTokenService`, `AiAgentRegistry`, `GenesisGraphImportService`, `Neo4jRebuildService`, `HadesSearchDocumentIndexer`, `docs/ai-devboard/` architecture docs, and existing plan files.
+- Work performed: inventoried 27 tables with `project_id` foreign keys (the current tenant boundary), 3 tables with `user_id` (devices, api_tokens, role_user pivot), and 0 tables with `organization_id` or `tenant_id`. Documented the full current state (projects as the implicit tenant, users as global, tokens as per-user), the proposed organization/tenant model, migration safety strategy (nullable column with backfill), Eloquent global scope design, token scoping per organization, Neo4j graph partitioning by organization label, and a 6-phase rollout plan. The plan is documented as a SEPARATE migration program — no tenant code is mixed into the current P0/P1/P2 operational hardening tasks.
+- Verification:
+  - `git diff --name-only -- backend app plugin analyzer` → no application code changes. Only the new plan document and logbook were modified.
+- Files changed: `docs/superpowers/plans/2026-07-09-devboard-multitenancy.md` (new), `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: This is a planning document only. All implementation decisions (migration ordering, backfill scripts, global scope registration, Neo4j partitioning strategy) remain deferred to the separate migration program. The inventory confirms the current codebase has no organization_id column anywhere, making the migration a net-new addition rather than a refactor of existing tenant logic.
+
 ## 2026-07-09 - Task 4.2: Add Pgvector Retrieval After Wiki Draft Evidence Exists
 
 - Request: execute Task 4.2 from the DevBoard Operational Hardening plan using TDD. Add pgvector-based embedding retrieval to the Hades search pipeline with evidence ref annotations.
