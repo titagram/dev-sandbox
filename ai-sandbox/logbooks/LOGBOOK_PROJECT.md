@@ -1,14 +1,26 @@
 # Project Logbook
 
+## 2026-07-09 - Task 3.1: Reconcile Genesis And Hades Memory Graph Planes
+
+- Request: execute Task 3.1 from the DevBoard Operational Hardening plan. Documentation-only task to reconcile the Genesis/Plugin Neo4j graph path with the Hades artifact-JSON graph path.
+- Context read: `docs/ai-devboard/01_ARCHITECTURE_DECISIONS.md`, `docs/ai-devboard/05_GENESIS_IMPORT.md`, `docs/ai-devboard/06_DELTA_SYNC.md`, `docs/ai-devboard/03_DOMAIN_MODEL.md`, `docs/ai-devboard/10_RUNTIME_SEQUENCES.md`, `backend/app/Services/GenesisGraphImportService.php`, `backend/app/Jobs/ImportGraphToNeo4j.php`, `backend/app/Http/Controllers/Hades/GraphTraversalController.php`, `backend/app/Assistants/Tools/QueryProjectGraphTool.php`, `backend/app/Services/Neo4jRebuildService.php`, `backend/app/Services/Hades/HadesProjectAwareness.php`, `backend/routes/api.php`.
+- Work performed: inventoried current graph paths with `rg` across backend, plugin, analyzer, and docs. Documented the two parallel graph planes: (1) Genesis/Plugin graph imported into Neo4j via `graph_snapshot` artifacts and Cypher MERGE commands, stored as `CodeNode` nodes with `RELATED` relationships; (2) Hades artifact graph stored as raw JSON in `hades_agent_artifacts` and traversed in-memory by `GraphTraversalController` with no Neo4j involvement. Wrote decision document establishing Neo4j as the canonical structural graph, declaring Hades graph reads must query the canonical graph for new features (not maintain a parallel artifact-only graph), defining artifact JSON graph as import/rebuild input and compatibility fallback, and stating search index is a derived projection of the canonical graph. Listed migration rules: existing Hades endpoints (`/graph/traverse`, `/artifacts` upload, `/project-awareness/status`) keep compatibility; new Hades graph endpoints must query Neo4j via `Neo4jClient`.
+- Verification:
+  - `rg -n "UNRESOLVED|FILL_ME|NOT_DECIDED" docs/ai-devboard/13_MEMORY_GRAPH_RECONCILIATION.md` → no matches.
+- Files changed: `docs/ai-devboard/13_MEMORY_GRAPH_RECONCILIATION.md` (new), `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: `QueryProjectGraphTool` still reads JSON from filesystem instead of Neo4j — documented as a future migration item. The Hades `GraphTraversalController` continues to serve from `hades_agent_artifacts` JSON until a replacement task migrates it to Neo4j Cypher queries.
+
 ## 2026-07-09 - Task 2.6: Make Python Client Reusable, Retryable, And Installable
 
 - Request: execute Task 2.6 from the DevBoard Operational Hardening plan using TDD. Make DevBoardClient reusable with shared httpx.Client lifecycle, add retries for ConnectError/TimeoutException/5xx with exponential backoff, wrap connect errors as DevBoardApiError, ensure credential load errors render cleanly in CLI, and declare devboard-analyzer as a plugin dependency.
 - Context read: `plugin/src/devboard_plugin/client.py`, `plugin/src/devboard_plugin/config.py`, `plugin/src/devboard_plugin/cli.py`, `plugin/pyproject.toml`, `plugin/tests/test_client.py`, `plugin/tests/test_config.py`, `plugin/tests/test_cli_smoke.py`, `analyzer/pyproject.toml`.
 - Intended write paths: `plugin/src/devboard_plugin/client.py`, `plugin/src/devboard_plugin/config.py`, `plugin/src/devboard_plugin/cli.py`, `plugin/pyproject.toml`, `plugin/tests/test_client.py`, `plugin/tests/test_config.py`, `plugin/tests/test_cli_smoke.py`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
-- Work performed: TDD flow — wrote failing tests for retry, connect-error wrapping, credential load error handling, and analyzer dependency declaration.
-- Verification: `cd plugin && .venv/bin/python3 -m pytest -q` and `cd analyzer && .venv/bin/python3 -m pytest -q`.
-- Files changed: (to be listed after implementation)
-- Residual risks: (to be filled after implementation)
+- Work performed: TDD flow — wrote 5 failing tests (timeout retry, 5xx retry, 4xx no-retry, connect-error wrapping, credential file-not-found handling, analyzer dependency declaration). Added reusable httpx.Client lifecycle via `_get_client()`/`_close_client()` with lazy initialization on `DevBoardClient`. Added `_send_with_retry()` method with exponential backoff (2^attempt seconds) for up to `max_retries=3` attempts, retrying `ConnectError`, `TimeoutException`, and HTTP 5xx but not 4xx. Connect/timeout exhaustion wraps as `DevBoardApiError(code="connect_error")`. Made `load_credentials()` catch `FileNotFoundError` and raise `DevBoardApiError(code="credentials_missing")` with a helpful CLI message. Added `main_cli()` wrapper that catches `DevBoardApiError` and renders clean messages via the existing `handle_api_error()` path. Changed pyproject.toml entry point from `cli:app` to `cli:main_cli`. Added `devboard-analyzer` as a plugin dependency and installed it as editable into the plugin venv.
+- Verification:
+  - `cd plugin && .venv/bin/python3 -m pytest -q` → GREEN (52 passed).
+  - `cd analyzer && python3 -m pytest -q` → GREEN (19 passed).
+- Files changed: `plugin/src/devboard_plugin/client.py`, `plugin/src/devboard_plugin/config.py`, `plugin/src/devboard_plugin/cli.py`, `plugin/pyproject.toml`, `plugin/tests/test_client.py`, `plugin/tests/test_config.py`, `plugin/tests/test_cli_smoke.py`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: The `main_cli()` wrapper uses `standalone_mode=False` which changes Click's exit behavior — normal exits return instead of calling `sys.exit()`, while command errors propagate as exceptions. The `CliRunner`-based tests continue to work because they bypass `main_cli()`. The `_close_client()` recreates the transport on retry, which is correct for network errors but unnecessary for MockTransport in tests (still works correctly).
 
 Record project code, behavior, architecture, build, deployment, and project documentation changes here.
 
