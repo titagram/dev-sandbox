@@ -24,6 +24,7 @@ def test_mcp_tool_names_match_v1_contract():
         "devboard_delta_sync",
         "devboard_upload_artifact",
         "devboard_write_wiki_revision",
+        "devboard_query_graph",
     }
 
 
@@ -165,6 +166,33 @@ def test_delta_sync_forwards_explicit_security_approval(monkeypatch, tmp_path):
     assert uploads[0]["allow_blocked_security_findings"] is True
 
 
+def test_query_graph_calls_graph_query_endpoint(monkeypatch):
+    fake_client = FakeClient()
+    fake_client.query_graph_response = {
+        "protocol_version": "v1",
+        "project_id": "proj_123",
+        "query_type": "callers",
+        "symbol_id": "App\\Services\\InvoiceService",
+        "results": [{"id": "node_1", "labels": ["Function"], "name": "processPayment"}],
+    }
+    monkeypatch.setattr(mcp_tools, "client_from_options", lambda server_url=None: fake_client)
+
+    response = mcp_tools.devboard_query_graph(
+        project_id="proj_123",
+        query_type="callers",
+        symbol_id="App\\Services\\InvoiceService",
+        limit=10,
+    )
+
+    assert response["query_type"] == "callers"
+    assert response["results"][0]["id"] == "node_1"
+    assert fake_client.calls[0][0] == "query_graph"
+    assert fake_client.calls[0][1]["type"] == "callers"
+    assert fake_client.calls[0][1]["symbol_id"] == "App\\Services\\InvoiceService"
+    assert fake_client.calls[0][1]["limit"] == 10
+    assert fake_client.calls[0][1]["project_id"] == "proj_123"
+
+
 def test_upload_artifact_forwards_explicit_security_approval(monkeypatch, tmp_path):
     fake_client = FakeClient()
     uploads = []
@@ -197,6 +225,7 @@ def test_upload_artifact_forwards_explicit_security_approval(monkeypatch, tmp_pa
 class FakeClient:
     def __init__(self):
         self.calls = []
+        self.query_graph_response = {"protocol_version": "v1", "project_id": "proj_123", "query_type": "callers", "results": []}
 
     def auth_check(self):
         self.calls.append(("auth_check", None))
@@ -209,6 +238,10 @@ class FakeClient:
     def repository_policy(self, repository_id):
         self.calls.append(("repository_policy", repository_id))
         return {"code_exposure": "full_code_artifacts"}
+
+    def query_graph(self, project_id, **kwargs):
+        self.calls.append(("query_graph", {**kwargs, "project_id": project_id}))
+        return self.query_graph_response
 
     def start_run(self, payload):
         self.calls.append(("start_run", payload))

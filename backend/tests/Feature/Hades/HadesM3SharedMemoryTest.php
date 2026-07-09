@@ -1963,6 +1963,130 @@ it('cleans up Hades diagnosis data by retention age with dry-run safety', functi
         ->and(json_encode($auditPayloads, JSON_THROW_ON_ERROR))->not->toContain('line 42: return ***;');
 });
 
+it('uses postgres full text search on pgsql driver', function () {
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        $this->markTestSkipped('PostgreSQL full-text search test requires a pgsql connection.');
+
+        return;
+    }
+
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $memoryId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'manual',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'Postgres full text search should rank lexical matches.',
+        'payload' => json_encode(['note' => 'postgres-fts-test'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_search_documents')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => null,
+        'domain' => 'logbook',
+        'kind' => 'decision',
+        'source_table' => 'project_memory_entries',
+        'source_id' => $memoryId,
+        'source_schema' => null,
+        'title' => 'Postgres FTS document title',
+        'body' => 'This document body contains postgres full text search ranking keywords.',
+        'metadata' => json_encode(['source' => 'test'], JSON_THROW_ON_ERROR),
+        'checksum' => str_repeat('a', 64),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'postgres full text ranking',
+        'domain' => 'logbook',
+        'limit' => 5,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $memoryId)
+        ->assertJsonPath('items.0.domain', 'logbook');
+
+    expect($response->json('items.0.score'))->toBeGreaterThan(0);
+});
+
+it('falls back to LIKE search on sqlite driver', function () {
+    if (DB::connection()->getDriverName() !== 'sqlite') {
+        $this->markTestSkipped('LIKE fallback test runs only on sqlite.');
+
+        return;
+    }
+
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $memoryId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'manual',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'LIKE fallback should find matches without fulltext index.',
+        'payload' => json_encode(['note' => 'like-fallback-test'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_search_documents')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => null,
+        'domain' => 'logbook',
+        'kind' => 'decision',
+        'source_table' => 'project_memory_entries',
+        'source_id' => $memoryId,
+        'source_schema' => null,
+        'title' => 'LIKE fallback document title',
+        'body' => 'sqlite like-only needle phrase',
+        'metadata' => json_encode(['source' => 'test'], JSON_THROW_ON_ERROR),
+        'checksum' => str_repeat('b', 64),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'sqlite like-only',
+        'domain' => 'logbook',
+        'limit' => 5,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $memoryId)
+        ->assertJsonPath('items.0.domain', 'logbook');
+
+    expect($response->json('items.0.score'))->toBeGreaterThan(0);
+});
+
 it('reports stale project awareness when indexed artifacts are from another commit', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);

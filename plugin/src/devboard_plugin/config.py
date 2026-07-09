@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from devboard_plugin.client import DevBoardApiError
+
 
 @dataclass(frozen=True)
 class Credentials:
@@ -25,7 +27,16 @@ def credentials_path() -> Path:
 
 def load_credentials(path: Path | None = None) -> Credentials:
     credential_file = path or credentials_path()
-    data = json.loads(credential_file.read_text())
+    try:
+        data = json.loads(credential_file.read_text())
+    except FileNotFoundError:
+        raise DevBoardApiError(
+            code="credentials_missing",
+            message=(
+                f"Credentials file not found at {credential_file}. "
+                "Run 'devboard auth check --server-url <URL> --token <TOKEN>' to configure."
+            ),
+        ) from None
 
     return Credentials(
         server_url=data["server_url"],

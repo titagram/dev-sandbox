@@ -98,6 +98,62 @@ def test_code_graph_marks_file_only_when_no_symbols_are_extractable(tmp_path):
     assert graph["relationships_upserted"] == 0
 
 
+def test_code_graph_resolves_calls_to_internal_symbols(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "app.py"
+    source.write_text(
+        "def helper():\n"
+        "    return 1\n"
+        "\n"
+        "def caller():\n"
+        "    return helper()\n"
+    )
+
+    graph = build_code_graph(repo, [source], {"repository_id": "repo_123"})
+
+    helper_node = next(
+        node for node in graph["nodes"]
+        if node["properties"].get("name") == "helper" and node["properties"].get("kind") == "function"
+    )
+    caller_node = next(
+        node for node in graph["nodes"]
+        if node["properties"].get("name") == "caller" and node["properties"].get("kind") == "function"
+    )
+    calls_rels = [
+        rel for rel in graph["relationships"]
+        if rel["type"] == "CALLS" and rel["source_id"] == caller_node["id"]
+    ]
+    assert len(calls_rels) >= 1
+    assert calls_rels[0]["target_id"] == helper_node["id"]
+    assert not calls_rels[0]["target_id"].startswith("external:")
+
+
+def test_code_graph_external_calls_remain_external(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "app.py"
+    source.write_text(
+        "import json\n"
+        "\n"
+        "def caller():\n"
+        "    return json.dumps({})\n"
+    )
+
+    graph = build_code_graph(repo, [source], {"repository_id": "repo_123"})
+
+    caller_node = next(
+        node for node in graph["nodes"]
+        if node["properties"].get("name") == "caller" and node["properties"].get("kind") == "function"
+    )
+    calls_rels = [
+        rel for rel in graph["relationships"]
+        if rel["type"] == "CALLS" and rel["source_id"] == caller_node["id"]
+    ]
+    assert len(calls_rels) >= 1
+    assert calls_rels[0]["target_id"].startswith("external:")
+
+
 def test_genesis_bundle_records_graph_extraction_metadata_in_manifest(tmp_path):
     repo = tmp_path / "repo"
     output = tmp_path / "bundle"

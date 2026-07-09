@@ -267,6 +267,52 @@ it('queries a bounded read-only project graph from the latest graph artifact', f
         ->and($payload['relationships'][0]['to'])->toBe('App\\Services\\InvoiceService');
 });
 
+it('QueryProjectGraphTool accepts structured query arguments for callers', function () {
+    $payload = (new QueryProjectGraphTool)->payload([
+        'project_id' => 'demo-project',
+        'structured_query' => [
+            'type' => 'callers',
+            'symbol_id' => 'App\\Services\\InvoiceService',
+            'limit' => 10,
+        ],
+    ]);
+
+    expect($payload['tool'])->toBe('query_project_graph')
+        ->and($payload['query_type'])->toBe('callers')
+        ->and($payload['symbol_id'])->toBe('App\\Services\\InvoiceService');
+});
+
+it('QueryProjectGraphTool accepts structured query arguments for callees', function () {
+    $payload = (new QueryProjectGraphTool)->payload([
+        'project_id' => 'demo-project',
+        'structured_query' => [
+            'type' => 'callees',
+            'symbol_id' => 'App\\Services\\InvoiceService',
+            'limit' => 10,
+        ],
+    ]);
+
+    expect($payload['tool'])->toBe('query_project_graph')
+        ->and($payload['query_type'])->toBe('callees');
+});
+
+it('QueryProjectGraphTool accepts structured query arguments for path', function () {
+    $payload = (new QueryProjectGraphTool)->payload([
+        'project_id' => 'demo-project',
+        'structured_query' => [
+            'type' => 'path',
+            'from_symbol_id' => 'App\\Controllers\\Foo',
+            'to_symbol_id' => 'App\\Services\\Bar',
+            'max_depth' => 5,
+        ],
+    ]);
+
+    expect($payload['tool'])->toBe('query_project_graph')
+        ->and($payload['query_type'])->toBe('path')
+        ->and($payload['from_symbol_id'])->toBe('App\\Controllers\\Foo')
+        ->and($payload['to_symbol_id'])->toBe('App\\Services\\Bar');
+});
+
 it('writes wiki revisions through a controlled audited agent tool', function () {
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
 

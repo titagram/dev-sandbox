@@ -306,8 +306,9 @@ class HadesSearchDocumentIndexer
         $tokens = $this->tokens($query);
         $fullTextQuery = $this->fullTextQuery($query);
         $useFullText = $fullTextQuery !== '' && $this->supportsFullTextSearch();
-        $selectRows = function (bool $withFullText) use ($domains, $filters, $fullTextQuery, $includeProjectLevel, $limit, $projectId, $query, $tokens, $workspaceBindingId) {
-            $fullTextMatch = 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE)';
+        $fullTextMatchExpr = $this->fullTextMatchExpression();
+        $fullTextOrderExpr = $this->fullTextOrderExpression();
+        $selectRows = function (bool $withFullText) use ($domains, $filters, $fullTextMatchExpr, $fullTextOrderExpr, $fullTextQuery, $includeProjectLevel, $limit, $projectId, $query, $tokens, $workspaceBindingId) {
 
             return DB::table('hades_search_documents')
                 ->where('project_id', $projectId)
@@ -344,8 +345,8 @@ class HadesSearchDocumentIndexer
                         }
                     });
                 })
-                ->when($withFullText, function ($builder) use ($fullTextMatch, $fullTextQuery): void {
-                    $builder->whereRaw($fullTextMatch, [$fullTextQuery]);
+                ->when($withFullText, function ($builder) use ($fullTextMatchExpr, $fullTextQuery): void {
+                    $builder->whereRaw($fullTextMatchExpr, [$fullTextQuery]);
                 })
                 ->when($query !== '' && ! $withFullText, function ($builder) use ($query, $tokens): void {
                     $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
@@ -362,7 +363,7 @@ class HadesSearchDocumentIndexer
                 })
                 ->when(
                     $withFullText,
-                    fn ($builder) => $builder->orderByRaw($fullTextMatch.' DESC', [$fullTextQuery]),
+                    fn ($builder) => $builder->orderByRaw($fullTextOrderExpr, [$fullTextQuery]),
                     fn ($builder) => $builder->orderByDesc('updated_at'),
                 )
                 ->limit(max(50, $limit * 15))
@@ -624,7 +625,9 @@ class HadesSearchDocumentIndexer
 
     private function supportsFullTextSearch(): bool
     {
-        return DB::connection()->getDriverName() === 'mysql';
+        $driver = DB::connection()->getDriverName();
+
+        return in_array($driver, ['mysql', 'pgsql'], true);
     }
 
     private function fullTextQuery(string $query): string
@@ -632,7 +635,29 @@ class HadesSearchDocumentIndexer
         preg_match_all('/[A-Za-z0-9]{2,}/', $query, $matches);
         $terms = array_slice(array_values(array_unique(array_map('strtolower', $matches[0] ?? []))), 0, 12);
 
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            return implode(' ', $terms);
+        }
+
         return implode(' ', array_map(fn (string $term): string => '+'.$term.'*', $terms));
+    }
+
+    private function fullTextMatchExpression(): string
+    {
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            return "to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(source_schema, '')) @@ plainto_tsquery('english', ?)";
+        }
+
+        return 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE)';
+    }
+
+    private function fullTextOrderExpression(): string
+    {
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            return "ts_rank(to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(source_schema, '')), plainto_tsquery('english', ?)) DESC";
+        }
+
+        return 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE) DESC';
     }
 
     /**

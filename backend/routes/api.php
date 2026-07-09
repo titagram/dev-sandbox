@@ -36,6 +36,7 @@ use App\Http\Controllers\Plugin\GenesisChunkController;
 use App\Http\Controllers\Plugin\GenesisFinalizeController;
 use App\Http\Controllers\Plugin\GenesisStartController;
 use App\Http\Controllers\Plugin\GenesisStatusController;
+use App\Http\Controllers\Plugin\GraphQueryController;
 use App\Http\Controllers\Plugin\ListProjectsController;
 use App\Http\Controllers\Plugin\ListRepositoriesController;
 use App\Http\Controllers\Plugin\RegisterDeviceController;
@@ -65,6 +66,10 @@ Route::prefix('plugin/v1')->group(function () {
         ->middleware('plugin.token:projects.read,repositories.read');
 
     Route::get('/projects/{project}/shared-memory-pack', SharedMemoryPackController::class)
+        ->middleware('throttle:plugin-api-light')
+        ->middleware('plugin.token:projects.read');
+
+    Route::post('/projects/{project}/graph/query', GraphQueryController::class)
         ->middleware('throttle:plugin-api-light')
         ->middleware('plugin.token:projects.read');
 

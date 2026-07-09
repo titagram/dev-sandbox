@@ -90,7 +90,10 @@ def build_code_graph(
             except SyntaxError:
                 continue
 
-            extractor = _PythonGraphExtractor(relative_path, file_id)
+            collector = _SymbolCollector(relative_path)
+            collector.visit(tree)
+
+            extractor = _PythonGraphExtractor(relative_path, file_id, collector.name_index)
             extractor.visit(tree)
             nodes.extend(extractor.nodes)
             relationships.extend(extractor.relationships)
@@ -349,10 +352,39 @@ def relation_index_from_graph(graph: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class _SymbolCollector(ast.NodeVisitor):
+    def __init__(self, relative_path: str):
+        self.relative_path = relative_path
+        self.name_index: dict[str, str] = {}
+        self.name_stack: list[str] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        self._add_symbol(node.name)
+        self.name_stack.append(node.name)
+        self.generic_visit(node)
+        self.name_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+        self._add_symbol(node.name)
+        self.name_stack.append(node.name)
+        self.generic_visit(node)
+        self.name_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
+        self.visit_FunctionDef(node)
+
+    def _add_symbol(self, name: str) -> None:
+        qualname = ".".join([*self.name_stack, name])
+        symbol_id = f"symbol:{self.relative_path}:{qualname}"
+        self.name_index[qualname] = symbol_id
+        self.name_index[name] = symbol_id
+
+
 class _PythonGraphExtractor(ast.NodeVisitor):
-    def __init__(self, relative_path: str, file_id: str):
+    def __init__(self, relative_path: str, file_id: str, name_index: dict[str, str] | None = None):
         self.relative_path = relative_path
         self.file_id = file_id
+        self._name_index = name_index or {}
         self.nodes: list[dict[str, Any]] = []
         self.relationships: list[dict[str, Any]] = []
         self.scope_stack: list[str] = [file_id]
@@ -402,9 +434,13 @@ class _PythonGraphExtractor(ast.NodeVisitor):
         if len(self.scope_stack) > 1:
             target_name = _call_name(node.func)
             if target_name:
-                target_id = "external:" + target_name
-                self._add_external_symbol(target_id, target_name, node)
-                self._add_relationship(self.scope_stack[-1], target_id, "CALLS", node)
+                resolved_id = self._name_index.get(target_name)
+                if resolved_id:
+                    self._add_relationship(self.scope_stack[-1], resolved_id, "CALLS", node)
+                else:
+                    target_id = "external:" + target_name
+                    self._add_external_symbol(target_id, target_name, node)
+                    self._add_relationship(self.scope_stack[-1], target_id, "CALLS", node)
 
         self.generic_visit(node)
 

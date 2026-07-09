@@ -353,6 +353,28 @@ def devboard_write_wiki_revision(
     )
 
 
+def devboard_query_graph(
+    project_id: str,
+    query_type: str,
+    symbol_id: str | None = None,
+    from_symbol_id: str | None = None,
+    to_symbol_id: str | None = None,
+    limit: int = 50,
+    max_depth: int = 5,
+    server_url: str | None = None,
+) -> dict[str, Any]:
+    """Query the Neo4j project graph with structured queries (callers, callees, path)."""
+    return client_from_options(server_url).query_graph(
+        project_id=project_id,
+        type=query_type,
+        symbol_id=symbol_id,
+        from_symbol_id=from_symbol_id,
+        to_symbol_id=to_symbol_id,
+        limit=limit,
+        max_depth=max_depth,
+    )
+
+
 def build_genesis_bundle(repo_path: Path, output_dir: Path, context: dict[str, Any]) -> dict[str, Any]:
     from devboard_analyzer.genesis_bundle import build_genesis_bundle as build
 
@@ -407,4 +429,5 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "devboard_delta_sync": devboard_delta_sync,
     "devboard_upload_artifact": devboard_upload_artifact,
     "devboard_write_wiki_revision": devboard_write_wiki_revision,
+    "devboard_query_graph": devboard_query_graph,
 }

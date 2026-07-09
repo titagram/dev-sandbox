@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import typer
@@ -481,7 +482,15 @@ def echo_json(payload: dict) -> None:
 
 
 def handle_api_error(error: DevBoardApiError) -> None:
-    raise typer.Exit(code=1) from error
+    typer.echo(f"Error: {error}", err=True)
+    raise typer.Exit(code=1)
+
+
+def main_cli() -> None:
+    try:
+        app(standalone_mode=False)
+    except DevBoardApiError as error:
+        handle_api_error(error)
 
 
 def build_genesis_bundle(repo_path: Path, output_dir: Path, context: dict) -> dict:
