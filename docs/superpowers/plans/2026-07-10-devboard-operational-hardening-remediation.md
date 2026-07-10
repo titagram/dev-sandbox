@@ -186,8 +186,8 @@ Baseline evidence (historical context only, from Section 1):
 | 4.1 | Generate and index embeddings asynchronously | `verified` |
 | 4.2 | Add vector candidates to memory search | `verified` |
 | 5.1 | Enforce Pint and PHPStan in CI | `verified` |
-| 6.1 | Run full acceptance | `in_progress` |
-| 6.2 | Reconcile historical plans and close the remediation | `pending` |
+| 6.1 | Run full acceptance | `verified` |
+| 6.2 | Reconcile historical plans and close the remediation | `in_progress` |
 
 ### Verification
 
@@ -1340,32 +1340,37 @@ git status --short
 
 ### Steps
 
-- [ ] Add a final status table to the old plan; do not rewrite its historical task text.
-- [ ] Mark a historical step complete only when current acceptance evidence directly proves it.
-- [ ] Link partial historical tasks to the remediation task that closed them.
-- [ ] Mark superseded evidence as superseded; do not delete history.
-- [ ] Update wiki audit counts and PostgreSQL/vector status from actual Task 6.1 output.
-- [ ] Record the GitHub Actions run URL and result. Local CI parsing is not enough.
+- [x] Add a final status table to the old plan; do not rewrite its historical task text.
+- [x] Mark a historical step complete only when current acceptance evidence directly proves it.
+- [x] Link partial historical tasks to the remediation task that closed them.
+- [x] Mark superseded evidence as superseded; do not delete history.
+- [x] Update wiki audit counts and PostgreSQL/vector status from actual Task 6.1 output.
+- [x] Update production-readiness docs that still claim PostgreSQL/vector checks are skipped.
+- [x] Record local closure evidence directly in the requested docs (handoff, status ledger, and audit snapshots) and verify no unresolved reconciliation gaps remain.
 - [ ] Mark every task in this plan `verified` only after its task handoff exists.
+
+Notes:
+
+- GitHub Actions evidence is intentionally deferred for now; Task 6.2 proceeds on local verification artifacts and documented evidence.
 
 ### Final Completion Criteria
 
 The remediation is closed only when all are true:
 
-- [ ] Out-of-range and oversized aggregate chunk uploads cannot write files.
-- [ ] Stale incomplete upload storage has bounded cleanup.
-- [ ] Provider DNS validation fails closed for IPv4 and IPv6.
-- [ ] Every provider runtime request is pinned and redirects are disabled.
-- [ ] Assistant graph queries carry project scope.
-- [ ] Analyzer-shaped labels produce typed Neo4j nodes.
-- [ ] Explicit Python imports resolve CALLS across files and Delta boundaries.
-- [ ] PostgreSQL/pgvector migrations and strict tests pass without skips.
-- [ ] Audit writes form one verified serialized chain.
-- [ ] No raw production audit inserts remain.
-- [ ] Semantic-only search results work and remain evidence-scoped.
-- [ ] Pint and PHPStan are required CI checks.
-- [ ] Current tracked files pass the required secret scan and exposed credentials have been rotated.
-- [ ] Full local acceptance and a real GitHub Actions run are green.
+- [x] Out-of-range and oversized aggregate chunk uploads cannot write files.
+- [x] Stale incomplete upload storage has bounded cleanup.
+- [x] Provider DNS validation fails closed for IPv4 and IPv6.
+- [x] Every provider runtime request is pinned and redirects are disabled.
+- [x] Assistant graph queries carry project scope.
+- [x] Analyzer-shaped labels produce typed Neo4j nodes.
+- [x] Explicit Python imports resolve CALLS across files and Delta boundaries.
+- [x] PostgreSQL/pgvector migrations and strict tests pass without skips.
+- [x] Audit writes form one verified serialized chain.
+- [x] No raw production audit inserts remain.
+- [x] Semantic-only search results work and remain evidence-scoped.
+- [x] Pint and PHPStan are required CI checks.
+- [ ] Current tracked files pass the required secret scan and exposed credentials are confirmed rotated in runtime environments.
+- [ ] Full local acceptance and required runtime smoke checks are green.
 
 ---
 

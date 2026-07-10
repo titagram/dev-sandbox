@@ -15,4 +15,5 @@ Status: `verified_from_code`.
 - Production Compose includes app, worker, and scheduler; Traefik is a production-only overlay; local service ports bind to loopback by default.
 - CI validates backend, Python, Node, frontend, dependency audits, Compose, and the production image.
 
-Verification baseline: Laravel `527 passed`, Python `116 passed`, Node `19 passed`, PHPStan level 1 clean, production image/frontend build clean, Composer/npm audits clean, and all Compose combinations valid. PostgreSQL-only vector/full-text tests remain skipped under the SQLite unit-test profile and require the production database acceptance path.
+- Verification baseline: Laravel `629 passed`, Python analyzer+plugin suite `122 passed`, Node agent suite passed, PHPStan level 1 clean, production image/frontend build clean, Composer/npm audits clean, and all required Compose combinations valid. PostgreSQL-only full-text/vector assertions are validated through the dedicated `DEVBOARD_POSTGRES_ACCEPTANCE=1 scripts/devboard_postgres_acceptance.sh` lane; no acceptance skips were observed in that lane.
+- GitHub Actions evidence is intentionally deferred for this closure pass; this audit reflects local acceptance evidence and documentation reconciliation.

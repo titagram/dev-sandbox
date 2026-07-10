@@ -1357,6 +1357,23 @@ Block Wave 4 if any are false:
 - A structured graph query API/tool exists.
 - Hades search no longer depends on MySQL-only full-text syntax in Postgres runtime.
 
+## Final Status Snapshot (2026-07-10 Remediation Handoff)
+
+| Old task | Remediation handoff | Status |
+| --- | --- | --- |
+| 1.1 Remove default secrets from deploy configuration | 0.2 (`Rotate And Redact Exposed Historical Secrets`) | verified |
+| 1.3 Add upload size limits and stream assembly | 1.1 (`Enforce Artifact Chunk Range And Exact Size`) | verified |
+| 1.5 Centralize audit logging and add missing security events | 3.2, 3.3 (`Serialized Audit Chain...`) | verified |
+| 1.6 Block SSRF in AI provider configuration | 1.3 (`Resolver-Based Endpoint Policy`) + 1.4 (`Pinned Provider Transport`) | verified |
+| 3.2 Resolve Python internal CALLS edges | 2.3 (`Repository-Aware Python CALLS Edges`) | verified |
+| 3.3 Emit real Neo4j labels and relationship types | 2.2 (`Semantic Neo4j Labels`) | verified |
+| 3.4 Add structured graph query API and tool | 2.1 (`Assistant Graph Project Scope`) | verified |
+| 3.5 Fix Hades search before vector search | 4.1 (`Embedding Generation And Indexing`) + 4.2 (`Vector Candidates In Memory Search`) | verified |
+| 4.2 Add pgvector retrieval after wiki evidence exists | 4.2 (`Vector Candidates In Memory Search`) | verified |
+| 4.3 Plan multi-tenancy as a separate migration program | not in this remediation | pending |
+
+All remaining historical tasks in `docs/superpowers/plans/2026-07-09-devboard-operational-hardening.md` are either unchanged by this remediation pass, already out-of-scope, or explicitly deferred.
+
 ## Self-Review
 
 - Spec coverage: all P0 items from `claude_suggestions.md` map to Wave 1 tasks; P1 foundations map to Wave 2; P2 deterministic graph/query/search gates map to Wave 3; AI/RAG and multi-tenancy are deferred to Wave 4 with explicit prerequisites.

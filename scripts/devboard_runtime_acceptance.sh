@@ -45,6 +45,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
+wait_for_app() {
+  local attempt=0
+
+  while (( attempt < 80 )); do
+    attempt=$((attempt + 1))
+    if curl -fsS "http://127.0.0.1:${APP_PORT}/up" >/dev/null; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  return 1
+}
+
 "${COMPOSE[@]}" config >/dev/null
 "${COMPOSE[@]}" up -d app worker scheduler postgres neo4j
 "${COMPOSE[@]}" exec -T app php artisan migrate:fresh --seed --seeder=DatabaseSeeder --force
@@ -54,7 +68,10 @@ if [[ ! -x /tmp/devboard-plugin-venv/bin/python ]]; then
   /tmp/devboard-plugin-venv/bin/python -m pip install -e "${ROOT}/analyzer" -e "${ROOT}/plugin" pytest
 fi
 
-curl -fsS "http://127.0.0.1:${APP_PORT}/up" >/dev/null
+if ! wait_for_app; then
+  echo "Timed out waiting for application readiness at /up" >&2
+  exit 1
+fi
 "${COMPOSE[@]}" exec -T postgres psql -U devboard -d devboard -c 'select 1 as ok;' >/tmp/devboard-postgres-ok.txt
 "${COMPOSE[@]}" exec -T neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD}" 'RETURN 1 AS ok' >/tmp/devboard-neo4j-ok.txt
 /tmp/devboard-plugin-venv/bin/python -m pytest tests/e2e/test_onboarding_genesis.py -q >/tmp/devboard-runtime-e2e.txt
