@@ -186,6 +186,36 @@ it('gracefully handles search on unsupported databases returning empty results',
     expect($results)->toBeArray()->toHaveCount(0);
 });
 
+it('reports embeddings unsupported until feature schema dimensions extension and provider config are operational', function () {
+    config()->set('devboard.embeddings.enabled', true);
+    config()->set('devboard.embeddings.provider', 'openai');
+    config()->set('devboard.embeddings.model', 'text-embedding-3-small');
+    config()->set('devboard.embeddings.dimensions', 1536);
+
+    $service = new EmbeddingIndexService;
+
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        expect($service->supportsEmbeddings())->toBeFalse();
+    } else {
+        expect($service->supportsEmbeddings())->toBeTrue();
+    }
+});
+
+it('has a PostgreSQL HNSW cosine index for embeddings', function () {
+    if (DB::connection()->getDriverName() !== 'pgsql') {
+        $this->markTestSkipped('PostgreSQL index catalog assertions require pgsql.');
+    }
+
+    $index = DB::table('pg_indexes')
+        ->where('tablename', 'hades_search_documents')
+        ->where('indexname', 'hades_search_documents_embedding_hnsw_idx')
+        ->value('indexdef');
+
+    expect($index)->toBeString();
+    expect($index)->toContain('hnsw');
+    expect($index)->toContain('vector_cosine_ops');
+});
+
 function seedSearchProject(): string
 {
     $user = User::factory()->create(['status' => 'active']);

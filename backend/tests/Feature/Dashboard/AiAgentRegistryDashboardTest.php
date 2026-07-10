@@ -1,5 +1,6 @@
 <?php
 
+use App\Assistants\ProviderHostResolver;
 use App\Models\User;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -13,6 +14,9 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     $this->withoutVite();
     $this->seed(DevBoardSeeder::class);
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new DashboardFakeProviderHostResolver(['8.8.8.8']);
+    });
 });
 
 it('shows the controlled AI agent registry page to admins only', function () {
@@ -894,4 +898,110 @@ function aiAgentRegistryUserWithRole(string $roleName): User
     ]);
 
     return $user;
+}
+
+it('rejects a provider base URL whose host resolves to a private address before any HTTP request', function () {
+    Http::preventStrayRequests();
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new DashboardFakeProviderHostResolver([], [
+            'ssrf-private.example.test' => ['10.0.0.5'],
+        ]);
+    });
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'SSRF Private Resolver',
+        'base_url' => 'https://ssrf-private.example.test',
+        'enabled' => true,
+    ])->assertUnprocessable()
+        ->assertJsonValidationErrors(['base_url']);
+});
+
+it('rejects a stored unsafe provider base URL at model discovery without making an HTTP request', function () {
+    Http::preventStrayRequests();
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new DashboardFakeProviderHostResolver([], [
+            'stored-unsafe.example.test' => ['169.254.169.254'],
+        ]);
+    });
+
+    // Insert the provider row directly to bypass controller validation, simulating a persisted unsafe URL.
+    DB::table('ai_model_providers')->where('provider_key', 'openai')->update([
+        'base_url' => 'https://stored-unsafe.example.test',
+        'enabled' => true,
+        'encrypted_api_key' => encrypt('sk-test-stored-secret-654321'),
+        'api_key_last_four' => '4321',
+        'api_key_updated_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/openai/models')
+        ->assertOk();
+
+    expect($response->json('models'))->toBe([])
+        ->and($response->json('provider_key'))->toBe('openai')
+        ->and($response->json('source'))->toBe('remote')
+        ->and($response->json('message'))->toBe('Provider endpoint URL is not allowed.');
+});
+
+it('rejects a stored unsafe opencode go provider base URL at validation without making an HTTP request', function () {
+    Http::preventStrayRequests();
+    Http::fake(fn () => Http::response('should not be called', 200));
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new DashboardFakeProviderHostResolver([], [
+            'ssrf-validate.example.test' => ['169.254.169.254'],
+        ]);
+    });
+
+    DB::table('ai_model_providers')->where('provider_key', 'opencode_go')->update([
+        'base_url' => 'https://ssrf-validate.example.test/v1',
+        'enabled' => true,
+        'encrypted_api_key' => encrypt('sk-test-validate-secret-654321'),
+        'api_key_last_four' => '4321',
+        'api_key_updated_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/ai-model-providers/opencode_go/validate')
+        ->assertOk();
+
+    expect($response->json('validation.provider_key'))->toBe('opencode_go')
+        ->and($response->json('validation.status'))->toBe('invalid')
+        ->and($response->json('validation.checks.api_reachable'))->toBeFalse()
+        ->and($response->json('validation.redacted_error'))->toBe('Provider endpoint URL is not allowed.');
+
+    Http::assertNothingSent();
+});
+
+final class DashboardFakeProviderHostResolver implements ProviderHostResolver
+{
+    /** @var list<string> */
+    private array $default;
+
+    /** @var array<string, list<string>> */
+    private array $overrides;
+
+    /**
+     * @param  list<string>  $default
+     * @param  array<string, list<string>>  $overrides
+     */
+    public function __construct(array $default = [], array $overrides = [])
+    {
+        $this->default = $default;
+        $this->overrides = $overrides;
+    }
+
+    public function resolve(string $host): array
+    {
+        $key = strtolower($host);
+
+        return $this->overrides[$key] ?? $this->default;
+    }
 }

@@ -233,3 +233,82 @@ def test_unique_simple_name_still_resolves_internally(tmp_path):
     assert len(calls_rels) >= 1
     assert calls_rels[0]["target_id"] == helper_node["id"]
     assert not calls_rels[0]["target_id"].startswith("external:")
+
+
+def _calls_targets(graph, symbol_id):
+    return {
+        relation["target_id"]
+        for relation in graph["relationships"]
+        if relation["type"] == "CALLS" and relation["source_id"] == symbol_id
+    }
+
+
+def test_code_graph_resolves_cross_file_from_import_independent_of_traversal_order(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    caller = repo / "app.py"
+    helper = repo / "helpers.py"
+    caller.write_text("from helpers import helper\n\ndef caller():\n    return helper()\n")
+    helper.write_text("def helper():\n    return 1\n")
+
+    graph = build_code_graph(repo, [caller, helper], {"repository_id": "repo_123"})
+
+    assert "symbol:helpers.py:helper" in _calls_targets(graph, "symbol:app.py:caller")
+
+
+def test_code_graph_disambiguates_duplicate_helpers_with_explicit_import(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    caller = repo / "app.py"
+    helpers = repo / "helpers.py"
+    other_helpers = repo / "other_helpers.py"
+    caller.write_text("from other_helpers import helper\n\ndef caller():\n    return helper()\n")
+    helpers.write_text("def helper():\n    return 'wrong'\n")
+    other_helpers.write_text("def helper():\n    return 'right'\n")
+
+    graph = build_code_graph(repo, [caller, helpers, other_helpers], {"repository_id": "repo_123"})
+
+    targets = _calls_targets(graph, "symbol:app.py:caller")
+    assert "symbol:other_helpers.py:helper" in targets
+    assert "symbol:helpers.py:helper" not in targets
+
+
+def test_code_graph_resolves_from_import_alias(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    caller = repo / "app.py"
+    helper = repo / "helpers.py"
+    caller.write_text("from helpers import helper as imported_helper\n\ndef caller():\n    return imported_helper()\n")
+    helper.write_text("def helper():\n    return 1\n")
+
+    graph = build_code_graph(repo, [caller, helper], {"repository_id": "repo_123"})
+
+    assert "symbol:helpers.py:helper" in _calls_targets(graph, "symbol:app.py:caller")
+
+
+def test_code_graph_resolves_module_import_alias_attribute_call(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    caller = repo / "app.py"
+    helper = repo / "helpers.py"
+    caller.write_text("import helpers as h\n\ndef caller():\n    return h.helper()\n")
+    helper.write_text("def helper():\n    return 1\n")
+
+    graph = build_code_graph(repo, [caller, helper], {"repository_id": "repo_123"})
+
+    assert "symbol:helpers.py:helper" in _calls_targets(graph, "symbol:app.py:caller")
+
+
+def test_code_graph_does_not_guess_globally_unique_unimported_name(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    caller = repo / "app.py"
+    helper = repo / "helpers.py"
+    caller.write_text("def caller():\n    return helper()\n")
+    helper.write_text("def helper():\n    return 1\n")
+
+    graph = build_code_graph(repo, [caller, helper], {"repository_id": "repo_123"})
+
+    targets = _calls_targets(graph, "symbol:app.py:caller")
+    assert "external:helper" in targets
+    assert "symbol:helpers.py:helper" not in targets

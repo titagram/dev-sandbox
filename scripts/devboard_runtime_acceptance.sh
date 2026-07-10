@@ -11,9 +11,10 @@ if [[ "${DEVBOARD_RUNTIME_ACCEPTANCE:-0}" != "1" ]]; then
   exit 2
 fi
 
-export APP_KEY="${APP_KEY:-base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
-export DB_PASSWORD="${DB_PASSWORD:-runtime-acceptance-db}"
-export NEO4J_PASSWORD="${NEO4J_PASSWORD:-runtime-acceptance-neo4j}"
+: "${APP_KEY:=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
+: "${DB_PASSWORD:=runtime-acceptance-db}"
+: "${NEO4J_PASSWORD:=runtime-acceptance-neo4j}"
+export APP_KEY DB_PASSWORD NEO4J_PASSWORD
 export DEVBOARD_APP_BIND="127.0.0.1"
 export DEVBOARD_APP_PORT="${APP_PORT}"
 export DEVBOARD_VITE_BIND="127.0.0.1"

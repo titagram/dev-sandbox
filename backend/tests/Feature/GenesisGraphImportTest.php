@@ -104,6 +104,13 @@ it('imports file and function nodes with snapshot metadata', function () {
     expect($allNodes)->toHaveCount(2);
     expect($allNodes[0]['properties']['snapshot_id'])->toBe($context['snapshot_id']);
     expect($allNodes[1]['properties']['repository_id'])->toBe($context['repository_id']);
+
+    $functionCommand = collect($nodeCommands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'SET n:Function,'),
+    );
+
+    expect($functionCommand)->not->toBeNull();
+    expect($functionCommand['params']['nodes'][0]['labels'])->toBe(['Symbol', 'Function']);
 });
 
 it('imports relationships with run and repository metadata', function () {
@@ -194,7 +201,7 @@ it('marks the import failed and records a run event after queue retries are exha
 it('builds a Neo4j client from configured basic auth', function () {
     config([
         'services.neo4j.uri' => 'bolt://localhost:7687',
-        'services.neo4j.auth' => ['neo4j', 'graphify-sandbox'],
+        'services.neo4j.auth' => ['neo4j', 'redacted-rotated-neo4j-password'],
     ]);
 
     expect(app(Neo4jClientFactory::class)->client())->toBeObject();
@@ -354,7 +361,7 @@ function createGraphImportContext(): array
     Storage::disk('local')->put($storagePath, json_encode([
         'nodes' => [
             ['id' => 'file:app.py', 'labels' => ['File'], 'properties' => ['path' => 'app.py']],
-            ['id' => 'function:health', 'labels' => ['Function'], 'properties' => ['name' => 'health']],
+            ['id' => 'function:health', 'labels' => ['Symbol', 'Function'], 'properties' => ['name' => 'health']],
         ],
         'relationships' => [
             ['id' => 'rel_1', 'type' => 'DECLARES', 'source_id' => 'file:app.py', 'target_id' => 'function:health', 'properties' => []],

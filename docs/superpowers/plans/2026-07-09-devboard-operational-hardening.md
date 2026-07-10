@@ -113,7 +113,7 @@ Expected: existing tests pass before changes, or failures are logged as pre-exis
 Add a shell-based verification section to the logbook entry with these checks:
 
 ```bash
-rg -n "graphify-sandbox|base64:|APP_KEY=.*fallback|NEO4J_PASSWORD.*graphify" docker-compose.devboard*.yaml backend/config/services.php backend/.env .gitignore
+rg -n "<redacted-rotated-neo4j-password>|base64:|APP_KEY=.*fallback|NEO4J_PASSWORD.*<redacted>" docker-compose.devboard*.yaml backend/config/services.php backend/.env .gitignore
 ```
 
 Expected before implementation: matches may exist. Expected after implementation: no matches for hardcoded live/default secrets outside documentation explaining required env names.
@@ -153,8 +153,10 @@ Change the public deployment instructions/config path so Traefik is layered over
 Run:
 
 ```bash
-APP_KEY=base64:test DB_PASSWORD=test NEO4J_PASSWORD=test docker compose -f docker-compose.devboard.prod.yaml -f docker-compose.devboard.traefik.yaml config >/tmp/devboard-compose-config.yaml
-rg -n "graphify-sandbox|php artisan serve|composer install|:/workspace" /tmp/devboard-compose-config.yaml
+APP_KEY=base64:test DB_PASSWORD=test NEO4J_PASSWORD=<test> docker compose -f docker-compose.devboard.prod.yaml -f docker-compose.devboard.traefik.yaml config >/tmp/devboard-compose-config.yaml
+rg -n "<redacted-rotated-neo4j-password>|php artisan serve|composer install|:/workspace" /tmp/devboard-compose-config.yaml
+
+<!-- credential rotated 2026-07-10 per remediation Task 0.2; values redacted -->
 ```
 
 Expected: no default Neo4j password, no dev server command, no runtime composer install, no workspace bind mount for production.

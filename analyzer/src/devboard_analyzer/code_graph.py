@@ -58,12 +58,15 @@ def build_code_graph(
     files: list[Path],
     context: dict[str, Any] | None = None,
     graph_mode: str = "full_snapshot",
+    resolution_files: list[Path] | None = None,
 ) -> dict[str, Any]:
     repo = Path(root)
     context = context or {}
     graphify_graph = _build_graphify_graph(repo, files, context, graph_mode)
     if graphify_graph is not None:
         return graphify_graph
+
+    python_index = _build_python_resolution_index(repo, resolution_files or files)
 
     nodes: list[dict[str, Any]] = []
     relationships: list[dict[str, Any]] = []
@@ -84,16 +87,12 @@ def build_code_graph(
         if file_path.suffix == ".py":
             before_nodes = len(nodes)
             before_relationships = len(relationships)
-
-            try:
-                tree = ast.parse(file_path.read_text(), filename=relative_path)
-            except SyntaxError:
+            tree = python_index.trees.get(relative_path)
+            collector = python_index.collectors.get(relative_path)
+            if tree is None or collector is None:
                 continue
 
-            collector = _SymbolCollector(relative_path)
-            collector.visit(tree)
-
-            extractor = _PythonGraphExtractor(relative_path, file_id, collector.name_index)
+            extractor = _PythonGraphExtractor(relative_path, file_id, python_index)
             extractor.visit(tree)
             nodes.extend(extractor.nodes)
             relationships.extend(extractor.relationships)
@@ -138,6 +137,89 @@ def build_code_graph(
         "nodes": nodes,
         "relationships": relationships,
     }
+
+
+class _PythonResolutionIndex:
+    def __init__(self) -> None:
+        self.trees: dict[str, ast.AST] = {}
+        self.collectors: dict[str, _SymbolCollector] = {}
+        self.module_symbols: dict[str, dict[str, str]] = {}
+        self.module_paths: dict[str, str] = {}
+        self.from_imports: dict[str, dict[str, str]] = {}
+        self.module_imports: dict[str, dict[str, str]] = {}
+
+
+def _build_python_resolution_index(repo: Path, files: list[Path]) -> _PythonResolutionIndex:
+    index = _PythonResolutionIndex()
+    module_candidates: dict[str, set[str]] = {}
+
+    for file_path in files:
+        if file_path.suffix != ".py" or not file_path.exists():
+            continue
+
+        relative_path = file_path.relative_to(repo).as_posix()
+        try:
+            tree = ast.parse(file_path.read_text(), filename=relative_path)
+        except SyntaxError:
+            continue
+
+        collector = _SymbolCollector(relative_path)
+        collector.visit(tree)
+        index.trees[relative_path] = tree
+        index.collectors[relative_path] = collector
+
+        for module_name in _module_names_for_path(relative_path):
+            module_candidates.setdefault(module_name, set()).add(relative_path)
+
+    index.module_paths = {
+        module_name: next(iter(paths))
+        for module_name, paths in module_candidates.items()
+        if len(paths) == 1
+    }
+    for module_name, relative_path in index.module_paths.items():
+        index.module_symbols[module_name] = index.collectors[relative_path].name_index
+
+    for relative_path, tree in index.trees.items():
+        from_imports: dict[str, str] = {}
+        module_imports: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    bound_name = alias.asname or alias.name.split(".", 1)[0]
+                    if alias.name in index.module_paths:
+                        module_imports[bound_name] = alias.name
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module not in index.module_paths:
+                    continue
+                symbols = index.module_symbols.get(module, {})
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    symbol_id = symbols.get(alias.name)
+                    if symbol_id:
+                        from_imports[alias.asname or alias.name] = symbol_id
+        index.from_imports[relative_path] = from_imports
+        index.module_imports[relative_path] = module_imports
+
+    return index
+
+
+def _module_names_for_path(relative_path: str) -> set[str]:
+    path = Path(relative_path)
+    if path.suffix != ".py":
+        return set()
+
+    parts = list(path.with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    if not parts:
+        return set()
+
+    names = {".".join(parts)}
+    if parts[0] == "src" and len(parts) > 1:
+        names.add(".".join(parts[1:]))
+    return names
 
 
 def _build_graphify_graph(
@@ -386,10 +468,12 @@ class _SymbolCollector(ast.NodeVisitor):
 
 
 class _PythonGraphExtractor(ast.NodeVisitor):
-    def __init__(self, relative_path: str, file_id: str, name_index: dict[str, str] | None = None):
+    def __init__(self, relative_path: str, file_id: str, python_index: _PythonResolutionIndex):
         self.relative_path = relative_path
         self.file_id = file_id
-        self._name_index = name_index or {}
+        self._python_index = python_index
+        collector = python_index.collectors.get(relative_path)
+        self._name_index = collector.name_index if collector else {}
         self.nodes: list[dict[str, Any]] = []
         self.relationships: list[dict[str, Any]] = []
         self.scope_stack: list[str] = [file_id]
@@ -439,7 +523,7 @@ class _PythonGraphExtractor(ast.NodeVisitor):
         if len(self.scope_stack) > 1:
             target_name = _call_name(node.func)
             if target_name:
-                resolved_id = self._name_index.get(target_name)
+                resolved_id = self._resolve_call(target_name)
                 if resolved_id:
                     self._add_relationship(self.scope_stack[-1], resolved_id, "CALLS", node)
                 else:
@@ -452,6 +536,24 @@ class _PythonGraphExtractor(ast.NodeVisitor):
     def _symbol_id(self, name: str) -> str:
         qualname = ".".join([*self.name_stack, name])
         return f"symbol:{self.relative_path}:{qualname}"
+
+    def _resolve_call(self, target_name: str) -> str | None:
+        resolved_id = self._name_index.get(target_name)
+        if resolved_id:
+            return resolved_id
+
+        if "." not in target_name:
+            resolved_id = self._python_index.from_imports.get(self.relative_path, {}).get(target_name)
+            if resolved_id:
+                return resolved_id
+
+        first, _, rest = target_name.partition(".")
+        if rest:
+            module_name = self._python_index.module_imports.get(self.relative_path, {}).get(first)
+            if module_name:
+                return self._python_index.module_symbols.get(module_name, {}).get(rest)
+
+        return None
 
     def _add_symbol(self, node: ast.AST, symbol_id: str, name: str, kind: str) -> None:
         self.nodes.append(

@@ -50,6 +50,8 @@ class DeltaFinalizeService
                     ->where('repository_id', $delta->repository_id)
                     ->where('run_id', $delta->run_id)
                     ->where('storage_path', 'like', "devboard/artifacts/delta/{$deltaId}/%/artifact")
+                    ->orderBy('id')
+                    ->lockForUpdate()
                     ->get();
 
                 foreach ($artifacts as $artifact) {
@@ -144,19 +146,9 @@ class DeltaFinalizeService
                     'created_at' => now(),
                 ]);
 
-                DB::table('audit_logs')->insert([
-                    'id' => (string) Str::ulid(),
-                    'actor_user_id' => null,
-                    'actor_device_id' => null,
-                    'actor_type' => 'plugin',
-                    'action' => 'delta.finalized',
-                    'target_type' => 'delta_sync',
-                    'target_id' => $deltaId,
-                    'ip_address' => null,
-                    'user_agent' => null,
-                    'payload' => json_encode(['snapshot_id' => $snapshotId], JSON_THROW_ON_ERROR),
-                    'created_at' => now(),
-                ]);
+                app(AuditLogger::class)->record('delta.finalized', 'delta_sync', $deltaId, [
+                    'snapshot_id' => $snapshotId,
+                ], ['type' => 'plugin']);
 
                 if ($graphSnapshot) {
                     if ($transactionalQueue) {
@@ -274,18 +266,9 @@ class DeltaFinalizeService
             'created_at' => now(),
         ]);
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => null,
-            'actor_device_id' => $run?->device_id,
-            'actor_type' => 'plugin',
-            'action' => 'security.blocked_upload_approved',
-            'target_type' => $targetType,
-            'target_id' => $targetId,
-            'ip_address' => null,
-            'user_agent' => null,
-            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        app(AuditLogger::class)->record('security.blocked_upload_approved', $targetType, $targetId, $payload, [
+            'type' => 'plugin',
+            'device_id' => $run?->device_id,
         ]);
     }
 

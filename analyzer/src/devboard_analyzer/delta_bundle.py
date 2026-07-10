@@ -22,7 +22,7 @@ def build_delta_bundle(root: Path | str, output_dir: Path | str, context: dict[s
     changed_files = _changed_files(base_hashes, current_hashes)
     safety_report = scan_safety(repo, files)
     graph_files = _graph_files(repo, changed_files)
-    graph = build_code_graph(repo, graph_files, context, graph_mode="affected_subgraph")
+    graph = build_code_graph(repo, graph_files, context, graph_mode="affected_subgraph", resolution_files=files)
     affected_relations = relation_index_from_graph(graph)["relations"]
     node_tombstones = _node_tombstones(changed_files, context.get("base_symbols", []), graph)
     relationship_tombstones = _relationship_tombstones(

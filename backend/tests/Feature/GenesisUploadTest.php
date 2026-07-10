@@ -160,6 +160,83 @@ it('allows duplicate uploads of the same chunk hash', function () {
         ->assertJsonPath('status', 'received');
 });
 
+it('rejects a negative Genesis chunk index with artifact_chunk_out_of_range and no file', function () {
+    $context = createGenesisUploadContext();
+    $artifact = genesisArtifact('file_inventory', 'file-inventory.json', 'hello', 1);
+    $importId = genesisStart($context, genesisManifest([$artifact]))->json('import_id');
+
+    genesisChunk($context, $importId, $artifact['artifact_id'], -1, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/genesis/{$importId}/{$artifact['artifact_id']}/chunks/-1"
+    );
+});
+
+it('rejects a Genesis chunk index equal to chunk_count with artifact_chunk_out_of_range and no file', function () {
+    $context = createGenesisUploadContext();
+    $artifact = genesisArtifact('file_inventory', 'file-inventory.json', 'hello', 1);
+    $importId = genesisStart($context, genesisManifest([$artifact]))->json('import_id');
+
+    genesisChunk($context, $importId, $artifact['artifact_id'], 1, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/genesis/{$importId}/{$artifact['artifact_id']}/chunks/1"
+    );
+});
+
+it('rejects a Genesis chunk index far above chunk_count with artifact_chunk_out_of_range and no file', function () {
+    $context = createGenesisUploadContext();
+    $artifact = genesisArtifact('file_inventory', 'file-inventory.json', 'hello', 1);
+    $importId = genesisStart($context, genesisManifest([$artifact]))->json('import_id');
+
+    genesisChunk($context, $importId, $artifact['artifact_id'], 999, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/genesis/{$importId}/{$artifact['artifact_id']}/chunks/999"
+    );
+});
+
+it('rejects a Genesis chunk whose bytes would exceed declared size_bytes', function () {
+    $context = createGenesisUploadContext();
+    $artifact = genesisArtifact('file_inventory', 'file-inventory.json', 'abcde', 2);
+    $artifact['size_bytes'] = 5;
+    $importId = genesisStart($context, genesisManifest([$artifact]))->json('import_id');
+
+    genesisChunk($context, $importId, $artifact['artifact_id'], 0, 'abc', hash('sha256', 'abc'))->assertOk();
+
+    genesisChunk($context, $importId, $artifact['artifact_id'], 1, 'def', hash('sha256', 'def'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_size_mismatch');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/genesis/{$importId}/{$artifact['artifact_id']}/chunks/1"
+    );
+});
+
+it('rejects Genesis finalize when assembled size does not match declared size_bytes and deletes the partial file', function () {
+    $context = createGenesisUploadContext();
+    $content = 'hello';
+    $artifact = genesisArtifact('file_inventory', 'file-inventory.json', $content, 1);
+    $artifact['size_bytes'] = 10;
+    $importId = genesisStart($context, genesisManifest([$artifact]))->json('import_id');
+
+    genesisChunk($context, $importId, $artifact['artifact_id'], 0, $content, hash('sha256', $content))->assertOk();
+
+    $storagePath = DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('storage_path');
+
+    genesisFinalize($context, $importId)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_size_mismatch');
+
+    Storage::disk('local')->assertMissing($storagePath);
+});
+
 it('finalizes a large multi-chunk Genesis artifact after retrying a chunk upload', function () {
     $context = createGenesisUploadContext();
     $largeContent = json_encode([

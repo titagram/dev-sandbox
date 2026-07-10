@@ -38,6 +38,7 @@ final class BackupManifestService
         'snapshots',
         'wiki_pages',
         'wiki_revisions',
+        'audit_chain_heads',
         'audit_logs',
         'task_attachments',
     ];
@@ -271,7 +272,7 @@ final class BackupManifestService
      */
     private function normalizeRow(string $table, array $row): array
     {
-        if ($table === 'audit_logs' && isset($row['payload']) && is_string($row['payload'])) {
+        if ($table !== 'audit_logs' && isset($row['payload']) && is_string($row['payload'])) {
             $decoded = json_decode($row['payload'], true);
             if (is_array($decoded)) {
                 $row['payload'] = json_encode($this->sanitize($decoded), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);

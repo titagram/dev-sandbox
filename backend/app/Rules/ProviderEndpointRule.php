@@ -14,7 +14,9 @@ final class ProviderEndpointRule implements ValidationRule
             return;
         }
 
-        if (! ProviderEndpointPolicy::validate($value)) {
+        $resolution = app(ProviderEndpointPolicy::class)->resolve($value);
+
+        if (! $resolution->allowed()) {
             $fail(ProviderEndpointPolicy::errorMessage());
         }
     }

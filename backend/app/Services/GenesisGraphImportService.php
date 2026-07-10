@@ -129,19 +129,29 @@ class GenesisGraphImportService
     }
 
     /**
-     * @param  list<string>  $labels
+     * @param  array<int, mixed>  $labels
      */
     private static function nodeLabelForLabels(array $labels): string
     {
-        $first = strtolower($labels[0] ?? '');
+        foreach ($labels as $label) {
+            if (! is_string($label)) {
+                continue;
+            }
 
-        return match ($first) {
-            'function', 'method' => 'Function',
-            'class' => 'Class',
-            'file' => 'File',
-            'module' => 'Module',
-            default => 'CodeNode',
-        };
+            $semanticLabel = match (strtolower($label)) {
+                'function', 'method' => 'Function',
+                'class' => 'Class',
+                'file' => 'File',
+                'module' => 'Module',
+                default => null,
+            };
+
+            if ($semanticLabel !== null) {
+                return $semanticLabel;
+            }
+        }
+
+        return 'CodeNode';
     }
 
     private static function relationshipTypeForType(string $type): string

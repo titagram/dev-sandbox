@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Services\AuditLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -87,6 +88,54 @@ it('exports a portable DevBoard backup bundle without raw secrets', function () 
         ->assertHeader('X-Content-Type-Options', 'nosniff');
 });
 
+it('preserves canonical audit chain fields exactly in backups', function () {
+    $admin = backupUserWithRole('Admin');
+    app(AuditLogger::class)->record('audit.canonical_fixture', 'audit', 'fixture', [
+        'secret_label' => 'placeholder-not-a-secret',
+        'nested' => ['b' => 2, 'a' => 1],
+    ], ['type' => 'system']);
+
+    $export = $this->actingAs($admin)
+        ->postJson('/api/dashboard/system/backups/export')
+        ->assertCreated()
+        ->json();
+
+    $bundle = json_decode(Storage::disk('local')->get((string) $export['path']), true, 512, JSON_THROW_ON_ERROR);
+    $snapshotRow = collect($bundle['database']['tables']['audit_logs']['rows'])
+        ->firstWhere('action', 'audit.canonical_fixture');
+    $databaseRow = (array) DB::table('audit_logs')->where('action', 'audit.canonical_fixture')->first();
+
+    foreach (['sequence', 'chain_version', 'actor_user_ref', 'actor_device_ref', 'payload', 'created_at', 'prev_hash', 'row_hash'] as $field) {
+        expect($snapshotRow[$field] ?? null)->toBe($databaseRow[$field]);
+    }
+});
+
+it('verifies the backed up audit chain independently during restore dry-run', function () {
+    $admin = backupUserWithRole('Admin');
+
+    $export = $this->actingAs($admin)
+        ->postJson('/api/dashboard/system/backups/export')
+        ->assertCreated()
+        ->json();
+
+    $bundle = json_decode(Storage::disk('local')->get((string) $export['path']), true, 512, JSON_THROW_ON_ERROR);
+    $bundle['database']['tables']['audit_logs']['rows'][0]['action'] = 'audit.tampered_in_backup';
+    $rows = $bundle['database']['tables']['audit_logs']['rows'];
+    $hash = hash('sha256', json_encode($rows, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    $bundle['database']['tables']['audit_logs']['sha256'] = $hash;
+    $bundle['checksums']['database:audit_logs'] = $hash;
+    $content = json_encode($bundle, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+    $this->actingAs($admin)
+        ->post('/api/dashboard/system/backups/validate', [
+            'bundle' => UploadedFile::fake()->createWithContent('tampered-audit-chain-backup.json', $content),
+        ], ['Accept' => 'application/json'])
+        ->assertOk()
+        ->assertJsonPath('valid', false)
+        ->assertJsonPath('can_restore', false)
+        ->assertJsonPath('blockers.0.code', 'audit_chain_invalid');
+});
+
 it('validates a backup bundle with dry-run restore and reports checksum tampering without mutation', function () {
     $admin = backupUserWithRole('Admin');
     backupAttachmentFixture();
@@ -107,7 +156,7 @@ it('validates a backup bundle with dry-run restore and reports checksum tamperin
         ->assertJsonPath('mode', 'dry_run')
         ->assertJsonPath('valid', true)
         ->assertJsonPath('can_restore', true)
-        ->assertJsonPath('summary.tables', 22)
+        ->assertJsonPath('summary.tables', 23)
         ->assertJsonPath('checks.0.status', 'ok');
 
     $tampered = json_decode($content, true, 512, JSON_THROW_ON_ERROR);

@@ -95,7 +95,7 @@ final class QueryProjectGraphTool implements Tool
     private function structuredPayload(string $projectId, array $sq): array
     {
         $type = (string) ($sq['type'] ?? '');
-        $params = [];
+        $params = ['project_id' => $projectId];
 
         if ($type === 'callers' || $type === 'callees') {
             $params['symbol_id'] = (string) ($sq['symbol_id'] ?? '');

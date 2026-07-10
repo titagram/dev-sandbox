@@ -8,9 +8,9 @@ x-backend-env: &backend-env
   APP_NAME: DevBoard
   APP_ENV: production
   APP_DEBUG: "false"
-  APP_KEY: ${DEVBOARD_APP_KEY:?Set DEVBOARD_APP_KEY to a Laravel base64 app key}
-  APP_URL: ${DEVBOARD_PUBLIC_BASE_URL:?Set DEVBOARD_PUBLIC_BASE_URL to the public https origin}
-  ASSET_URL: ${DEVBOARD_PUBLIC_BASE_URL:?Set DEVBOARD_PUBLIC_BASE_URL to the public https origin}
+  APP_KEY: ${DEVBOARD_APP_KEY:-}
+  APP_URL: ${DEVBOARD_PUBLIC_BASE_URL:-}
+  ASSET_URL: ${DEVBOARD_PUBLIC_BASE_URL:-}
   APP_MAINTENANCE_DRIVER: file
   LOG_CHANNEL: stderr
   LOG_LEVEL: ${DEVBOARD_LOG_LEVEL:-info}
@@ -19,16 +19,16 @@ x-backend-env: &backend-env
   DB_PORT: "5432"
   DB_DATABASE: ${DEVBOARD_DB_DATABASE:-devboard}
   DB_USERNAME: ${DEVBOARD_DB_USERNAME:-devboard}
-  DB_PASSWORD: ${DEVBOARD_DB_PASSWORD:?Set DEVBOARD_DB_PASSWORD}
+  DB_PASSWORD: ${DEVBOARD_DB_PASSWORD:-}
   CACHE_STORE: database
   QUEUE_CONNECTION: database
   SESSION_DRIVER: database
-  SESSION_DOMAIN: ${DEVBOARD_SESSION_DOMAIN:?Set DEVBOARD_SESSION_DOMAIN, for example example.com}
+  SESSION_DOMAIN: ${DEVBOARD_SESSION_DOMAIN:-}
   SESSION_ENCRYPT: "true"
   SESSION_SECURE_COOKIE: ${DEVBOARD_SESSION_SECURE_COOKIE:-true}
   SESSION_SAME_SITE: ${DEVBOARD_SESSION_SAME_SITE:-lax}
-  SANCTUM_STATEFUL_DOMAINS: ${DEVBOARD_STATEFUL_DOMAINS:?Set DEVBOARD_STATEFUL_DOMAINS, for example example.com}
-  DEVBOARD_DASHBOARD_ORIGINS: ${DEVBOARD_DASHBOARD_ORIGINS:?Set DEVBOARD_DASHBOARD_ORIGINS to allowed browser origins}
+  SANCTUM_STATEFUL_DOMAINS: ${DEVBOARD_STATEFUL_DOMAINS:-}
+  DEVBOARD_DASHBOARD_ORIGINS: ${DEVBOARD_DASHBOARD_ORIGINS:-}
   DEVBOARD_ARTIFACT_DISK: local
   DEVBOARD_ARTIFACT_ROOT: ${DEVBOARD_ARTIFACT_ROOT:-artifacts}
   DEVBOARD_GRAPH_IMPORT_MODE: neo4j
@@ -36,7 +36,7 @@ x-backend-env: &backend-env
   FILESYSTEM_DISK: local
   NEO4J_URI: bolt://neo4j:7687
   NEO4J_USER: neo4j
-  NEO4J_PASSWORD: ${DEVBOARD_NEO4J_PASSWORD:?Set DEVBOARD_NEO4J_PASSWORD}
+  NEO4J_PASSWORD: ${DEVBOARD_NEO4J_PASSWORD:-}
 
 services:
   app:
@@ -115,12 +115,12 @@ services:
       start_period: 20s
 
   postgres:
-    image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
+    image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DEVBOARD_DB_DATABASE:-devboard}
       POSTGRES_USER: ${DEVBOARD_DB_USERNAME:-devboard}
-      POSTGRES_PASSWORD: ${DEVBOARD_DB_PASSWORD:?Set DEVBOARD_DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DEVBOARD_DB_PASSWORD:-}
     volumes:
       - devboard-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -137,7 +137,7 @@ services:
     image: neo4j:5.26.27-community@sha256:937fbd163e302a5751dd329b719c1b05e2a4293af223d61b1aa17e3dea087709
     restart: unless-stopped
     environment:
-      NEO4J_AUTH: neo4j/${DEVBOARD_NEO4J_PASSWORD:?Set DEVBOARD_NEO4J_PASSWORD}
+      NEO4J_AUTH: neo4j/${DEVBOARD_NEO4J_PASSWORD:-}
       NEO4J_server_memory_heap_initial__size: ${DEVBOARD_NEO4J_HEAP_INITIAL:-512m}
       NEO4J_server_memory_heap_max__size: ${DEVBOARD_NEO4J_HEAP_MAX:-1G}
     volumes:

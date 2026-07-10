@@ -109,6 +109,94 @@ it('rejects a Delta artifact uploaded through another sync URL', function () {
         ->assertJsonPath('error.code', 'schema_validation_failed');
 });
 
+it('allows duplicate uploads of the same Delta chunk hash', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'hello');
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, 'hello', hash('sha256', 'hello'))->assertOk();
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, 'hello', hash('sha256', 'hello'))
+        ->assertOk()
+        ->assertJsonPath('status', 'received');
+});
+
+it('rejects a negative Delta chunk index with artifact_chunk_out_of_range and no file', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'hello', 1);
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], -1, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/delta/{$deltaId}/{$artifact['artifact_id']}/chunks/-1"
+    );
+});
+
+it('rejects a Delta chunk index equal to chunk_count with artifact_chunk_out_of_range and no file', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'hello', 1);
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 1, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/delta/{$deltaId}/{$artifact['artifact_id']}/chunks/1"
+    );
+});
+
+it('rejects a Delta chunk index far above chunk_count with artifact_chunk_out_of_range and no file', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'hello', 1);
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 999, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/delta/{$deltaId}/{$artifact['artifact_id']}/chunks/999"
+    );
+});
+
+it('rejects a Delta chunk whose bytes would exceed declared size_bytes', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'abcde', 2);
+    $artifact['size_bytes'] = 5;
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, 'abc', hash('sha256', 'abc'))->assertOk();
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 1, 'def', hash('sha256', 'def'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_size_mismatch');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/delta/{$deltaId}/{$artifact['artifact_id']}/chunks/1"
+    );
+});
+
+it('rejects Delta finalize when assembled size does not match declared size_bytes and deletes the partial file', function () {
+    $context = createDeltaContext();
+    $content = 'hello';
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', $content, 1);
+    $artifact['size_bytes'] = 10;
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $content, hash('sha256', $content))->assertOk();
+
+    $storagePath = DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('storage_path');
+
+    deltaFinalize($context, $deltaId)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_size_mismatch');
+
+    Storage::disk('local')->assertMissing($storagePath);
+});
+
 it('finalizes a valid delta bundle and creates a new snapshot', function () {
     Queue::fake();
 

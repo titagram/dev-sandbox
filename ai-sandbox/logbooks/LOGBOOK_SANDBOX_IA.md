@@ -1,5 +1,7 @@
 # Sandbox IA Logbook
 
+<!-- Intended write paths for Remediation Task 2.5: ai-sandbox/config/project.yaml; .graphifyignore; ai-sandbox/scripts/audit_sandbox.py; tests/test_audit_sandbox.py; tests/test_init_sandbox.py; ai-sandbox/logbooks/LOGBOOK_SANDBOX_IA.md -->
+
 Record sandbox framework, tooling, graph, wiki seed, and automation changes here.
 
 ### 2026-07-10 05:38 - Dependency Bootstrap Verification
@@ -177,3 +179,13 @@ Record sandbox framework, tooling, graph, wiki seed, and automation changes here
 **Residual risks**:
 - Discovery output is rough because the script includes `ai-sandbox/.venv` in sample files.
 - Dependency bootstrap remains blocked until a compatible `rapidfuzz` wheel is vendored or the bootstrap strategy changes.
+
+## 2026-07-10 - Remediation Task 2.5
+
+- Request: execute Task 2.5 from `docs/superpowers/plans/2026-07-10-devboard-operational-hardening-remediation.md`.
+- Intended write paths: `ai-sandbox/config/project.yaml`, `.graphifyignore`, `ai-sandbox/scripts/audit_sandbox.py`, `tests/test_audit_sandbox.py`, `tests/test_init_sandbox.py`, `ai-sandbox/logbooks/LOGBOOK_SANDBOX_IA.md`.
+- RED verification: `python3 -m pytest -q tests/test_audit_sandbox.py tests/test_init_sandbox.py` -> failed as expected with 5 failures: root `.` audit signature/handling, missing-root validation, `.graphifyignore` root dependency/cache exclusions, workspace-root source filtering, and duplicate `environment:` block.
+- Work performed: set `graph.ast_root` to `.`, removed duplicate tracked `environment:` facts, kept Neo4j credentials out of tracked project config, replaced obsolete `project/**` Graphify ignores with root-level generated/dependency/cache paths, and updated sandbox audit validation for workspace-root graphs while preserving non-root prefix checks.
+- GREEN verification: `python3 -m pytest -q tests/test_audit_sandbox.py tests/test_init_sandbox.py` -> 10 passed; `python3 ai-sandbox/scripts/detect_environment.py` -> passed and reported Linux/x86_64 with Docker linux/amd64; `python3 ai-sandbox/scripts/bootstrap_dependencies.py` -> passed and wrote dependency lock; `python3 ai-sandbox/scripts/discover_project.py` -> passed and wrote discovery artifacts; `python3 ai-sandbox/scripts/refresh_graph.py` -> passed for `.` with 4927 nodes and 6873 edges after clustering; `python3 ai-sandbox/scripts/audit_sandbox.py` -> Sandbox audit passed; `git diff --check` -> passed.
+- Files changed: `ai-sandbox/config/project.yaml`, `.graphifyignore`, `ai-sandbox/scripts/audit_sandbox.py`, `tests/test_audit_sandbox.py`, `tests/test_init_sandbox.py`, `ai-sandbox/logbooks/LOGBOOK_SANDBOX_IA.md`.
+- Residual risks: graph refresh generated an untracked `ai-sandbox/graph/GRAPH_REPORT.md` as a verification side effect and it was removed to honor the task's allowed write boundary; generated ignored discovery/environment/dependency artifacts may have been refreshed by the required gate commands.

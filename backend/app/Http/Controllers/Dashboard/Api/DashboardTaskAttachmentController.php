@@ -108,17 +108,7 @@ final class DashboardTaskAttachmentController extends Controller
                 'updated_at' => $now,
             ]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $request->user()->id,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'task_attachment.uploaded',
-                'target_type' => 'task_attachment',
-                'target_id' => $attachmentId,
-                'ip_address' => $request->ip(),
-                'user_agent' => $request->userAgent(),
-                'payload' => json_encode([
+            app(\App\Services\AuditLogger::class)->record('task_attachment.uploaded', 'task_attachment', $attachmentId, [
                     'project_id' => (string) $taskRow->project_id,
                     'task_id' => $task,
                     'attachment_id' => $attachmentId,
@@ -126,8 +116,11 @@ final class DashboardTaskAttachmentController extends Controller
                     'mime_type' => $mime,
                     'size_bytes' => $file->getSize(),
                     'sha256' => $sha256,
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
+            ], [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
             ]);
         });
 
@@ -154,17 +147,9 @@ final class DashboardTaskAttachmentController extends Controller
         );
         abort_unless(Storage::disk('local')->exists((string) $attachmentRow->storage_path), 404);
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'task_attachment.downloaded',
-            'target_type' => 'task_attachment',
-            'target_id' => (string) $attachmentRow->id,
-            'ip_address' => $request->ip(),
-            'user_agent' => $request->userAgent(),
-            'payload' => json_encode([
+        $contents = Storage::disk('local')->get((string) $attachmentRow->storage_path);
+
+        app(\App\Services\AuditLogger::class)->record('task_attachment.downloaded', 'task_attachment', (string) $attachmentRow->id, [
                 'project_id' => (string) $attachmentRow->project_id,
                 'task_id' => (string) $attachmentRow->task_id,
                 'attachment_id' => (string) $attachmentRow->id,
@@ -172,11 +157,13 @@ final class DashboardTaskAttachmentController extends Controller
                 'mime_type' => (string) $attachmentRow->mime_type,
                 'size_bytes' => (int) $attachmentRow->size_bytes,
                 'sha256' => (string) $attachmentRow->sha256,
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        ], [
+            'type' => 'user',
+            'user_id' => $request->user()->id,
+            'ip_address' => $request->ip(),
+            'user_agent' => $request->userAgent(),
         ]);
 
-        $contents = Storage::disk('local')->get((string) $attachmentRow->storage_path);
         $disposition = $attachmentRow->kind === 'image' ? 'inline' : 'attachment';
         $filename = addcslashes((string) $attachmentRow->original_name, '"\\');
 
@@ -231,17 +218,7 @@ final class DashboardTaskAttachmentController extends Controller
                 ->where('id', $task)
                 ->update(['updated_at' => $now]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $request->user()->id,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'task_attachment.deleted',
-                'target_type' => 'task_attachment',
-                'target_id' => (string) $attachmentRow->id,
-                'ip_address' => $request->ip(),
-                'user_agent' => $request->userAgent(),
-                'payload' => json_encode([
+            app(\App\Services\AuditLogger::class)->record('task_attachment.deleted', 'task_attachment', (string) $attachmentRow->id, [
                     'project_id' => (string) $attachmentRow->project_id,
                     'task_id' => (string) $attachmentRow->task_id,
                     'attachment_id' => (string) $attachmentRow->id,
@@ -249,8 +226,11 @@ final class DashboardTaskAttachmentController extends Controller
                     'mime_type' => (string) $attachmentRow->mime_type,
                     'size_bytes' => (int) $attachmentRow->size_bytes,
                     'sha256' => (string) $attachmentRow->sha256,
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
+            ], [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
             ]);
         });
 

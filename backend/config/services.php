@@ -47,8 +47,13 @@ return [
         /*
         |----------------------------------------------------------------------
         | AI provider endpoints are validated at runtime by ProviderEndpointPolicy
-        | before any HTTP call. The policy blocks private, loopback, and
-        | link-local IP ranges. See App\Assistants\ProviderEndpointPolicy.
+        | before any HTTP call. The policy resolves each provider host through
+        | a ProviderHostResolver (bound in AppServiceProvider to
+        | SystemProviderHostResolver, which queries A and AAAA records) and
+        | rejects the host unless every returned address is public. Unresolved
+        | hosts fail closed. Private, loopback, link-local, multicast, and
+        | reserved addresses are blocked. See App\Assistants\ProviderEndpointPolicy
+        | and App\Assistants\ProviderHostResolver.
         |----------------------------------------------------------------------
         */
         'graph_import_mode' => env('DEVBOARD_GRAPH_IMPORT_MODE', 'neo4j'),

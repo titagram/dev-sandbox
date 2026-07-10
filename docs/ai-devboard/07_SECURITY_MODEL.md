@@ -305,6 +305,12 @@ Generated AGENTS/context files must:
 - be written under `.devboard/`;
 - be regenerable.
 
+## Provider Endpoint Transport
+
+`verified_from_code`: Admin-managed model provider base URLs are revalidated at use time, not only when saved. Runtime provider requests use `App\Assistants\ProviderHttpClient`, which resolves every A and AAAA answer immediately before dispatch through `ProviderEndpointPolicy`, rejects unresolved or non-public answers, preserves the original URL hostname, disables redirects, and pins the validated address set with cURL `CURLOPT_RESOLVE` (`host:port:ip`). If cURL pinning constants are unavailable, provider dispatch fails closed.
+
+`verified_from_code`: The pinned transport is used for Admin model discovery, OpenCode validation, server-side agent work chat calls, and real OpenAI-compatible Task Clarifier, Backlog Triage, and Hades Intake Normalizer provider calls. Laravel AI SDK fake-agent paths remain available for deterministic tests, but real stored provider URLs are not dispatched through an unpinned SDK transport.
+
 ## Audit Requirements
 
 Audit logs are append-only.

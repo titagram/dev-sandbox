@@ -226,3 +226,28 @@ def test_two_consecutive_deltas_keep_complete_symbol_baseline(tmp_path):
     assert "declares:file:unchanged.py->symbol:unchanged.py:keep_me:1" not in {
         item["relation_id"] for item in second_relations
     }
+
+
+def test_delta_changed_caller_resolves_unchanged_imported_callee(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    caller = repo / "app.py"
+    helper = repo / "helpers.py"
+    caller.write_text("from helpers import helper\n\ndef caller():\n    return helper()\n")
+    helper.write_text("def helper():\n    return 1\n")
+    base_hashes = {"app.py": hash_file(caller), "helpers.py": hash_file(helper)}
+    caller.write_text("from helpers import helper\n\ndef caller():\n    value = helper()\n    return value\n")
+
+    output = tmp_path / "delta"
+    build_delta_bundle(repo, output, {"base_snapshot_id": "snap_base", "base_file_hashes": base_hashes})
+
+    graph = json.loads((output / "graph-snapshot.json").read_text())
+    call_targets = {
+        relation["target_id"]
+        for relation in graph["relationships"]
+        if relation["type"] == "CALLS" and relation["source_id"] == "symbol:app.py:caller"
+    }
+
+    assert graph["affected_file_paths"] == ["app.py"]
+    assert "file:helpers.py" not in {node["id"] for node in graph["nodes"]}
+    assert "symbol:helpers.py:helper" in call_targets

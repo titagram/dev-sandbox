@@ -54,12 +54,16 @@ class AuditExportService
             throw new \RuntimeException('Unable to allocate audit export CSV buffer.');
         }
 
-        fputcsv($handle, ['id', 'actor_type', 'action', 'target_type', 'target_id', 'created_at', 'payload']);
+        fputcsv($handle, ['id', 'sequence', 'chain_version', 'prev_hash', 'row_hash', 'actor_type', 'action', 'target_type', 'target_id', 'created_at', 'payload']);
 
         foreach ($rows as $row) {
             $exportRow = $this->exportRow($row);
             fputcsv($handle, [
                 $exportRow['id'],
+                $exportRow['sequence'],
+                $exportRow['chain_version'],
+                $exportRow['prev_hash'],
+                $exportRow['row_hash'],
                 $exportRow['actor_type'],
                 $exportRow['action'],
                 $exportRow['target_type'],
@@ -117,6 +121,10 @@ class AuditExportService
     {
         return [
             'id' => $row->id,
+            'sequence' => $row->sequence,
+            'chain_version' => $row->chain_version,
+            'prev_hash' => $row->prev_hash,
+            'row_hash' => $row->row_hash,
             'actor_user_id' => $row->actor_user_id,
             'actor_device_id' => $row->actor_device_id,
             'actor_type' => $row->actor_type,
@@ -164,23 +172,11 @@ class AuditExportService
      */
     private function recordAuditExport(string $path, int $rowCount, string $hash, array $filters): void
     {
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => null,
-            'actor_device_id' => null,
-            'actor_type' => 'system',
-            'action' => 'audit.exported',
-            'target_type' => 'audit_export',
-            'target_id' => null,
-            'ip_address' => null,
-            'user_agent' => null,
-            'payload' => json_encode([
+        app(AuditLogger::class)->record('audit.exported', 'audit_export', null, [
                 'path' => $path,
                 'row_count' => $rowCount,
                 'sha256' => $hash,
                 'filters' => $filters,
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
         ]);
     }
 }

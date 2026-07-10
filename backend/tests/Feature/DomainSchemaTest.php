@@ -36,11 +36,32 @@ it('creates the devboard core tables', function () {
         'assistant_messages',
         'assistant_suggestions',
         'audit_logs',
+        'audit_chain_heads',
     ];
 
     foreach ($tables as $table) {
         expect(Schema::hasTable($table))->toBeTrue($table);
     }
+});
+
+it('creates audit chain expansion columns and global head row', function () {
+    expect(Schema::hasColumns('audit_logs', [
+        'sequence',
+        'chain_version',
+        'actor_user_ref',
+        'actor_device_ref',
+        'prev_hash',
+        'row_hash',
+    ]))->toBeTrue();
+
+    expect(Schema::hasColumns('audit_chain_heads', [
+        'chain_key',
+        'last_sequence',
+        'last_hash',
+        'updated_at',
+    ]))->toBeTrue();
+
+    expect(DB::table('audit_chain_heads')->where('chain_key', 'global')->value('last_sequence'))->toBe(0);
 });
 
 it('seeds the required role names and default kanban columns', function () {

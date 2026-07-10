@@ -2,10 +2,15 @@
 
 namespace App\Providers;
 
+use App\Assistants\ProviderEndpointPolicy;
+use App\Assistants\ProviderHostResolver;
+use App\Assistants\SystemProviderHostResolver;
+use App\Contracts\EmbeddingGenerator;
 use App\Models\User;
 use App\Policies\PluginTokenPolicy;
 use App\Policies\ProjectPolicy;
 use App\Services\AuditLogger;
+use App\Services\Search\ProviderEmbeddingGenerator;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -19,7 +24,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(ProviderHostResolver::class, SystemProviderHostResolver::class);
+        $this->app->singleton(ProviderEndpointPolicy::class);
+        $this->app->bind(EmbeddingGenerator::class, ProviderEmbeddingGenerator::class);
     }
 
     /**

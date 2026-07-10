@@ -70,6 +70,57 @@ it('assembles chunks without concatenating the full artifact in a PHP string', f
     expect(hash('sha256', $assembled))->toBe($artifact['sha256']);
 });
 
+it('rejects out-of-range Genesis chunk indexes with artifact_chunk_out_of_range and no file', function () {
+    $context = createLimitsGenesisContext();
+    $artifact = limitsGenesisArtifact('file_inventory', 'file-inventory.json', 'hello', 1);
+    $importId = limitsGenesisStart($context, limitsGenesisManifest([$artifact]))->json('import_id');
+
+    foreach ([-1, 1, 999] as $index) {
+        limitsGenesisChunk($context, $importId, $artifact['artifact_id'], $index, 'evil', hash('sha256', 'evil'))
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+        Storage::disk('local')->assertMissing(
+            "devboard/artifacts/genesis/{$importId}/{$artifact['artifact_id']}/chunks/{$index}"
+        );
+    }
+});
+
+it('rejects a Genesis chunk whose bytes would exceed declared size_bytes', function () {
+    $context = createLimitsGenesisContext();
+    $artifact = limitsGenesisArtifact('file_inventory', 'file-inventory.json', 'abcde', 2);
+    $artifact['size_bytes'] = 5;
+    $importId = limitsGenesisStart($context, limitsGenesisManifest([$artifact]))->json('import_id');
+
+    limitsGenesisChunk($context, $importId, $artifact['artifact_id'], 0, 'abc', hash('sha256', 'abc'))->assertOk();
+
+    limitsGenesisChunk($context, $importId, $artifact['artifact_id'], 1, 'def', hash('sha256', 'def'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_size_mismatch');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/genesis/{$importId}/{$artifact['artifact_id']}/chunks/1"
+    );
+});
+
+it('rejects Genesis finalize when assembled size does not match declared size_bytes and deletes the partial file', function () {
+    $context = createLimitsGenesisContext();
+    $content = 'hello';
+    $artifact = limitsGenesisArtifact('file_inventory', 'file-inventory.json', $content, 1);
+    $artifact['size_bytes'] = 10;
+    $importId = limitsGenesisStart($context, limitsGenesisManifest([$artifact]))->json('import_id');
+
+    limitsGenesisChunk($context, $importId, $artifact['artifact_id'], 0, $content, hash('sha256', $content))->assertOk();
+
+    $storagePath = DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('storage_path');
+
+    limitsGenesisFinalize($context, $importId)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_size_mismatch');
+
+    Storage::disk('local')->assertMissing($storagePath);
+});
+
 function createLimitsGenesisContext(): array
 {
     $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');

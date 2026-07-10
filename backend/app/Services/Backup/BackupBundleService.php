@@ -3,6 +3,8 @@
 namespace App\Services\Backup;
 
 use App\Models\User;
+use App\Services\AuditChainVerifier;
+use App\Services\AuditLogger;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -11,7 +13,10 @@ use RuntimeException;
 
 final class BackupBundleService
 {
-    public function __construct(private readonly BackupManifestService $manifests)
+    public function __construct(
+        private readonly BackupManifestService $manifests,
+        private readonly AuditChainVerifier $auditChainVerifier,
+    )
     {
     }
 
@@ -137,9 +142,37 @@ final class BackupBundleService
 
         $report = $this->validateRequiredSecrets($bundle, $report);
         $report = $this->validateDatabaseChecksums($bundle, $report);
+        $report = $this->validateAuditChain($bundle, $report);
         $report = $this->validateStorageFiles($bundle, $report);
 
         return $this->finishReport($report, null, $actor);
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     * @param array<string, mixed> $report
+     * @return array<string, mixed>
+     */
+    private function validateAuditChain(array $bundle, array $report): array
+    {
+        $rows = $bundle['database']['tables']['audit_logs']['rows'] ?? null;
+        if (! is_array($rows)) {
+            return $this->addBlocker($report, 'missing_audit_logs', 'Audit log rows are missing from the database snapshot.');
+        }
+
+        $result = $this->auditChainVerifier->verifyRows($rows);
+        if (! $result->valid) {
+            $failure = $result->failures[0] ?? null;
+            $message = $failure === null
+                ? 'Audit chain verification failed for the database snapshot.'
+                : "Audit chain verification failed at sequence {$failure->sequence}: {$failure->message}";
+
+            return $this->addBlocker($report, 'audit_chain_invalid', $message);
+        }
+
+        $report['checks'][] = ['key' => 'audit_chain', 'label' => 'Audit hash chain', 'status' => 'ok', 'detail' => "{$result->lastSequence} audit row(s) verified"];
+
+        return $report;
     }
 
     /**
@@ -382,18 +415,9 @@ final class BackupBundleService
      */
     private function audit(User $actor, string $action, string $targetType, ?string $targetId, array $payload): void
     {
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $actor->id,
-            'actor_device_id' => null,
-            'actor_type' => 'dashboard',
-            'action' => $action,
-            'target_type' => $targetType,
-            'target_id' => $targetId,
-            'ip_address' => null,
-            'user_agent' => null,
-            'payload' => json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-            'created_at' => now(),
+        app(AuditLogger::class)->record($action, $targetType, $targetId, $payload, [
+            'type' => 'dashboard',
+            'user_id' => $actor->id,
         ]);
     }
 }

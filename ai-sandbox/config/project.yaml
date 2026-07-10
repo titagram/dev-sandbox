@@ -30,13 +30,6 @@ project:
   build_commands:
     - "cd backend && npm run build"
 
-environment:
-  host_os: "Darwin"
-  host_arch: "arm64"
-  docker_os: "linux"
-  docker_arch: "aarch64"
-  python: "3.14.5"
-
 docker:
   required: true
   compose_files:
@@ -50,11 +43,8 @@ docker:
 
 graph:
   enabled: true
-  ast_root: "project"
+  ast_root: "."
   neo4j_required: true
-  neo4j_url: "bolt://localhost:7687"
-  neo4j_user: "neo4j"
-  neo4j_password: "graphify-sandbox"
 
 documentation:
   wiki_root: "ai-sandbox/wiki"

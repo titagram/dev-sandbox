@@ -7,7 +7,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
 class DataPrivacyController extends Controller
@@ -297,18 +296,12 @@ class DataPrivacyController extends Controller
         $auth = $request->attributes->get('hades_auth') ?? [];
         $agent = is_array($auth) ? ($auth['agent'] ?? null) : null;
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => null,
-            'actor_device_id' => null,
-            'actor_type' => 'hades_agent',
-            'action' => $action,
-            'target_type' => 'hades_workspace_binding',
-            'target_id' => $bindingId,
+        app(\App\Services\AuditLogger::class)->record($action, 'hades_workspace_binding', $bindingId, [
+            'hades_agent_id' => $agent?->id,
+        ] + $payload, [
+            'type' => 'hades_agent',
             'ip_address' => $request->ip(),
             'user_agent' => $request->userAgent(),
-            'payload' => json_encode(['hades_agent_id' => $agent?->id] + $payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-            'created_at' => now(),
         ]);
     }
 

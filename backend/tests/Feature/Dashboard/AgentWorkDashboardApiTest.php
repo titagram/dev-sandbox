@@ -1,5 +1,6 @@
 <?php
 
+use App\Assistants\ProviderHostResolver;
 use App\Models\User;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Database\Events\QueryExecuted;
@@ -14,6 +15,11 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->seed(DevBoardSeeder::class);
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new AgentWorkFakeHostResolver(['8.8.8.8'], [
+            'ssrf-agent-work.example.test' => ['10.0.0.5'],
+        ]);
+    });
 });
 
 it('lets a developer create and list local agent work with repository and task scope', function () {
@@ -219,6 +225,45 @@ it('rejects unknown dashboard agent work keys', function () {
         ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['assigned_agent_key']);
+});
+
+it('fails socrates work closed without dispatching when the provider base URL is unsafe', function () {
+    Http::preventStrayRequests();
+    Http::fake(fn () => Http::response('should not be called', 200));
+
+    $providerId = (string) DB::table('ai_model_providers')->where('provider_key', 'openai')->value('id');
+
+    DB::table('ai_model_providers')->where('id', $providerId)->update([
+        'base_url' => 'https://ssrf-agent-work.example.test/v1',
+        'encrypted_api_key' => Crypt::encryptString('sk-opencode-test'),
+        'api_key_last_four' => 'test',
+        'enabled' => true,
+    ]);
+    DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->update([
+        'provider_id' => $providerId,
+        'model_name' => 'deepseek-v4-flash',
+        'max_output_tokens' => 1024,
+        'timeout_seconds' => 30,
+        'enabled' => true,
+    ]);
+
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $workItem = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => 'socrates',
+            'title' => 'Unsafe endpoint work',
+            'prompt' => 'This must fail without calling the unsafe provider.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('status', 'failed')
+        ->json();
+
+    expect($workItem['failure_reason'])->toBe('Provider endpoint URL is not allowed.')
+        ->and($workItem['result_memory_entry_id'])->toBeNull();
+
+    Http::assertNothingSent();
 });
 
 it('fails socrates work visibly when the configured provider rejects the request', function () {
@@ -1023,4 +1068,15 @@ function agentWorkDashboardApiProjectMemory(string $projectId, string $summary):
     ]);
 
     return $memoryId;
+}
+
+final class AgentWorkFakeHostResolver implements ProviderHostResolver
+{
+    /** @param list<string> $default @param array<string, list<string>> $overrides */
+    public function __construct(private array $default, private array $overrides = []) {}
+
+    public function resolve(string $host): array
+    {
+        return $this->overrides[strtolower($host)] ?? $this->default;
+    }
 }

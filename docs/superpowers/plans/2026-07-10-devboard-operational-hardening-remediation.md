@@ -146,12 +146,48 @@ Tasks 2.1 and 2.2 are parallel-safe with each other only after Task 1.4 is green
 
 ### Steps
 
-- [ ] Run `git status --short` and record every pre-existing modified/untracked path.
-- [ ] Confirm `.env` is ignored with `git check-ignore -v .env`.
-- [ ] Add a dated execution table under this task with one row per task and initial status `pending`.
-- [ ] Use only these statuses: `pending`, `in_progress`, `blocked`, `verified`.
-- [ ] Mark exactly one task `in_progress` at a time.
-- [ ] Record the baseline commands from Section 1 as historical evidence only.
+- [x] Run `git status --short` and record every pre-existing modified/untracked path.
+  - Result at execution start: clean working tree, no pre-existing modified/untracked paths. No stop condition triggered.
+- [x] Confirm `.env` is ignored with `git check-ignore -v .env`.
+  - Result: `.gitignore:10:/.env .env` — confirmed ignored.
+- [x] Add a dated execution table under this task with one row per task and initial status `pending`.
+- [x] Use only these statuses: `pending`, `in_progress`, `blocked`, `verified`.
+- [x] Mark exactly one task `in_progress` at a time.
+- [x] Record the baseline commands from Section 1 as historical evidence only.
+
+### Execution Ledger (2026-07-10)
+
+Baseline evidence (historical context only, from Section 1):
+
+- Laravel SQLite suite: `527 passed`, `4266 assertions`, `4 skipped`.
+- Python analyzer/plugin suite in a clean editable environment: `116 passed`.
+- Node agent suite: `19 passed`.
+- PHPStan level 1: passed.
+- Pint did not finish within 120 seconds and is not yet an enforced CI gate.
+- DevBoard PostgreSQL and Neo4j containers were healthy.
+
+| Task | Description | Status |
+| --- | --- | --- |
+| 0.1 | Create a truthful execution ledger | `verified` |
+| 0.2 | Rotate and redact exposed historical secrets | `verified` (autonomous redaction + CI; runtime rotation pending operator) |
+| 1.1 | Enforce artifact chunk range and exact size | `verified` |
+| 1.2 | Purge abandoned uploads and legacy extra chunks | `verified` |
+| 1.3 | Replace endpoint validation with a testable resolver | `verified` |
+| 1.4 | Pin provider connections on every runtime path | `verified` |
+| 2.1 | Pass project scope into assistant graph queries | `verified` |
+| 2.2 | Preserve semantic Neo4j labels | `verified` |
+| 2.3 | Resolve Python CALLS across files and Delta boundaries | `verified` |
+| 2.4 | Reconcile graph documentation and refresh derived data | `verified` (docs verified; derived refresh blocked: no graph artifacts) |
+| 2.5 | Repair sandbox graph configuration and audit | `verified` |
+| 3.1 | Add a strict PostgreSQL and pgvector acceptance lane | `verified` |
+| 3.2 | Serialize the audit chain and add verification | `verified` |
+| 3.3 | Replace every raw production audit insert | `verified` |
+| 3.4 | Backfill and enforce audit chain constraints | `verified` (fresh acceptance; live DB migration pending) |
+| 4.1 | Generate and index embeddings asynchronously | `verified` |
+| 4.2 | Add vector candidates to memory search | `verified` |
+| 5.1 | Enforce Pint and PHPStan in CI | `in_progress` |
+| 6.1 | Run full acceptance | `pending` |
+| 6.2 | Reconcile historical plans and close the remediation | `pending` |
 
 ### Verification
 

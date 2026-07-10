@@ -130,6 +130,49 @@ it('uses :Function label for function node kind', function () {
     expect($command['cypher'])->not()->toContain('UNWIND $nodes');
 });
 
+it('adds semantic labels from analyzer label arrays while preserving CodeNode', function (array $labels, string $expectedLabel) {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'node:test',
+            'labels' => $labels,
+            'properties' => ['name' => 'test'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain('MERGE (n:CodeNode');
+    expect($command['cypher'])->toContain("SET n:{$expectedLabel}");
+    expect($command['params']['labels'])->toBe($labels);
+})->with([
+    'symbol function' => [['Symbol', 'Function'], 'Function'],
+    'symbol method' => [['Symbol', 'Method'], 'Function'],
+    'symbol class' => [['Symbol', 'Class'], 'Class'],
+    'file' => [['File'], 'File'],
+]);
+
+it('keeps unknown analyzer symbol labels as only CodeNode', function () {
+    $command = GenesisGraphImportService::nodeCommand(
+        [
+            'id' => 'variable:x',
+            'labels' => ['Symbol', 'Variable'],
+            'properties' => ['name' => 'x'],
+        ],
+        'snap_123',
+        'run_123',
+        'repo_123',
+    );
+
+    expect($command['cypher'])->toContain('MERGE (n:CodeNode');
+    expect($command['cypher'])->toContain('SET n:CodeNode');
+    expect($command['cypher'])->not()->toContain('SET n:File');
+    expect($command['cypher'])->not()->toContain('SET n:Function');
+    expect($command['cypher'])->not()->toContain('SET n:Class');
+    expect($command['cypher'])->not()->toContain('SET n:Module');
+    expect($command['params']['labels'])->toBe(['Symbol', 'Variable']);
+});
+
 it('uses :File label for file node kind', function () {
     $command = GenesisGraphImportService::nodeCommand(
         [
@@ -325,6 +368,32 @@ it('returns multiple node batch commands grouped by label', function () {
     expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, ':Function')))->not->toBeNull();
     expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, ':Class')))->not->toBeNull();
     expect(collect($cyphers)->first(fn (string $c): bool => str_contains($c, 'UNWIND $nodes')))->not->toBeNull();
+});
+
+it('groups batch node commands by real analyzer semantic label shapes', function () {
+    $nodes = [
+        ['id' => 'function:health', 'labels' => ['Symbol', 'Function'], 'properties' => ['name' => 'health']],
+        ['id' => 'method:Controller@index', 'labels' => ['Symbol', 'Method'], 'properties' => ['name' => 'index']],
+        ['id' => 'class:Controller', 'labels' => ['Symbol', 'Class'], 'properties' => ['name' => 'Controller']],
+        ['id' => 'file:app.py', 'labels' => ['File'], 'properties' => ['path' => 'app.py']],
+        ['id' => 'variable:x', 'labels' => ['Symbol', 'Variable'], 'properties' => ['name' => 'x']],
+    ];
+
+    $commands = GenesisGraphImportService::nodeBatchCommands($nodes, 'snap_123', 'run_123', 'repo_123');
+
+    $commandBySetLabel = collect($commands)->keyBy(function (array $command): string {
+        preg_match('/SET n:(File|Function|Class|Module|CodeNode),/', $command['cypher'], $matches);
+
+        return $matches[1] ?? 'missing';
+    });
+
+    expect($commandBySetLabel->keys()->all())->toContain('File', 'Function', 'Class', 'CodeNode');
+    expect($commandBySetLabel['Function']['params']['nodes'])->toHaveCount(2);
+    expect($commandBySetLabel['Class']['params']['nodes'])->toHaveCount(1);
+    expect($commandBySetLabel['File']['params']['nodes'])->toHaveCount(1);
+    expect($commandBySetLabel['CodeNode']['params']['nodes'])->toHaveCount(1);
+    expect($commandBySetLabel['Function']['params']['nodes'][0]['labels'])->toBe(['Symbol', 'Function']);
+    expect($commandBySetLabel['CodeNode']['params']['nodes'][0]['labels'])->toBe(['Symbol', 'Variable']);
 });
 
 it('returns multiple relationship batch commands grouped by type', function () {

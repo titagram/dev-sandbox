@@ -24,57 +24,54 @@ class WikiRevisionService
         $now = now();
         $pageId = $this->findPageId($payload);
 
-        if (! $pageId) {
-            $pageId = (string) Str::ulid();
-            DB::table('wiki_pages')->insert([
-                'id' => $pageId,
-                'project_id' => $payload['project_id'],
-                'repository_id' => $payload['repository_id'] ?? null,
-                'slug' => $payload['slug'],
+        $revisionId = (string) Str::ulid();
+
+        DB::transaction(function () use (&$pageId, $payload, $evidence, $revisionId, $authorUserId, $authorDeviceId, $now): void {
+            if (! $pageId) {
+                $pageId = (string) Str::ulid();
+                DB::table('wiki_pages')->insert([
+                    'id' => $pageId,
+                    'project_id' => $payload['project_id'],
+                    'repository_id' => $payload['repository_id'] ?? null,
+                    'slug' => $payload['slug'],
+                    'title' => $payload['title'],
+                    'page_type' => $payload['page_type'],
+                    'current_revision_id' => null,
+                    'source_status' => $payload['source_status'],
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+            }
+
+            DB::table('wiki_revisions')->insert([
+                'id' => $revisionId,
+                'wiki_page_id' => $pageId,
+                'author_user_id' => $authorUserId,
+                'author_device_id' => $authorDeviceId,
+                'producer' => $payload['producer'],
+                'source_type' => $payload['source_type'],
+                'source_status' => $payload['source_status'],
+                'content_markdown' => $payload['content_markdown'],
+                'evidence_refs' => json_encode($evidence, JSON_THROW_ON_ERROR),
+                'created_at' => $now,
+            ]);
+
+            DB::table('wiki_pages')->where('id', $pageId)->update([
                 'title' => $payload['title'],
                 'page_type' => $payload['page_type'],
-                'current_revision_id' => null,
+                'current_revision_id' => $revisionId,
                 'source_status' => $payload['source_status'],
-                'created_at' => $now,
                 'updated_at' => $now,
             ]);
-        }
 
-        $revisionId = (string) Str::ulid();
-        DB::table('wiki_revisions')->insert([
-            'id' => $revisionId,
-            'wiki_page_id' => $pageId,
-            'author_user_id' => $authorUserId,
-            'author_device_id' => $authorDeviceId,
-            'producer' => $payload['producer'],
-            'source_type' => $payload['source_type'],
-            'source_status' => $payload['source_status'],
-            'content_markdown' => $payload['content_markdown'],
-            'evidence_refs' => json_encode($evidence, JSON_THROW_ON_ERROR),
-            'created_at' => $now,
-        ]);
-
-        DB::table('wiki_pages')->where('id', $pageId)->update([
-            'title' => $payload['title'],
-            'page_type' => $payload['page_type'],
-            'current_revision_id' => $revisionId,
-            'source_status' => $payload['source_status'],
-            'updated_at' => $now,
-        ]);
-
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $authorUserId,
-            'actor_device_id' => $authorDeviceId,
-            'actor_type' => $authorUserId ? 'user' : ($authorDeviceId ? 'plugin' : 'system'),
-            'action' => 'wiki.updated',
-            'target_type' => 'wiki_page',
-            'target_id' => $pageId,
-            'ip_address' => null,
-            'user_agent' => null,
-            'payload' => json_encode(['wiki_revision_id' => $revisionId], JSON_THROW_ON_ERROR),
-            'created_at' => $now,
-        ]);
+            app(AuditLogger::class)->record('wiki.updated', 'wiki_page', $pageId, [
+                'wiki_revision_id' => $revisionId,
+            ], [
+                'type' => $authorUserId ? 'user' : ($authorDeviceId ? 'plugin' : 'system'),
+                'user_id' => $authorUserId,
+                'device_id' => $authorDeviceId,
+            ]);
+        });
 
         $page = DB::table('wiki_pages')->where('id', $pageId)->first();
         $revision = DB::table('wiki_revisions')->where('id', $revisionId)->first();

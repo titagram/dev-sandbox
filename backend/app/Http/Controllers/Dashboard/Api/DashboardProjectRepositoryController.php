@@ -48,17 +48,7 @@ final class DashboardProjectRepositoryController extends Controller
                 'updated_at' => $now,
             ]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $request->user()->id,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'repository.declared',
-                'target_type' => 'repository',
-                'target_id' => $repositoryId,
-                'ip_address' => $request->ip(),
-                'user_agent' => $request->userAgent(),
-                'payload' => json_encode([
+            app(\App\Services\AuditLogger::class)->record('repository.declared', 'repository', $repositoryId, [
                     'project_id' => $project,
                     'repository' => [
                         'id' => $repositoryId,
@@ -71,8 +61,11 @@ final class DashboardProjectRepositoryController extends Controller
                         'excluded_paths' => $payload['excluded_paths'],
                         'stack_hints' => $payload['stack_hints'],
                     ],
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
+            ], [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
             ]);
         });
 

@@ -1,10 +1,12 @@
 <?php
 
 use App\Console\Commands\BootstrapAdminCommand;
+use App\Console\Commands\BackfillAuditChainCommand;
 use App\Console\Commands\Hades\ReindexSearchDocumentsCommand;
 use App\Console\Commands\Quality\CheckGatesCommand;
 use App\Console\Commands\Quality\RouteInventoryCommand;
 use App\Console\Commands\Quality\RouteSmokeCommand;
+use App\Console\Commands\VerifyAuditChainCommand;
 use App\Http\Middleware\AuthenticateHadesAgentToken;
 use App\Http\Middleware\AuthenticatePluginToken;
 use App\Http\Middleware\EnsureActiveUser;
@@ -23,10 +25,12 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withCommands([
         BootstrapAdminCommand::class,
+        BackfillAuditChainCommand::class,
         CheckGatesCommand::class,
         ReindexSearchDocumentsCommand::class,
         RouteInventoryCommand::class,
         RouteSmokeCommand::class,
+        VerifyAuditChainCommand::class,
     ])
     ->withSchedule(function (Schedule $schedule): void {
         $schedule

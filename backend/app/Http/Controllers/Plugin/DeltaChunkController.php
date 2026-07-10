@@ -20,10 +20,15 @@ class DeltaChunkController extends Controller
         private readonly PluginInvariantService $invariants,
     ) {}
 
-    public function __invoke(Request $request, string $deltaSync, string $artifact, int $chunk): JsonResponse
+    public function __invoke(Request $request, string $deltaSync, string $artifact, string $chunk): JsonResponse
     {
         if ($error = $this->lifecycle->pluginDeltaWriteGuard($deltaSync)) {
             return $error;
+        }
+
+        $chunkIndex = filter_var($chunk, FILTER_VALIDATE_INT);
+        if ($chunkIndex === false || $chunkIndex < 0) {
+            return $this->error('artifact_chunk_out_of_range', 'Chunk index must be a non-negative integer within 0..chunk_count-1.', Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
         $delta = DB::table('delta_syncs')->where('id', $deltaSync)->first();
@@ -45,30 +50,39 @@ class DeltaChunkController extends Controller
         }
 
         if (strlen($request->getContent()) > config('devboard.artifacts.max_chunk_bytes')) {
-            return response()->json([
-                'error' => ['code' => 'artifact_chunk_too_large', 'message' => 'Chunk body exceeds max_chunk_bytes.'],
-            ], Response::HTTP_REQUEST_ENTITY_TOO_LARGE);
+            return $this->error('artifact_chunk_too_large', 'Chunk body exceeds max_chunk_bytes.', Response::HTTP_REQUEST_ENTITY_TOO_LARGE);
         }
 
         try {
             $this->storage->storeChunk(
                 $deltaSync,
                 $artifact,
-                $chunk,
+                $chunkIndex,
                 $request->getContent(),
                 (string) $request->header('X-DevBoard-Chunk-SHA256'),
                 'delta',
             );
         } catch (ArtifactStorageException $exception) {
-            return response()->json([
-                'error' => ['code' => $exception->errorCode, 'message' => $exception->getMessage()],
-            ], Response::HTTP_CONFLICT);
+            return $this->error($exception->errorCode, $exception->getMessage(), $this->mapStatus($exception->errorCode));
         }
 
         return response()->json([
             'artifact_id' => $artifact,
-            'chunk_index' => $chunk,
+            'chunk_index' => $chunkIndex,
             'status' => 'received',
         ]);
+    }
+
+    private function error(string $code, string $message, int $status): JsonResponse
+    {
+        return response()->json(['error' => ['code' => $code, 'message' => $message]], $status);
+    }
+
+    private function mapStatus(string $errorCode): int
+    {
+        return match ($errorCode) {
+            'artifact_chunk_out_of_range', 'artifact_size_mismatch' => Response::HTTP_UNPROCESSABLE_ENTITY,
+            default => Response::HTTP_CONFLICT,
+        };
     }
 }

@@ -143,7 +143,7 @@ services:
       - devboard-node-modules:/workspace/backend/node_modules
 
   postgres:
-    image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
+    image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
     environment:
       POSTGRES_DB: devboard
       POSTGRES_USER: devboard

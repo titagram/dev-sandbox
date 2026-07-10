@@ -22,13 +22,14 @@ Backend responsibilities:
 - authenticate token and device;
 - enforce repository policy;
 - allocate run, Genesis Import, artifact, and snapshot ids;
-- receive chunks;
+- receive chunks, validating chunk index range (`0..chunk_count-1`) and cumulative byte budget exactly against the declared `size_bytes`;
 - validate hashes and schema versions;
-- persist artifact metadata in PostgreSQL;
-- store artifact files on the filesystem;
-- import graph artifacts into Neo4j;
+- persist artifact metadata in PostgreSQL, serializing chunk accounting with `artifacts` row locks;
+- store artifact files on the filesystem, iterating only declared chunk indexes;
+- import graph artifacts into Neo4j through the unified `ImportGraphToNeo4j` job;
 - write or update wiki revisions with evidence;
-- expose import state in dashboard.
+- expose import state in dashboard;
+- purge abandoned uploads: artifacts that stay in the `uploading` status past the `DEVBOARD_INCOMPLETE_UPLOAD_TTL_HOURS` window (default `24`), and whose parent `genesis_imports` row has not been updated within that same window, are eligible for cleanup. Operator-triggered cleanup defaults to a dry run that reports candidates without deleting files or mutating rows; a live purge deletes the complete artifact directory (including any out-of-range legacy chunk files) and marks the row `purged`, auditing only IDs, type, byte counts, and reason.
 
 ## Required Flow
 
@@ -46,7 +47,7 @@ Backend responsibilities:
 11. Plugin finalizes Genesis Import.
 12. Backend validates hashes and schemas.
 13. Backend creates a Snapshot.
-14. Backend imports graph into Neo4j.
+14. Backend dispatches `ImportGraphToNeo4j` to import graph into Neo4j.
 15. Backend upserts wiki revisions.
 16. Backend marks Genesis Import active.
 17. Plugin finishes run.
@@ -241,7 +242,7 @@ schema_version
 snapshot_hash
 ```
 
-Graph node labels must prefer code intelligence entities over raw AST nodes:
+Graph node labels should prefer code intelligence entities over raw AST nodes. This broad label list is a future target for analyzer output and product semantics:
 
 ```text
 File
@@ -263,6 +264,10 @@ Task
 Run
 Commit
 ```
+
+Implemented Neo4j contract: the backend currently imports every node with the base `:CodeNode` label and then adds only recognized semantic labels: `:File`, `:Function`, `:Class`, and `:Module`. `Method` maps to `:Function`. Unknown labels remain only `:CodeNode`, and the original artifact `labels` array is preserved as a node property. Broader labels such as `Route`, `Controller`, `Model`, `Table`, `Migration`, `Job`, `Event`, `Listener`, `Command`, `Test`, `WikiPage`, `Task`, `Run`, and `Commit` remain a future target until backend import and query support are expanded.
+
+Implemented relationship contract: Neo4j relationship types are `CALLS`, `DECLARES`, and `IMPORTS`; any other artifact relationship type imports as `RELATED` while retaining the original `type` property. Broader relation vocabulary in `relation-index.json` is a future target for typed Neo4j relationships, not a current Neo4j query contract.
 
 ### route-index.json
 
@@ -449,7 +454,11 @@ Finalize must validate:
 Failure handling:
 
 - missing chunk returns `artifact_chunk_missing`;
+- a chunk index outside the declared `0..chunk_count-1` range returns `artifact_chunk_out_of_range` (HTTP 422) and creates no file;
+- a chunk whose cumulative bytes would exceed the declared `size_bytes` returns `artifact_size_mismatch` (HTTP 422) and is not stored;
+- mismatched chunk hash returns `artifact_hash_mismatch`;
 - hash mismatch returns `artifact_hash_mismatch`;
+- finalize validates the exact assembled size before the artifact SHA: if the streamed size is not exactly `size_bytes` it returns `artifact_size_mismatch` (HTTP 422) and deletes the partial assembled file; SHA validation is a separate check after exact-size validation;
 - hard-block violation without explicit approval returns `secret_scan_blocked`;
 - schema failure returns `schema_validation_failed`;
 - Neo4j import failure marks Genesis Import `failed` but preserves uploaded artifacts for audit.
@@ -497,8 +506,8 @@ Required graph metadata node:
 Import rules:
 
 - delete or supersede previous graph projection for the same repository snapshot scope;
-- create nodes with stable ids from artifact ids and symbol ids;
-- create relations only from validated `relation-index.json` and `graph-snapshot.json`;
+- create nodes with stable ids from artifact ids and symbol ids, always preserving `:CodeNode` and adding only implemented semantic labels (`:File`, `:Function`, `:Class`, `:Module`);
+- create relations only from validated `relation-index.json` and `graph-snapshot.json`, mapping `CALLS`, `DECLARES`, and `IMPORTS` to native Neo4j relationship types and all other types to `RELATED`;
 - link `Run`, `WikiPage`, and `Task` nodes when ids are present.
 
 ## Acceptance Criteria

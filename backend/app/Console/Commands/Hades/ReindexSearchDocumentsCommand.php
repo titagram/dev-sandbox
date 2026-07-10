@@ -2,7 +2,10 @@
 
 namespace App\Console\Commands\Hades;
 
+use App\Contracts\EmbeddingGenerator;
+use App\Jobs\GenerateSearchDocumentEmbedding;
 use App\Services\Hades\HadesSearchDocumentIndexer;
+use App\Services\Search\EmbeddingIndexService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
@@ -15,12 +18,16 @@ class ReindexSearchDocumentsCommand extends Command
         {--domain=* : Restrict domains: memory,wiki,artifacts,bug_evidence,source_slices,evidence_packs}
         {--limit=5000 : Maximum rows to scan per domain}
         {--dry-run : Count rows without writing search documents}
+        {--embeddings : Generate missing/stale embeddings after rebuilding search documents}
         {--json : Emit machine-readable JSON}';
 
     protected $description = 'Backfill Hades materialized search documents from existing memory, wiki, artifact, evidence, source slice, and evidence pack records.';
 
-    public function __construct(private readonly HadesSearchDocumentIndexer $indexer)
-    {
+    public function __construct(
+        private readonly HadesSearchDocumentIndexer $indexer,
+        private readonly EmbeddingGenerator $embeddingGenerator,
+        private readonly EmbeddingIndexService $embeddingIndex,
+    ) {
         parent::__construct();
     }
 
@@ -41,6 +48,7 @@ class ReindexSearchDocumentsCommand extends Command
         $projectId = $this->option('project') ?: null;
         $workspaceBindingId = $this->option('workspace-binding') ?: null;
         $dryRun = (bool) $this->option('dry-run');
+        $embeddings = (bool) $this->option('embeddings') && ! $dryRun;
         $result = [
             'schema' => 'hades.search_documents_reindex.v1',
             'project_id' => $projectId,
@@ -50,14 +58,16 @@ class ReindexSearchDocumentsCommand extends Command
             'domains' => [],
             'scanned' => 0,
             'indexed' => 0,
+            'embeddings' => 0,
         ];
 
         foreach ($domains as $domain) {
             $method = 'reindex'.str_replace(' ', '', ucwords(str_replace('_', ' ', $domain)));
-            $stats = $this->{$method}($projectId, $workspaceBindingId, $limit, $dryRun);
+            $stats = $this->{$method}($projectId, $workspaceBindingId, $limit, $dryRun, $embeddings);
             $result['domains'][$domain] = $stats;
             $result['scanned'] += $stats['scanned'];
             $result['indexed'] += $stats['indexed'];
+            $result['embeddings'] += $stats['embeddings'];
         }
 
         if ((bool) $this->option('json')) {
@@ -69,8 +79,11 @@ class ReindexSearchDocumentsCommand extends Command
         $this->info("Scanned {$result['scanned']} source record(s).");
         $verb = $dryRun ? 'Would index' : 'Indexed';
         $this->info("{$verb} {$result['indexed']} search document(s).");
+        if ($embeddings) {
+            $this->info("Backfilled {$result['embeddings']} embedding(s).");
+        }
         foreach ($result['domains'] as $domain => $stats) {
-            $this->line("- {$domain}: scanned {$stats['scanned']}, indexed {$stats['indexed']}");
+            $this->line("- {$domain}: scanned {$stats['scanned']}, indexed {$stats['indexed']}, embeddings {$stats['embeddings']}");
         }
 
         return SymfonyCommand::SUCCESS;
@@ -99,9 +112,9 @@ class ReindexSearchDocumentsCommand extends Command
     }
 
     /**
-     * @return array{scanned:int,indexed:int}
+     * @return array{scanned:int,indexed:int,embeddings:int}
      */
-    private function reindexMemory(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun): array
+    private function reindexMemory(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun, bool $embeddings): array
     {
         $rows = DB::table('project_memory_entries')
             ->when($projectId !== null, fn ($builder) => $builder->where('project_id', $projectId))
@@ -110,13 +123,13 @@ class ReindexSearchDocumentsCommand extends Command
             ->limit($limit)
             ->get();
 
-        return $this->indexRows($rows, $dryRun, fn (object $row) => $this->indexer->indexMemoryEntry($row));
+        return $this->indexRows($rows, $dryRun, fn (object $row) => $this->indexer->indexMemoryEntry($row), $embeddings, fn (object $row): array => ['project_memory_entries', (string) $row->id]);
     }
 
     /**
-     * @return array{scanned:int,indexed:int}
+     * @return array{scanned:int,indexed:int,embeddings:int}
      */
-    private function reindexWiki(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun): array
+    private function reindexWiki(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun, bool $embeddings): array
     {
         $rows = DB::table('wiki_pages')
             ->join('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
@@ -171,13 +184,13 @@ class ReindexSearchDocumentsCommand extends Command
                 'created_at' => $row->revision_created_at,
             ];
             $this->indexer->indexWikiRevision($page, $revision);
-        });
+        }, $embeddings, fn (object $row): array => ['wiki_revisions', (string) $row->revision_id]);
     }
 
     /**
-     * @return array{scanned:int,indexed:int}
+     * @return array{scanned:int,indexed:int,embeddings:int}
      */
-    private function reindexArtifacts(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun): array
+    private function reindexArtifacts(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun, bool $embeddings): array
     {
         $rows = DB::table('hades_agent_artifacts')
             ->when($projectId !== null, fn ($builder) => $builder->where('project_id', $projectId))
@@ -192,13 +205,13 @@ class ReindexSearchDocumentsCommand extends Command
             $artifact = is_array($artifact) ? $artifact : [];
             $artifactJson = json_encode($artifact, JSON_THROW_ON_ERROR);
             $this->indexer->indexArtifact($row, $artifact, $artifactJson);
-        });
+        }, $embeddings, fn (object $row): array => ['hades_agent_artifacts', (string) $row->id]);
     }
 
     /**
-     * @return array{scanned:int,indexed:int}
+     * @return array{scanned:int,indexed:int,embeddings:int}
      */
-    private function reindexBugEvidence(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun): array
+    private function reindexBugEvidence(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun, bool $embeddings): array
     {
         $rows = DB::table('hades_bug_evidence_items')
             ->when($projectId !== null, fn ($builder) => $builder->where('project_id', $projectId))
@@ -208,13 +221,13 @@ class ReindexSearchDocumentsCommand extends Command
             ->limit($limit)
             ->get();
 
-        return $this->indexRows($rows, $dryRun, fn (object $row) => $this->indexer->indexBugEvidence($row));
+        return $this->indexRows($rows, $dryRun, fn (object $row) => $this->indexer->indexBugEvidence($row), $embeddings, fn (object $row): array => ['hades_bug_evidence_items', (string) $row->id]);
     }
 
     /**
-     * @return array{scanned:int,indexed:int}
+     * @return array{scanned:int,indexed:int,embeddings:int}
      */
-    private function reindexSourceSlices(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun): array
+    private function reindexSourceSlices(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun, bool $embeddings): array
     {
         $rows = DB::table('hades_source_slices')
             ->when($projectId !== null, fn ($builder) => $builder->where('project_id', $projectId))
@@ -224,13 +237,13 @@ class ReindexSearchDocumentsCommand extends Command
             ->limit($limit)
             ->get();
 
-        return $this->indexRows($rows, $dryRun, fn (object $row) => $this->indexer->indexSourceSlice($row));
+        return $this->indexRows($rows, $dryRun, fn (object $row) => $this->indexer->indexSourceSlice($row), $embeddings, fn (object $row): array => ['hades_source_slices', (string) $row->id]);
     }
 
     /**
-     * @return array{scanned:int,indexed:int}
+     * @return array{scanned:int,indexed:int,embeddings:int}
      */
-    private function reindexEvidencePacks(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun): array
+    private function reindexEvidencePacks(?string $projectId, ?string $workspaceBindingId, int $limit, bool $dryRun, bool $embeddings): array
     {
         $rows = DB::table('hades_evidence_packs')
             ->when($projectId !== null, fn ($builder) => $builder->where('project_id', $projectId))
@@ -240,26 +253,51 @@ class ReindexSearchDocumentsCommand extends Command
             ->limit($limit)
             ->get();
 
-        return $this->indexRows($rows, $dryRun, fn (object $row) => $this->indexer->indexEvidencePack($row));
+        return $this->indexRows($rows, $dryRun, fn (object $row) => $this->indexer->indexEvidencePack($row), $embeddings, fn (object $row): array => ['hades_evidence_packs', (string) $row->id]);
     }
 
     /**
      * @param  iterable<object>  $rows
-     * @return array{scanned:int,indexed:int}
+     * @return array{scanned:int,indexed:int,embeddings:int}
      */
-    private function indexRows(iterable $rows, bool $dryRun, callable $callback): array
+    private function indexRows(iterable $rows, bool $dryRun, callable $callback, bool $embeddings, callable $source): array
     {
         $scanned = 0;
         $indexed = 0;
+        $embedded = 0;
 
         foreach ($rows as $row) {
             $scanned++;
             if (! $dryRun) {
                 $callback($row);
+                [$sourceTable, $sourceId] = $source($row);
+                if ($embeddings && $this->backfillEmbedding($sourceTable, $sourceId)) {
+                    $embedded++;
+                }
             }
             $indexed++;
         }
 
-        return ['scanned' => $scanned, 'indexed' => $indexed];
+        return ['scanned' => $scanned, 'indexed' => $indexed, 'embeddings' => $embedded];
+    }
+
+    private function backfillEmbedding(string $sourceTable, string $sourceId): bool
+    {
+        $checksum = DB::table('hades_search_documents')
+            ->where('source_table', $sourceTable)
+            ->where('source_id', $sourceId)
+            ->value('checksum');
+
+        if (! is_string($checksum) || $checksum === '') {
+            return false;
+        }
+
+        (new GenerateSearchDocumentEmbedding($sourceTable, $sourceId, $checksum))->handle($this->embeddingGenerator, $this->embeddingIndex);
+
+        return DB::table('hades_search_documents')
+            ->where('source_table', $sourceTable)
+            ->where('source_id', $sourceId)
+            ->where('embedding_status', 'ready')
+            ->exists();
     }
 }

@@ -50,6 +50,8 @@ class GenesisFinalizeService
                     ->where('repository_id', $import->repository_id)
                     ->where('run_id', $import->run_id)
                     ->where('storage_path', 'like', "devboard/artifacts/genesis/{$importId}/%/artifact")
+                    ->orderBy('id')
+                    ->lockForUpdate()
                     ->get();
 
                 foreach ($artifacts as $artifact) {
@@ -123,19 +125,9 @@ class GenesisFinalizeService
                     'created_at' => now(),
                 ]);
 
-                DB::table('audit_logs')->insert([
-                    'id' => (string) Str::ulid(),
-                    'actor_user_id' => null,
-                    'actor_device_id' => null,
-                    'actor_type' => 'plugin',
-                    'action' => 'genesis.finalized',
-                    'target_type' => 'genesis_import',
-                    'target_id' => $importId,
-                    'ip_address' => null,
-                    'user_agent' => null,
-                    'payload' => json_encode(['snapshot_id' => $snapshotId], JSON_THROW_ON_ERROR),
-                    'created_at' => now(),
-                ]);
+                app(AuditLogger::class)->record('genesis.finalized', 'genesis_import', $importId, [
+                    'snapshot_id' => $snapshotId,
+                ], ['type' => 'plugin']);
 
                 if ($graphSnapshot) {
                     if ($transactionalQueue) {
@@ -222,18 +214,9 @@ class GenesisFinalizeService
             'created_at' => now(),
         ]);
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => null,
-            'actor_device_id' => $run?->device_id,
-            'actor_type' => 'plugin',
-            'action' => 'security.blocked_upload_approved',
-            'target_type' => $targetType,
-            'target_id' => $targetId,
-            'ip_address' => null,
-            'user_agent' => null,
-            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        app(AuditLogger::class)->record('security.blocked_upload_approved', $targetType, $targetId, $payload, [
+            'type' => 'plugin',
+            'device_id' => $run?->device_id,
         ]);
     }
 

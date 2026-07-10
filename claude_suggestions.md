@@ -70,7 +70,7 @@ Questi vanno chiusi prima di scambiare token con agenti esterni. Sono i punti do
 
 **Cosa succede.**
 - `backend/.env` è **tracciato in git** (attualmente vuoto, ma `.gitignore` non protegge un file già tracciato) → un commit futuro popolato leakerebbe.
-- `docker-compose.devboard.yaml` hardcoda un `APP_KEY` base64 reale come fallback (`:12,52`) e la password Neo4j `graphify-sandbox` (`:32,72,114,127`); quest'ultima è anche fallback in `config/services.php:42`.
+- `docker-compose.devboard.yaml` hardcoda un `APP_KEY` base64 reale come fallback (`:12,52`) e la password Neo4j `<redacted-rotated-neo4j-password>` (`:32,72,114,127`); quest'ultima è anche fallback in `config/services.php:42`. <!-- credential rotated 2026-07-10 per remediation Task 0.2; value redacted -->
 - Il dominio pubblico `home-sweet-home.cloud` monta `docker-compose.devboard.traefik.yaml` **sopra il compose dev** (`README.md:167`), quindi la produzione eredita `php artisan serve`, `composer install` a runtime, bind mount `.:/workspace` e i secret di default — pur con `APP_ENV=production`.
 
 **Cosa cambiare.**

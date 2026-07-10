@@ -15,8 +15,8 @@ Provide non-production local credentials through the shell or a root `.env` file
 
 ```bash
 export APP_KEY='base64:replace-with-a-local-key'
-export DB_PASSWORD='local-db-password'
-export NEO4J_PASSWORD='local-neo4j-password'
+export DB_PASSWORD=  # set your local PostgreSQL password
+export NEO4J_PASSWORD=  # set your local Neo4j password
 
 docker compose -f docker-compose.devboard.yaml up -d app worker scheduler node postgres neo4j
 ```

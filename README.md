@@ -185,7 +185,7 @@ docker compose -f docker-compose.devboard.yaml exec -T app php artisan migrate:f
 ```bash
 docker compose -f docker-compose.devboard.yaml ps
 docker compose -f docker-compose.devboard.yaml logs --tail=80 app
-docker compose -f docker-compose.devboard.yaml exec -T neo4j cypher-shell -u neo4j -p graphify-sandbox 'RETURN 1 AS ok'
+docker compose -f docker-compose.devboard.yaml exec -T neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD}" 'RETURN 1 AS ok'
 ```
 
 ## Porte e credenziali locali
@@ -220,7 +220,7 @@ docker compose -f docker-compose.devboard.yaml exec -T postgres psql -U devboard
 - browser: [http://127.0.0.1:17474](http://127.0.0.1:17474)
 - bolt: `bolt://127.0.0.1:17687`
 - username: `neo4j`
-- password: `graphify-sandbox`
+- password: supplied via the `NEO4J_PASSWORD` environment variable (see `docker/devboard/README.md`)
 
 ## Dati seedati per sviluppo e test
 
@@ -676,7 +676,7 @@ docker compose -f docker-compose.devboard.yaml exec -T postgres psql -U devboard
 ### Neo4j
 
 ```bash
-docker compose -f docker-compose.devboard.yaml exec -T neo4j cypher-shell -u neo4j -p graphify-sandbox \
+docker compose -f docker-compose.devboard.yaml exec -T neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD}" \
   "MATCH (s:DevBoardSnapshot) RETURN count(s) AS snapshots; MATCH (n:CodeNode) RETURN count(n) AS code_nodes;"
 ```
 

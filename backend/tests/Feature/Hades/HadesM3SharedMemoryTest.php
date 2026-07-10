@@ -1,6 +1,8 @@
 <?php
 
+use App\Contracts\EmbeddingGenerator;
 use App\Models\User;
+use App\Services\Search\EmbeddingIndexService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
@@ -730,6 +732,157 @@ it('quarantines raw source chunks from memory search unless explicitly requested
         ->assertJsonPath('items.0.raw_chunk', true)
         ->assertJsonPath('items.0.schema', 'hades.backend_wiki.file_chunk.v1')
         ->assertJsonPath('items.0.source', 'graphify-sidecar/carnovali-facts.md');
+});
+
+it('unions semantic vector candidates into Hades memory search once and reports retrieval metadata', function () {
+    config()->set('devboard.embeddings.enabled', true);
+    config()->set('devboard.embeddings.provider', 'fake');
+    config()->set('devboard.embeddings.model', 'fake-embedding-model');
+    config()->set('devboard.embeddings.dimensions', 3);
+    config()->set('devboard.vector_score_weight', 20);
+
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $now = now();
+    $semanticId = (string) Str::ulid();
+    $lexicalId = (string) Str::ulid();
+    $otherProjectId = (string) Str::ulid();
+
+    DB::table('project_memory_entries')->insert([
+        [
+            'id' => $semanticId,
+            'project_id' => $agent['project_id'],
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => null,
+            'source' => 'manual',
+            'kind' => 'decision',
+            'completeness' => 'complete',
+            'summary' => 'Persist durable purchase reconciliation outcome.',
+            'payload' => json_encode(['evidence_refs' => [['path' => 'docs/orders.md']]], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now->copy()->subHour(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+        [
+            'id' => $lexicalId,
+            'project_id' => $agent['project_id'],
+            'repository_id' => null,
+            'task_id' => null,
+            'run_id' => null,
+            'author_user_id' => null,
+            'agent_key' => null,
+            'source' => 'manual',
+            'kind' => 'decision',
+            'completeness' => 'complete',
+            'summary' => 'semantic-vector-query appears in lexical memory.',
+            'payload' => json_encode(['note' => 'lexical match'], JSON_THROW_ON_ERROR),
+            'occurred_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ],
+    ]);
+
+    $embeddingGenerator = new HadesMemorySearchEmbeddingGeneratorFake([[0.1, 0.2, 0.3]]);
+    $embeddingIndex = new HadesMemorySearchEmbeddingIndexFake([
+        [
+            'source_id' => $semanticId,
+            'source_table' => 'project_memory_entries',
+            'similarity' => 1.25,
+            'evidence_refs' => [['path' => 'docs/orders.md']],
+            'needs_verification' => false,
+        ],
+        [
+            'source_id' => (string) Str::ulid(),
+            'source_table' => 'project_memory_entries',
+            'similarity' => 0.99,
+            'evidence_refs' => [],
+            'needs_verification' => true,
+        ],
+    ], model: 'fake-embedding-model');
+
+    app()->instance(EmbeddingGenerator::class, $embeddingGenerator);
+    app()->instance(EmbeddingIndexService::class, $embeddingIndex);
+
+    $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'semantic-vector-query',
+        'domain' => 'logbook',
+        'limit' => 2,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('retrieval.lexical.status', 'ok')
+        ->assertJsonPath('retrieval.vector.status', 'ok')
+        ->assertJsonPath('retrieval.vector.model', 'fake-embedding-model')
+        ->assertJsonPath('retrieval.vector.candidate_count', 2)
+        ->assertJsonPath('count', 2)
+        ->json();
+
+    expect($embeddingGenerator->calls)->toBe(1);
+    expect($embeddingIndex->calls)->toHaveCount(1);
+    expect($embeddingIndex->calls[0]['project_id'])->toBe($agent['project_id']);
+    expect($embeddingIndex->calls[0]['workspace_binding_id'])->toBe($binding['workspace_binding_id']);
+    expect($embeddingIndex->calls[0]['domains'])->toBe(['logbook']);
+    expect($embeddingIndex->calls[0]['limit'])->toBe(2);
+
+    $ids = collect($response['items'])->pluck('id')->all();
+    expect($ids)->toContain($semanticId)->toContain($lexicalId)->not->toContain($otherProjectId);
+
+    $semantic = collect($response['items'])->firstWhere('id', $semanticId);
+    expect($semantic['similarity'])->toBeGreaterThanOrEqual(0.0)->toBeLessThanOrEqual(1.0);
+    expect($semantic['evidence_refs'])->toBe([['path' => 'docs/orders.md']]);
+    expect($semantic['needs_verification'])->toBeFalse();
+    expect($semantic['score'])->toBeGreaterThan(0)->toBeLessThan(80);
+});
+
+it('preserves lexical Hades memory results when vector retrieval is degraded', function () {
+    config()->set('devboard.embeddings.enabled', true);
+    config()->set('devboard.embeddings.provider', 'fake');
+    config()->set('devboard.embeddings.model', 'fake-embedding-model');
+    config()->set('devboard.embeddings.dimensions', 3);
+
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $memoryId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => null,
+        'source' => 'manual',
+        'kind' => 'decision',
+        'completeness' => 'complete',
+        'summary' => 'degraded-vector-query remains lexical.',
+        'payload' => json_encode(['note' => 'lexical survives vector failure'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    app()->instance(EmbeddingGenerator::class, new HadesMemorySearchEmbeddingGeneratorFake(exception: new \RuntimeException('provider unavailable')));
+    app()->instance(EmbeddingIndexService::class, new HadesMemorySearchEmbeddingIndexFake([], model: 'fake-embedding-model'));
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'degraded-vector-query',
+        'domain' => 'logbook',
+        'limit' => 1,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('items.0.id', $memoryId)
+        ->assertJsonPath('retrieval.lexical.status', 'ok')
+        ->assertJsonPath('retrieval.vector.status', 'degraded')
+        ->assertJsonPath('retrieval.vector.candidate_count', 0);
 });
 
 it('searches project index artifacts through the Hades memory search endpoint', function () {
@@ -2405,4 +2558,67 @@ function hadesM3Artifact(array $agent, array $binding, string $schema, array $ar
     ]);
 
     return $id;
+}
+
+class HadesMemorySearchEmbeddingGeneratorFake implements EmbeddingGenerator
+{
+    public int $calls = 0;
+
+    /** @param list<list<float>> $responses */
+    public function __construct(private array $responses = [], private ?Throwable $exception = null) {}
+
+    /** @return list<float> */
+    public function generate(string $input): array
+    {
+        $this->calls++;
+
+        if ($this->exception !== null) {
+            throw $this->exception;
+        }
+
+        return array_shift($this->responses) ?? [0.1, 0.2, 0.3];
+    }
+}
+
+class HadesMemorySearchEmbeddingIndexFake extends EmbeddingIndexService
+{
+    /** @var list<array<string, mixed>> */
+    public array $calls = [];
+
+    /** @param list<array<string, mixed>> $results */
+    public function __construct(private array $results, private string $model) {}
+
+    public function supportsEmbeddings(): bool
+    {
+        return true;
+    }
+
+    public function vectorModel(): ?string
+    {
+        return $this->model;
+    }
+
+    public function searchSimilar(string $projectId, array $queryEmbedding, int $limit, ?string $workspaceBindingId = null, array $domains = []): array
+    {
+        $this->calls[] = [
+            'project_id' => $projectId,
+            'query_embedding' => $queryEmbedding,
+            'limit' => $limit,
+            'workspace_binding_id' => $workspaceBindingId,
+            'domains' => $domains,
+        ];
+
+        return $this->results;
+    }
+
+    public function extractEvidenceRefsForSource(string $sourceTable, string $sourceId): array
+    {
+        foreach ($this->results as $result) {
+            if (($result['source_table'] ?? null) === $sourceTable && ($result['source_id'] ?? null) === $sourceId) {
+                return $result['evidence_refs'] ?? [];
+            }
+        }
+
+        return [];
+    }
 }

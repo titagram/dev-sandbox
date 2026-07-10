@@ -196,29 +196,24 @@ class PluginTokenController extends Controller
         $plainToken = $tokenRow->token_prefix.'|'.$secret;
         $now = now();
 
-        DB::table('api_tokens')->where('id', $token)->update([
-            'token_hash' => hash('sha256', $secret),
-            'last_used_at' => null,
-            'updated_at' => $now,
-        ]);
+        DB::transaction(function () use ($request, $secret, $token, $tokenRow, $now): void {
+            DB::table('api_tokens')->where('id', $token)->update([
+                'token_hash' => hash('sha256', $secret),
+                'last_used_at' => null,
+                'updated_at' => $now,
+            ]);
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'token.rotated',
-            'target_type' => 'api_token',
-            'target_id' => $token,
-            'ip_address' => $request->ip(),
-            'user_agent' => $request->userAgent(),
-            'payload' => json_encode([
+            app(\App\Services\AuditLogger::class)->record('token.rotated', 'api_token', $token, [
                 'token_prefix' => $tokenRow->token_prefix,
                 'device_id' => $tokenRow->device_id,
                 'scopes' => json_decode($tokenRow->scopes, true, 512, JSON_THROW_ON_ERROR),
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => $now,
-        ]);
+            ], [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]);
+        });
 
         return response()->json([
             'plain_token' => $plainToken,
@@ -239,31 +234,26 @@ class PluginTokenController extends Controller
         abort_unless($deviceRow, 404);
         $now = now();
 
-        DB::table('devices')
-            ->where('id', $device)
-            ->where('status', '!=', 'revoked')
-            ->update([
-                'status' => 'revoked',
-                'updated_at' => $now,
-            ]);
+        DB::transaction(function () use ($request, $device, $deviceRow, $now): void {
+            DB::table('devices')
+                ->where('id', $device)
+                ->where('status', '!=', 'revoked')
+                ->update([
+                    'status' => 'revoked',
+                    'updated_at' => $now,
+                ]);
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'device.revoked',
-            'target_type' => 'device',
-            'target_id' => $device,
-            'ip_address' => $request->ip(),
-            'user_agent' => $request->userAgent(),
-            'payload' => json_encode([
+            app(\App\Services\AuditLogger::class)->record('device.revoked', 'device', $device, [
                 'device_name' => $deviceRow->name,
                 'previous_status' => $deviceRow->status,
                 'bound_token_count' => DB::table('api_tokens')->where('device_id', $device)->count(),
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => $now,
-        ]);
+            ], [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]);
+        });
 
         return response()->json(['revoked' => true]);
     }

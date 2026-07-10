@@ -1,9 +1,12 @@
 <?php
 
 use App\Assistants\Agents\IntakeNormalizerAgent;
+use App\Assistants\ProviderHostResolver;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
@@ -11,6 +14,11 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     $this->withoutVite();
     $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new IntakeNormalizerFakeHostResolver(['8.8.8.8'], [
+            'ssrf-intake.example.test' => ['169.254.169.254'],
+        ]);
+    });
 });
 
 it('normalizes bug-like raw text with deterministic fallback', function () {
@@ -241,3 +249,46 @@ function intakeUserWithRole(string $roleName): User
 
     return $user;
 }
+
+final class IntakeNormalizerFakeHostResolver implements ProviderHostResolver
+{
+    /** @param list<string> $default @param array<string, list<string>> $overrides */
+    public function __construct(private array $default, private array $overrides = []) {}
+
+    public function resolve(string $host): array
+    {
+        return $this->overrides[strtolower($host)] ?? $this->default;
+    }
+}
+
+it('revalidates the intake normalizer provider endpoint at use time and returns the deterministic fallback without dispatching for an unsafe stored URL', function () {
+    Http::preventStrayRequests();
+    Http::fake(fn () => Http::response('should not be called', 200));
+
+    $providerId = (string) DB::table('ai_model_providers')->where('provider_key', 'openai')->value('id');
+    $agentId = DB::table('ai_agent_profiles')->where('agent_key', 'intake_normalizer')->value('id');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('ai_model_providers')->where('id', $providerId)->update([
+        'base_url' => 'https://ssrf-intake.example.test/v1',
+        'encrypted_api_key' => Crypt::encryptString('sk-opencode-test'),
+        'api_key_last_four' => 'test',
+        'enabled' => true,
+    ]);
+    DB::table('ai_agent_profiles')->where('id', $agentId)->update(['default_model_profile_id' => $profileId, 'enabled' => true]);
+    DB::table('ai_model_profiles')->where('id', $profileId)->update(['enabled' => true, 'provider_id' => $providerId]);
+
+    $pm = intakeUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $response = $this->actingAs($pm)
+        ->postJson("/api/dashboard/projects/{$projectId}/intake/normalize", [
+            'raw_text' => 'The search feature crashes with an exception when filtering by date range.',
+        ])
+        ->assertOk();
+
+    expect($response->json('normalization.execution_mode'))->toBe('deterministic_fallback')
+        ->and($response->json('normalization.task_type'))->toBe('bug');
+
+    Http::assertNothingSent();
+});

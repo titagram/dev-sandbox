@@ -99,7 +99,7 @@ it('chains audit rows with prev_hash and row_hash', function () {
         'type' => 'user',
     ]);
 
-    $rows = DB::table('audit_logs')->orderBy('created_at')->get();
+    $rows = DB::table('audit_logs')->orderBy('sequence')->get();
 
     expect($rows)->toHaveCount(2);
 
@@ -107,9 +107,41 @@ it('chains audit rows with prev_hash and row_hash', function () {
     $second = $rows[1];
 
     expect($first->row_hash)->not->toBeNull();
+    expect($first->sequence)->toBe(1);
+    expect($first->chain_version)->toBe(1);
     expect($first->prev_hash)->toBeNull();
     expect($second->row_hash)->not->toBeNull();
+    expect($second->sequence)->toBe(2);
+    expect($second->chain_version)->toBe(1);
     expect($second->prev_hash)->toBe($first->row_hash);
+});
+
+it('records many audit rows while preserving one contiguous chain', function () {
+    app(AuditLogger::class)->recordMany([
+        [
+            'action' => 'test.batch_one',
+            'target_type' => 'test_target',
+            'target_id' => 'target-1',
+            'payload' => ['z' => 'last', 'a' => 'first'],
+            'actor' => ['type' => 'system'],
+        ],
+        [
+            'action' => 'test.batch_two',
+            'target_type' => 'test_target',
+            'target_id' => 'target-2',
+            'payload' => ['b' => 'second'],
+            'actor' => ['type' => 'system'],
+        ],
+    ]);
+
+    $rows = DB::table('audit_logs')->orderBy('sequence')->get();
+    $head = DB::table('audit_chain_heads')->where('chain_key', 'global')->first();
+
+    expect($rows)->toHaveCount(2);
+    expect($rows->pluck('sequence')->all())->toBe([1, 2]);
+    expect($rows[1]->prev_hash)->toBe($rows[0]->row_hash);
+    expect($head->last_sequence)->toBe(2);
+    expect($head->last_hash)->toBe($rows[1]->row_hash);
 });
 
 function adminUserForAuditTest(): User

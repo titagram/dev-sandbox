@@ -36,8 +36,10 @@ Open:
 http://localhost:7474
 ```
 
-Default credentials:
+Default credentials are supplied through the `NEO4J_PASSWORD` environment variable consumed by `docker-compose.graph.yaml`:
 
 ```text
-neo4j / graphify-sandbox
+neo4j / $NEO4J_PASSWORD
 ```
+
+<!-- credential rotated 2026-07-10 per remediation Task 0.2; value redacted -->

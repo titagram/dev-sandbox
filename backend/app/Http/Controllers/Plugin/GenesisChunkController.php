@@ -20,10 +20,15 @@ class GenesisChunkController extends Controller
         private readonly PluginInvariantService $invariants,
     ) {}
 
-    public function __invoke(Request $request, string $genesisImport, string $artifact, int $chunk): JsonResponse
+    public function __invoke(Request $request, string $genesisImport, string $artifact, string $chunk): JsonResponse
     {
         if ($error = $this->lifecycle->pluginGenesisWriteGuard($genesisImport)) {
             return $error;
+        }
+
+        $chunkIndex = filter_var($chunk, FILTER_VALIDATE_INT);
+        if ($chunkIndex === false || $chunkIndex < 0) {
+            return $this->error('artifact_chunk_out_of_range', 'Chunk index must be a non-negative integer within 0..chunk_count-1.', Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
         $import = DB::table('genesis_imports')->where('id', $genesisImport)->first();
@@ -52,17 +57,21 @@ class GenesisChunkController extends Controller
             $this->storage->storeChunk(
                 $genesisImport,
                 $artifact,
-                $chunk,
+                $chunkIndex,
                 $request->getContent(),
                 (string) $request->header('X-DevBoard-Chunk-SHA256'),
             );
         } catch (ArtifactStorageException $exception) {
-            return $this->error($exception->errorCode, $exception->getMessage(), Response::HTTP_CONFLICT);
+            return $this->error(
+                $exception->errorCode,
+                $exception->getMessage(),
+                $this->mapStatus($exception->errorCode),
+            );
         }
 
         return response()->json([
             'artifact_id' => $artifact,
-            'chunk_index' => $chunk,
+            'chunk_index' => $chunkIndex,
             'status' => 'received',
         ]);
     }
@@ -70,5 +79,13 @@ class GenesisChunkController extends Controller
     private function error(string $code, string $message, int $status): JsonResponse
     {
         return response()->json(['error' => ['code' => $code, 'message' => $message]], $status);
+    }
+
+    private function mapStatus(string $errorCode): int
+    {
+        return match ($errorCode) {
+            'artifact_chunk_out_of_range', 'artifact_size_mismatch' => Response::HTTP_UNPROCESSABLE_ENTITY,
+            default => Response::HTTP_CONFLICT,
+        };
     }
 }

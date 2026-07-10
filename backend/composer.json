@@ -56,6 +56,11 @@
             "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan config:clear --ansi @no_additional_args",
             "APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test"
         ],
+        "test:postgres": [
+            "php artisan config:clear --ansi",
+            "php artisan migrate:fresh --force --ansi",
+            "vendor/bin/pest --configuration=phpunit.postgres.xml --display-warnings"
+        ],
         "quality:static": "vendor/bin/phpstan analyse --memory-limit=-1",
         "quality:test": "@test",
         "quality:audit": "composer audit",

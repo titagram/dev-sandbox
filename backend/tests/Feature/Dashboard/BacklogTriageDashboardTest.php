@@ -1,6 +1,7 @@
 <?php
 
 use App\Assistants\Agents\BacklogTriageAgent;
+use App\Assistants\ProviderHostResolver;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
@@ -14,6 +15,11 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     $this->withoutVite();
     $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new BacklogTriageFakeHostResolver(['8.8.8.8'], [
+            'ssrf-triage.example.test' => ['10.0.0.5'],
+        ]);
+    });
 });
 
 it('creates a project-level backlog triage suggestion without mutating the board', function () {
@@ -193,6 +199,57 @@ function backlogTriageUserWithRole(string $roleName): User
 
     return $user;
 }
+
+final class BacklogTriageFakeHostResolver implements ProviderHostResolver
+{
+    /** @param list<string> $default @param array<string, list<string>> $overrides */
+    public function __construct(private array $default, private array $overrides = []) {}
+
+    public function resolve(string $host): array
+    {
+        return $this->overrides[strtolower($host)] ?? $this->default;
+    }
+}
+
+it('revalidates the backlog triage provider endpoint at use time and returns the deterministic fallback without dispatching for an unsafe stored URL', function () {
+    Http::preventStrayRequests();
+    Http::fake(fn () => Http::response('should not be called', 200));
+
+    $providerId = (string) DB::table('ai_model_providers')->where('provider_key', 'openai')->value('id');
+    $agentId = DB::table('ai_agent_profiles')->where('agent_key', 'backlog_triage')->value('id');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('ai_model_providers')->where('id', $providerId)->update([
+        'base_url' => 'https://ssrf-triage.example.test/v1',
+        'encrypted_api_key' => Crypt::encryptString('sk-opencode-test'),
+        'api_key_last_four' => 'test',
+        'enabled' => true,
+    ]);
+    DB::table('ai_agent_profiles')->where('id', $agentId)->update(['default_model_profile_id' => $profileId, 'enabled' => true]);
+    DB::table('ai_model_profiles')->where('id', $profileId)->update(['enabled' => true, 'provider_id' => $providerId]);
+
+    $pm = backlogTriageUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    backlogTriageCreateTask($projectId, $pm, [
+        'title' => 'Unsafe endpoint triage',
+        'description' => 'The backlog should fall back without calling the provider.',
+    ]);
+
+    $response = $this->actingAs($pm)
+        ->postJson("/api/dashboard/projects/{$projectId}/assistant/backlog-triage")
+        ->assertCreated();
+
+    $metadata = json_decode(
+        (string) DB::table('assistant_runs')->where('id', $response->json('run.id'))->value('metadata'),
+        true,
+        flags: JSON_THROW_ON_ERROR
+    );
+
+    expect($metadata['execution_mode'])->toBe('deterministic_fallback')
+        ->and($metadata['external_provider_call'])->toBeFalse();
+
+    Http::assertNothingSent();
+});
 
 function backlogTriageConfigureProvider(): void
 {

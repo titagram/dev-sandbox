@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Hades;
 
+use App\Contracts\EmbeddingGenerator;
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesProjectAwareness;
 use App\Services\Hades\HadesSearchDocumentIndexer;
@@ -26,6 +27,7 @@ class MemorySearchController extends Controller
         private readonly HadesProjectAwareness $awareness,
         private readonly HadesSearchDocumentIndexer $searchIndexer,
         private readonly EmbeddingIndexService $embeddingIndex,
+        private readonly EmbeddingGenerator $embeddingGenerator,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -59,6 +61,22 @@ class MemorySearchController extends Controller
         $filters = $this->filters($validated);
         $rawChunksOmitted = 0;
         $items = [];
+        $retrieval = [
+            'lexical' => ['status' => 'ok'],
+            'vector' => [
+                'status' => 'disabled',
+                'model' => null,
+                'candidate_count' => 0,
+            ],
+        ];
+        $vectorCandidates = $this->vectorCandidates(
+            projectId: $validated['project_id'],
+            workspaceBindingId: $binding->id,
+            query: $query,
+            domain: $domain,
+            limit: $limit,
+            retrieval: $retrieval,
+        );
 
         if (! in_array($domain, ['wiki', 'artifacts'], true)) {
             [$memoryItems, $omitted] = $this->memoryResults(
@@ -70,17 +88,18 @@ class MemorySearchController extends Controller
                 limit: $limit,
                 includeRawChunks: $includeRawChunks,
                 workspaceHeadCommit: (string) ($binding->head_commit ?? ''),
+                vectorCandidates: $vectorCandidates,
             );
             $items = array_merge($items, $memoryItems);
             $rawChunksOmitted += $omitted;
         }
 
         if (in_array($domain, ['all', 'wiki'], true)) {
-            $items = array_merge($items, $this->wikiResults($validated['project_id'], $query, $filters, $limit));
+            $items = array_merge($items, $this->wikiResults($validated['project_id'], $query, $filters, $limit, $vectorCandidates));
         }
 
         if (in_array($domain, ['all', 'artifacts'], true)) {
-            $items = array_merge($items, $this->artifactResults($validated['project_id'], $binding->id, $query, $filters, $limit));
+            $items = array_merge($items, $this->artifactResults($validated['project_id'], $binding->id, $query, $filters, $limit, $vectorCandidates));
         }
 
         usort($items, function (array $a, array $b): int {
@@ -113,6 +132,7 @@ class MemorySearchController extends Controller
             'candidate_count' => $candidateCount,
             'truncated' => $candidateCount > count($items),
             'raw_chunks_omitted' => $rawChunksOmitted,
+            'retrieval' => $retrieval,
             'freshness' => $this->awareness->freshnessForBinding($binding),
             'items' => array_values($items),
             'server_time' => now()->toISOString(),
@@ -145,7 +165,7 @@ class MemorySearchController extends Controller
     /**
      * @return array{0: list<array<string, mixed>>, 1: int}
      */
-    private function memoryResults(string $projectId, string $query, string $domain, array $filters, string $workspaceBindingId, int $limit, bool $includeRawChunks, string $workspaceHeadCommit = ''): array
+    private function memoryResults(string $projectId, string $query, string $domain, array $filters, string $workspaceBindingId, int $limit, bool $includeRawChunks, string $workspaceHeadCommit = '', array $vectorCandidates = []): array
     {
         $tokens = $this->tokens($query);
         $indexedDomains = match ($domain) {
@@ -156,11 +176,29 @@ class MemorySearchController extends Controller
             default => ['project_memory', 'logbook', 'agent_notes', 'source_chunks'],
         };
         $indexedMemoryScores = $this->searchIndexer->matchingSourceScores($projectId, $workspaceBindingId, $indexedDomains, $query, $filters, $limit);
-        $indexedMemoryIds = array_keys($indexedMemoryScores);
+        $vectorMemoryIds = array_keys($vectorCandidates['project_memory_entries'] ?? []);
+        $indexedMemoryIds = array_values(array_unique(array_merge(array_keys($indexedMemoryScores), $vectorMemoryIds)));
 
         $rows = DB::table('project_memory_entries')
-            ->when($indexedMemoryIds !== [], function ($builder) use ($indexedMemoryIds): void {
-                $builder->whereIn('id', $indexedMemoryIds);
+            ->when($indexedMemoryIds !== [], function ($builder) use ($indexedMemoryIds, $query, $tokens): void {
+                $builder->where(function ($nested) use ($indexedMemoryIds, $query, $tokens): void {
+                    $nested->whereIn('id', $indexedMemoryIds);
+
+                    if ($query === '') {
+                        return;
+                    }
+
+                    $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
+                    foreach ($patterns as $pattern) {
+                        $like = '%'.$pattern.'%';
+                        $nested
+                            ->orWhere('summary', 'like', $like)
+                            ->orWhere('payload', 'like', $like)
+                            ->orWhere('kind', 'like', $like)
+                            ->orWhere('source', 'like', $like)
+                            ->orWhere('agent_key', 'like', $like);
+                    }
+                });
             })
             ->where('project_id', $projectId)
             ->when(($filters['kind'] ?? '') !== '', function ($builder) use ($filters): void {
@@ -229,6 +267,8 @@ class MemorySearchController extends Controller
             $matchFields = $this->matchFields($filterFields, $filters);
             $validity = $this->resolvedBugValidity($entry, $payload, $workspaceHeadCommit);
             $documentScore = $indexedMemoryScores[(string) $entry->id] ?? 0;
+            $vector = $vectorCandidates['project_memory_entries'][(string) $entry->id] ?? null;
+            $vectorScore = $this->vectorScore($vector);
             $score = max($documentScore, $this->score($query, $tokens, [
                 (string) $entry->summary,
                 (string) $entry->payload,
@@ -236,12 +276,12 @@ class MemorySearchController extends Controller
                 (string) $entry->source,
                 (string) $entry->agent_key,
             ]));
-            $score += count($matchFields) * 15;
+            $score += count($matchFields) * 15 + $vectorScore;
             if ((string) $entry->kind === 'resolved_bug') {
                 $score += 12;
             }
 
-            $items[] = [
+            $item = [
                 'id' => (string) $entry->id,
                 'domain' => $entryDomain,
                 'source' => $source !== '' ? $source : (string) $entry->source,
@@ -259,6 +299,8 @@ class MemorySearchController extends Controller
                 'updated_at' => $this->toIsoString($entry->updated_at),
                 'version' => 'mem_'.hash('sha256', $entry->id.'|'.$entry->updated_at),
             ];
+
+            $items[] = $this->applyVectorMetadata($item, $vector);
         }
 
         return [$items, $rawChunksOmitted];
@@ -267,11 +309,11 @@ class MemorySearchController extends Controller
     /**
      * @return list<array<string, mixed>>
      */
-    private function wikiResults(string $projectId, string $query, array $filters, int $limit): array
+    private function wikiResults(string $projectId, string $query, array $filters, int $limit, array $vectorCandidates = []): array
     {
         $tokens = $this->tokens($query);
         $indexedRevisionScores = $this->searchIndexer->matchingSourceScores($projectId, null, ['wiki'], $query, $filters, $limit);
-        $indexedRevisionIds = array_keys($indexedRevisionScores);
+        $indexedRevisionIds = array_values(array_unique(array_merge(array_keys($indexedRevisionScores), array_keys($vectorCandidates['wiki_revisions'] ?? []))));
 
         return DB::table('wiki_pages')
             ->join('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
@@ -311,7 +353,7 @@ class MemorySearchController extends Controller
             ->orderByDesc('wiki_revisions.created_at')
             ->limit(max($filters === [] ? 50 : 150, $limit * ($filters === [] ? 8 : 15)))
             ->get()
-            ->map(function (object $row) use ($filters, $indexedRevisionScores, $query, $tokens): ?array {
+            ->map(function (object $row) use ($filters, $indexedRevisionScores, $query, $tokens, $vectorCandidates): ?array {
                 $filterFields = [
                     'kind' => ['wiki'],
                     'schema' => ['devboard.wiki_revision.v1'],
@@ -326,7 +368,9 @@ class MemorySearchController extends Controller
 
                 $matchFields = $this->matchFields($filterFields, $filters);
 
-                return [
+                $vector = $vectorCandidates['wiki_revisions'][(string) $row->revision_id] ?? null;
+
+                $item = [
                     'id' => (string) $row->revision_id,
                     'domain' => 'wiki',
                     'source' => 'wiki_revision',
@@ -346,13 +390,15 @@ class MemorySearchController extends Controller
                         (string) $row->page_type,
                         (string) $row->content_markdown,
                         (string) $row->evidence_refs,
-                    ])) + count($matchFields) * 15,
+                    ])) + count($matchFields) * 15 + $this->vectorScore($vector),
                     'match_fields' => $matchFields,
                     'raw_chunk' => false,
                     'occurred_at' => $this->toIsoString($row->revision_created_at),
                     'updated_at' => $this->toIsoString($row->updated_at),
                     'version' => 'wiki_'.hash('sha256', $row->revision_id.'|'.$row->updated_at),
                 ];
+
+                return $this->applyVectorMetadata($item, $vector);
             })
             ->filter()
             ->values()
@@ -362,11 +408,11 @@ class MemorySearchController extends Controller
     /**
      * @return list<array<string, mixed>>
      */
-    private function artifactResults(string $projectId, string $bindingId, string $query, array $filters, int $limit): array
+    private function artifactResults(string $projectId, string $bindingId, string $query, array $filters, int $limit, array $vectorCandidates = []): array
     {
         $tokens = $this->tokens($query);
         $indexedArtifactScores = $this->searchIndexer->matchingSourceScores($projectId, $bindingId, ['artifacts'], $query, $filters, $limit, false);
-        $indexedArtifactIds = array_keys($indexedArtifactScores);
+        $indexedArtifactIds = array_values(array_unique(array_merge(array_keys($indexedArtifactScores), array_keys($vectorCandidates['hades_agent_artifacts'] ?? []))));
 
         return DB::table('hades_agent_artifacts')
             ->where('project_id', $projectId)
@@ -392,7 +438,7 @@ class MemorySearchController extends Controller
             ->orderByDesc('id')
             ->limit(max($filters === [] ? 50 : 150, $limit * ($filters === [] ? 8 : 15)))
             ->get()
-            ->map(function (object $row) use ($filters, $indexedArtifactScores, $query, $tokens): ?array {
+            ->map(function (object $row) use ($filters, $indexedArtifactScores, $query, $tokens, $vectorCandidates): ?array {
                 $artifact = $this->decodePayload($row->artifact);
                 $summary = $this->artifactSummary((string) $row->schema, $artifact);
                 $encoded = json_encode($artifact, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
@@ -404,7 +450,9 @@ class MemorySearchController extends Controller
 
                 $matchFields = $this->matchFields($filterFields, $filters);
 
-                return [
+                $vector = $vectorCandidates['hades_agent_artifacts'][(string) $row->id] ?? null;
+
+                $item = [
                     'id' => (string) $row->id,
                     'domain' => 'artifacts',
                     'source' => (string) $row->schema,
@@ -416,13 +464,15 @@ class MemorySearchController extends Controller
                         $summary,
                         (string) $row->schema,
                         $encoded,
-                    ])) + count($matchFields) * 15,
+                    ])) + count($matchFields) * 15 + $this->vectorScore($vector),
                     'match_fields' => $matchFields,
                     'raw_chunk' => false,
                     'occurred_at' => $this->toIsoString($row->created_at),
                     'updated_at' => $this->toIsoString($row->updated_at),
                     'version' => 'artifact_'.hash('sha256', $row->id.'|'.$row->updated_at.'|'.$row->sha256),
                 ];
+
+                return $this->applyVectorMetadata($item, $vector);
             })
             ->filter()
             ->values()
@@ -1003,6 +1053,105 @@ class MemorySearchController extends Controller
     }
 
     /**
+     * @param  array<string, mixed>  $retrieval
+     * @return array<string, array<string, array<string, mixed>>>
+     */
+    private function vectorCandidates(string $projectId, string $workspaceBindingId, string $query, string $domain, int $limit, array &$retrieval): array
+    {
+        if ($query === '' || ! $this->embeddingIndex->supportsEmbeddings()) {
+            return [];
+        }
+
+        $retrieval['vector']['status'] = 'ok';
+        $retrieval['vector']['model'] = $this->embeddingIndex->vectorModel();
+
+        try {
+            $queryEmbedding = $this->embeddingGenerator->generate($query);
+            $candidates = $this->embeddingIndex->searchSimilar(
+                projectId: $projectId,
+                queryEmbedding: $queryEmbedding,
+                limit: $limit,
+                workspaceBindingId: $workspaceBindingId,
+                domains: $this->indexedDomainsForDomain($domain),
+            );
+        } catch (\Throwable) {
+            $retrieval['vector']['status'] = 'degraded';
+            $retrieval['vector']['candidate_count'] = 0;
+
+            return [];
+        }
+
+        $retrieval['vector']['candidate_count'] = count($candidates);
+        $grouped = [];
+
+        foreach ($candidates as $candidate) {
+            $sourceTable = (string) ($candidate['source_table'] ?? '');
+            $sourceId = (string) ($candidate['source_id'] ?? '');
+
+            if ($sourceTable === '' || $sourceId === '') {
+                continue;
+            }
+
+            $candidate['similarity'] = $this->clampSimilarity((float) ($candidate['similarity'] ?? 0.0));
+            $grouped[$sourceTable][$sourceId] = $candidate;
+        }
+
+        return $grouped;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function indexedDomainsForDomain(string $domain): array
+    {
+        return match ($domain) {
+            'all' => ['project_memory', 'logbook', 'agent_notes', 'source_chunks', 'wiki', 'artifacts'],
+            'project_memory' => ['project_memory', 'logbook', 'agent_notes', 'source_chunks'],
+            'logbook' => ['logbook'],
+            'agent_notes' => ['agent_notes'],
+            'source_chunks' => ['source_chunks'],
+            'wiki' => ['wiki'],
+            'artifacts' => ['artifacts'],
+            default => [],
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $vector
+     */
+    private function vectorScore(?array $vector): int
+    {
+        if ($vector === null) {
+            return 0;
+        }
+
+        return (int) round($this->clampSimilarity((float) ($vector['similarity'] ?? 0.0)) * (int) config('devboard.vector_score_weight', 20));
+    }
+
+    /**
+     * @param  array<string, mixed>  $item
+     * @param  array<string, mixed>|null  $vector
+     * @return array<string, mixed>
+     */
+    private function applyVectorMetadata(array $item, ?array $vector): array
+    {
+        if ($vector === null) {
+            return $item;
+        }
+
+        $item['similarity'] = $this->clampSimilarity((float) ($vector['similarity'] ?? 0.0));
+        $item['evidence_refs'] = array_values(is_array($vector['evidence_refs'] ?? null) ? $vector['evidence_refs'] : []);
+        $item['needs_verification'] = (bool) ($vector['needs_verification'] ?? ($item['evidence_refs'] === []));
+
+        return $item;
+    }
+
+    private function clampSimilarity(float $similarity): float
+    {
+        return max(0.0, min(1.0, $similarity));
+    }
+
+    /**
      * @param  list<array<string, mixed>>  $items
      * @return list<array<string, mixed>>
      */
@@ -1024,6 +1173,9 @@ class MemorySearchController extends Controller
 
                 if ($refs !== []) {
                     $evidenceRefs = $refs;
+                } elseif (isset($item['evidence_refs']) && is_array($item['evidence_refs'])) {
+                    $evidenceRefs = $item['evidence_refs'];
+                    $needsVerification = (bool) ($item['needs_verification'] ?? false);
                 } else {
                     $needsVerification = true;
                 }

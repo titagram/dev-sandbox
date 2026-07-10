@@ -9,14 +9,16 @@ Load these values from the deployment secret manager, not from a committed `.env
 ```bash
 export DEVBOARD_PUBLIC_BASE_URL='https://devboard.example.com'
 export DEVBOARD_APP_KEY='base64:replace-with-a-generated-laravel-key'
-export DEVBOARD_DB_PASSWORD='replace-with-a-long-random-password'
-export DEVBOARD_NEO4J_PASSWORD='replace-with-a-long-random-password'
+export DEVBOARD_DB_PASSWORD=  # set to a long random password from the deployment secret manager
+export DEVBOARD_NEO4J_PASSWORD=  # set to a long random password from the deployment secret manager
 export DEVBOARD_SESSION_DOMAIN='devboard.example.com'
 export DEVBOARD_STATEFUL_DOMAINS='devboard.example.com'
 export DEVBOARD_DASHBOARD_ORIGINS='https://devboard.example.com'
 ```
 
 The default application bind is `127.0.0.1:18000`. PostgreSQL and Neo4j have no host ports.
+
+`docker compose config` intentionally renders without these variables so CI and local validation can parse the production file. Do not deploy with empty values; the variables above are required production inputs even though Compose interpolation no longer prints their names as errors.
 
 ## Build And Validate
 
@@ -27,12 +29,31 @@ docker compose -f docker-compose.devboard.prod.yaml build app worker scheduler
 
 ## Database Upgrade
 
+The production PostgreSQL service uses the digest-pinned PostgreSQL 16 pgvector image `pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb`. Run migrations against a database created from that image so the `vector` extension and Hades search schema are available before deploying vector-enabled search features.
+
 Run migrations before exposing the new application version:
 
 ```bash
 docker compose -f docker-compose.devboard.prod.yaml run --rm app su-exec www-data php artisan migrate --force
 docker compose -f docker-compose.devboard.prod.yaml run --rm app su-exec www-data php artisan db:seed --class=DevBoardSeeder --force
 ```
+
+Audit chain constraint deployment is a two-step maintenance operation when upgrading an existing database. First deploy the nullable chain metadata migration, put the application in maintenance mode or pass `--force` during an approved maintenance window, then run:
+
+```bash
+docker compose -f docker-compose.devboard.prod.yaml run --rm app su-exec www-data php artisan audit:chain-backfill --dry-run
+docker compose -f docker-compose.devboard.prod.yaml run --rm app su-exec www-data php artisan audit:chain-backfill --force
+docker compose -f docker-compose.devboard.prod.yaml run --rm app su-exec www-data php artisan audit:verify-chain
+```
+
+Do not run the final audit constraint migration until this query returns `0` and `audit:verify-chain` exits successfully:
+
+```sql
+select count(*) from audit_logs
+where sequence is null or chain_version is null or row_hash is null;
+```
+
+The backfill locks the global audit chain, orders legacy rows by `created_at` then `id`, assigns sequence numbers from `1`, initializes `audit_chain_heads.global`, and verifies the chain before returning success. Backups preserve canonical audit chain fields exactly, and restore dry-runs independently validate exported audit chains.
 
 `DevBoardSeeder` is now the structural production seeder for roles, permissions, and the agent registry. It does not create users or demo projects. Never run `DemoDevBoardSeeder` in production; avoid `DatabaseSeeder` so a future environment/configuration error cannot opt into demo data.
 

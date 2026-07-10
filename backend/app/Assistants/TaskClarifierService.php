@@ -3,6 +3,7 @@
 namespace App\Assistants;
 
 use App\Assistants\Agents\TaskClarifierAgent;
+use App\Services\AuditLogger;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -13,6 +14,10 @@ use Throwable;
 
 final class TaskClarifierService
 {
+    public function __construct(private readonly ProviderHttpClient $httpClient)
+    {
+    }
+
     /**
      * @return array{run: array<string, mixed>, suggestion: array<string, mixed>}
      */
@@ -110,25 +115,13 @@ final class TaskClarifierService
                 'updated_at' => $now,
             ]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $userId,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'assistant.task_clarification.created',
-                'target_type' => 'task',
-                'target_id' => $task->id,
-                'ip_address' => null,
-                'user_agent' => null,
-                'payload' => json_encode([
+            app(AuditLogger::class)->record('assistant.task_clarification.created', 'task', $task->id, [
                     'assistant_run_id' => $runId,
                     'assistant_suggestion_id' => $suggestionId,
                     'agent_key' => 'task_clarifier',
                     'external_provider_call' => $execution['external_provider_call'],
                     'execution_mode' => $execution['execution_mode'],
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
-            ]);
+            ], ['type' => 'user', 'user_id' => $userId]);
         });
 
         return [
@@ -181,17 +174,7 @@ final class TaskClarifierService
                     'updated_at' => $now,
                 ]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $userId,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => "assistant.suggestion.{$status}",
-                'target_type' => 'assistant_suggestion',
-                'target_id' => $suggestionId,
-                'ip_address' => null,
-                'user_agent' => null,
-                'payload' => json_encode([
+            app(AuditLogger::class)->record("assistant.suggestion.{$status}", 'assistant_suggestion', $suggestionId, [
                     'assistant_run_id' => (string) $suggestion->assistant_run_id,
                     'project_id' => (string) $suggestion->project_id,
                     'target_type' => (string) $suggestion->target_type,
@@ -199,9 +182,7 @@ final class TaskClarifierService
                     'suggestion_type' => (string) $suggestion->suggestion_type,
                     'status' => $status,
                     'mutated_target' => false,
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
-            ]);
+            ], ['type' => 'user', 'user_id' => $userId]);
         });
 
         return $this->suggestionPayload($suggestionId);
@@ -255,17 +236,7 @@ final class TaskClarifierService
                     'updated_at' => $now,
                 ]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $userId,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'assistant.suggestion.applied',
-                'target_type' => 'assistant_suggestion',
-                'target_id' => $suggestionId,
-                'ip_address' => null,
-                'user_agent' => null,
-                'payload' => json_encode([
+            app(AuditLogger::class)->record('assistant.suggestion.applied', 'assistant_suggestion', $suggestionId, [
                     'assistant_run_id' => (string) $suggestion->assistant_run_id,
                     'project_id' => (string) $suggestion->project_id,
                     'target_type' => 'task',
@@ -276,9 +247,7 @@ final class TaskClarifierService
                     'applied_fields' => ['description'],
                     'previous_description_sha256' => hash('sha256', $previousDescription),
                     'new_description_sha256' => hash('sha256', $newDescription),
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
-            ]);
+            ], ['type' => 'user', 'user_id' => $userId]);
 
             $taskId = (string) $task->id;
         });
@@ -320,18 +289,12 @@ final class TaskClarifierService
                 'updated_at' => $now,
             ]);
 
-        DB::table('audit_logs')->insert(
+        app(AuditLogger::class)->recordMany(
             $pendingSuggestions->map(fn (object $suggestion): array => [
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $userId,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
                 'action' => 'assistant.suggestion.superseded',
                 'target_type' => 'assistant_suggestion',
                 'target_id' => (string) $suggestion->id,
-                'ip_address' => null,
-                'user_agent' => null,
-                'payload' => json_encode([
+                'payload' => [
                     'assistant_run_id' => (string) $suggestion->assistant_run_id,
                     'project_id' => (string) $suggestion->project_id,
                     'target_type' => (string) $suggestion->target_type,
@@ -341,8 +304,8 @@ final class TaskClarifierService
                     'superseded_by_assistant_run_id' => $runId,
                     'superseded_by_assistant_suggestion_id' => $suggestionId,
                     'mutated_target' => false,
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
+                ],
+                'actor' => ['type' => 'user', 'user_id' => $userId],
             ])->all()
         );
     }
@@ -414,9 +377,9 @@ final class TaskClarifierService
     {
         $prompt = $this->promptForContext($context);
         $modelProfile = $this->modelProfileForAgent($agentProfile);
-        $shouldUseSdk = TaskClarifierAgent::isFaked() || $this->modelProfileCanCallProvider($modelProfile);
+        $shouldUseProvider = $this->modelProfileCanCallProvider($modelProfile);
 
-        if (! $shouldUseSdk) {
+        if (! TaskClarifierAgent::isFaked() && ! $shouldUseProvider) {
             return [
                 'structured' => $this->structuredSuggestion($task),
                 'prompt' => $prompt,
@@ -430,17 +393,19 @@ final class TaskClarifierService
             ];
         }
 
-        if ($modelProfile) {
+        if (TaskClarifierAgent::isFaked() && $modelProfile) {
             $this->configureLaravelAiProvider($modelProfile);
         }
 
         try {
-            $response = TaskClarifierAgent::make()->prompt(
-                $prompt,
-                provider: $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
-                model: $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
-                timeout: $modelProfile?->timeout_seconds ? (int) $modelProfile->timeout_seconds : null,
-            );
+            $response = TaskClarifierAgent::isFaked()
+                ? TaskClarifierAgent::make()->prompt(
+                    $prompt,
+                    provider: $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
+                    model: $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
+                    timeout: $modelProfile?->timeout_seconds ? (int) $modelProfile->timeout_seconds : null,
+                )
+                : $this->callProvider($modelProfile, $prompt);
         } catch (Throwable $exception) {
             return [
                 'structured' => $this->structuredSuggestion($task),
@@ -505,7 +470,54 @@ final class TaskClarifierService
         return $modelProfile
             && (bool) $modelProfile->model_profile_enabled
             && (bool) $modelProfile->provider_enabled
-            && filled($modelProfile->encrypted_api_key);
+            && (string) $modelProfile->provider_type === 'openai_compatible'
+            && filled($modelProfile->encrypted_api_key)
+            && app(ProviderEndpointPolicy::class)->isAllowed($this->responsesEndpoint((string) ($modelProfile->base_url ?: 'https://api.openai.com/v1')));
+    }
+
+    private function callProvider(object $modelProfile, string $prompt): object
+    {
+        $apiKey = Crypt::decryptString((string) $modelProfile->encrypted_api_key);
+        $response = $this->httpClient
+            ->withToken($apiKey)
+            ->acceptJson()
+            ->asJson()
+            ->timeout((int) ($modelProfile->timeout_seconds ?: 60))
+            ->post($this->responsesEndpoint((string) ($modelProfile->base_url ?: 'https://api.openai.com/v1')), [
+                'model' => (string) $modelProfile->model_name,
+                'instructions' => (string) TaskClarifierAgent::make()->instructions(),
+                'input' => $prompt,
+            ]);
+
+        if ($response->failed()) {
+            throw new \RuntimeException('HTTP request returned status code '.$response->status().'.');
+        }
+
+        return (object) ['text' => $this->extractProviderText($response->json())];
+    }
+
+    private function responsesEndpoint(string $baseUrl): string
+    {
+        $base = rtrim($baseUrl, '/');
+        $base = preg_replace('#/(responses|chat/completions|models)$#', '', $base) ?: $base;
+
+        return $base.'/responses';
+    }
+
+    private function extractProviderText(mixed $payload): string
+    {
+        if (! is_array($payload)) {
+            return '';
+        }
+
+        foreach (['output_text', 'choices.0.message.content', 'output.0.content.0.text'] as $path) {
+            $text = data_get($payload, $path);
+            if (is_string($text) && trim($text) !== '') {
+                return trim($text);
+            }
+        }
+
+        return '';
     }
 
     private function configureLaravelAiProvider(object $modelProfile): void

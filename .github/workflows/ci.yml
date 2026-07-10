@@ -51,12 +51,53 @@ jobs:
         run: docker build --file docker/devboard/backend.Dockerfile --tag devboard-backend-test:ci .
       - name: Run Composer audit and Laravel tests
         run: >-
+          APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')";
           docker run --rm
           --volume "$PWD:/workspace"
           --workdir /workspace/backend
-          --env APP_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          --env APP_KEY
           devboard-backend-test:ci
           sh -lc 'composer install --no-interaction --prefer-dist --no-progress && composer audit --locked --no-interaction && composer test'
+
+  postgres-acceptance:
+    name: PostgreSQL pgvector acceptance
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+        env:
+          POSTGRES_DB: devboard_acceptance
+          POSTGRES_USER: devboard_acceptance
+          POSTGRES_PASSWORD: ci-postgres-acceptance-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devboard_acceptance -d devboard_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend test image
+        run: docker build --file docker/devboard/backend.Dockerfile --tag devboard-backend-test:ci .
+      - name: Run strict PostgreSQL acceptance suite
+        run: >-
+          APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')";
+          docker run --rm
+          --network host
+          --volume "$PWD:/workspace"
+          --workdir /workspace/backend
+          --env APP_KEY
+          --env APP_ENV=testing
+          --env DB_CONNECTION=pgsql
+          --env DB_HOST=127.0.0.1
+          --env DB_PORT=5432
+          --env DB_DATABASE=devboard_acceptance
+          --env DB_USERNAME=devboard_acceptance
+          --env DB_PASSWORD=ci-postgres-acceptance-password
+          --env DB_URL=
+          devboard-backend-test:ci
+          sh -lc 'composer install --no-interaction --prefer-dist --no-progress && composer test:postgres'
 
   python:
     name: Python tests
@@ -96,3 +137,19 @@ jobs:
       - name: Build Laravel Vite frontend
         working-directory: backend
         run: npm run build
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run gitleaks on current checkout
+        run: >-
+          docker run --rm
+          -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          dir /repo
+          --config /repo/.gitleaks.toml
+          --verbose
+          --redact
+          --exit-code 1

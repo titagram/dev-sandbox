@@ -43,7 +43,7 @@ class GenesisFinalizeController extends Controller
         } catch (ArtifactStorageException $exception) {
             $status = match ($exception->errorCode) {
                 'secret_scan_blocked' => Response::HTTP_FORBIDDEN,
-                'artifact_chunk_missing', 'artifact_hash_mismatch' => Response::HTTP_UNPROCESSABLE_ENTITY,
+                'artifact_chunk_missing', 'artifact_hash_mismatch', 'artifact_chunk_out_of_range', 'artifact_size_mismatch' => Response::HTTP_UNPROCESSABLE_ENTITY,
                 default => Response::HTTP_BAD_REQUEST,
             };
 

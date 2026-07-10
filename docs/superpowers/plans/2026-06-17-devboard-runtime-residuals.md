@@ -21,7 +21,7 @@ These facts are already true in the current branch and should be treated as base
 - Docker runtime defaults today:
   - app: `http://127.0.0.1:8000`
   - Postgres: `devboard/devboard`
-  - Neo4j: `neo4j/graphify-sandbox`
+  - Neo4j: `neo4j/<redacted-rotated-neo4j-password>` <!-- credential rotated 2026-07-10 per remediation Task 0.2; value redacted -->
 - Seed credentials today:
   - dashboard: `admin@example.com / password`
 
@@ -526,7 +526,7 @@ fi
 
 curl -fsS "http://127.0.0.1:${APP_PORT}/up" >/dev/null
 docker compose -f "${ROOT}/docker-compose.devboard.yaml" exec -T postgres psql -U devboard -d devboard -c 'select 1 as ok;' >/tmp/devboard-postgres-ok.txt
-docker compose -f "${ROOT}/docker-compose.devboard.yaml" exec -T neo4j cypher-shell -u neo4j -p graphify-sandbox 'RETURN 1 AS ok' >/tmp/devboard-neo4j-ok.txt
+docker compose -f "${ROOT}/docker-compose.devboard.yaml" exec -T neo4j cypher-shell -u neo4j -p <redacted-rotated-neo4j-password> 'RETURN 1 AS ok' >/tmp/devboard-neo4j-ok.txt
 /tmp/devboard-plugin-venv/bin/python -m pytest tests/e2e/test_onboarding_genesis.py -q >/tmp/devboard-runtime-e2e.txt
 
 python3 - <<'PY' "${REPORT}" "${HOST_OS}" "${HOST_ARCH}" "${DOCKER_PLATFORM}"
