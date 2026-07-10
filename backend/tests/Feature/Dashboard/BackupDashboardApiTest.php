@@ -2,6 +2,7 @@
 
 use App\Models\User;
 use App\Services\AuditLogger;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -12,7 +13,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('exposes backup readiness only to system operators', function () {

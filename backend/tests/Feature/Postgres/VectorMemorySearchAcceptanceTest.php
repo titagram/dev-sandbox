@@ -224,7 +224,7 @@ function vectorMemorySearchDocument(string $projectId, ?string $workspaceBinding
 }
 
 /**
- * @param list<float> $prefix
+ * @param  list<float>  $prefix
  * @return list<float>
  */
 function vectorMemoryEmbedding(array $prefix): array

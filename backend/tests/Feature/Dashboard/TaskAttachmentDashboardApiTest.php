@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
@@ -12,7 +13,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
     $this->withSession(['_token' => 'test-token']);
 });
 

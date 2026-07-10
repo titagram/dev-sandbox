@@ -2,8 +2,8 @@
 
 use App\Assistants\ProviderEndpointPolicy;
 use App\Assistants\ProviderEndpointResolution;
-use App\Assistants\ProviderHttpClient;
 use App\Assistants\ProviderHostResolver;
+use App\Assistants\ProviderHttpClient;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 

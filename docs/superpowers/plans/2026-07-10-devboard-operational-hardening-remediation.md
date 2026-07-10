@@ -185,8 +185,8 @@ Baseline evidence (historical context only, from Section 1):
 | 3.4 | Backfill and enforce audit chain constraints | `verified` (fresh acceptance; live DB migration pending) |
 | 4.1 | Generate and index embeddings asynchronously | `verified` |
 | 4.2 | Add vector candidates to memory search | `verified` |
-| 5.1 | Enforce Pint and PHPStan in CI | `in_progress` |
-| 6.1 | Run full acceptance | `pending` |
+| 5.1 | Enforce Pint and PHPStan in CI | `verified` |
+| 6.1 | Run full acceptance | `in_progress` |
 | 6.2 | Reconcile historical plans and close the remediation | `pending` |
 
 ### Verification

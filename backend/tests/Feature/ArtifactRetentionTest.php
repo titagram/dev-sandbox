@@ -2,6 +2,7 @@
 
 use App\Services\ArtifactRetentionService;
 use App\Services\ArtifactStorageService;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -12,7 +13,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('purges old finalized artifact contents and writes an audit record', function () {
@@ -84,7 +85,7 @@ it('registers a scheduled artifact retention command', function () {
 });
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{id: string, project_id: string, repository_id: string, run_id: string, storage_path: string}
  */
 function createRetentionArtifact(array $overrides = []): array
@@ -164,7 +165,7 @@ function createRetentionArtifact(array $overrides = []): array
 }
 
 /**
- * @param array{id: string, project_id: string, repository_id: string, run_id: string} $artifact
+ * @param  array{id: string, project_id: string, repository_id: string, run_id: string}  $artifact
  */
 function createCurrentSnapshotForArtifact(array $artifact): void
 {
@@ -346,7 +347,7 @@ it('reports incomplete upload candidates in dry-run without deleting files or mu
 });
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{import_id: string, artifact_id: string, artifact_dir: string, storage_path: string, declared_chunks: list<string>, legacy_chunks: list<string>}
  */
 function createIncompleteUploadArtifact(array $overrides = []): array
@@ -437,7 +438,7 @@ function createIncompleteUploadArtifact(array $overrides = []): array
 
     $storage = app(ArtifactStorageService::class);
     $storagePath = $storage->artifactPath($importId, $artifactId, 'genesis');
-    $artifactDir = \Illuminate\Support\Str::beforeLast($storagePath, '/artifact');
+    $artifactDir = Str::beforeLast($storagePath, '/artifact');
 
     $declaredChunks = [];
     $combinedContent = '';

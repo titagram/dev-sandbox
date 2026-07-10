@@ -3,6 +3,7 @@
 use App\Assistants\Agents\TaskClarifierAgent;
 use App\Assistants\ProviderHostResolver;
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -14,7 +15,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->withoutVite();
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
     $this->app->singleton(ProviderHostResolver::class, function () {
         return new TaskClarifierFakeHostResolver(['8.8.8.8'], [
             'ssrf-clarify.example.test' => ['192.168.1.2'],
@@ -508,7 +509,7 @@ it('revalidates the task clarifier provider endpoint at use time and returns the
 });
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 function taskClarifierCreateTask(string $projectId, User $user, array $overrides = []): string
 {

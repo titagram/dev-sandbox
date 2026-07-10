@@ -63,4 +63,3 @@ it('writes route inventory json with route metadata and registry classification'
     expect($login['configured'])->toBeFalse();
     expect($login['warnings'])->toContain('missing_config');
 });
-

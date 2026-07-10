@@ -33,7 +33,7 @@ it('enforces final audit chain constraints in PostgreSQL', function () {
 });
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 function auditConstraintRejects(array $overrides): bool
 {
@@ -52,7 +52,7 @@ function auditConstraintRejects(array $overrides): bool
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 function insertConstrainedAuditRow(array $overrides): void
 {

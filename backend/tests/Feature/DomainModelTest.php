@@ -6,8 +6,8 @@ use App\Models\Device;
 use App\Models\Project;
 use App\Models\Repository;
 use App\Models\Run;
-use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -457,5 +457,5 @@ it('casts boolean and datetime columns correctly', function () {
 
     expect($repository->local_only)->toBeTrue();
     expect($repository->graph_enabled)->toBeFalse();
-    expect($device->last_seen_at)->toBeInstanceOf(\Illuminate\Support\Carbon::class);
+    expect($device->last_seen_at)->toBeInstanceOf(Carbon::class);
 });

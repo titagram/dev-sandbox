@@ -115,7 +115,6 @@ it('marks non terminal jobs unlinked when the workspace binding is unlinked', fu
         ->assertJsonPath('error.code', 'workspace_binding_unlinked');
 });
 
-
 it('lets linked agents enqueue an idempotent project awareness wiki bootstrap job', function () {
     $agent = hadesM4RegisteredAgent();
     $binding = hadesM4WorkspaceBinding($agent);

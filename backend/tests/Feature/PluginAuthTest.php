@@ -214,7 +214,7 @@ it('rejects a bound token request with a stale timestamp', function () {
     $bodyHash = hash('sha256', $body);
     $signingKey = hash('sha256', $deviceSecret);
     $canonical = "POST\n/api/plugin/v1/auth/check\n{$staleTimestamp}\n{$bodyHash}";
-    $signature = 'v1=' . hash_hmac('sha256', $canonical, $signingKey);
+    $signature = 'v1='.hash_hmac('sha256', $canonical, $signingKey);
 
     $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], array_merge(
         pluginHeaders($token['plain_token']),
@@ -257,7 +257,7 @@ it('rejects a bound token request with a body hash mismatch', function () {
     $wrongBodyHash = hash('sha256', 'wrong body content');
     $signingKey = hash('sha256', $deviceSecret);
     $canonical = "POST\n/api/plugin/v1/auth/check\n{$timestamp}\n{$wrongBodyHash}";
-    $signature = 'v1=' . hash_hmac('sha256', $canonical, $signingKey);
+    $signature = 'v1='.hash_hmac('sha256', $canonical, $signingKey);
 
     $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], array_merge(
         pluginHeaders($token['plain_token']),
@@ -300,7 +300,7 @@ it('accepts a bound token request with a valid device signature', function () {
     $bodyHash = hash('sha256', $body);
     $signingKey = hash('sha256', $deviceSecret);
     $canonical = "POST\n/api/plugin/v1/auth/check\n{$timestamp}\n{$bodyHash}";
-    $signature = 'v1=' . hash_hmac('sha256', $canonical, $signingKey);
+    $signature = 'v1='.hash_hmac('sha256', $canonical, $signingKey);
 
     $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], array_merge(
         pluginHeaders($token['plain_token']),
@@ -314,82 +314,82 @@ it('accepts a bound token request with a valid device signature', function () {
 });
 
 if (! function_exists('pluginHeaders')) {
-function pluginHeaders(?string $token = null): array
-{
-    $headers = [
-        'X-DevBoard-Protocol' => 'v1',
-        'X-DevBoard-Plugin-Version' => '0.1.0',
-    ];
+    function pluginHeaders(?string $token = null): array
+    {
+        $headers = [
+            'X-DevBoard-Protocol' => 'v1',
+            'X-DevBoard-Plugin-Version' => '0.1.0',
+        ];
 
-    if ($token !== null) {
-        $headers['Authorization'] = 'Bearer '.$token;
+        if ($token !== null) {
+            $headers['Authorization'] = 'Bearer '.$token;
+        }
+
+        return $headers;
     }
-
-    return $headers;
-}
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{id: string, prefix: string, plain_token: string, secret: string, user_id: int}
  */
 if (! function_exists('createPluginToken')) {
-function createPluginToken(array $overrides = []): array
-{
-    $user = User::factory()->create(['status' => 'active']);
-    $id = (string) Str::ulid();
-    $secret = $overrides['secret'] ?? 'test-secret';
-    $prefix = 'devb_live_'.$id;
-    $now = now();
+    function createPluginToken(array $overrides = []): array
+    {
+        $user = User::factory()->create(['status' => 'active']);
+        $id = (string) Str::ulid();
+        $secret = $overrides['secret'] ?? 'test-secret';
+        $prefix = 'devb_live_'.$id;
+        $now = now();
 
-    DB::table('api_tokens')->insert(array_merge([
-        'id' => $id,
-        'token_prefix' => $prefix,
-        'token_hash' => hash('sha256', $secret),
-        'user_id' => $user->id,
-        'device_id' => null,
-        'name' => 'Test Plugin Token',
-        'scopes' => json_encode(['projects.read', 'runs.write'], JSON_THROW_ON_ERROR),
-        'expires_at' => now()->addMonth(),
-        'revoked_at' => null,
-        'last_used_at' => null,
-        'created_at' => $now,
-        'updated_at' => $now,
-    ], $overrides));
+        DB::table('api_tokens')->insert(array_merge([
+            'id' => $id,
+            'token_prefix' => $prefix,
+            'token_hash' => hash('sha256', $secret),
+            'user_id' => $user->id,
+            'device_id' => null,
+            'name' => 'Test Plugin Token',
+            'scopes' => json_encode(['projects.read', 'runs.write'], JSON_THROW_ON_ERROR),
+            'expires_at' => now()->addMonth(),
+            'revoked_at' => null,
+            'last_used_at' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], $overrides));
 
-    return [
-        'id' => $id,
-        'prefix' => $prefix,
-        'plain_token' => $prefix.'|'.$secret,
-        'secret' => $secret,
-        'user_id' => $user->id,
-    ];
-}
+        return [
+            'id' => $id,
+            'prefix' => $prefix,
+            'plain_token' => $prefix.'|'.$secret,
+            'secret' => $secret,
+            'user_id' => $user->id,
+        ];
+    }
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 if (! function_exists('createPluginDevice')) {
-function createPluginDevice(int $userId, array $overrides = []): string
-{
-    $id = (string) Str::ulid();
-    $now = now();
+    function createPluginDevice(int $userId, array $overrides = []): string
+    {
+        $id = (string) Str::ulid();
+        $now = now();
 
-    DB::table('devices')->insert(array_merge([
-        'id' => $id,
-        'user_id' => $userId,
-        'name' => 'Test Device',
-        'fingerprint_hash' => 'sha256:test-revoked-device',
-        'platform_os' => 'darwin',
-        'platform_arch' => 'arm64',
-        'plugin_version' => '0.1.0',
-        'last_seen_at' => $now,
-        'status' => 'active',
-        'created_at' => $now,
-        'updated_at' => $now,
-    ], $overrides));
+        DB::table('devices')->insert(array_merge([
+            'id' => $id,
+            'user_id' => $userId,
+            'name' => 'Test Device',
+            'fingerprint_hash' => 'sha256:test-revoked-device',
+            'platform_os' => 'darwin',
+            'platform_arch' => 'arm64',
+            'plugin_version' => '0.1.0',
+            'last_seen_at' => $now,
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], $overrides));
 
-    return $id;
-}
+        return $id;
+    }
 }

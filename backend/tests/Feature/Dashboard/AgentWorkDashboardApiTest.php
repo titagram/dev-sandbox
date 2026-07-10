@@ -2,6 +2,7 @@
 
 use App\Assistants\ProviderHostResolver;
 use App\Models\User;
+use App\Services\ServerAgentWorkService;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -310,7 +311,7 @@ it('fails project-scoped agent work execution when visibility is missing', funct
         'prompt' => 'This work should fail when executed outside the visibility project.',
     ]);
 
-    app(\App\Services\ServerAgentWorkService::class)->process($workItemId);
+    app(ServerAgentWorkService::class)->process($workItemId);
 
     expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('failed')
         ->and((string) DB::table('agent_work_items')->where('id', $workItemId)->value('failure_reason'))->toContain('not visible');

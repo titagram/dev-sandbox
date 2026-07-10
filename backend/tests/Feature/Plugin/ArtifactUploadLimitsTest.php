@@ -1,10 +1,12 @@
 <?php
 
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 
 uses(RefreshDatabase::class);
 
@@ -14,7 +16,7 @@ beforeEach(function () {
         'queue.default' => 'sync',
         'services.devboard.graph_import_mode' => 'fake',
     ]);
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('rejects genesis manifests whose size_bytes exceeds max_artifact_bytes', function () {
@@ -239,7 +241,7 @@ function limitsGenesisArtifact(string $type, string $filename, string $content, 
     ];
 }
 
-function limitsGenesisStart(array $context, array $manifest): Illuminate\Testing\TestResponse
+function limitsGenesisStart(array $context, array $manifest): TestResponse
 {
     return test()->postJson("/api/plugin/v1/repositories/{$context['repository_id']}/genesis-imports", [
         'protocol_version' => 'v1',
@@ -256,7 +258,7 @@ function limitsGenesisChunk(
     int $index,
     string $content,
     string $hash,
-): Illuminate\Testing\TestResponse {
+): TestResponse {
     return test()->call(
         'PUT',
         "/api/plugin/v1/genesis-imports/{$importId}/artifacts/{$artifactId}/chunks/{$index}",
@@ -272,7 +274,7 @@ function limitsGenesisChunk(
     );
 }
 
-function limitsGenesisFinalize(array $context, ?string $importId, array $payload = []): Illuminate\Testing\TestResponse
+function limitsGenesisFinalize(array $context, ?string $importId, array $payload = []): TestResponse
 {
     return test()->postJson("/api/plugin/v1/genesis-imports/{$importId}/finalize", array_merge([
         'protocol_version' => 'v1',

@@ -1,7 +1,6 @@
 <?php
 
 use App\Services\AuditChainVerifier;
-use App\Services\AuditLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Process;

@@ -4,7 +4,6 @@ use App\Assistants\BehaviorWikiDraftService;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 

@@ -867,7 +867,7 @@ it('preserves lexical Hades memory results when vector retrieval is degraded', f
         'updated_at' => $now,
     ]);
 
-    app()->instance(EmbeddingGenerator::class, new HadesMemorySearchEmbeddingGeneratorFake(exception: new \RuntimeException('provider unavailable')));
+    app()->instance(EmbeddingGenerator::class, new HadesMemorySearchEmbeddingGeneratorFake(exception: new RuntimeException('provider unavailable')));
     app()->instance(EmbeddingIndexService::class, new HadesMemorySearchEmbeddingIndexFake([], model: 'fake-embedding-model'));
 
     $this->getJson('/api/hades/v1/memory/search?'.http_build_query([

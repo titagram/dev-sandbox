@@ -1,5 +1,7 @@
 <?php
 
+use App\Assistants\AiAgentRegistry;
+use App\Assistants\ProviderEndpointPolicy;
 use App\Assistants\ProviderHostResolver;
 use App\Models\User;
 use Database\Seeders\DevBoardSeeder;
@@ -14,9 +16,14 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     $this->withoutVite();
     $this->seed(DevBoardSeeder::class);
-    $this->app->singleton(ProviderHostResolver::class, function () {
-        return new DashboardFakeProviderHostResolver(['8.8.8.8']);
-    });
+    $this->app->instance(
+        ProviderHostResolver::class,
+        new DashboardFakeProviderHostResolver(
+            ['8.8.8.8'],
+            ['opencode.example.test' => ['8.8.8.8']],
+        ),
+    );
+    $this->app->forgetInstance(ProviderEndpointPolicy::class);
 });
 
 it('shows the controlled AI agent registry page to admins only', function () {
@@ -317,7 +324,7 @@ it('lets an admin assign a model profile to a controlled agent', function () {
 });
 
 it('returns agent options for project with scoped visibility and legacy aliases', function () {
-    $registry = app(\App\Assistants\AiAgentRegistry::class);
+    $registry = app(AiAgentRegistry::class);
     $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
     $ownerId = (int) DB::table('users')->value('id');
     $projectB = (string) Str::ulid();
@@ -415,7 +422,7 @@ it('returns agent options for project with scoped visibility and legacy aliases'
 });
 
 it('returns agent visibility for a project', function () {
-    $registry = app(\App\Assistants\AiAgentRegistry::class);
+    $registry = app(AiAgentRegistry::class);
     $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
     $projectB = (string) Str::ulid();
     $ownerId = (int) DB::table('users')->value('id');
@@ -588,7 +595,7 @@ it('project visibility persistence for custom agent profiles', function () {
         ->and(DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->where('project_id', $projectA)->exists())
         ->toBeTrue();
 
-    $registry = app(\App\Assistants\AiAgentRegistry::class);
+    $registry = app(AiAgentRegistry::class);
 
     expect($registry->agentVisibleForProject('scoped_dashboard_reviewer', $projectA))->toBeTrue()
         ->and($registry->agentVisibleForProject('scoped_dashboard_reviewer', $projectB))->toBeFalse();
@@ -904,11 +911,9 @@ it('rejects a provider base URL whose host resolves to a private address before 
     Http::preventStrayRequests();
     $admin = aiAgentRegistryUserWithRole('Admin');
 
-    $this->app->singleton(ProviderHostResolver::class, function () {
-        return new DashboardFakeProviderHostResolver([], [
-            'ssrf-private.example.test' => ['10.0.0.5'],
-        ]);
-    });
+    $this->app->instance(ProviderHostResolver::class, new DashboardFakeProviderHostResolver([], [
+        'ssrf-private.example.test' => ['10.0.0.5'],
+    ]));
 
     $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
         'display_name' => 'SSRF Private Resolver',
@@ -922,11 +927,9 @@ it('rejects a stored unsafe provider base URL at model discovery without making 
     Http::preventStrayRequests();
     $admin = aiAgentRegistryUserWithRole('Admin');
 
-    $this->app->singleton(ProviderHostResolver::class, function () {
-        return new DashboardFakeProviderHostResolver([], [
-            'stored-unsafe.example.test' => ['169.254.169.254'],
-        ]);
-    });
+    $this->app->instance(ProviderHostResolver::class, new DashboardFakeProviderHostResolver([], [
+        'stored-unsafe.example.test' => ['169.254.169.254'],
+    ]));
 
     // Insert the provider row directly to bypass controller validation, simulating a persisted unsafe URL.
     DB::table('ai_model_providers')->where('provider_key', 'openai')->update([
@@ -953,11 +956,9 @@ it('rejects a stored unsafe opencode go provider base URL at validation without 
     Http::fake(fn () => Http::response('should not be called', 200));
     $admin = aiAgentRegistryUserWithRole('Admin');
 
-    $this->app->singleton(ProviderHostResolver::class, function () {
-        return new DashboardFakeProviderHostResolver([], [
-            'ssrf-validate.example.test' => ['169.254.169.254'],
-        ]);
-    });
+    $this->app->instance(ProviderHostResolver::class, new DashboardFakeProviderHostResolver([], [
+        'ssrf-validate.example.test' => ['169.254.169.254'],
+    ]));
 
     DB::table('ai_model_providers')->where('provider_key', 'opencode_go')->update([
         'base_url' => 'https://ssrf-validate.example.test/v1',

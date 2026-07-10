@@ -118,7 +118,8 @@ it('keeps the lexical document available and records degraded state on provider 
 
 it('rejects an unsafe stored provider endpoint before sending an embedding request', function (): void {
     Http::preventStrayRequests();
-    app()->instance(ProviderHostResolver::class, new class implements ProviderHostResolver {
+    app()->instance(ProviderHostResolver::class, new class implements ProviderHostResolver
+    {
         public function resolve(string $host): array
         {
             return ['127.0.0.1'];
@@ -184,9 +185,7 @@ it('indexes run summaries', function (): void {
 class FakeEmbeddingGenerator implements EmbeddingGenerator
 {
     /** @param list<list<mixed>> $responses */
-    public function __construct(private array $responses = [], private ?Throwable $exception = null)
-    {
-    }
+    public function __construct(private array $responses = [], private ?Throwable $exception = null) {}
 
     /** @return list<float> */
     public function generate(string $input): array

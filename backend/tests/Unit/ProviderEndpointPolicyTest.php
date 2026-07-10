@@ -105,7 +105,7 @@ it('rejects IPv4-mapped IPv6 literals that map to unsafe IPv4', function (string
 ]);
 
 it('rejects a hostname when one A answer is public and one A answer is private', function () {
-    $resolver = (new FakeProviderHostResolver())
+    $resolver = (new FakeProviderHostResolver)
         ->forHost('mixed-a.example.test', ['8.8.8.8', '10.0.0.5']);
 
     $resolution = deniedResolution('https://mixed-a.example.test', $resolver);
@@ -114,7 +114,7 @@ it('rejects a hostname when one A answer is public and one A answer is private',
 });
 
 it('rejects a hostname with a public A answer and a private AAAA answer', function () {
-    $resolver = (new FakeProviderHostResolver())
+    $resolver = (new FakeProviderHostResolver)
         ->forHost('mixed-aaaa.example.test', ['8.8.8.8', 'fc00::1']);
 
     $resolution = deniedResolution('https://mixed-aaaa.example.test', $resolver);
@@ -123,7 +123,7 @@ it('rejects a hostname with a public A answer and a private AAAA answer', functi
 });
 
 it('accepts a hostname only when every returned A/AAAA address is public', function () {
-    $resolver = (new FakeProviderHostResolver())
+    $resolver = (new FakeProviderHostResolver)
         ->forHost('all-public.example.test', ['8.8.8.8', '2606:4700:4700::1111']);
 
     $resolution = deniedResolution('https://all-public.example.test:443', $resolver);

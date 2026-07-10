@@ -3,6 +3,7 @@
 use App\Assistants\Agents\IntakeNormalizerAgent;
 use App\Assistants\ProviderHostResolver;
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -13,7 +14,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->withoutVite();
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
     $this->app->singleton(ProviderHostResolver::class, function () {
         return new IntakeNormalizerFakeHostResolver(['8.8.8.8'], [
             'ssrf-intake.example.test' => ['169.254.169.254'],
@@ -195,7 +196,7 @@ it('redacts secrets from the LLM prompt using HadesEvidencePolicy when agent is 
 
     $this->actingAs($pm)
         ->postJson("/api/dashboard/projects/{$projectId}/intake/normalize", [
-            'raw_text' => <<<TEXT
+            'raw_text' => <<<'TEXT'
 The Stripe integration stopped working. The dev key sk-live-test-AbCdEfGhIjKlMnOpQrStUvWxYz leaked in the commit.
 Error: "secret: xyz-token-abcdefghijklmnop"
 Bearer token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozwZx8Jm7vs9fHk

@@ -66,7 +66,7 @@ it('exposes an artisan command to export audit logs as csv', function () {
 });
 
 /**
- * @param array<string, mixed> $payload
+ * @param  array<string, mixed>  $payload
  */
 function createAuditLog(string $action, array $payload): void
 {

@@ -1,5 +1,7 @@
 <?php
 
+use App\Services\ArtifactStorageService;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -14,7 +16,7 @@ beforeEach(function () {
         'queue.default' => 'sync',
         'services.devboard.graph_import_mode' => 'fake',
     ]);
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('rejects Genesis artifact ids that are not strict ULIDs', function () {
@@ -120,7 +122,7 @@ it('rejects Delta with size_bytes above max', function () {
 });
 
 it('rejects storage path construction for unsafe artifact ids', function () {
-    $storage = app(\App\Services\ArtifactStorageService::class);
+    $storage = app(ArtifactStorageService::class);
 
     $importId = (string) Str::ulid();
 

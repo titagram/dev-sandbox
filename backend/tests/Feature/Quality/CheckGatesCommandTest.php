@@ -91,7 +91,7 @@ it('passes pull request gate with non blocking warnings only', function () {
 });
 
 /**
- * @param list<array<string, mixed>> $findings
+ * @param  list<array<string, mixed>>  $findings
  */
 function writeQualityReport(string $tool, array $findings): void
 {

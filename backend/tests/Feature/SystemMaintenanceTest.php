@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -12,7 +13,7 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     Storage::fake('local');
     $this->withoutVite();
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('shows maintenance operation config on the system page for sysadmin users', function () {
@@ -121,7 +122,7 @@ it('requires explicit confirmation before rotating a plugin token', function () 
 });
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{id: string, storage_path: string}
  */
 function createSystemMaintenanceArtifact(array $overrides = []): array
@@ -198,7 +199,7 @@ function createSystemMaintenanceArtifact(array $overrides = []): array
 }
 
 /**
- * @param array<string, mixed> $payload
+ * @param  array<string, mixed>  $payload
  */
 function createMaintenanceAuditLog(string $action, array $payload): void
 {
