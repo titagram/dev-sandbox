@@ -11,7 +11,7 @@ The development stack binds all published ports to `127.0.0.1` by default. The p
 
 ## Development
 
-Provide non-production local credentials and start all runtime processes:
+Provide non-production local credentials through the shell or a root `.env` file. The root `.env` file is ignored by Git and lets Compose commands reuse the local runtime credentials:
 
 ```bash
 export APP_KEY='base64:replace-with-a-local-key'
@@ -20,6 +20,8 @@ export NEO4J_PASSWORD='local-neo4j-password'
 
 docker compose -f docker-compose.devboard.yaml up -d app worker scheduler node postgres neo4j
 ```
+
+The root `.env` must define `APP_KEY`, `DB_PASSWORD`, and `NEO4J_PASSWORD`. Do not add credentials to the Compose file or commit the local `.env`.
 
 Default endpoints are:
 
