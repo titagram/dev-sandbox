@@ -1,5 +1,25 @@
 # Project Logbook
 
+## 2026-07-10 - Complete Demo Seed
+
+- Request: run a complete demo seed as an additional safety check after seeding users and roles.
+- Context read: `DemoDevBoardSeeder`, sandbox initialization, project configuration, and sandbox policies.
+- Intended write paths: `ai-sandbox/logbooks/LOGBOOK_PROJECT.md` only; the requested operation writes database records.
+- Work performed: ran `DemoDevBoardSeeder` against the active DevBoard application container.
+- Verification commands and result: PostgreSQL verification returned 5 users, 5 roles, 1 `demo-project`, 1 `demo-repository`, 1 default board, 6 board columns, and 1 project overview wiki page.
+- Files changed: `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`; database seed records only.
+- Residual risks or skipped checks: this verifies seed output and idempotent upsert paths, not the entire application regression suite.
+
+## 2026-07-10 - Isolated Demo User Seed
+
+- Request: verify the latest remediation task and rerun only the user seed.
+- Context read: current Git status, `DemoDevBoardSeeder`, `DevBoardSeeder`, `DatabaseSeeder`, and the production admin bootstrap command/tests.
+- Intended write paths: `backend/database/seeders/DemoUsersSeeder.php`, `backend/database/seeders/DemoDevBoardSeeder.php`, `backend/tests/Feature/DomainSchemaTest.php`, and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Work performed: added `DemoUsersSeeder`, refactored `DemoDevBoardSeeder` to reuse it, seeded `DevBoardSeeder` for the role dependency, then seeded the demo users.
+- Verification commands and result: `php artisan test tests/Feature/DomainSchemaTest.php tests/Feature/DashboardAuthTest.php` passed (11 tests, 98 assertions); database verification returned 5 roles, 5 users, and 0 projects, repositories, boards, and wiki pages.
+- Files changed: `backend/database/seeders/DemoUsersSeeder.php`, `backend/database/seeders/DemoDevBoardSeeder.php`, and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks or skipped checks: broader regression suite was previously reported as passing but was not rerun for this focused seeding operation.
+
 ## 2026-07-09 - Security And Production Readiness Remediation
 
 - Request: prepare and implement a subagent-driven remediation plan for the blocking security, correctness, Hades integration, and production-readiness findings from the project review.

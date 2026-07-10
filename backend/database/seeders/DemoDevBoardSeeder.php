@@ -4,7 +4,6 @@ namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
 class DemoDevBoardSeeder extends Seeder
@@ -12,18 +11,7 @@ class DemoDevBoardSeeder extends Seeder
     public function run(): void
     {
         $now = now();
-        $roleIds = DB::table('roles')->pluck('id', 'name')->all();
-
-        $userId = $this->seedUser('DevBoard Admin', 'admin@example.com', 'password', 'Admin', $roleIds, $now);
-
-        foreach ([
-            ['DevBoard Admin', 'admin@devboard.local', 'devboard', 'Admin'],
-            ['DevBoard PM', 'pm@devboard.local', 'devboard', 'PM'],
-            ['DevBoard Developer', 'dev@devboard.local', 'devboard', 'Developer'],
-            ['DevBoard Sysadmin', 'sysadmin@devboard.local', 'devboard', 'Sysadmin'],
-        ] as [$name, $email, $password, $role]) {
-            $this->seedUser($name, $email, $password, $role, $roleIds, $now);
-        }
+        $userId = (new DemoUsersSeeder)->seedUsers()['admin@example.com'];
 
         $projectId = $this->upsertUlid('projects', ['slug' => 'demo-project'], [
             'name' => 'Demo Project',
@@ -95,36 +83,6 @@ class DemoDevBoardSeeder extends Seeder
             ['name' => 'Review', 'status_key' => 'review'],
             ['name' => 'Done', 'status_key' => 'done'],
         ];
-    }
-
-    /**
-     * @param  array<string, string>  $roleIds
-     */
-    private function seedUser(string $name, string $email, string $password, string $role, array $roleIds, mixed $now): string
-    {
-        $userId = DB::table('users')->where('email', $email)->value('id');
-        $values = [
-            'name' => $name,
-            'password' => Hash::make($password),
-            'status' => 'active',
-            'updated_at' => $now,
-        ];
-
-        if ($userId) {
-            DB::table('users')->where('id', $userId)->update($values);
-        } else {
-            $userId = DB::table('users')->insertGetId(array_merge($values, [
-                'email' => $email,
-                'created_at' => $now,
-            ]));
-        }
-
-        DB::table('role_user')->updateOrInsert(
-            ['user_id' => $userId, 'role_id' => $roleIds[$role]],
-            ['updated_at' => $now, 'created_at' => $now],
-        );
-
-        return (string) $userId;
     }
 
     /**
