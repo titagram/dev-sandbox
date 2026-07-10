@@ -23,6 +23,7 @@ services:
       SANCTUM_STATEFUL_DOMAINS: "127.0.0.1:3000,localhost:3000,127.0.0.1:${DEVBOARD_APP_PORT:-18000},localhost:${DEVBOARD_APP_PORT:-18000}"
       DEVBOARD_ARTIFACT_DISK: local
       DEVBOARD_ARTIFACT_ROOT: artifacts
+      DEVBOARD_LOCAL_DISK_ROOT: "${DEVBOARD_LOCAL_DISK_ROOT:-/tmp/devboard-runtime-local-storage}"
       DEVBOARD_GRAPH_IMPORT_MODE: neo4j
       SESSION_DOMAIN: "null"
       SESSION_SECURE_COOKIE: "false"
@@ -63,6 +64,7 @@ services:
       SANCTUM_STATEFUL_DOMAINS: "127.0.0.1:3000,localhost:3000,127.0.0.1:${DEVBOARD_APP_PORT:-18000},localhost:${DEVBOARD_APP_PORT:-18000}"
       DEVBOARD_ARTIFACT_DISK: local
       DEVBOARD_ARTIFACT_ROOT: artifacts
+      DEVBOARD_LOCAL_DISK_ROOT: "${DEVBOARD_LOCAL_DISK_ROOT:-/tmp/devboard-runtime-local-storage}"
       DEVBOARD_GRAPH_IMPORT_MODE: neo4j
       SESSION_DOMAIN: "null"
       SESSION_SECURE_COOKIE: "false"
@@ -107,6 +109,7 @@ services:
       SANCTUM_STATEFUL_DOMAINS: "127.0.0.1:3000,localhost:3000,127.0.0.1:${DEVBOARD_APP_PORT:-18000},localhost:${DEVBOARD_APP_PORT:-18000}"
       DEVBOARD_ARTIFACT_DISK: local
       DEVBOARD_ARTIFACT_ROOT: artifacts
+      DEVBOARD_LOCAL_DISK_ROOT: "${DEVBOARD_LOCAL_DISK_ROOT:-/tmp/devboard-runtime-local-storage}"
       DEVBOARD_GRAPH_IMPORT_MODE: neo4j
       SESSION_DOMAIN: "null"
       SESSION_SECURE_COOKIE: "false"

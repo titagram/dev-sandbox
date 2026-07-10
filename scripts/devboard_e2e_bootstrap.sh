@@ -10,6 +10,7 @@ if [[ "${WORKDIR_REAL}" != /tmp/* && "${DEVBOARD_E2E_ALLOW_CUSTOM_WORKDIR:-0}" !
   exit 2
 fi
 WORKDIR="${WORKDIR_REAL}"
+ARTIFACT_ROOT="${WORKDIR}/artifact-storage"
 if [[ -n "${DEVBOARD_E2E_PORT:-}" ]]; then
   PORT="${DEVBOARD_E2E_PORT}"
 else
@@ -29,6 +30,8 @@ REPO_PATH="${WORKDIR}/repo"
 SEED_PATH="${WORKDIR}/seed.json"
 SERVER_LOG="${WORKDIR}/laravel-server.log"
 export DEVBOARD_CREDENTIALS_PATH="${WORKDIR}/credentials.json"
+export DEVBOARD_LOCAL_DISK_ROOT="${ARTIFACT_ROOT}"
+export APP_KEY="${APP_KEY:-base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
 
 SERVER_PID=""
 
@@ -43,6 +46,8 @@ trap cleanup EXIT
 mkdir -p "${WORKDIR}"
 rm -f "${DB_PATH}" "${REPORT}" "${SEED_PATH}" "${DEVBOARD_CREDENTIALS_PATH}"
 rm -rf "${REPO_PATH}"
+rm -rf "${ARTIFACT_ROOT}"
+mkdir -p "${ARTIFACT_ROOT}"
 touch "${DB_PATH}"
 
 if [[ ! -f "${ROOT}/backend/vendor/autoload.php" ]]; then
@@ -57,7 +62,10 @@ fi
 
 (
   cd "${ROOT}/backend"
-  DB_CONNECTION=sqlite DB_DATABASE="${DB_PATH}" php artisan migrate:fresh --seed --seeder=DatabaseSeeder --force
+  APP_ENV=testing \
+  DB_CONNECTION=sqlite \
+  DB_DATABASE="${DB_PATH}" \
+  php artisan migrate:fresh --seed --seeder=DatabaseSeeder --force
 )
 
 "${VENV}/bin/python" - "${DB_PATH}" "${SEED_PATH}" <<'PY'
@@ -140,6 +148,7 @@ cp -R "${ROOT}/fixtures/repos/simple-python" "${REPO_PATH}"
 
 (
   cd "${ROOT}/backend"
+  APP_ENV=testing \
   DB_CONNECTION=sqlite \
   DB_DATABASE="${DB_PATH}" \
   APP_URL="${SERVER_URL}" \
@@ -223,8 +232,21 @@ device = run_devboard([
     seed["token"],
 ])
 
+device_secret = None
+credentials_path = Path(env.get("DEVBOARD_CREDENTIALS_PATH", "")).expanduser() if env.get("DEVBOARD_CREDENTIALS_PATH") else None
+if credentials_path and credentials_path.is_file():
+    try:
+        device_secret = json.loads(credentials_path.read_text()).get("device_secret")
+    except (OSError, json.JSONDecodeError, TypeError):
+        device_secret = None
+
 projects = run_devboard(["projects", "list"])
-client = DevBoardClient(base_url=server_url, token=seed["token"], device_id=device["device_id"])
+client = DevBoardClient(
+    base_url=server_url,
+    token=seed["token"],
+    device_id=device["device_id"],
+    device_secret=device_secret,
+)
 repositories = client.list_repositories(seed["project_id"])
 repository_id = repositories["repositories"][0]["repository_id"]
 
