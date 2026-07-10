@@ -229,3 +229,23 @@ def test_client_retries_5xx_then_succeeds():
 
     assert result == {"ok": True}
     assert attempts == 2
+
+
+def test_client_does_not_retry_mutating_post_after_timeout():
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise TimeoutException("timed out")
+
+    client = DevBoardClient(
+        base_url="https://devboard.test",
+        token="token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(DevBoardApiError):
+        client.post("/api/plugin/v1/runs", {})
+
+    assert attempts == 1

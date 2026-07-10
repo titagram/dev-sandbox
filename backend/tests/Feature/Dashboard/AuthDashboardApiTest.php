@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -8,7 +9,7 @@ use Illuminate\Support\Facades\Hash;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('returns the authenticated dashboard user for the frontend adapter', function () {
@@ -44,6 +45,28 @@ it('authenticates and logs out through dashboard json endpoints', function () {
 
     $this->postJson('/api/dashboard/logout')
         ->assertNoContent();
+
+    $this->assertGuest();
+});
+
+it('rejects json login and existing sessions for non-active users', function () {
+    $user = User::factory()->create([
+        'email' => 'inactive-api@example.com',
+        'password' => Hash::make('correct-password'),
+        'status' => 'inactive',
+    ]);
+    dashboardApiAttachRole($user, 'PM');
+
+    $this->postJson('/api/dashboard/login', [
+        'email' => 'inactive-api@example.com',
+        'password' => 'correct-password',
+    ])->assertUnprocessable()->assertJsonValidationErrors('email');
+
+    $this->assertGuest();
+
+    $this->actingAs($user)
+        ->getJson('/api/dashboard/me')
+        ->assertUnauthorized();
 
     $this->assertGuest();
 });

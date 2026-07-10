@@ -1,5 +1,7 @@
 <?php
 
+use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -7,7 +9,7 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('creates a started run from a plugin payload', function () {
@@ -123,12 +125,107 @@ it('rejects artifact events after a run is finished', function () {
         ->assertJsonPath('error.code', 'run_not_active');
 });
 
+it('rejects user B heartbeat event and finish requests for user A run', function () {
+    $owner = createRunApiContext();
+    $otherUser = User::factory()->create(['status' => 'active']);
+    $other = createRunApiContext($otherUser->id);
+    $runId = createStartedRun($owner);
+
+    foreach (runMutationRequests($runId) as [$path, $payload]) {
+        $this->postJson($path, $payload, runApiHeaders($other))
+            ->assertForbidden()
+            ->assertJsonPath('error.code', 'forbidden');
+    }
+
+    expect(DB::table('runs')->where('id', $runId)->value('status'))->toBe('started');
+    expect(DB::table('run_events')->where('run_id', $runId)->count())->toBe(1);
+});
+
+it('rejects device B heartbeat event and finish requests for device A run', function () {
+    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $owner = createRunApiContext($userId);
+    $otherDevice = createRunApiContext($userId);
+    $runId = createStartedRun($owner);
+
+    foreach (runMutationRequests($runId) as [$path, $payload]) {
+        $this->postJson($path, $payload, runApiHeaders($otherDevice))
+            ->assertForbidden()
+            ->assertJsonPath('error.code', 'forbidden');
+    }
+});
+
+it('rejects run start with cross-project repository workspace and task references', function () {
+    $context = createRunApiContext();
+    $projectId = (string) Str::ulid();
+    $boardId = (string) Str::ulid();
+    $columnId = (string) Str::ulid();
+    $taskId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('projects')->insert([
+        'id' => $projectId,
+        'name' => 'Other Project',
+        'slug' => 'other-run-project',
+        'description' => null,
+        'status' => 'active',
+        'default_code_exposure_policy' => 'full_code_artifacts',
+        'created_by_user_id' => $context['user_id'],
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('kanban_boards')->insert([
+        'id' => $boardId,
+        'project_id' => $projectId,
+        'name' => 'Other Board',
+        'is_default' => true,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('kanban_columns')->insert([
+        'id' => $columnId,
+        'board_id' => $boardId,
+        'name' => 'Backlog',
+        'position' => 0,
+        'status_key' => 'backlog',
+        'wip_limit' => null,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('tasks')->insert([
+        'id' => $taskId,
+        'project_id' => $projectId,
+        'title' => 'Other task',
+        'description' => null,
+        'status_column_id' => $columnId,
+        'priority' => 'normal',
+        'risk_level' => 'low',
+        'owner_user_id' => null,
+        'created_by_user_id' => $context['user_id'],
+        'due_at' => null,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $payload = runStartPayload($context);
+    $payload['task_id'] = $taskId;
+
+    foreach ([
+        $payload,
+        array_merge(runStartPayload($context), ['project_id' => $projectId]),
+        array_merge(runStartPayload($context), ['repository_id' => null]),
+    ] as $inconsistentPayload) {
+        $this->postJson('/api/plugin/v1/runs', $inconsistentPayload, runApiHeaders($context))
+            ->assertUnprocessable()
+            ->assertJsonPath('error.code', 'schema_validation_failed');
+    }
+});
+
 /**
  * @return array<string, string>
  */
-function createRunApiContext(): array
+function createRunApiContext(?int $userId = null): array
 {
-    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $userId ??= DB::table('users')->where('email', 'admin@example.com')->value('id');
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
     $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
     $now = now();
@@ -193,7 +290,32 @@ function createRunApiContext(): array
 }
 
 /**
- * @param array<string, string> $context
+ * @return list<array{0: string, 1: array<string, mixed>}>
+ */
+function runMutationRequests(string $runId): array
+{
+    return [
+        ["/api/plugin/v1/runs/{$runId}/heartbeat", [
+            'protocol_version' => 'v1',
+            'message' => 'foreign heartbeat',
+        ]],
+        ["/api/plugin/v1/runs/{$runId}/events", [
+            'protocol_version' => 'v1',
+            'event_type' => 'artifact_uploaded',
+            'severity' => 'info',
+            'message' => 'foreign event',
+            'payload' => [],
+        ]],
+        ["/api/plugin/v1/runs/{$runId}/finish", [
+            'protocol_version' => 'v1',
+            'status' => 'finished',
+            'summary' => 'foreign finish',
+        ]],
+    ];
+}
+
+/**
+ * @param  array<string, string>  $context
  * @return array<string, mixed>
  */
 function runStartPayload(array $context): array
@@ -215,7 +337,7 @@ function runStartPayload(array $context): array
 }
 
 /**
- * @param array<string, string> $context
+ * @param  array<string, string>  $context
  * @return array<string, string>
  */
 function runApiHeaders(array $context): array
@@ -229,7 +351,7 @@ function runApiHeaders(array $context): array
 }
 
 /**
- * @param array<string, string> $context
+ * @param  array<string, string>  $context
  */
 function createStartedRun(array $context): string
 {

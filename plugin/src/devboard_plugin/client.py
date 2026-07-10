@@ -6,7 +6,8 @@ import hmac
 import json
 import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
+import ipaddress
 
 import httpx
 from httpx import ConnectError, TimeoutException
@@ -17,6 +18,32 @@ class DevBoardApiError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.details = details or {}
+
+
+def normalize_server_url(server_url: str) -> str:
+    try:
+        parsed = urlsplit(server_url.strip())
+        port = parsed.port
+    except (AttributeError, ValueError):
+        raise DevBoardApiError(code="invalid_server_url", message="server_url must be a valid HTTP(S) URL.") from None
+
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    if scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+        raise DevBoardApiError(code="invalid_server_url", message="server_url must be an HTTP(S) origin without credentials.")
+
+    host = host.lower().rstrip(".")
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = host == "localhost" or host.endswith(".localhost")
+    if scheme != "https" and not is_loopback:
+        raise DevBoardApiError(code="insecure_server_url", message="HTTPS is required for non-loopback server hosts.")
+
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    return f"{scheme}://{host}{f':{port}' if port is not None and not default_port else ''}"
 
 
 @dataclass
@@ -30,6 +57,7 @@ class DevBoardClient:
     max_retries: int = 3
 
     def __post_init__(self) -> None:
+        self.base_url = normalize_server_url(self.base_url)
         self._http_client: httpx.Client | None = None
 
     def _get_client(self) -> httpx.Client:
@@ -83,12 +111,13 @@ class DevBoardClient:
     ) -> httpx.Response:
         last_exception: Exception | None = None
 
-        for attempt in range(self.max_retries):
+        attempts = self.max_retries if method.upper() in {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"} else 1
+        for attempt in range(attempts):
             try:
                 response = self._get_client().request(method, path, headers=headers, content=content)
 
                 if response.is_error and response.status_code >= 500:
-                    if attempt < self.max_retries - 1:
+                    if attempt < attempts - 1:
                         time.sleep(2 ** attempt)
                         self._close_client()
                         continue
@@ -100,7 +129,7 @@ class DevBoardClient:
                 return response
             except (ConnectError, TimeoutException) as e:
                 last_exception = e
-                if attempt < self.max_retries - 1:
+                if attempt < attempts - 1:
                     time.sleep(2 ** attempt)
                     self._close_client()
                     continue

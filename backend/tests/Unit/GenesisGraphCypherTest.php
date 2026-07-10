@@ -14,6 +14,38 @@ it('builds a DevBoardSnapshot command payload', function () {
     ]);
 });
 
+it('builds affected subgraph clone commands that preserve the base projection', function () {
+    $commands = GenesisGraphImportService::cloneBaseSnapshotCommands(
+        'snap_base',
+        'snap_new',
+        'repo_123',
+        'run_123',
+    );
+
+    expect($commands)->toHaveCount(9);
+    expect($commands[0]['cypher'])->toContain('MERGE (copy:CodeNode:File');
+    expect($commands[0]['params'])->toMatchArray([
+        'base_snapshot_id' => 'snap_base',
+        'snapshot_id' => 'snap_new',
+    ]);
+    expect(collect($commands)->contains(
+        fn (array $command): bool => str_contains($command['cypher'], '[copy:CALLS'),
+    ))->toBeTrue();
+});
+
+it('builds snapshot-scoped relationship and node deletion commands from tombstone ids', function () {
+    $commands = GenesisGraphImportService::deltaDeletionCommands(
+        'snap_new',
+        ['node:removed'],
+        ['rel:removed'],
+    );
+
+    expect($commands[0]['cypher'])->toContain('DELETE relationship');
+    expect($commands[0]['params']['relationship_ids'])->toBe(['rel:removed']);
+    expect($commands[1]['cypher'])->toContain('DETACH DELETE node');
+    expect($commands[1]['params']['node_ids'])->toBe(['node:removed']);
+});
+
 it('adds snapshot run and repository ids to graph nodes', function () {
     $command = GenesisGraphImportService::nodeCommand(
         [
@@ -62,7 +94,7 @@ it('adds run and repository ids to graph relationships', function () {
 });
 
 it('FakeNeo4jClient records Cypher and parameters for assertion', function () {
-    $fake = new FakeNeo4jClient();
+    $fake = new FakeNeo4jClient;
 
     $fake->run('CREATE INDEX code_node_snapshot_external IF NOT EXISTS FOR (n:CodeNode) ON (n.snapshot_id, n.external_id)', []);
     $fake->run('MERGE (s:DevBoardSnapshot {snapshot_id: $snapshot_id}) SET s.repository_id = $repository_id, s.run_id = $run_id', [

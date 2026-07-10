@@ -1,11 +1,13 @@
 <?php
 
+use App\Console\Commands\BootstrapAdminCommand;
 use App\Console\Commands\Hades\ReindexSearchDocumentsCommand;
 use App\Console\Commands\Quality\CheckGatesCommand;
 use App\Console\Commands\Quality\RouteInventoryCommand;
 use App\Console\Commands\Quality\RouteSmokeCommand;
 use App\Http\Middleware\AuthenticateHadesAgentToken;
 use App\Http\Middleware\AuthenticatePluginToken;
+use App\Http\Middleware\EnsureActiveUser;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -20,6 +22,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withCommands([
+        BootstrapAdminCommand::class,
         CheckGatesCommand::class,
         ReindexSearchDocumentsCommand::class,
         RouteInventoryCommand::class,
@@ -40,6 +43,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'plugin.token' => AuthenticatePluginToken::class,
             'hades.agent' => AuthenticateHadesAgentToken::class,
+            'active' => EnsureActiveUser::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

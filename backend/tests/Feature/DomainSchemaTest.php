@@ -1,8 +1,11 @@
 <?php
 
+use Database\Seeders\DemoDevBoardSeeder;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 
@@ -41,9 +44,9 @@ it('creates the devboard core tables', function () {
 });
 
 it('seeds the required role names and default kanban columns', function () {
-    expect(class_exists(\Database\Seeders\DevBoardSeeder::class))->toBeTrue();
+    expect(class_exists(DevBoardSeeder::class))->toBeTrue();
 
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 
     expect(DB::table('roles')->pluck('name')->all())
         ->toEqualCanonicalizing(['Admin', 'PM', 'Developer', 'Sysadmin', 'Agent']);
@@ -68,9 +71,24 @@ it('seeds the required role names and default kanban columns', function () {
         ->not->toBeNull();
 });
 
+it('keeps the structural seeder free of demo users and projects in production', function () {
+    $this->app['env'] = 'production';
+
+    try {
+        app(DevBoardSeeder::class)->run();
+
+        expect(DB::table('roles')->count())->toBe(5)
+            ->and(DB::table('users')->count())->toBe(0)
+            ->and(DB::table('projects')->count())->toBe(0)
+            ->and(class_exists(DemoDevBoardSeeder::class))->toBeTrue();
+    } finally {
+        $this->app['env'] = 'testing';
+    }
+});
+
 it('repairs missing default ai agent registry rows and normalizes opencode go defaults', function () {
     $providerId = DB::table('ai_model_providers')->where('provider_key', 'opencode_go')->value('id');
-    $modelProfileId = (string) \Illuminate\Support\Str::ulid();
+    $modelProfileId = (string) Str::ulid();
     expect($providerId)->not->toBeNull();
 
     DB::table('ai_model_profiles')->insert([

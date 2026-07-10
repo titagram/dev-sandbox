@@ -482,10 +482,15 @@ M4 implementato:
 - `GET /api/hades/v1/agent/jobs` per pull di job `queued`, filtrati per
   `project_id`, `agent_id`, `workspace_binding_id` e `capabilities[]`.
 - `POST /api/hades/v1/agent/jobs/{job}/status` per lifecycle
-  `received`, `waiting_confirmation`, `started`, `completed`, `failed`,
-  `expired`, `cancelled`, `unlinked`.
+  `received`, `waiting_confirmation`, `started`, `failed`, `expired`,
+  `cancelled`, `unlinked`. Lo stato `completed` viene prodotto solo dal result endpoint.
 - `POST /api/hades/v1/agent/jobs/{job}/result` per risultati bounded gia'
   prodotti dal client Hades locale.
+- I job con `requires_confirmation=true` non possono passare da
+  `waiting_confirmation` a `started` con il bearer agent. Una sessione dashboard
+  Admin deve confermarli tramite
+  `POST /api/dashboard/admin/hades/jobs/{job}/confirm`; la conferma e' atomica,
+  auditata e vincolata a progetti attivi.
 - Nuove tabelle `hades_agent_jobs` e `hades_agent_job_events`.
 - Payload/result JSON restano strutturati; eventi status/result vengono
   tracciati separatamente.

@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesAgentJobPolicy;
+use App\Services\Hades\HadesJobException;
 use App\Services\WikiRefreshResultService;
 use App\Services\WikiRevisionException;
 use Illuminate\Http\JsonResponse;
@@ -14,6 +16,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AgentJobResultController extends Controller
 {
+    public function __construct(private readonly HadesAgentJobPolicy $jobs) {}
+
     public function __invoke(Request $request, WikiRefreshResultService $wikiResults, string $job): JsonResponse
     {
         $validated = $request->validate([
@@ -34,12 +38,6 @@ class AgentJobResultController extends Controller
             return $binding;
         }
 
-        $record = $this->jobRecord($agent, $job, $validated['project_id'], $binding->id);
-
-        if ($record instanceof JsonResponse) {
-            return $record;
-        }
-
         $result = $validated['result'] ?? [];
         if (($validated['summary'] ?? null) !== null && ! isset($result['summary'])) {
             $result['summary'] = $validated['summary'];
@@ -51,29 +49,94 @@ class AgentJobResultController extends Controller
         }
 
         $now = now();
-        $updates = [
-            'hades_agent_id' => $agent->id,
-            'status' => $status,
-            'result' => json_encode($result, JSON_THROW_ON_ERROR),
-            'updated_at' => $now,
-        ];
-
-        if ($status === 'completed') {
-            $updates['completed_at'] = $now;
-        } else {
-            $updates['failed_at'] = $now;
-            $updates['error_message'] = $validated['error'] ?? ($result['summary'] ?? null);
-        }
-
         try {
-            DB::transaction(function () use ($job, $status, &$updates, &$result, $record, $wikiResults, $now): void {
+            $updated = DB::transaction(function () use ($agent, $binding, $job, $status, $validated, &$result, $wikiResults, $now): object {
+                $this->assertBindingStillLinked($agent, $binding->id, $validated['project_id']);
+                $currentAgent = DB::table('hades_agents')->where('id', $agent->id)->lockForUpdate()->first();
+                $record = $this->lockedJob($agent, $job, $validated['project_id'], $binding->id);
+                $this->jobs->assertCapability($currentAgent, $record);
+                $this->jobs->assertResult($record, $status, $result);
+
+                $expectedStatus = (string) $record->status;
+                $transitionRecord = clone $record;
+                foreach ($this->jobs->resultPreparationStatuses($record) as $preparationStatus) {
+                    $this->jobs->assertStatusTransition($transitionRecord, $preparationStatus);
+                    $transitionUpdates = [
+                        'hades_agent_id' => $agent->id,
+                        'status' => $preparationStatus,
+                        'updated_at' => $now,
+                    ];
+                    if ($preparationStatus === 'received') {
+                        $transitionUpdates['claimed_at'] = $transitionRecord->claimed_at ?: $now;
+                    }
+                    if ($preparationStatus === 'started') {
+                        $transitionUpdates['claimed_at'] = $transitionRecord->claimed_at ?: $now;
+                        $transitionUpdates['started_at'] = $transitionRecord->started_at ?: $now;
+                    }
+
+                    $advanced = DB::table('hades_agent_jobs')
+                        ->where('id', $job)
+                        ->where('status', $expectedStatus)
+                        ->where(function ($query) use ($agent): void {
+                            $query->whereNull('hades_agent_id')->orWhere('hades_agent_id', $agent->id);
+                        })
+                        ->update($transitionUpdates);
+                    if ($advanced !== 1) {
+                        throw new HadesJobException('job_concurrent_update', 'The Hades job was updated concurrently.', Response::HTTP_CONFLICT);
+                    }
+
+                    DB::table('hades_agent_job_events')->insert([
+                        'id' => (string) Str::ulid(),
+                        'job_id' => $job,
+                        'event_type' => 'status',
+                        'status' => $preparationStatus,
+                        'payload' => json_encode([
+                            'reason' => 'implicit_wiki_result_submission',
+                            'error' => null,
+                            'payload' => [],
+                        ], JSON_THROW_ON_ERROR),
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]);
+
+                    $expectedStatus = $preparationStatus;
+                    $transitionRecord->status = $preparationStatus;
+                    if ($preparationStatus === 'received') {
+                        $transitionRecord->claimed_at = $transitionUpdates['claimed_at'];
+                    }
+                    if ($preparationStatus === 'started') {
+                        $transitionRecord->started_at = $transitionUpdates['started_at'];
+                    }
+                }
+
+                $updates = [
+                    'hades_agent_id' => $agent->id,
+                    'status' => $status,
+                    'result' => json_encode($result, JSON_THROW_ON_ERROR),
+                    'updated_at' => $now,
+                ];
+                if ($status === 'completed') {
+                    $updates['completed_at'] = $now;
+                } else {
+                    $updates['failed_at'] = $now;
+                    $updates['error_message'] = $validated['error'] ?? ($result['summary'] ?? null);
+                }
+
                 if ($status === 'completed' && $this->shouldApplyWikiRefreshResult($record, $result)) {
                     $result['applied'] = $wikiResults->apply($record, $result);
                     $updates['result'] = json_encode($result, JSON_THROW_ON_ERROR);
                     $updates['result_applied_at'] = $now;
                 }
 
-                DB::table('hades_agent_jobs')->where('id', $job)->update($updates);
+                $affected = DB::table('hades_agent_jobs')
+                    ->where('id', $job)
+                    ->where('status', $expectedStatus)
+                    ->where('hades_agent_id', $agent->id)
+                    ->update($updates);
+                if ($affected !== 1) {
+                    throw new HadesJobException('job_concurrent_update', 'The Hades job was updated concurrently.', Response::HTTP_CONFLICT);
+                }
+
                 DB::table('hades_agent_job_events')->insert([
                     'id' => (string) Str::ulid(),
                     'job_id' => $job,
@@ -83,12 +146,14 @@ class AgentJobResultController extends Controller
                     'created_at' => $now,
                     'updated_at' => $now,
                 ]);
-            });
+
+                return DB::table('hades_agent_jobs')->where('id', $job)->first();
+            }, 3);
         } catch (WikiRevisionException $exception) {
             return $this->error($exception->errorCode, $exception->getMessage(), Response::HTTP_UNPROCESSABLE_ENTITY);
+        } catch (HadesJobException $exception) {
+            return $this->error($exception->errorCode, $exception->getMessage(), $exception->status);
         }
-
-        $updated = DB::table('hades_agent_jobs')->where('id', $job)->first();
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -126,7 +191,7 @@ class AgentJobResultController extends Controller
         return $binding;
     }
 
-    private function jobRecord(object $agent, string $jobId, string $projectId, string $bindingId): mixed
+    private function lockedJob(object $agent, string $jobId, string $projectId, string $bindingId): object
     {
         $job = DB::table('hades_agent_jobs')
             ->where('id', $jobId)
@@ -135,9 +200,28 @@ class AgentJobResultController extends Controller
             ->where(function ($query) use ($agent): void {
                 $query->whereNull('hades_agent_id')->orWhere('hades_agent_id', $agent->id);
             })
+            ->lockForUpdate()
             ->first();
 
-        return $job ?: $this->error('job_not_found', 'Hades agent job was not found.', Response::HTTP_NOT_FOUND);
+        if (! $job) {
+            throw new HadesJobException('job_not_found', 'Hades agent job was not found.', Response::HTTP_NOT_FOUND);
+        }
+
+        return $job;
+    }
+
+    private function assertBindingStillLinked(object $agent, string $bindingId, string $projectId): void
+    {
+        $binding = DB::table('hades_workspace_bindings')
+            ->where('id', $bindingId)
+            ->where('project_id', $projectId)
+            ->where('hades_agent_id', $agent->id)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $binding || $binding->status !== 'linked') {
+            throw new HadesJobException('workspace_binding_unlinked', 'Workspace binding is not linked.', Response::HTTP_CONFLICT);
+        }
     }
 
     private function payload(object $job): array

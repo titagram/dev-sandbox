@@ -49,6 +49,7 @@ use App\Http\Controllers\Plugin\RunHeartbeatController;
 use App\Http\Controllers\Plugin\RunStartController;
 use App\Http\Controllers\Plugin\SharedMemoryPackController;
 use App\Http\Controllers\Plugin\WikiRevisionController;
+use App\Http\Middleware\HadesProjectWritable;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('plugin/v1')->group(function () {
@@ -158,7 +159,7 @@ Route::prefix('plugin/v1')->group(function () {
         ->middleware('plugin.token:wiki.write');
 });
 
-Route::prefix('hades/v1')->group(function () {
+Route::prefix('hades/v1')->middleware(HadesProjectWritable::class)->group(function () {
     Route::get('/health', HadesHealthController::class)
         ->middleware('throttle:plugin-api-light');
 

@@ -200,7 +200,8 @@ affected_symbol_ids
 Backend rules:
 
 - for `full_snapshot`, replace the active graph projection for the repository snapshot scope;
-- for `affected_subgraph`, upsert affected nodes and relationships, then mark removed nodes inactive;
+- for `affected_subgraph`, clone the unchanged base projection into the new snapshot scope, apply node and relationship upserts, and omit identifiers listed in `nodes_deleted` and `relationships_deleted`;
+- deletion fields are lists of stable identifiers/tombstones, never aggregate counters;
 - keep previous snapshot data queryable for audit until retention policy removes it;
 - link graph changes to `delta_sync_id` and `run_id`.
 

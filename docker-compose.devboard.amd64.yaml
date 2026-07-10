@@ -5,6 +5,12 @@ services:
   node:
     platform: linux/amd64
 
+  worker:
+    platform: linux/amd64
+
+  scheduler:
+    platform: linux/amd64
+
   postgres:
     platform: linux/amd64
 

@@ -4,6 +4,12 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKDIR="${DEVBOARD_E2E_WORKDIR:-/tmp/devboard-e2e}"
 REPORT="${DEVBOARD_E2E_REPORT:-${WORKDIR}/report.json}"
+WORKDIR_REAL="$(realpath -m "${WORKDIR}")"
+if [[ "${WORKDIR_REAL}" != /tmp/* && "${DEVBOARD_E2E_ALLOW_CUSTOM_WORKDIR:-0}" != "1" ]]; then
+  echo "Refusing cleanup outside /tmp. Set DEVBOARD_E2E_ALLOW_CUSTOM_WORKDIR=1 to override." >&2
+  exit 2
+fi
+WORKDIR="${WORKDIR_REAL}"
 if [[ -n "${DEVBOARD_E2E_PORT:-}" ]]; then
   PORT="${DEVBOARD_E2E_PORT}"
 else
@@ -51,7 +57,7 @@ fi
 
 (
   cd "${ROOT}/backend"
-  DB_CONNECTION=sqlite DB_DATABASE="${DB_PATH}" php artisan migrate:fresh --seed --seeder=DevBoardSeeder --force
+  DB_CONNECTION=sqlite DB_DATABASE="${DB_PATH}" php artisan migrate:fresh --seed --seeder=DatabaseSeeder --force
 )
 
 "${VENV}/bin/python" - "${DB_PATH}" "${SEED_PATH}" <<'PY'

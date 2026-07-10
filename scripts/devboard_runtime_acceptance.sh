@@ -3,11 +3,27 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPORT="${DEVBOARD_RUNTIME_ACCEPTANCE_REPORT:-/tmp/devboard-runtime-acceptance-report.json}"
-APP_PORT="${DEVBOARD_APP_PORT:-8000}"
-VITE_PORT="${DEVBOARD_VITE_PORT:-5173}"
-POSTGRES_PORT="${DEVBOARD_POSTGRES_PORT:-5432}"
-NEO4J_HTTP_PORT="${DEVBOARD_NEO4J_HTTP_PORT:-7474}"
-NEO4J_BOLT_PORT="${DEVBOARD_NEO4J_BOLT_PORT:-7687}"
+APP_PORT="${DEVBOARD_APP_PORT:-28000}"
+PROJECT_NAME="${DEVBOARD_RUNTIME_ACCEPTANCE_PROJECT:-devboard-runtime-acceptance}"
+
+if [[ "${DEVBOARD_RUNTIME_ACCEPTANCE:-0}" != "1" ]]; then
+  echo "Refusing destructive acceptance run. Set DEVBOARD_RUNTIME_ACCEPTANCE=1." >&2
+  exit 2
+fi
+
+export APP_KEY="${APP_KEY:-base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}"
+export DB_PASSWORD="${DB_PASSWORD:-runtime-acceptance-db}"
+export NEO4J_PASSWORD="${NEO4J_PASSWORD:-runtime-acceptance-neo4j}"
+export DEVBOARD_APP_BIND="127.0.0.1"
+export DEVBOARD_APP_PORT="${APP_PORT}"
+export DEVBOARD_VITE_BIND="127.0.0.1"
+export DEVBOARD_VITE_PORT="${DEVBOARD_VITE_PORT:-25173}"
+export DEVBOARD_POSTGRES_BIND="127.0.0.1"
+export DEVBOARD_POSTGRES_PORT="${DEVBOARD_POSTGRES_PORT:-25432}"
+export DEVBOARD_NEO4J_BIND="127.0.0.1"
+export DEVBOARD_NEO4J_HTTP_PORT="${DEVBOARD_NEO4J_HTTP_PORT:-27474}"
+export DEVBOARD_NEO4J_BOLT_PORT="${DEVBOARD_NEO4J_BOLT_PORT:-27687}"
+COMPOSE=(docker compose -p "${PROJECT_NAME}" -f "${ROOT}/docker-compose.devboard.yaml")
 
 HOST_OS="$(uname -s)"
 HOST_ARCH="$(uname -m)"
@@ -23,9 +39,14 @@ case "${HOST_ARCH}" in
   *) echo "This harness is for x64 hosts only." >&2; exit 1 ;;
 esac
 
-docker compose -f "${ROOT}/docker-compose.devboard.yaml" config >/dev/null
-docker compose -f "${ROOT}/docker-compose.devboard.yaml" up -d app node postgres neo4j
-docker compose -f "${ROOT}/docker-compose.devboard.yaml" exec -T app php artisan migrate:fresh --seed --seeder=DevBoardSeeder --force
+cleanup() {
+  "${COMPOSE[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+"${COMPOSE[@]}" config >/dev/null
+"${COMPOSE[@]}" up -d app worker scheduler postgres neo4j
+"${COMPOSE[@]}" exec -T app php artisan migrate:fresh --seed --seeder=DatabaseSeeder --force
 
 if [[ ! -x /tmp/devboard-plugin-venv/bin/python ]]; then
   python3 -m venv /tmp/devboard-plugin-venv
@@ -33,8 +54,8 @@ if [[ ! -x /tmp/devboard-plugin-venv/bin/python ]]; then
 fi
 
 curl -fsS "http://127.0.0.1:${APP_PORT}/up" >/dev/null
-docker compose -f "${ROOT}/docker-compose.devboard.yaml" exec -T postgres psql -U devboard -d devboard -c 'select 1 as ok;' >/tmp/devboard-postgres-ok.txt
-docker compose -f "${ROOT}/docker-compose.devboard.yaml" exec -T neo4j cypher-shell -u neo4j -p graphify-sandbox 'RETURN 1 AS ok' >/tmp/devboard-neo4j-ok.txt
+"${COMPOSE[@]}" exec -T postgres psql -U devboard -d devboard -c 'select 1 as ok;' >/tmp/devboard-postgres-ok.txt
+"${COMPOSE[@]}" exec -T neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD}" 'RETURN 1 AS ok' >/tmp/devboard-neo4j-ok.txt
 /tmp/devboard-plugin-venv/bin/python -m pytest tests/e2e/test_onboarding_genesis.py -q >/tmp/devboard-runtime-e2e.txt
 
 python3 - <<'PY' "${REPORT}" "${HOST_OS}" "${HOST_ARCH}" "${DOCKER_PLATFORM}"

@@ -31,7 +31,7 @@ services:
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: "${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}"
     ports:
-      - "${DEVBOARD_APP_PORT:-18000}:8000"
+      - "${DEVBOARD_APP_BIND:-127.0.0.1}:${DEVBOARD_APP_PORT:-18000}:8000"
     volumes:
       - .:/workspace
       - devboard-composer-cache:/tmp/composer-cache
@@ -78,28 +78,78 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grep -aq 'artisan' /proc/1/cmdline && grep -aq 'queue:work' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/devboard/backend.Dockerfile
+    working_dir: /workspace/backend
+    command: sh -lc "composer install && php artisan schedule:work"
+    environment:
+      APP_ENV: local
+      APP_KEY: "${APP_KEY:?APP_KEY is required}"
+      APP_DEBUG: "true"
+      APP_URL: "http://127.0.0.1:${DEVBOARD_APP_PORT:-18000}"
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: devboard
+      DB_USERNAME: devboard
+      DB_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD is required}"
+      DEVBOARD_DASHBOARD_ORIGINS: "http://127.0.0.1:3000,http://localhost:3000"
+      QUEUE_CONNECTION: database
+      SANCTUM_STATEFUL_DOMAINS: "127.0.0.1:3000,localhost:3000,127.0.0.1:${DEVBOARD_APP_PORT:-18000},localhost:${DEVBOARD_APP_PORT:-18000}"
+      DEVBOARD_ARTIFACT_DISK: local
+      DEVBOARD_ARTIFACT_ROOT: artifacts
+      DEVBOARD_GRAPH_IMPORT_MODE: neo4j
+      SESSION_DOMAIN: "null"
+      SESSION_SECURE_COOKIE: "false"
+      SESSION_SAME_SITE: lax
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: "${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}"
+    volumes:
+      - .:/workspace
+      - devboard-composer-cache:/tmp/composer-cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "grep -aq 'artisan' /proc/1/cmdline && grep -aq 'schedule:work' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   node:
-    image: node:24-alpine
+    image: node:24.16.0-alpine@sha256:21f403ab171f2dc89bad4dd69d7721bfd15f084ccb46cdd225f31f2bc59b5c9a
     working_dir: /workspace/backend
     command: sh -lc "npm install && npm run dev -- --host 0.0.0.0"
     environment:
       VITE_DEV_SERVER_HOST: 0.0.0.0
     ports:
-      - "${DEVBOARD_VITE_PORT:-15173}:5173"
+      - "${DEVBOARD_VITE_BIND:-127.0.0.1}:${DEVBOARD_VITE_PORT:-15173}:5173"
     volumes:
       - .:/workspace
       - devboard-npm-cache:/root/.npm
       - devboard-node-modules:/workspace/backend/node_modules
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
     environment:
       POSTGRES_DB: devboard
       POSTGRES_USER: devboard
       POSTGRES_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD is required}"
     ports:
-      - "${DEVBOARD_POSTGRES_PORT:-15432}:5432"
+      - "${DEVBOARD_POSTGRES_BIND:-127.0.0.1}:${DEVBOARD_POSTGRES_PORT:-15432}:5432"
     volumes:
       - devboard-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -109,14 +159,14 @@ services:
       retries: 20
 
   neo4j:
-    image: neo4j:5-community
+    image: neo4j:5.26.27-community@sha256:937fbd163e302a5751dd329b719c1b05e2a4293af223d61b1aa17e3dea087709
     environment:
       NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}"
       NEO4J_server_memory_heap_initial__size: 512m
       NEO4J_server_memory_heap_max__size: 1G
     ports:
-      - "${DEVBOARD_NEO4J_HTTP_PORT:-17474}:7474"
-      - "${DEVBOARD_NEO4J_BOLT_PORT:-17687}:7687"
+      - "${DEVBOARD_NEO4J_BIND:-127.0.0.1}:${DEVBOARD_NEO4J_HTTP_PORT:-17474}:7474"
+      - "${DEVBOARD_NEO4J_BIND:-127.0.0.1}:${DEVBOARD_NEO4J_BOLT_PORT:-17687}:7687"
     volumes:
       - devboard-neo4j-data:/data
       - devboard-neo4j-logs:/logs

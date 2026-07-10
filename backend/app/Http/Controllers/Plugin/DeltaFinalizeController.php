@@ -7,8 +7,10 @@ use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageException;
 use App\Services\AuditLogger;
 use App\Services\DeltaFinalizeService;
+use App\Services\PluginInvariantService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\Response;
 
 class DeltaFinalizeController extends Controller
@@ -16,13 +18,20 @@ class DeltaFinalizeController extends Controller
     public function __construct(
         private readonly DeltaFinalizeService $finalize,
         private readonly ProjectLifecycleService $lifecycle,
-    )
-    {
-    }
+        private readonly PluginInvariantService $invariants,
+    ) {}
 
     public function __invoke(Request $request, string $deltaSync): JsonResponse
     {
         if ($error = $this->lifecycle->pluginDeltaWriteGuard($deltaSync)) {
+            return $error;
+        }
+
+        $delta = DB::table('delta_syncs')->where('id', $deltaSync)->first();
+        $run = DB::table('runs')->where('id', $delta->run_id)->first();
+        abort_unless($run, Response::HTTP_NOT_FOUND);
+
+        if ($error = $this->invariants->assertRunOwnership($request, $run)) {
             return $error;
         }
 
@@ -34,7 +43,7 @@ class DeltaFinalizeController extends Controller
         } catch (ArtifactStorageException $exception) {
             $status = match ($exception->errorCode) {
                 'secret_scan_blocked' => Response::HTTP_FORBIDDEN,
-                'artifact_chunk_missing', 'artifact_hash_mismatch' => Response::HTTP_UNPROCESSABLE_ENTITY,
+                'artifact_chunk_missing', 'artifact_hash_mismatch', 'schema_validation_failed' => Response::HTTP_UNPROCESSABLE_ENTITY,
                 default => Response::HTTP_BAD_REQUEST,
             };
 

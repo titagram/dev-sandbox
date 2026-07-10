@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesAgentJobPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -11,6 +12,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AgentJobsController extends Controller
 {
+    public function __construct(private readonly HadesAgentJobPolicy $jobs) {}
+
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -30,7 +33,11 @@ class AgentJobsController extends Controller
             return $binding;
         }
 
-        $capabilities = array_values(array_filter($validated['capabilities'] ?? [], 'is_string'));
+        $effectiveCapabilities = $this->jobs->effectiveCapabilities($agent);
+        $requestedCapabilities = array_values(array_filter($validated['capabilities'] ?? [], 'is_string'));
+        $capabilities = $requestedCapabilities === []
+            ? $effectiveCapabilities
+            : array_values(array_intersect($effectiveCapabilities, $requestedCapabilities));
         $limit = (int) ($validated['limit'] ?? 25);
         $now = now();
         $query = DB::table('hades_agent_jobs')
@@ -46,14 +53,13 @@ class AgentJobsController extends Controller
             ->where(function ($query) use ($now): void {
                 $query->whereNull('deadline_at')->orWhere('deadline_at', '>=', $now);
             })
+            ->whereIn('capability', $capabilities)
             ->orderBy('created_at')
             ->limit($limit);
 
-        if ($capabilities !== []) {
-            $query->whereIn('capability', $capabilities);
-        }
-
-        $jobs = $query->get()->map(fn (object $job): array => $this->payload($job))->values()->all();
+        $jobs = $capabilities === []
+            ? []
+            : $query->get()->map(fn (object $job): array => $this->payload($job))->values()->all();
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -106,7 +112,7 @@ class AgentJobsController extends Controller
             'status' => $job->status,
             'policy' => $policy,
             'execution_policy' => $policy,
-            'requires_confirmation' => (bool) $job->requires_confirmation || in_array($policy, ['confirm', 'manual', 'approval_required'], true),
+            'requires_confirmation' => $this->jobs->requiresConfirmation($job),
             'payload' => $this->decode($job->payload),
             'deadline_at' => $this->toIsoString($job->deadline_at),
         ];

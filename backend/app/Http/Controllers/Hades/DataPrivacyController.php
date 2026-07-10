@@ -16,16 +16,32 @@ class DataPrivacyController extends Controller
         'bug_reports' => 'hades_bug_reports',
         'bug_evidence' => 'hades_bug_evidence_items',
         'source_slices' => 'hades_source_slices',
+        'source_slice_candidates' => 'hades_source_slice_candidates',
         'evidence_packs' => 'hades_evidence_packs',
+        'causal_packs' => 'hades_causal_packs',
         'diagnosis_reports' => 'hades_diagnosis_reports',
+        'artifacts' => 'hades_agent_artifacts',
+        'search_documents' => 'hades_search_documents',
+        'memory_proposals' => 'hades_memory_proposals',
+        'agent_jobs' => 'hades_agent_jobs',
+        'doctor_reports' => 'hades_doctor_reports',
+        'persephone_events' => 'hades_persephone_events',
     ];
 
     private const DELETE_ORDER = [
+        'hades_search_documents',
+        'hades_source_slice_candidates',
+        'hades_causal_packs',
         'hades_evidence_packs',
         'hades_diagnosis_reports',
         'hades_source_slices',
         'hades_bug_evidence_items',
         'hades_bug_reports',
+        'hades_agent_artifacts',
+        'hades_memory_proposals',
+        'hades_doctor_reports',
+        'hades_persephone_events',
+        'hades_agent_jobs',
     ];
 
     public function export(Request $request): JsonResponse
@@ -60,6 +76,46 @@ class DataPrivacyController extends Controller
             $collections[$key] = $rows;
             $counts[$key] = count($rows);
         }
+
+        $jobIds = array_column($collections['agent_jobs'], 'id');
+        $jobEvents = $this->jobEventsQuery($jobIds)
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            ->map(fn (object $row): array => $this->rowPayload('hades_agent_job_events', $row, $includeContent))
+            ->values()
+            ->all();
+        $collections['agent_job_events'] = $jobEvents;
+        $counts['agent_job_events'] = count($jobEvents);
+
+        $resolvedBugMemory = $this->resolvedBugMemoryQuery($validated['project_id'], $binding->id)
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            ->map(fn (object $row): array => $this->rowPayload('project_memory_entries', $row, $includeContent))
+            ->values()
+            ->all();
+        $collections['resolved_bug_memory'] = $resolvedBugMemory;
+        $counts['resolved_bug_memory'] = count($resolvedBugMemory);
+
+        $proposalMemoryIds = DB::table('hades_memory_proposals')
+            ->where('project_id', $validated['project_id'])
+            ->where('workspace_binding_id', $binding->id)
+            ->whereNotNull('memory_entry_id')
+            ->pluck('memory_entry_id')
+            ->all();
+        $proposalMemory = DB::table('project_memory_entries')
+            ->where('project_id', $validated['project_id'])
+            ->where('source', 'hades_agent')
+            ->whereIn('id', $proposalMemoryIds ?: [''])
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            ->map(fn (object $row): array => $this->rowPayload('project_memory_entries', $row, $includeContent))
+            ->values()
+            ->all();
+        $collections['proposal_memory'] = $proposalMemory;
+        $counts['proposal_memory'] = count($proposalMemory);
 
         $this->auditPrivacyAction($request, 'hades.privacy_exported', $binding->id, [
             'scope' => 'workspace_binding',
@@ -103,22 +159,11 @@ class DataPrivacyController extends Controller
             return $this->error('delete_confirmation_required', 'Hades evidence delete requires confirm=true when dry_run=false.', Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $counts = DB::transaction(function () use ($binding, $validated, $dryRun): array {
-            $counts = [];
-
-            foreach (self::DELETE_ORDER as $table) {
-                $query = DB::table($table)
-                    ->where('project_id', $validated['project_id'])
-                    ->where('workspace_binding_id', $binding->id);
-                $counts[$table] = (clone $query)->count();
-
-                if (! $dryRun && $counts[$table] > 0) {
-                    $query->delete();
-                }
-            }
-
-            return $counts;
-        });
+        $counts = DB::transaction(fn (): array => $this->deleteScopedData(
+            $validated['project_id'],
+            $binding->id,
+            $dryRun,
+        ));
 
         $this->auditPrivacyAction($request, 'hades.privacy_deleted', $binding->id, [
             'scope' => 'workspace_binding',
@@ -163,23 +208,12 @@ class DataPrivacyController extends Controller
         }
 
         $cutoff = now()->subDays((int) $validated['retention_days']);
-        $counts = DB::transaction(function () use ($binding, $validated, $dryRun, $cutoff): array {
-            $counts = [];
-
-            foreach (self::DELETE_ORDER as $table) {
-                $query = DB::table($table)
-                    ->where('project_id', $validated['project_id'])
-                    ->where('workspace_binding_id', $binding->id)
-                    ->where('created_at', '<', $cutoff);
-                $counts[$table] = (clone $query)->count();
-
-                if (! $dryRun && $counts[$table] > 0) {
-                    $query->delete();
-                }
-            }
-
-            return $counts;
-        });
+        $counts = DB::transaction(fn (): array => $this->deleteScopedData(
+            $validated['project_id'],
+            $binding->id,
+            $dryRun,
+            $cutoff,
+        ));
 
         $this->auditPrivacyAction($request, 'hades.retention_cleaned', $binding->id, [
             'scope' => 'workspace_binding',
@@ -234,7 +268,7 @@ class DataPrivacyController extends Controller
     {
         $payload = (array) $row;
 
-        foreach (['environment', 'affected_refs', 'payload', 'evidence_refs', 'freshness', 'graph_refs', 'source_slice_ids'] as $key) {
+        foreach (['environment', 'affected_refs', 'payload', 'result', 'evidence_refs', 'freshness', 'awareness', 'graph_refs', 'source_slice_ids', 'source_slice_refs', 'replay', 'blockers', 'metadata', 'artifact', 'provenance', 'declared_capabilities', 'effective_capabilities'] as $key) {
             if (array_key_exists($key, $payload)) {
                 $payload[$key] = $this->decode($payload[$key]);
             }
@@ -285,9 +319,107 @@ class DataPrivacyController extends Controller
             'hades_bug_evidence_items' => ['summary', 'payload'],
             'hades_source_slices' => ['content_redacted'],
             'hades_evidence_packs' => ['summary', 'payload', 'evidence_refs', 'graph_refs'],
+            'hades_causal_packs' => ['affected_refs', 'freshness', 'awareness', 'evidence_refs', 'graph_refs', 'source_slice_refs', 'replay', 'blockers'],
             'hades_diagnosis_reports' => ['root_cause', 'mechanism', 'payload', 'evidence_refs'],
+            'hades_agent_artifacts' => ['artifact'],
+            'hades_search_documents' => ['title', 'body', 'metadata'],
+            'hades_memory_proposals' => ['summary', 'provenance', 'reason_message'],
+            'hades_agent_jobs' => ['payload', 'result', 'error_message'],
+            'hades_agent_job_events' => ['payload'],
+            'hades_doctor_reports', 'hades_persephone_events' => ['payload'],
+            'project_memory_entries' => ['summary', 'payload'],
             default => [],
         };
+    }
+
+    private function deleteScopedData(string $projectId, string $bindingId, bool $dryRun, ?Carbon $cutoff = null): array
+    {
+        $counts = [];
+        $jobs = $this->scopedQuery('hades_agent_jobs', $projectId, $bindingId, $cutoff);
+        $jobIds = (clone $jobs)->pluck('id')->all();
+        $jobEvents = $this->jobEventsQuery($jobIds);
+        $counts['hades_agent_job_events'] = (clone $jobEvents)->count();
+        if (! $dryRun && $counts['hades_agent_job_events'] > 0) {
+            $jobEvents->delete();
+        }
+
+        $resolvedMemoryIds = $this->resolvedBugMemoryQuery($projectId, $bindingId, $cutoff)->pluck('id')->all();
+        $scopedProposals = $this->scopedQuery('hades_memory_proposals', $projectId, $bindingId, $cutoff);
+        $scopedProposalIds = (clone $scopedProposals)->pluck('id')->all();
+        $candidateProposalMemoryIds = (clone $scopedProposals)
+            ->whereNotNull('memory_entry_id')
+            ->pluck('memory_entry_id')
+            ->all();
+        $protectedProposalMemoryIds = $candidateProposalMemoryIds === []
+            ? []
+            : DB::table('hades_memory_proposals')
+                ->whereIn('memory_entry_id', $candidateProposalMemoryIds)
+                ->whereNotIn('id', $scopedProposalIds ?: [''])
+                ->pluck('memory_entry_id')
+                ->all();
+        $proposalMemoryIds = array_values(array_diff($candidateProposalMemoryIds, $protectedProposalMemoryIds));
+        $memoryIds = array_values(array_unique([...$resolvedMemoryIds, ...$proposalMemoryIds]));
+        $memory = DB::table('project_memory_entries')
+            ->where('project_id', $projectId)
+            ->whereIn('id', $memoryIds ?: [''])
+            ->where(function ($query) use ($proposalMemoryIds): void {
+                $query->where('source', 'hades_diagnosis_report');
+                if ($proposalMemoryIds !== []) {
+                    $query->orWhere(function ($proposalQuery) use ($proposalMemoryIds): void {
+                        $proposalQuery->where('source', 'hades_agent')->whereIn('id', $proposalMemoryIds);
+                    });
+                }
+            })
+            ->when($cutoff !== null, fn ($query) => $query->where('created_at', '<', $cutoff));
+        $memoryIds = (clone $memory)->pluck('id')->all();
+        $memoryLinks = DB::table('project_memory_links')->whereIn('memory_entry_id', $memoryIds ?: ['']);
+        $memorySearch = DB::table('hades_search_documents')
+            ->where('source_table', 'project_memory_entries')
+            ->whereIn('source_id', $memoryIds ?: ['']);
+        $counts['project_memory_links'] = (clone $memoryLinks)->count();
+        $counts['project_memory_entries'] = count($memoryIds);
+        $counts['project_memory_entries_from_proposals'] = count(array_intersect($memoryIds, $proposalMemoryIds));
+        $counts['hades_search_documents_related_memory'] = (clone $memorySearch)->count();
+        if (! $dryRun) {
+            $memoryLinks->delete();
+            $memorySearch->delete();
+            $memory->delete();
+        }
+
+        foreach (self::DELETE_ORDER as $table) {
+            $query = $this->scopedQuery($table, $projectId, $bindingId, $cutoff);
+            $counts[$table] = (clone $query)->count();
+            if (! $dryRun && $counts[$table] > 0) {
+                $query->delete();
+            }
+        }
+
+        return $counts;
+    }
+
+    private function scopedQuery(string $table, string $projectId, string $bindingId, ?Carbon $cutoff = null): mixed
+    {
+        return DB::table($table)
+            ->where('project_id', $projectId)
+            ->where('workspace_binding_id', $bindingId)
+            ->when($cutoff !== null, fn ($query) => $query->where('created_at', '<', $cutoff));
+    }
+
+    /** @param list<string> $jobIds */
+    private function jobEventsQuery(array $jobIds, ?Carbon $cutoff = null): mixed
+    {
+        return DB::table('hades_agent_job_events')
+            ->whereIn('job_id', $jobIds ?: [''])
+            ->when($cutoff !== null, fn ($query) => $query->where('created_at', '<', $cutoff));
+    }
+
+    private function resolvedBugMemoryQuery(string $projectId, string $bindingId, ?Carbon $cutoff = null): mixed
+    {
+        return DB::table('project_memory_entries')
+            ->where('project_id', $projectId)
+            ->where('source', 'hades_diagnosis_report')
+            ->where('payload->workspace_binding_id', $bindingId)
+            ->when($cutoff !== null, fn ($query) => $query->where('created_at', '<', $cutoff));
     }
 
     private function decode(mixed $value): mixed

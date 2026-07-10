@@ -11,7 +11,15 @@ from devboard_plugin.git_local import (
     dirty_status as git_dirty_status,
     head_sha as git_head_sha,
 )
-from devboard_plugin.state import read_repo_state, write_repo_state
+from devboard_plugin.state import (
+    base_snapshot_state,
+    load_base_snapshot_data,
+    read_repo_state,
+    resolve_repo_path,
+    resolve_repo_relative_path,
+    validate_path_component,
+    write_repo_state,
+)
 
 
 def client_from_credentials(credentials: Credentials) -> DevBoardClient:
@@ -19,6 +27,7 @@ def client_from_credentials(credentials: Credentials) -> DevBoardClient:
         base_url=credentials.server_url,
         token=credentials.token,
         device_id=credentials.device_id,
+        device_secret=credentials.device_secret,
     )
 
 
@@ -130,6 +139,7 @@ def devboard_heartbeat_run(
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """Send a heartbeat for an active DevBoard run."""
+    run_id = validate_path_component(run_id, "run_id")
     payload: dict[str, Any] = {}
     if message is not None:
         payload["message"] = message
@@ -145,6 +155,7 @@ def devboard_finish_run(
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """Finish a DevBoard run."""
+    run_id = validate_path_component(run_id, "run_id")
     payload: dict[str, Any] = {"status": status, "summary": summary}
     if risk_level is not None:
         payload["risk_report"] = {"risk_level": risk_level}
@@ -163,7 +174,7 @@ def devboard_genesis_import(
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """Build a local Genesis bundle and record its state for upload."""
-    repo = Path(repo_path)
+    repo = resolve_repo_path(repo_path)
     client = client_from_options(server_url)
 
     if run_id is None:
@@ -184,8 +195,13 @@ def devboard_genesis_import(
         )
         run_id = start["run_id"]
 
+    run_id = validate_path_component(run_id, "run_id")
+
     policy = client.repository_policy(repository_id)
-    output_dir = Path(output_path) if output_path else repo / ".devboard" / "artifacts" / "genesis" / run_id
+    output_dir = resolve_repo_relative_path(
+        repo,
+        Path(output_path) if output_path else Path(".devboard") / "artifacts" / "genesis" / run_id,
+    )
     bundle = build_genesis_bundle(
         repo,
         output_dir,
@@ -195,6 +211,7 @@ def devboard_genesis_import(
             "local_workspace_id": local_workspace_id,
             "run_id": run_id,
             "code_exposure": policy.get("code_exposure", "full_code_artifacts"),
+            "excluded_paths": policy.get("excluded_paths", []),
         },
     )
     write_repo_state(
@@ -223,7 +240,7 @@ def devboard_delta_sync(
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """Build, upload, and finalize a Delta Sync bundle."""
-    repo = Path(repo_path)
+    repo = resolve_repo_path(repo_path)
     client = client_from_options(server_url)
 
     if run_id is None:
@@ -244,9 +261,21 @@ def devboard_delta_sync(
         )
         run_id = start["run_id"]
 
+    run_id = validate_path_component(run_id, "run_id")
+
     state = read_repo_state(repo)
     policy = client.repository_policy(repository_id)
-    output_dir = Path(output_path) if output_path else repo / ".devboard" / "artifacts" / "delta" / run_id
+    output_dir = resolve_repo_relative_path(
+        repo,
+        Path(output_path) if output_path else Path(".devboard") / "artifacts" / "delta" / run_id,
+    )
+    (
+        base_file_hashes,
+        base_symbols,
+        base_symbols_complete,
+        base_relations,
+        base_relations_complete,
+    ) = load_base_snapshot_data(repo, state, base_snapshot_id)
     bundle = build_delta_bundle(
         repo,
         output_dir,
@@ -256,8 +285,13 @@ def devboard_delta_sync(
             "local_workspace_id": local_workspace_id,
             "run_id": run_id,
             "base_snapshot_id": base_snapshot_id,
-            "base_file_hashes": load_base_file_hashes(repo, state),
+            "base_file_hashes": base_file_hashes,
+            "base_symbols": base_symbols,
+            "base_symbols_complete": base_symbols_complete,
+            "base_relations": base_relations,
+            "base_relations_complete": base_relations_complete,
             "code_exposure": policy.get("code_exposure", "full_code_artifacts"),
+            "excluded_paths": policy.get("excluded_paths", []),
             "branch": git_current_branch(repo),
             "base_sha": git_head_sha(repo) or "unknown",
             "head_sha": git_head_sha(repo),
@@ -272,16 +306,21 @@ def devboard_delta_sync(
         bundle_path=output_dir,
         allow_blocked_security_findings=allow_blocked_security_findings,
     )
+    snapshot_id = upload.get("snapshot_id")
+    snapshot_state = base_snapshot_state(output_dir, snapshot_id) if isinstance(snapshot_id, str) and snapshot_id else {}
     write_repo_state(
         repo,
         {
+            **state,
             "project_id": project_id,
             "repository_id": repository_id,
             "local_workspace_id": local_workspace_id,
             "run_id": run_id,
-            "base_snapshot_id": base_snapshot_id,
-            "snapshot_id": upload.get("snapshot_id"),
+            "base_snapshot_id": snapshot_id or base_snapshot_id,
+            "previous_base_snapshot_id": base_snapshot_id,
+            "snapshot_id": snapshot_id,
             "delta_bundle_path": str(output_dir),
+            **snapshot_state,
         },
     )
 
@@ -298,7 +337,7 @@ def devboard_upload_artifact(
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """Upload a Genesis artifact bundle using manifest/chunk/finalize."""
-    repo = Path(repo_path)
+    repo = resolve_repo_path(repo_path)
     state = read_repo_state(repo)
     resolved_repository_id = repository_id or state.get("repository_id")
     resolved_run_id = run_id or state.get("run_id")
@@ -311,14 +350,19 @@ def devboard_upload_artifact(
             "message": "repository_id, run_id, local_workspace_id, and bundle_path are required.",
         }
 
-    return upload_genesis_bundle(
+    resolved_bundle = resolve_state_path(repo, resolved_bundle_path)
+    response = upload_genesis_bundle(
         client_from_options(server_url),
         repository_id=resolved_repository_id,
         run_id=resolved_run_id,
         local_workspace_id=resolved_workspace_id,
-        bundle_path=resolve_state_path(repo, resolved_bundle_path),
+        bundle_path=resolved_bundle,
         allow_blocked_security_findings=allow_blocked_security_findings,
     )
+    snapshot_id = response.get("snapshot_id")
+    if isinstance(snapshot_id, str) and snapshot_id:
+        write_repo_state(repo, {**state, **base_snapshot_state(resolved_bundle, snapshot_id)})
+    return response
 
 
 def devboard_write_wiki_revision(
@@ -387,30 +431,12 @@ def build_delta_bundle(repo_path: Path, output_dir: Path, context: dict[str, Any
     return build(repo_path, output_dir, context)
 
 
-def load_base_file_hashes(repo_path: Path, state: dict[str, Any]) -> dict[str, str]:
-    for key in ("delta_bundle_path", "genesis_bundle_path"):
-        bundle_path = state.get(key)
-        if not bundle_path:
-            continue
-
-        hashes_path = resolve_state_path(repo_path, bundle_path) / "file-hashes.json"
-        if not hashes_path.exists():
-            continue
-
-        import json
-
-        document = json.loads(hashes_path.read_text())
-        return {row["path"]: row["sha256"] for row in document.get("hashes", [])}
-
-    return {}
+def load_base_file_hashes(repo_path: Path, state: dict[str, Any], base_snapshot_id: str) -> dict[str, str]:
+    return load_base_snapshot_data(repo_path, state, base_snapshot_id)[0]
 
 
 def resolve_state_path(repo_path: Path, value: str) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-
-    return repo_path / path
+    return resolve_repo_relative_path(repo_path, value)
 
 
 TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {

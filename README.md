@@ -129,7 +129,7 @@ docker info --format '{{.OSType}}/{{.Architecture}}'
 ### 1. Avvia lo stack
 
 ```bash
-docker compose -f docker-compose.devboard.yaml up -d app node postgres neo4j
+docker compose -f docker-compose.devboard.yaml up -d app worker scheduler node postgres neo4j
 ```
 
 Se hai collisioni di porte, cambia solo i binding host:
@@ -140,39 +140,35 @@ DEVBOARD_VITE_PORT=15173 \
 DEVBOARD_POSTGRES_PORT=15432 \
 DEVBOARD_NEO4J_HTTP_PORT=17474 \
 DEVBOARD_NEO4J_BOLT_PORT=17687 \
-docker compose -f docker-compose.devboard.yaml up -d app node postgres neo4j
+docker compose -f docker-compose.devboard.yaml up -d app worker scheduler node postgres neo4j
 ```
 
 Per validare la configurazione `amd64` target Ubuntu x64 da Apple Silicon:
 
 ```bash
 docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config
-docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml up -d app node postgres neo4j
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml up -d app worker scheduler node postgres neo4j
 ```
 
 Nota: questo verifica la configurazione Docker `amd64`, ma **non sostituisce** una vera validazione su host Ubuntu x64.
 
 ### Esposizione Traefik
 
-Su host con Traefik gia` attivo sulla rete Docker esterna `traefik_default`, compila prima gli asset frontend e poi avvia lo stack con l'override dedicato:
+Su host con Traefik gia` attivo sulla rete Docker esterna `traefik_default`, usa l'override esclusivamente sopra il compose production. Gli asset Inertia/Vite vengono compilati nell'immagine backend production:
 
 ```bash
-docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml run --rm node sh -lc "npm install && npm run build"
-
-DEVBOARD_APP_KEY='base64:...' \
-DEVBOARD_APP_PORT=127.0.0.1:18000 \
-DEVBOARD_POSTGRES_PORT=127.0.0.1:15432 \
-DEVBOARD_NEO4J_HTTP_PORT=127.0.0.1:17474 \
-DEVBOARD_NEO4J_BOLT_PORT=127.0.0.1:17687 \
-docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml -f docker-compose.devboard.traefik.yaml up -d app postgres neo4j
+docker compose \
+  -f docker-compose.devboard.prod.yaml \
+  -f docker-compose.devboard.traefik.yaml \
+  up -d app worker scheduler postgres neo4j
 ```
 
-Il dominio pubblico configurato e` `https://home-sweet-home.cloud`. Traefik inoltra solo al container `app` sulla porta `8000`; PostgreSQL e Neo4j non hanno router Traefik. Nell'esempio i binding host restano su `127.0.0.1` per evitare ingressi pubblici fuori da Traefik.
+Imposta dominio, rete, resolver e basic auth con le variabili documentate nel runbook production. Traefik inoltra al container `app` sulla porta `8000`; PostgreSQL e Neo4j non hanno router o porte host.
 
 ### Profilo production
 
 Il profilo production separato e` `docker-compose.devboard.prod.yaml`.
-Builda il backend Laravel in immagine con PHP-FPM + nginx, builda il frontend pubblico da `../emergent_devboard_frontend/frontend`, richiede segreti espliciti e non espone PostgreSQL o Neo4j su porte host.
+Builda Laravel e il frontend Inertia/Vite da `backend/` nella stessa immagine PHP-FPM + nginx, richiede segreti espliciti, include worker e scheduler e non espone PostgreSQL o Neo4j su porte host.
 
 Runbook:
 
@@ -181,7 +177,7 @@ Runbook:
 ### 2. Inizializza database e seed
 
 ```bash
-docker compose -f docker-compose.devboard.yaml exec -T app php artisan migrate:fresh --seed --seeder=DevBoardSeeder --force
+docker compose -f docker-compose.devboard.yaml exec -T app php artisan migrate:fresh --seed --seeder=DatabaseSeeder --force
 ```
 
 ### 3. Verifica i servizi
@@ -198,17 +194,17 @@ Questi valori sono quelli del `docker-compose.devboard.yaml`.
 
 ### Backend / dashboard
 
-- URL: [http://127.0.0.1:8000](http://127.0.0.1:8000)
-- login page: [http://127.0.0.1:8000/login](http://127.0.0.1:8000/login)
+- URL: [http://127.0.0.1:18000](http://127.0.0.1:18000)
+- login page: [http://127.0.0.1:18000/login](http://127.0.0.1:18000/login)
 
 ### Vite dev server
 
-- URL: [http://127.0.0.1:5173](http://127.0.0.1:5173)
+- URL: [http://127.0.0.1:15173](http://127.0.0.1:15173)
 
 ### PostgreSQL
 
 - host: `127.0.0.1`
-- port: `5432`
+- port: `15432`
 - database: `devboard`
 - username: `devboard`
 - password: `devboard`
@@ -221,14 +217,14 @@ docker compose -f docker-compose.devboard.yaml exec -T postgres psql -U devboard
 
 ### Neo4j
 
-- browser: [http://127.0.0.1:7474](http://127.0.0.1:7474)
-- bolt: `bolt://127.0.0.1:7687`
+- browser: [http://127.0.0.1:17474](http://127.0.0.1:17474)
+- bolt: `bolt://127.0.0.1:17687`
 - username: `neo4j`
 - password: `graphify-sandbox`
 
 ## Dati seedati per sviluppo e test
 
-Dopo `migrate:fresh --seed --seeder=DevBoardSeeder` hai questi dati:
+Dopo `migrate:fresh --seed --seeder=DatabaseSeeder` in ambiente locale hai questi dati:
 
 ### Utente dashboard seedato
 
@@ -597,13 +593,14 @@ python3 -m venv /tmp/devboard-e2e-venv
 ### Queue retry fault harness
 
 ```bash
-/tmp/devboard-plugin-venv/bin/python -m pytest tests/e2e/test_queue_retry_fault.py -q
-scripts/devboard_queue_fault_harness.sh
+DEVBOARD_QUEUE_FAULT_ACCEPTANCE=1 /tmp/devboard-plugin-venv/bin/python -m pytest tests/e2e/test_queue_retry_fault.py -q
+DEVBOARD_QUEUE_FAULT_ACCEPTANCE=1 scripts/devboard_queue_fault_harness.sh
 ```
 
 The harness:
 
 - seeds the Docker stack;
+- requires `DEVBOARD_QUEUE_FAULT_ACCEPTANCE=1`, generates a unique Compose project, and locks it for the run;
 - queues a real `ImportGenesisGraphToNeo4j` job;
 - stops Neo4j;
 - verifies phase 1 (`active`, retry pending);
@@ -614,7 +611,7 @@ The harness:
 
 ```bash
 DEVBOARD_RUNTIME_ACCEPTANCE=1 /tmp/devboard-plugin-venv/bin/python -m pytest tests/e2e/test_runtime_acceptance.py -q
-scripts/devboard_runtime_acceptance.sh
+DEVBOARD_RUNTIME_ACCEPTANCE=1 scripts/devboard_runtime_acceptance.sh
 ```
 
 Use this only on a real Linux x64 host. It is the acceptance path that closes the remaining runtime validation gap left by local macOS Docker checks.
@@ -759,7 +756,7 @@ Questa sezione e` intenzionalmente mantenuta come backlog operativo sintetico.
 ## Note
 
 - `backend/node_modules` nel container vive in un volume Docker dedicato per evitare che binding Linux sovrascrivano il checkout host.
-- Il backend live gira con `QUEUE_CONNECTION=sync` nel compose DevBoard locale.
+- App, worker e scheduler locali usano la coda database; gli harness distruttivi usano project name e volumi Compose isolati.
 - Il plugin MCP non accetta raw backend token come parametro tool: usa le credenziali locali salvate.
 
 Per i dettagli sui container vedi anche `docker/devboard/README.md`.

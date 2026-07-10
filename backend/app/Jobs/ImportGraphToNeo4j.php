@@ -8,7 +8,6 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use RuntimeException;
 use Throwable;
 
 class ImportGraphToNeo4j implements ShouldQueue
@@ -91,26 +90,7 @@ class ImportGraphToNeo4j implements ShouldQueue
             };
         }
 
-        $delta = DB::table('delta_syncs')->where('id', $this->importOrDeltaId)->first();
-        if (! $delta || ! $delta->new_snapshot_id) {
-            throw new RuntimeException('Delta sync is not ready for graph import.');
-        }
-
-        $snapshot = DB::table('snapshots')->where('id', $delta->new_snapshot_id)->first();
-        if (! $snapshot || ! $snapshot->graph_snapshot_artifact_id) {
-            throw new RuntimeException('Delta snapshot does not reference a graph artifact.');
-        }
-
-        $service->importGraphArtifact(
-            $snapshot->id,
-            $delta->repository_id,
-            $delta->run_id,
-            $snapshot->graph_snapshot_artifact_id,
-            $client,
-            $mode,
-            'Delta graph import validated in fake mode.',
-            'Delta graph imported into Neo4j.',
-        );
+        $service->importDelta($this->importOrDeltaId, $client, $mode);
     }
 
     public function failed(Throwable $exception): void

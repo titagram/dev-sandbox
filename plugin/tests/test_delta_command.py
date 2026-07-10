@@ -66,7 +66,9 @@ def test_delta_run_builds_uploads_and_records_delta_state(monkeypatch, tmp_path)
 
     state = json.loads((tmp_path / ".devboard" / "state.json").read_text())
     assert state["run_id"] == "run_delta"
-    assert state["base_snapshot_id"] == "snap_base"
+    assert state["base_snapshot_id"] == "snap_new"
+    assert state["previous_base_snapshot_id"] == "snap_base"
+    assert state["base_artifact_snapshot_id"] == "snap_new"
     assert state["snapshot_id"] == "snap_new"
     assert state["delta_bundle_path"].endswith(".devboard/artifacts/delta/run_delta")
     assert "devb_live_" not in json.dumps(state)

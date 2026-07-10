@@ -53,7 +53,7 @@ Route::prefix('/api/dashboard')->group(function () {
     Route::post('/login', [DashboardAuthController::class, 'login']);
 });
 
-Route::middleware('auth')->group(function () {
+Route::middleware(['auth', 'active'])->group(function () {
     Route::prefix('/api/dashboard')->group(function () {
         Route::get('/me', [DashboardAuthController::class, 'me']);
         Route::post('/logout', [DashboardAuthController::class, 'logout']);
@@ -124,6 +124,7 @@ Route::middleware('auth')->group(function () {
         Route::post('/admin/hades/bootstrap-tokens', [DashboardHadesController::class, 'createBootstrapToken']);
         Route::delete('/admin/hades/bootstrap-tokens/{token}', [DashboardHadesController::class, 'revokeBootstrapToken']);
         Route::post('/admin/hades/jobs', [DashboardHadesController::class, 'createJob']);
+        Route::post('/admin/hades/jobs/{job}/confirm', [DashboardHadesController::class, 'confirmJob']);
         Route::post('/admin/hades/memory-proposals/{proposal}/review', [DashboardHadesController::class, 'reviewMemoryProposal']);
         Route::get('/admin/devices', [DashboardAdminController::class, 'devices']);
         Route::delete('/admin/devices/{device}', [DashboardAdminController::class, 'revokeDevice']);
@@ -146,18 +147,20 @@ Route::middleware('auth')->group(function () {
         Route::get('/system/backups/{backup}/download', [DashboardBackupController::class, 'download']);
         Route::post('/system/backups/validate', [DashboardBackupController::class, 'validateBundle']);
     });
-    Route::get('/kanban', KanbanController::class);
-    Route::get('/artifacts', ArtifactsIndexController::class);
-    Route::get('/graph', GraphShowController::class);
-    Route::get('/projects/{project}', ProjectShowController::class);
-    Route::get('/runs', RunsIndexController::class);
-    Route::get('/runs/{run}', RunShowController::class);
+    Route::middleware('can:read-project')->group(function () {
+        Route::get('/kanban', KanbanController::class);
+        Route::get('/artifacts', ArtifactsIndexController::class);
+        Route::get('/graph', GraphShowController::class);
+        Route::get('/projects/{project}', ProjectShowController::class);
+        Route::get('/runs', RunsIndexController::class);
+        Route::get('/runs/{run}', RunShowController::class);
+        Route::get('/tasks/{task}', TaskShowController::class);
+        Route::get('/wiki', WikiIndexController::class);
+        Route::get('/wiki/pages/{page}', WikiShowController::class);
+    });
     Route::get('/system', SystemShowController::class);
     Route::post('/system/artifact-retention', ArtifactRetentionRunController::class);
     Route::post('/system/audit-exports', AuditExportStoreController::class);
-    Route::get('/tasks/{task}', TaskShowController::class);
-    Route::get('/wiki', WikiIndexController::class);
-    Route::get('/wiki/pages/{page}', WikiShowController::class);
     Route::post('/runs/{run}/retry-import', RunRetryImportController::class);
     Route::post('/runs/{run}/review', RunReviewController::class);
     Route::get('/runs/{run}/artifacts/{artifact}/download', ArtifactDownloadController::class);

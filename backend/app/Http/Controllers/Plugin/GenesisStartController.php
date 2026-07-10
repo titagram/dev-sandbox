@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Plugin\StartGenesisImportRequest;
 use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageService;
+use App\Services\PluginInvariantService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -15,9 +16,8 @@ class GenesisStartController extends Controller
     public function __construct(
         private readonly ArtifactStorageService $storage,
         private readonly ProjectLifecycleService $lifecycle,
-    )
-    {
-    }
+        private readonly PluginInvariantService $invariants,
+    ) {}
 
     public function __invoke(StartGenesisImportRequest $request, string $repository): JsonResponse
     {
@@ -31,6 +31,23 @@ class GenesisStartController extends Controller
         $validated = $request->validated();
 
         $run = DB::table('runs')->where('id', $validated['run_id'])->first();
+        $workspace = DB::table('local_workspaces')->where('id', $validated['local_workspace_id'])->first();
+
+        if ($error = $this->invariants->assertRunOwnership($request, $run)) {
+            return $error;
+        }
+
+        if ($error = $this->invariants->assertReferences(
+            (string) $run->project_id === (string) $repositoryRow->project_id
+                && (string) $run->repository_id === $repository
+                && (string) $run->local_workspace_id === (string) $workspace->id
+                && (string) $workspace->repository_id === $repository
+                && (string) $workspace->device_id === (string) $run->device_id,
+            'Genesis project, repository, workspace, run, and device references are inconsistent.',
+        )) {
+            return $error;
+        }
+
         $artifactRows = $validated['manifest']['artifacts'];
         $artifactIds = array_map(
             fn (array $artifact): string => (string) $artifact['artifact_id'],
@@ -44,7 +61,7 @@ class GenesisStartController extends Controller
             ->orderByDesc('created_at')
             ->first();
 
-        if ($existingImport && $this->sameArtifactSet((string) $validated['run_id'], $repository, $artifactIds)) {
+        if ($existingImport && $this->sameArtifactSet((string) $existingImport->id, $artifactIds)) {
             if (in_array((string) $existingImport->status, ['uploading', 'failed'], true)) {
                 DB::table('genesis_imports')->where('id', $existingImport->id)->update([
                     'status' => 'uploading',
@@ -117,13 +134,12 @@ class GenesisStartController extends Controller
     }
 
     /**
-     * @param list<string> $artifactIds
+     * @param  list<string>  $artifactIds
      */
-    private function sameArtifactSet(string $runId, string $repositoryId, array $artifactIds): bool
+    private function sameArtifactSet(string $importId, array $artifactIds): bool
     {
         $existingArtifactIds = DB::table('artifacts')
-            ->where('run_id', $runId)
-            ->where('repository_id', $repositoryId)
+            ->where('storage_path', 'like', "devboard/artifacts/genesis/{$importId}/%/artifact")
             ->pluck('id')
             ->map(fn (mixed $id): string => (string) $id)
             ->sort()

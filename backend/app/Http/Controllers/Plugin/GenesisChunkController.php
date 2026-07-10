@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Projects\ProjectLifecycleService;
 use App\Services\ArtifactStorageException;
 use App\Services\ArtifactStorageService;
+use App\Services\PluginInvariantService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,9 +17,8 @@ class GenesisChunkController extends Controller
     public function __construct(
         private readonly ArtifactStorageService $storage,
         private readonly ProjectLifecycleService $lifecycle,
-    )
-    {
-    }
+        private readonly PluginInvariantService $invariants,
+    ) {}
 
     public function __invoke(Request $request, string $genesisImport, string $artifact, int $chunk): JsonResponse
     {
@@ -26,7 +26,23 @@ class GenesisChunkController extends Controller
             return $error;
         }
 
-        abort_unless(DB::table('artifacts')->where('id', $artifact)->exists(), 404);
+        $import = DB::table('genesis_imports')->where('id', $genesisImport)->first();
+        $run = DB::table('runs')->where('id', $import->run_id)->first();
+        $artifactRow = DB::table('artifacts')->where('id', $artifact)->first();
+        abort_unless($run && $artifactRow, 404);
+
+        if ($error = $this->invariants->assertRunOwnership($request, $run)) {
+            return $error;
+        }
+
+        if ($error = $this->invariants->assertArtifactBelongsToTransfer(
+            $artifactRow,
+            $import,
+            $genesisImport,
+            'genesis',
+        )) {
+            return $error;
+        }
 
         if (strlen($request->getContent()) > config('devboard.artifacts.max_chunk_bytes')) {
             return $this->error('artifact_chunk_too_large', 'Chunk body exceeds max_chunk_bytes.', Response::HTTP_REQUEST_ENTITY_TOO_LARGE);

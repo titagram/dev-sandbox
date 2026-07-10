@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Plugin;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Plugin\Concerns\HandlesRunResponses;
 use App\Projects\ProjectLifecycleService;
+use App\Services\PluginInvariantService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -13,14 +14,19 @@ class RunHeartbeatController extends Controller
 {
     use HandlesRunResponses;
 
-    public function __construct(private readonly ProjectLifecycleService $lifecycle)
-    {
-    }
+    public function __construct(
+        private readonly ProjectLifecycleService $lifecycle,
+        private readonly PluginInvariantService $invariants,
+    ) {}
 
     public function __invoke(Request $request, string $run): JsonResponse
     {
         $runRow = $this->runOrFail($run);
         if ($error = $this->lifecycle->pluginRunWriteGuard($run)) {
+            return $error;
+        }
+
+        if ($error = $this->invariants->assertRunOwnership($request, $runRow)) {
             return $error;
         }
 

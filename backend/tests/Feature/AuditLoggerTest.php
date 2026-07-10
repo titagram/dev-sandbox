@@ -2,10 +2,13 @@
 
 use App\Models\User;
 use App\Services\AuditLogger;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 
 uses(RefreshDatabase::class);
 
@@ -15,7 +18,7 @@ beforeEach(function () {
         'queue.default' => 'sync',
         'services.devboard.graph_import_mode' => 'fake',
     ]);
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('records token created and revoked events', function () {
@@ -78,7 +81,11 @@ it('records artifact upload rejection when validation fails after start', functi
     expect(DB::table('audit_logs')
         ->where('action', 'artifact.rejected')
         ->where('target_type', 'artifact')
+        ->where('target_id', $artifact['artifact_id'])
         ->exists())->toBeTrue('Expected artifact.rejected audit event');
+    expect(DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('status'))->toBe('uploading');
+    expect(DB::table('genesis_imports')->where('id', $importId)->value('snapshot_id'))->toBeNull();
+    expect(DB::table('snapshots')->where('created_by_run_id', $context['run_id'])->exists())->toBeFalse();
 });
 
 it('chains audit rows with prev_hash and row_hash', function () {
@@ -121,7 +128,7 @@ function adminUserForAuditTest(): User
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{id: string, prefix: string, plain_token: string, secret: string, user_id: int}
  */
 if (! function_exists('createPluginToken')) {
@@ -269,7 +276,7 @@ if (! function_exists('createGenesisUploadContext')) {
 }
 
 /**
- * @param list<array<string, mixed>> $artifacts
+ * @param  list<array<string, mixed>>  $artifacts
  * @return array<string, mixed>
  */
 if (! function_exists('genesisManifest')) {
@@ -279,7 +286,7 @@ if (! function_exists('genesisManifest')) {
             'protocol_version' => 'v1',
             'bundle_type' => 'genesis_import',
             'schema_version' => 'v1',
-            'artifacts' => array_map(fn (array $artifact): array => \Illuminate\Support\Arr::except($artifact, ['content']), $artifacts),
+            'artifacts' => array_map(fn (array $artifact): array => Arr::except($artifact, ['content']), $artifacts),
         ];
     }
 }
@@ -309,7 +316,7 @@ if (! function_exists('genesisArtifact')) {
 }
 
 if (! function_exists('genesisStart')) {
-    function genesisStart(array $context, array $manifest): \Illuminate\Testing\TestResponse
+    function genesisStart(array $context, array $manifest): TestResponse
     {
         return test()->postJson("/api/plugin/v1/repositories/{$context['repository_id']}/genesis-imports", [
             'protocol_version' => 'v1',
@@ -328,7 +335,7 @@ if (! function_exists('genesisChunk')) {
         int $index,
         string $content,
         string $hash,
-    ): \Illuminate\Testing\TestResponse {
+    ): TestResponse {
         return test()->call(
             'PUT',
             "/api/plugin/v1/genesis-imports/{$importId}/artifacts/{$artifactId}/chunks/{$index}",
@@ -346,7 +353,7 @@ if (! function_exists('genesisChunk')) {
 }
 
 if (! function_exists('genesisFinalize')) {
-    function genesisFinalize(array $context, ?string $importId, array $payload = []): \Illuminate\Testing\TestResponse
+    function genesisFinalize(array $context, ?string $importId, array $payload = []): TestResponse
     {
         return test()->postJson("/api/plugin/v1/genesis-imports/{$importId}/finalize", array_merge([
             'protocol_version' => 'v1',

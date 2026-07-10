@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -109,5 +110,27 @@ test("probeGitWorkspace reports dirty workspaces after a file changes", { skip: 
     assert.equal(result.dirty_status, "dirty");
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("probeGitWorkspace canonicalizes nested and symlinked paths to the real Git root", { skip: !gitAvailable() }, () => {
+  const root = createCommittedRepository();
+  const linkRoot = mkdtempSync(path.join(tmpdir(), "devboard-agent-probe-link-"));
+  const nested = path.join(root, "nested", "directory");
+  const linked = path.join(linkRoot, "workspace");
+
+  try {
+    mkdirSync(nested, { recursive: true });
+    symlinkSync(root, linked, "dir");
+
+    const result = probeGitWorkspace(path.join(linked, "nested", "directory"));
+    const canonicalRoot = realpathSync(root);
+    const expectedHash = `sha256:${createHash("sha256").update(canonicalRoot).digest("hex")}`;
+
+    assert.equal(result.display_path, canonicalRoot);
+    assert.equal(result.local_root_hash, expectedHash);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(linkRoot, { recursive: true, force: true });
   }
 });

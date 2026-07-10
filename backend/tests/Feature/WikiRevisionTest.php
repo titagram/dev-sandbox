@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\GenesisFinalizeService;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -10,7 +11,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('lets a plugin create a verified wiki revision with evidence', function () {
@@ -49,6 +50,52 @@ it('accepts needs_verification revisions without evidence', function () {
     ]), wikiHeaders($context))
         ->assertOk()
         ->assertJsonPath('source_status', 'needs_verification');
+});
+
+it('rejects wiki project and repository references that do not match the run', function () {
+    $context = createWikiRevisionContext();
+    $otherProjectId = (string) Str::ulid();
+    $otherRepositoryId = (string) Str::ulid();
+    $now = now();
+    DB::table('projects')->insert([
+        'id' => $otherProjectId,
+        'name' => 'Other Wiki Project',
+        'slug' => 'other-wiki-project',
+        'description' => null,
+        'status' => 'active',
+        'default_code_exposure_policy' => 'full_code_artifacts',
+        'created_by_user_id' => DB::table('users')->where('email', 'admin@example.com')->value('id'),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('repositories')->insert([
+        'id' => $otherRepositoryId,
+        'project_id' => $context['project_id'],
+        'name' => 'Other Wiki Repository',
+        'slug' => 'other-wiki-repository',
+        'default_branch' => 'main',
+        'local_only' => true,
+        'code_exposure_policy' => 'full_code_artifacts',
+        'protected_paths' => '[]',
+        'excluded_paths' => '[]',
+        'stack_hints' => '[]',
+        'graph_enabled' => true,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    foreach ([
+        ['project_id' => $otherProjectId],
+        ['repository_id' => $otherRepositoryId],
+    ] as $overrides) {
+        $this->postJson(
+            "/api/plugin/v1/runs/{$context['run_id']}/wiki/revisions",
+            wikiPayload($context, $overrides),
+            wikiHeaders($context),
+        )
+            ->assertUnprocessable()
+            ->assertJsonPath('error.code', 'schema_validation_failed');
+    }
 });
 
 it('keeps older revisions and updates current_revision_id', function () {
@@ -161,7 +208,7 @@ function createWikiRevisionContext(): array
 }
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array<string, mixed>
  */
 function wikiPayload(array $context, array $overrides = []): array

@@ -22,7 +22,7 @@ final class AuthController extends Controller
             'password' => ['required', 'string'],
         ]);
 
-        if (! Auth::attempt($credentials)) {
+        if (! Auth::attempt([...$credentials, 'status' => 'active'])) {
             throw ValidationException::withMessages([
                 'email' => __('auth.failed'),
             ]);
@@ -81,7 +81,7 @@ final class AuthController extends Controller
     }
 
     /**
-     * @param list<string> $roles
+     * @param  list<string>  $roles
      */
     private function frontendRole(array $roles): string
     {

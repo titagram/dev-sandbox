@@ -8,6 +8,7 @@ class HadesCapabilityPolicy
     private const SUPPORTED_M1_CAPABILITIES = [
         'read_files',
         'read_source_slice',
+        'project_inspection',
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',

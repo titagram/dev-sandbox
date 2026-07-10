@@ -23,6 +23,16 @@ X-DevBoard-Plugin-Version: <semver>
 X-DevBoard-Device-Id: <device_id>, after registration
 ```
 
+Requests made with a device-bound token also include:
+
+```text
+X-DevBoard-Timestamp: <unix_seconds>
+X-DevBoard-Content-SHA256: <sha256_of_exact_request_body>
+X-DevBoard-Signature: v1=<hmac_sha256>
+```
+
+The signature canonical value is `METHOD\nREQUEST_URI\nTIMESTAMP\nBODY_SHA256`. The signing key is the SHA-256 hex digest of the one-time device secret. `REQUEST_URI` includes the path and query string exactly as sent.
+
 All JSON payloads include:
 
 ```json
@@ -72,6 +82,8 @@ Token rules:
 - the full token is shown once in the dashboard;
 - the server stores only a hash of the secret;
 - the plugin stores credentials outside the project repository;
+- stored credentials are bound to their normalized server origin and cannot be reused when only the server URL is overridden;
+- HTTPS is required outside explicit loopback development origins;
 - token values must never be written to `.devboard/`, generated AGENTS files, wiki content, logs, artifacts, or committed files.
 
 Recommended local credential path:
@@ -140,7 +152,7 @@ devboard_upload_artifact
 devboard_write_wiki_revision
 ```
 
-MCP tools must not expose raw backend tokens to the LLM. Tools return domain ids, statuses, summaries, and safe errors only.
+MCP tools must not expose raw backend tokens to the LLM. Tools return domain ids, statuses, summaries, and safe errors only. An MCP `server_url` override must not carry credentials saved for another origin.
 
 ## Endpoint Summary
 
@@ -236,10 +248,15 @@ Response:
 ```json
 {
   "device_id": "dev_01J...",
+  "device_secret": "<shown once for a new device>",
   "status": "active",
   "server_time": "2026-06-16T15:30:00Z"
 }
 ```
+
+The plugin persists `device_secret` with the credential record, removes it from CLI/MCP output, and uses it for subsequent signed requests. The backend does not return the secret again for an existing device.
+
+Run mutation endpoints verify that the authenticated token user and bound device own the target run. Repository, workspace, task, snapshot, project, and import references must belong to the same project/repository context.
 
 ### RepositoryPolicy
 
@@ -473,4 +490,3 @@ graph.write
 ```
 
 The backend checks scopes for every request. The plugin cannot bypass policy by choosing a different endpoint.
-

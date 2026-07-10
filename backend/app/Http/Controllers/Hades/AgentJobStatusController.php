@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesAgentJobPolicy;
+use App\Services\Hades\HadesJobException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -12,13 +14,15 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AgentJobStatusController extends Controller
 {
+    public function __construct(private readonly HadesAgentJobPolicy $jobs) {}
+
     public function __invoke(Request $request, string $job): JsonResponse
     {
         $validated = $request->validate([
             'project_id' => ['required', 'string'],
             'agent_id' => ['nullable', 'string', 'max:191'],
             'workspace_binding_id' => ['required', 'string'],
-            'status' => ['required', 'string', 'in:received,waiting_confirmation,started,completed,failed,expired,cancelled,unlinked'],
+            'status' => ['required', 'string', 'in:received,waiting_confirmation,started,failed,expired,cancelled,unlinked'],
             'reason' => ['nullable', 'string', 'max:4000'],
             'error' => ['nullable', 'string', 'max:4000'],
             'payload' => ['nullable', 'array'],
@@ -32,60 +36,78 @@ class AgentJobStatusController extends Controller
             return $binding;
         }
 
-        $record = $this->jobRecord($agent, $job, $validated['project_id'], $binding->id);
-
-        if ($record instanceof JsonResponse) {
-            return $record;
-        }
-
         $now = now();
         $status = $validated['status'];
-        $updates = [
-            'hades_agent_id' => $agent->id,
-            'status' => $status,
-            'updated_at' => $now,
-        ];
+        try {
+            $updated = DB::transaction(function () use ($agent, $binding, $job, $status, $validated, $now): object {
+                $this->assertBindingStillLinked($agent, $binding->id, $validated['project_id']);
+                $currentAgent = DB::table('hades_agents')->where('id', $agent->id)->lockForUpdate()->first();
+                $record = $this->lockedJob($agent, $job, $validated['project_id'], $binding->id);
+                $this->jobs->assertCapability($currentAgent, $record);
 
-        if (in_array($status, ['received', 'waiting_confirmation'], true)) {
-            $updates['claimed_at'] = $record->claimed_at ?: $now;
+                if ($status === 'started'
+                    && $record->status === 'started'
+                    && (bool) $record->requires_confirmation
+                    && DB::table('hades_agent_job_events')
+                        ->where('job_id', $job)
+                        ->where('event_type', 'confirmation')
+                        ->where('status', 'started')
+                        ->exists()) {
+                    return $record;
+                }
+
+                $this->jobs->assertStatusTransition($record, $status);
+
+                $updates = [
+                    'hades_agent_id' => $agent->id,
+                    'status' => $status,
+                    'updated_at' => $now,
+                ];
+                if (in_array($status, ['received', 'waiting_confirmation'], true)) {
+                    $updates['claimed_at'] = $record->claimed_at ?: $now;
+                }
+                if ($status === 'started') {
+                    $updates['claimed_at'] = $record->claimed_at ?: $now;
+                    $updates['started_at'] = $record->started_at ?: $now;
+                }
+                if ($status === 'failed') {
+                    $updates['failed_at'] = $now;
+                    $updates['error_message'] = $validated['error'] ?? $validated['reason'] ?? null;
+                }
+                if ($status === 'cancelled') {
+                    $updates['cancelled_at'] = $now;
+                }
+
+                $affected = DB::table('hades_agent_jobs')
+                    ->where('id', $job)
+                    ->where('status', $record->status)
+                    ->where(function ($query) use ($agent): void {
+                        $query->whereNull('hades_agent_id')->orWhere('hades_agent_id', $agent->id);
+                    })
+                    ->update($updates);
+                if ($affected !== 1) {
+                    throw new HadesJobException('job_concurrent_update', 'The Hades job was updated concurrently.', Response::HTTP_CONFLICT);
+                }
+
+                DB::table('hades_agent_job_events')->insert([
+                    'id' => (string) Str::ulid(),
+                    'job_id' => $job,
+                    'event_type' => 'status',
+                    'status' => $status,
+                    'payload' => json_encode([
+                        'reason' => $validated['reason'] ?? null,
+                        'error' => $validated['error'] ?? null,
+                        'payload' => $validated['payload'] ?? [],
+                    ], JSON_THROW_ON_ERROR),
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+
+                return DB::table('hades_agent_jobs')->where('id', $job)->first();
+            }, 3);
+        } catch (HadesJobException $exception) {
+            return $this->error($exception->errorCode, $exception->getMessage(), $exception->status);
         }
-
-        if ($status === 'started') {
-            $updates['claimed_at'] = $record->claimed_at ?: $now;
-            $updates['started_at'] = $record->started_at ?: $now;
-        }
-
-        if ($status === 'completed') {
-            $updates['completed_at'] = $now;
-        }
-
-        if ($status === 'failed') {
-            $updates['failed_at'] = $now;
-            $updates['error_message'] = $validated['error'] ?? $validated['reason'] ?? null;
-        }
-
-        if ($status === 'cancelled') {
-            $updates['cancelled_at'] = $now;
-        }
-
-        DB::transaction(function () use ($job, $status, $validated, $updates, $now): void {
-            DB::table('hades_agent_jobs')->where('id', $job)->update($updates);
-            DB::table('hades_agent_job_events')->insert([
-                'id' => (string) Str::ulid(),
-                'job_id' => $job,
-                'event_type' => 'status',
-                'status' => $status,
-                'payload' => json_encode([
-                    'reason' => $validated['reason'] ?? null,
-                    'error' => $validated['error'] ?? null,
-                    'payload' => $validated['payload'] ?? [],
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-        });
-
-        $updated = DB::table('hades_agent_jobs')->where('id', $job)->first();
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -123,7 +145,7 @@ class AgentJobStatusController extends Controller
         return $binding;
     }
 
-    private function jobRecord(object $agent, string $jobId, string $projectId, string $bindingId): mixed
+    private function lockedJob(object $agent, string $jobId, string $projectId, string $bindingId): object
     {
         $job = DB::table('hades_agent_jobs')
             ->where('id', $jobId)
@@ -132,9 +154,28 @@ class AgentJobStatusController extends Controller
             ->where(function ($query) use ($agent): void {
                 $query->whereNull('hades_agent_id')->orWhere('hades_agent_id', $agent->id);
             })
+            ->lockForUpdate()
             ->first();
 
-        return $job ?: $this->error('job_not_found', 'Hades agent job was not found.', Response::HTTP_NOT_FOUND);
+        if (! $job) {
+            throw new HadesJobException('job_not_found', 'Hades agent job was not found.', Response::HTTP_NOT_FOUND);
+        }
+
+        return $job;
+    }
+
+    private function assertBindingStillLinked(object $agent, string $bindingId, string $projectId): void
+    {
+        $binding = DB::table('hades_workspace_bindings')
+            ->where('id', $bindingId)
+            ->where('project_id', $projectId)
+            ->where('hades_agent_id', $agent->id)
+            ->lockForUpdate()
+            ->first();
+
+        if (! $binding || $binding->status !== 'linked') {
+            throw new HadesJobException('workspace_binding_unlinked', 'Workspace binding is not linked.', Response::HTTP_CONFLICT);
+        }
     }
 
     private function payload(object $job): array

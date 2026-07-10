@@ -49,7 +49,87 @@ class GenesisGraphImportService
     }
 
     /**
-     * @param list<string> $labels
+     * @return array{cypher: string, params: array<string, mixed>}
+     */
+    public static function devBoardDeltaSnapshotCommand(
+        string $snapshotId,
+        string $baseSnapshotId,
+        string $repositoryId,
+        string $runId,
+        string $deltaId,
+    ): array {
+        return [
+            'cypher' => 'MERGE (s:DevBoardSnapshot {snapshot_id: $snapshot_id}) SET s.repository_id = $repository_id, s.run_id = $run_id, s.base_snapshot_id = $base_snapshot_id, s.delta_sync_id = $delta_id',
+            'params' => [
+                'snapshot_id' => $snapshotId,
+                'base_snapshot_id' => $baseSnapshotId,
+                'repository_id' => $repositoryId,
+                'run_id' => $runId,
+                'delta_id' => $deltaId,
+            ],
+        ];
+    }
+
+    /**
+     * @return list<array{cypher: string, params: array<string, mixed>}>
+     */
+    public static function cloneBaseSnapshotCommands(
+        string $baseSnapshotId,
+        string $snapshotId,
+        string $repositoryId,
+        string $runId,
+    ): array {
+        $params = [
+            'base_snapshot_id' => $baseSnapshotId,
+            'snapshot_id' => $snapshotId,
+            'repository_id' => $repositoryId,
+            'run_id' => $runId,
+        ];
+        $commands = [];
+
+        foreach (['File', 'Function', 'Class', 'Module'] as $label) {
+            $commands[] = [
+                'cypher' => "MATCH (source:CodeNode:{$label} {snapshot_id: \$base_snapshot_id, repository_id: \$repository_id}) MERGE (copy:CodeNode:{$label} {external_id: source.external_id, snapshot_id: \$snapshot_id}) SET copy = properties(source), copy.snapshot_id = \$snapshot_id, copy.run_id = \$run_id",
+                'params' => $params,
+            ];
+        }
+
+        $commands[] = [
+            'cypher' => 'MATCH (source:CodeNode {snapshot_id: $base_snapshot_id, repository_id: $repository_id}) WHERE NOT source:File AND NOT source:Function AND NOT source:Class AND NOT source:Module MERGE (copy:CodeNode {external_id: source.external_id, snapshot_id: $snapshot_id}) SET copy = properties(source), copy.snapshot_id = $snapshot_id, copy.run_id = $run_id',
+            'params' => $params,
+        ];
+
+        foreach (['CALLS', 'DECLARES', 'IMPORTS', 'RELATED'] as $type) {
+            $commands[] = [
+                'cypher' => "MATCH (source:CodeNode {snapshot_id: \$base_snapshot_id})-[relationship:{$type}]->(target:CodeNode {snapshot_id: \$base_snapshot_id}) MATCH (new_source:CodeNode {external_id: source.external_id, snapshot_id: \$snapshot_id}), (new_target:CodeNode {external_id: target.external_id, snapshot_id: \$snapshot_id}) MERGE (new_source)-[copy:{$type} {external_id: relationship.external_id, snapshot_id: \$snapshot_id}]->(new_target) SET copy = properties(relationship), copy.snapshot_id = \$snapshot_id, copy.run_id = \$run_id",
+                'params' => $params,
+            ];
+        }
+
+        return $commands;
+    }
+
+    /**
+     * @param  list<string>  $nodeIds
+     * @param  list<string>  $relationshipIds
+     * @return list<array{cypher: string, params: array<string, mixed>}>
+     */
+    public static function deltaDeletionCommands(string $snapshotId, array $nodeIds, array $relationshipIds): array
+    {
+        return [
+            [
+                'cypher' => 'MATCH ()-[relationship {snapshot_id: $snapshot_id}]->() WHERE relationship.external_id IN $relationship_ids DELETE relationship',
+                'params' => ['snapshot_id' => $snapshotId, 'relationship_ids' => $relationshipIds],
+            ],
+            [
+                'cypher' => 'MATCH (node:CodeNode {snapshot_id: $snapshot_id}) WHERE node.external_id IN $node_ids DETACH DELETE node',
+                'params' => ['snapshot_id' => $snapshotId, 'node_ids' => $nodeIds],
+            ],
+        ];
+    }
+
+    /**
+     * @param  list<string>  $labels
      */
     private static function nodeLabelForLabels(array $labels): string
     {
@@ -77,7 +157,7 @@ class GenesisGraphImportService
     }
 
     /**
-     * @param array<string, mixed> $node
+     * @param  array<string, mixed>  $node
      * @return array{cypher: string, params: array<string, mixed>}
      */
     public static function nodeCommand(array $node, string $snapshotId, string $runId, string $repositoryId): array
@@ -102,7 +182,7 @@ class GenesisGraphImportService
     }
 
     /**
-     * @param array<string, mixed> $relationship
+     * @param  array<string, mixed>  $relationship
      * @return array{cypher: string, params: array<string, mixed>}
      */
     public static function relationshipCommand(array $relationship, string $snapshotId, string $runId, string $repositoryId): array
@@ -129,7 +209,7 @@ class GenesisGraphImportService
     }
 
     /**
-     * @param list<array<string, mixed>> $nodes
+     * @param  list<array<string, mixed>>  $nodes
      * @return list<array{cypher: string, params: array<string, mixed>}>
      */
     public static function nodeBatchCommands(array $nodes, string $snapshotId, string $runId, string $repositoryId): array
@@ -153,7 +233,7 @@ class GenesisGraphImportService
 
         foreach ($byLabel as $label => $groupedNodes) {
             $commands[] = [
-                'cypher' => "UNWIND \$nodes AS node MERGE (n:CodeNode {external_id: node.id, snapshot_id: \$snapshot_id}) SET n:{$label}, n += node.properties, n.labels = node.labels",
+                'cypher' => "UNWIND \$nodes AS node MERGE (n:CodeNode {external_id: node.id, snapshot_id: \$snapshot_id}) REMOVE n:File:Function:Class:Module SET n:{$label}, n = node.properties, n.external_id = node.id, n.labels = node.labels",
                 'params' => [
                     'snapshot_id' => $snapshotId,
                     'nodes' => $groupedNodes,
@@ -165,7 +245,7 @@ class GenesisGraphImportService
     }
 
     /**
-     * @param list<array<string, mixed>> $relationships
+     * @param  list<array<string, mixed>>  $relationships
      * @return list<array{cypher: string, params: array<string, mixed>}>
      */
     public static function relationshipBatchCommands(array $relationships, string $snapshotId, string $runId, string $repositoryId): array
@@ -191,7 +271,7 @@ class GenesisGraphImportService
 
         foreach ($byType as $relType => $groupedRelationships) {
             $commands[] = [
-                'cypher' => "UNWIND \$relationships AS relationship MATCH (source:CodeNode {external_id: relationship.source_id, snapshot_id: \$snapshot_id}) MATCH (target:CodeNode {external_id: relationship.target_id, snapshot_id: \$snapshot_id}) MERGE (source)-[r:{$relType} {external_id: relationship.id, snapshot_id: \$snapshot_id}]->(target) SET r.type = relationship.type, r += relationship.properties",
+                'cypher' => "UNWIND \$relationships AS relationship MATCH (source:CodeNode {external_id: relationship.source_id, snapshot_id: \$snapshot_id}) MATCH (target:CodeNode {external_id: relationship.target_id, snapshot_id: \$snapshot_id}) MERGE (source)-[r:{$relType} {external_id: relationship.id, snapshot_id: \$snapshot_id}]->(target) SET r = relationship.properties, r.external_id = relationship.id, r.type = relationship.type",
                 'params' => [
                     'snapshot_id' => $snapshotId,
                     'relationships' => $groupedRelationships,
@@ -207,8 +287,7 @@ class GenesisGraphImportService
         ?Neo4jClient $client = null,
         string $mode = 'neo4j',
         bool $markFailedOnException = true,
-    ): void
-    {
+    ): void {
         $client ??= app(Neo4jClientFactory::class)->client();
         $import = DB::table('genesis_imports')->where('id', $importId)->first();
         if (! $import || ! $import->snapshot_id) {
@@ -243,6 +322,35 @@ class GenesisGraphImportService
         }
     }
 
+    public function importDelta(
+        string $deltaId,
+        ?Neo4jClient $client = null,
+        string $mode = 'neo4j',
+    ): void {
+        $delta = DB::table('delta_syncs')->where('id', $deltaId)->first();
+        if (! $delta || ! $delta->new_snapshot_id) {
+            throw new RuntimeException('Delta sync is not ready for graph import.');
+        }
+
+        $snapshot = DB::table('snapshots')->where('id', $delta->new_snapshot_id)->first();
+        if (! $snapshot || ! $snapshot->graph_snapshot_artifact_id) {
+            throw new RuntimeException('Delta snapshot does not reference a graph artifact.');
+        }
+
+        $this->importGraphArtifact(
+            $snapshot->id,
+            $delta->repository_id,
+            $delta->run_id,
+            $snapshot->graph_snapshot_artifact_id,
+            $client,
+            $mode,
+            'Delta graph import validated in fake mode.',
+            'Delta graph imported into Neo4j.',
+            $delta->base_snapshot_id,
+            $deltaId,
+        );
+    }
+
     public function importGraphArtifact(
         string $snapshotId,
         string $repositoryId,
@@ -252,6 +360,9 @@ class GenesisGraphImportService
         string $mode = 'neo4j',
         string $fakeMessage = 'Graph import validated in fake mode.',
         string $neo4jMessage = 'Graph imported into Neo4j.',
+        ?string $baseSnapshotId = null,
+        ?string $deltaId = null,
+        bool $force = false,
     ): void {
         $client ??= app(Neo4jClientFactory::class)->client();
         $artifact = DB::table('artifacts')->where('id', $artifactId)->first();
@@ -259,22 +370,66 @@ class GenesisGraphImportService
             throw new RuntimeException('Graph snapshot artifact was not found.');
         }
 
+        if (! $force && $this->alreadyImported($snapshotId, $runId)) {
+            return;
+        }
+
         $graph = json_decode(Storage::disk('local')->get($artifact->storage_path), true, 512, JSON_THROW_ON_ERROR);
 
         $this->ensureIndexes($client);
-        $this->runCommand($client, self::devBoardSnapshotCommand($snapshotId, $repositoryId, $runId));
+        $graphMode = (string) ($graph['graph_mode'] ?? 'full_snapshot');
+        $nodes = is_array($graph['nodes_upserted'] ?? null)
+            ? $graph['nodes_upserted']
+            : ($graph['nodes'] ?? []);
+        $relationships = is_array($graph['relationships_upserted'] ?? null)
+            ? $graph['relationships_upserted']
+            : ($graph['relationships'] ?? []);
 
-        foreach (array_chunk($graph['nodes'] ?? [], self::BATCH_SIZE) as $nodes) {
-            if ($nodes !== []) {
-                foreach (self::nodeBatchCommands($nodes, $snapshotId, $runId, $repositoryId) as $cmd) {
+        if ($graphMode === 'affected_subgraph') {
+            if ($baseSnapshotId === null || $deltaId === null) {
+                throw new RuntimeException('Affected subgraph import requires a base snapshot and delta sync.');
+            }
+            if (isset($graph['base_snapshot_id']) && (string) $graph['base_snapshot_id'] !== $baseSnapshotId) {
+                throw new RuntimeException('Affected subgraph base snapshot does not match the Delta sync.');
+            }
+
+            $this->runCommand($client, self::devBoardDeltaSnapshotCommand(
+                $snapshotId,
+                $baseSnapshotId,
+                $repositoryId,
+                $runId,
+                $deltaId,
+            ));
+            foreach (self::cloneBaseSnapshotCommands($baseSnapshotId, $snapshotId, $repositoryId, $runId) as $command) {
+                $this->runCommand($client, $command);
+            }
+
+            $nodeIds = $this->tombstoneIds($graph['nodes_deleted'] ?? [], 'nodes_deleted');
+            $relationshipIds = $this->tombstoneIds($graph['relationships_deleted'] ?? [], 'relationships_deleted');
+            foreach ($relationships as $relationship) {
+                if (is_array($relationship) && isset($relationship['id']) && is_string($relationship['id'])) {
+                    $relationshipIds[] = $relationship['id'];
+                }
+            }
+            $relationshipIds = array_values(array_unique($relationshipIds));
+            foreach (self::deltaDeletionCommands($snapshotId, $nodeIds, $relationshipIds) as $command) {
+                $this->runCommand($client, $command);
+            }
+        } else {
+            $this->runCommand($client, self::devBoardSnapshotCommand($snapshotId, $repositoryId, $runId));
+        }
+
+        foreach (array_chunk($nodes, self::BATCH_SIZE) as $nodeBatch) {
+            if ($nodeBatch !== []) {
+                foreach (self::nodeBatchCommands($nodeBatch, $snapshotId, $runId, $repositoryId) as $cmd) {
                     $this->runCommand($client, $cmd);
                 }
             }
         }
 
-        foreach (array_chunk($graph['relationships'] ?? [], self::BATCH_SIZE) as $relationships) {
-            if ($relationships !== []) {
-                foreach (self::relationshipBatchCommands($relationships, $snapshotId, $runId, $repositoryId) as $cmd) {
+        foreach (array_chunk($relationships, self::BATCH_SIZE) as $relationshipBatch) {
+            if ($relationshipBatch !== []) {
+                foreach (self::relationshipBatchCommands($relationshipBatch, $snapshotId, $runId, $repositoryId) as $cmd) {
                     $this->runCommand($client, $cmd);
                 }
             }
@@ -297,7 +452,7 @@ class GenesisGraphImportService
     }
 
     /**
-     * @param array{cypher: string, params: array<string, mixed>} $command
+     * @param  array{cypher: string, params: array<string, mixed>}  $command
      */
     private function runCommand(Neo4jClient $client, array $command): void
     {
@@ -309,5 +464,58 @@ class GenesisGraphImportService
         foreach (self::indexCommands() as $command) {
             $this->runCommand($client, $command);
         }
+    }
+
+    private function alreadyImported(string $snapshotId, string $runId): bool
+    {
+        $payloads = DB::table('run_events')
+            ->where('run_id', $runId)
+            ->where('event_type', 'graph.imported')
+            ->pluck('payload');
+
+        foreach ($payloads as $payload) {
+            if (! is_string($payload)) {
+                continue;
+            }
+
+            try {
+                $decoded = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                continue;
+            }
+
+            if (is_array($decoded) && ($decoded['snapshot_id'] ?? null) === $snapshotId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function tombstoneIds(mixed $tombstones, string $field): array
+    {
+        if (! is_array($tombstones) || ! array_is_list($tombstones)) {
+            throw new RuntimeException("{$field} must be a list of identifiers or tombstones.");
+        }
+
+        $ids = [];
+        foreach ($tombstones as $tombstone) {
+            $id = is_string($tombstone)
+                ? $tombstone
+                : (is_array($tombstone)
+                    ? ($tombstone['id'] ?? $tombstone['external_id'] ?? $tombstone['node_id'] ?? $tombstone['relationship_id'] ?? null)
+                    : null);
+
+            if (! is_string($id) || $id === '') {
+                throw new RuntimeException("{$field} contains an invalid tombstone.");
+            }
+
+            $ids[] = $id;
+        }
+
+        return array_values(array_unique($ids));
     }
 }

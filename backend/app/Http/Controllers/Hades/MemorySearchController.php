@@ -453,7 +453,7 @@ class MemorySearchController extends Controller
             ->when($useFullText && $driver === 'pgsql', function ($builder) use ($query): void {
                 $builder->whereRaw("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(source_schema, '')) @@ plainto_tsquery('english', ?)", [$query]);
             })
-            ->when($useFullText && $driver === 'mysql', function ($builder) use ($query, $tokens): void {
+            ->when($useFullText && $driver === 'mysql', function ($builder) use ($query): void {
                 $fullTextQuery = implode(' ', array_map(fn (string $term): string => '+'.$term.'*', array_values(array_unique(array_map('strtolower', array_filter(preg_match_all('/[A-Za-z0-9]{2,}/', $query, $m) ? $m[0] : []))))));
                 $builder->whereRaw('MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE)', [$fullTextQuery]);
             })

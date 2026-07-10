@@ -2,6 +2,7 @@
 
 use App\Services\Graph\GraphQueryService;
 use App\Services\Neo4j\FakeNeo4jClient;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -9,7 +10,11 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
+
+    $client = new FakeNeo4jClient;
+    $this->app->instance(FakeNeo4jClient::class, $client);
+    $this->app->bind(GraphQueryService::class, fn () => new GraphQueryService($client));
 });
 
 function graphQueryProjectId(): string
