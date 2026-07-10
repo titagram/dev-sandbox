@@ -14,9 +14,7 @@ use Throwable;
 
 final class TaskClarifierService
 {
-    public function __construct(private readonly ProviderHttpClient $httpClient)
-    {
-    }
+    public function __construct(private readonly ProviderHttpClient $httpClient) {}
 
     /**
      * @return array{run: array<string, mixed>, suggestion: array<string, mixed>}
@@ -116,11 +114,11 @@ final class TaskClarifierService
             ]);
 
             app(AuditLogger::class)->record('assistant.task_clarification.created', 'task', $task->id, [
-                    'assistant_run_id' => $runId,
-                    'assistant_suggestion_id' => $suggestionId,
-                    'agent_key' => 'task_clarifier',
-                    'external_provider_call' => $execution['external_provider_call'],
-                    'execution_mode' => $execution['execution_mode'],
+                'assistant_run_id' => $runId,
+                'assistant_suggestion_id' => $suggestionId,
+                'agent_key' => 'task_clarifier',
+                'external_provider_call' => $execution['external_provider_call'],
+                'execution_mode' => $execution['execution_mode'],
             ], ['type' => 'user', 'user_id' => $userId]);
         });
 
@@ -175,13 +173,13 @@ final class TaskClarifierService
                 ]);
 
             app(AuditLogger::class)->record("assistant.suggestion.{$status}", 'assistant_suggestion', $suggestionId, [
-                    'assistant_run_id' => (string) $suggestion->assistant_run_id,
-                    'project_id' => (string) $suggestion->project_id,
-                    'target_type' => (string) $suggestion->target_type,
-                    'target_id' => (string) $suggestion->target_id,
-                    'suggestion_type' => (string) $suggestion->suggestion_type,
-                    'status' => $status,
-                    'mutated_target' => false,
+                'assistant_run_id' => (string) $suggestion->assistant_run_id,
+                'project_id' => (string) $suggestion->project_id,
+                'target_type' => (string) $suggestion->target_type,
+                'target_id' => (string) $suggestion->target_id,
+                'suggestion_type' => (string) $suggestion->suggestion_type,
+                'status' => $status,
+                'mutated_target' => false,
             ], ['type' => 'user', 'user_id' => $userId]);
         });
 
@@ -237,16 +235,16 @@ final class TaskClarifierService
                 ]);
 
             app(AuditLogger::class)->record('assistant.suggestion.applied', 'assistant_suggestion', $suggestionId, [
-                    'assistant_run_id' => (string) $suggestion->assistant_run_id,
-                    'project_id' => (string) $suggestion->project_id,
-                    'target_type' => 'task',
-                    'target_id' => (string) $task->id,
-                    'suggestion_type' => (string) $suggestion->suggestion_type,
-                    'status' => 'applied',
-                    'mutated_target' => true,
-                    'applied_fields' => ['description'],
-                    'previous_description_sha256' => hash('sha256', $previousDescription),
-                    'new_description_sha256' => hash('sha256', $newDescription),
+                'assistant_run_id' => (string) $suggestion->assistant_run_id,
+                'project_id' => (string) $suggestion->project_id,
+                'target_type' => 'task',
+                'target_id' => (string) $task->id,
+                'suggestion_type' => (string) $suggestion->suggestion_type,
+                'status' => 'applied',
+                'mutated_target' => true,
+                'applied_fields' => ['description'],
+                'previous_description_sha256' => hash('sha256', $previousDescription),
+                'new_description_sha256' => hash('sha256', $newDescription),
             ], ['type' => 'user', 'user_id' => $userId]);
 
             $taskId = (string) $task->id;
@@ -370,7 +368,7 @@ final class TaskClarifierService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return array{structured: array{questions: list<string>, acceptance_criteria: list<string>, risks: list<string>, missing_context: list<string>, confidence: float}, prompt: string, execution_mode: string, external_provider_call: bool, model_provider_id: ?string, model_profile_id: ?string, provider_key: ?string, model_name: ?string, provider_failure: ?array<string, string>}
      */
     private function generateSuggestion(object $task, object $agentProfile, array $context): array
@@ -547,7 +545,7 @@ final class TaskClarifierService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      */
     private function promptForContext(array $context): string
     {
@@ -569,7 +567,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $structured
+     * @param  array<string, mixed>  $structured
      * @return array{questions: list<string>, acceptance_criteria: list<string>, risks: list<string>, missing_context: list<string>, confidence: float}
      */
     private function normalizeStructuredSuggestion(array $structured, object $task): array
@@ -586,7 +584,7 @@ PROMPT;
     }
 
     /**
-     * @param list<string> $fallback
+     * @param  list<string>  $fallback
      * @return list<string>
      */
     private function stringList(mixed $value, array $fallback, int $limit): array
@@ -636,7 +634,7 @@ PROMPT;
     }
 
     /**
-     * @param array{questions: list<string>, acceptance_criteria: list<string>, risks: list<string>, missing_context: list<string>} $structured
+     * @param  array{questions: list<string>, acceptance_criteria: list<string>, risks: list<string>, missing_context: list<string>}  $structured
      */
     private function bodyMarkdown(array $structured): string
     {
@@ -649,7 +647,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $structured
+     * @param  array<string, mixed>  $structured
      */
     private function appliedDescriptionBlock(array $structured): string
     {
@@ -666,7 +664,7 @@ PROMPT;
     }
 
     /**
-     * @param list<string> $items
+     * @param  list<string>  $items
      */
     private function markdownList(array $items): string
     {

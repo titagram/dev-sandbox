@@ -70,9 +70,9 @@ final class IntakeNormalizerService
             'suggested_title' => $structured['suggested_title'],
             'suggested_description' => $structured['suggested_description'],
             'clarifying_questions' => $structured['clarifying_questions'],
-            "requires_root_cause" => str_contains($haystack, "root cause")
-                || str_contains($haystack, "diagnose")
-                || str_contains($haystack, "diagnosi"),
+            'requires_root_cause' => str_contains($haystack, 'root cause')
+                || str_contains($haystack, 'diagnose')
+                || str_contains($haystack, 'diagnosi'),
             'confidence' => (float) $structured['confidence'],
             'execution_mode' => IntakeNormalizerAgent::isFaked() ? 'laravel_ai_sdk_fake' : 'laravel_ai_sdk',
         ];
@@ -186,7 +186,7 @@ final class IntakeNormalizerService
     private function promptForRawText(string $rawText, ?string $projectId): string
     {
         $safeText = json_encode($rawText, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-        $projectContext = $projectId ? "Project context is already known from the route: {$projectId}. Do not ask which project or repository this applies to unless the text explicitly names a conflicting one." : "No project context was provided.";
+        $projectContext = $projectId ? "Project context is already known from the route: {$projectId}. Do not ask which project or repository this applies to unless the text explicitly names a conflicting one." : 'No project context was provided.';
 
         return <<<PROMPT
 Analyze this raw free-text input from a team member and produce an intake normalization.
@@ -202,7 +202,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $structured
+     * @param  array<string, mixed>  $structured
      * @return array{task_type: string, suggested_title: string, suggested_description: string, clarifying_questions: list<string>, confidence: float}
      */
     private function normalizeStructuredResult(array $structured, string $rawText, ?string $projectId): array

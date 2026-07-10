@@ -7,8 +7,8 @@ use DateTimeInterface;
 final readonly class QualityReport
 {
     /**
-     * @param array{total: int, passed: int, failed: int, warnings: int, skipped: int} $summary
-     * @param list<Finding> $findings
+     * @param  array{total: int, passed: int, failed: int, warnings: int, skipped: int}  $summary
+     * @param  list<Finding>  $findings
      */
     public function __construct(
         public string $tool,
@@ -16,8 +16,7 @@ final readonly class QualityReport
         public DateTimeInterface $generatedAt,
         public array $summary,
         public array $findings = [],
-    ) {
-    }
+    ) {}
 
     /**
      * @return array{
@@ -42,4 +41,3 @@ final readonly class QualityReport
         ];
     }
 }
-

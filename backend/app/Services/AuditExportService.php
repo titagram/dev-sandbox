@@ -11,7 +11,7 @@ use InvalidArgumentException;
 class AuditExportService
 {
     /**
-     * @param array{action?: string|null, actor_type?: string|null, from?: string|null, to?: string|null} $filters
+     * @param  array{action?: string|null, actor_type?: string|null, from?: string|null, to?: string|null}  $filters
      * @return array{format: string, path: string, exported: int, row_count: int, sha256: string}
      */
     public function export(array $filters = [], string $formatOrPath = 'jsonl', ?string $path = null): array
@@ -45,7 +45,7 @@ class AuditExportService
     }
 
     /**
-     * @param Collection<int, object> $rows
+     * @param  Collection<int, object>  $rows
      */
     private function csv(Collection $rows): string
     {
@@ -85,7 +85,7 @@ class AuditExportService
     }
 
     /**
-     * @param array{action?: string|null, actor_type?: string|null, from?: string|null, to?: string|null} $filters
+     * @param  array{action?: string|null, actor_type?: string|null, from?: string|null, to?: string|null}  $filters
      * @return Collection<int, object>
      */
     private function auditRows(array $filters): Collection
@@ -101,7 +101,7 @@ class AuditExportService
     }
 
     /**
-     * @param Collection<int, object> $rows
+     * @param  Collection<int, object>  $rows
      */
     private function jsonl(Collection $rows): string
     {
@@ -138,10 +138,6 @@ class AuditExportService
         ];
     }
 
-    /**
-     * @param mixed $value
-     * @return mixed
-     */
     private function sanitize(mixed $value): mixed
     {
         if (is_array($value)) {
@@ -168,15 +164,15 @@ class AuditExportService
     }
 
     /**
-     * @param array<string, mixed> $filters
+     * @param  array<string, mixed>  $filters
      */
     private function recordAuditExport(string $path, int $rowCount, string $hash, array $filters): void
     {
         app(AuditLogger::class)->record('audit.exported', 'audit_export', null, [
-                'path' => $path,
-                'row_count' => $rowCount,
-                'sha256' => $hash,
-                'filters' => $filters,
+            'path' => $path,
+            'row_count' => $rowCount,
+            'sha256' => $hash,
+            'filters' => $filters,
         ]);
     }
 }

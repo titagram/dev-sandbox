@@ -6,6 +6,7 @@ use App\Models\User;
 use App\Services\AuditChainVerifier;
 use App\Services\AuditLogger;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use JsonException;
@@ -16,9 +17,7 @@ final class BackupBundleService
     public function __construct(
         private readonly BackupManifestService $manifests,
         private readonly AuditChainVerifier $auditChainVerifier,
-    )
-    {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -149,8 +148,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $bundle
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $bundle
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function validateAuditChain(array $bundle, array $report): array
@@ -199,8 +198,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $report
-     * @param array{code: string, message: string}|null $extraBlocker
+     * @param  array<string, mixed>  $report
+     * @param  array{code: string, message: string}|null  $extraBlocker
      * @return array<string, mixed>
      */
     private function finishReport(array $report, ?array $extraBlocker, User $actor): array
@@ -229,8 +228,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $bundle
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $bundle
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function validateRequiredSecrets(array $bundle, array $report): array
@@ -262,8 +261,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $bundle
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $bundle
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function validateDatabaseChecksums(array $bundle, array $report): array
@@ -278,12 +277,14 @@ final class BackupBundleService
         foreach ($tables as $table => $snapshot) {
             if (! is_array($snapshot)) {
                 $report = $this->addBlocker($report, 'invalid_table_snapshot', "Table {$table} snapshot is invalid.");
+
                 continue;
             }
 
             $rows = $snapshot['rows'] ?? [];
             if (! is_array($rows)) {
                 $report = $this->addBlocker($report, 'invalid_table_rows', "Table {$table} rows are invalid.");
+
                 continue;
             }
 
@@ -303,8 +304,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $bundle
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $bundle
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function validateStorageFiles(array $bundle, array $report): array
@@ -319,18 +320,21 @@ final class BackupBundleService
         foreach ($files as $file) {
             if (! is_array($file)) {
                 $report = $this->addBlocker($report, 'invalid_storage_file', 'Storage file entry is invalid.');
+
                 continue;
             }
 
             $path = (string) ($file['path'] ?? '');
             if (! $this->isSafeStoragePath($path)) {
                 $report = $this->addBlocker($report, 'unsafe_storage_path', "Storage path {$path} is not safe to restore.");
+
                 continue;
             }
 
             $contents = base64_decode((string) ($file['content_base64'] ?? ''), true);
             if ($contents === false) {
                 $report = $this->addBlocker($report, 'invalid_storage_encoding', "Storage file {$path} is not valid base64.");
+
                 continue;
             }
 
@@ -370,7 +374,7 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function addBlocker(array $report, string $code, string $message): array
@@ -385,7 +389,7 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $manifest
+     * @param  array<string, mixed>  $manifest
      * @return array<string, mixed>
      */
     private function manifestSummary(array $manifest): array
@@ -411,7 +415,7 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function audit(User $actor, string $action, string $targetType, ?string $targetId, array $payload): void
     {
@@ -427,7 +431,7 @@ final class SchemaCompat
     public static function hasTable(string $table): bool
     {
         try {
-            return \Illuminate\Support\Facades\Schema::hasTable($table);
+            return Schema::hasTable($table);
         } catch (RuntimeException) {
             return false;
         }

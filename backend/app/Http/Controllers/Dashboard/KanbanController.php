@@ -218,5 +218,4 @@ class KanbanController extends Controller
             default => 'Assign local agent when the task is ready for agent work.',
         };
     }
-
 }

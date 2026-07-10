@@ -53,18 +53,18 @@ final class BehaviorWikiDraftService
         }
 
         if ($callers !== []) {
-            $parts[] = 'called by ' . $this->listPrefix($callers);
+            $parts[] = 'called by '.$this->listPrefix($callers);
         }
 
         if ($callees !== []) {
-            $parts[] = 'calls ' . $this->listPrefix($callees);
+            $parts[] = 'calls '.$this->listPrefix($callees);
         }
 
         if ($relationships !== []) {
             $parts[] = $this->relationshipSummary($relationships);
         }
 
-        return implode('. ', $parts) . '.';
+        return implode('. ', $parts).'.';
     }
 
     /**
@@ -90,7 +90,7 @@ final class BehaviorWikiDraftService
         }
 
         if ($callers !== []) {
-            $preconditions[] = 'Inbound callers ' . $this->listPrefix($callers) . ' must provide valid arguments matching the expected signature.';
+            $preconditions[] = 'Inbound callers '.$this->listPrefix($callers).' must provide valid arguments matching the expected signature.';
         }
 
         if (isset($properties['visibility']) && $properties['visibility'] === 'public') {
@@ -115,7 +115,7 @@ final class BehaviorWikiDraftService
         $sideEffects = [];
 
         if ($callees !== []) {
-            $sideEffects[] = "Invocation of {$symbolId} may trigger downstream calls to " . $this->listPrefix($callees) . '.';
+            $sideEffects[] = "Invocation of {$symbolId} may trigger downstream calls to ".$this->listPrefix($callees).'.';
         }
 
         foreach ($relationships as $relationship) {
@@ -147,7 +147,7 @@ final class BehaviorWikiDraftService
     private function listPrefix(array $items): string
     {
         $prefix = count($items) > 3
-            ? implode(', ', array_slice($items, 0, 3)) . ' and ' . (count($items) - 3) . ' more'
+            ? implode(', ', array_slice($items, 0, 3)).' and '.(count($items) - 3).' more'
             : implode(', ', $items);
 
         return $prefix;
@@ -169,10 +169,10 @@ final class BehaviorWikiDraftService
 
         $summaries = [];
         foreach ($byType as $type => $targets) {
-            $summaries[] = "{$type} " . $this->listPrefix($targets);
+            $summaries[] = "{$type} ".$this->listPrefix($targets);
         }
 
-        return 'Holds relationship(s): ' . implode('; ', $summaries);
+        return 'Holds relationship(s): '.implode('; ', $summaries);
     }
 
     /**
@@ -199,7 +199,6 @@ final class BehaviorWikiDraftService
     }
 
     /**
-     * @param  mixed  $value
      * @return list<string>
      */
     private function safeStringList(mixed $value): array

@@ -11,8 +11,8 @@ use DomainException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
-use InvalidArgumentException;
 use Illuminate\Validation\Rule;
+use InvalidArgumentException;
 
 final class DashboardAiAgentController extends Controller
 {
@@ -44,11 +44,11 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_model_provider.updated', 'ai_model_provider', $payload['id'], [
-                'provider_key' => $payload['provider_key'],
-                'display_name' => $payload['display_name'],
-                'base_url' => $payload['base_url'],
-                'enabled' => $payload['enabled'],
-                'api_key_configured' => $payload['api_key_configured'],
+            'provider_key' => $payload['provider_key'],
+            'display_name' => $payload['display_name'],
+            'base_url' => $payload['base_url'],
+            'enabled' => $payload['enabled'],
+            'api_key_configured' => $payload['api_key_configured'],
         ]);
 
         return response()->json(['provider' => $payload]);
@@ -76,16 +76,16 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_model_profile.updated', 'ai_model_profile', $payload['id'], [
-                'profile_key' => $payload['profile_key'],
-                'display_name' => $payload['display_name'],
-                'provider_key' => $payload['provider_key'],
-                'model_name' => $payload['model_name'],
-                'runtime_profile' => $payload['runtime_profile'],
-                'max_context' => $payload['max_context'],
-                'max_output_tokens' => $payload['max_output_tokens'],
-                'temperature' => $payload['temperature'],
-                'timeout_seconds' => $payload['timeout_seconds'],
-                'enabled' => $payload['enabled'],
+            'profile_key' => $payload['profile_key'],
+            'display_name' => $payload['display_name'],
+            'provider_key' => $payload['provider_key'],
+            'model_name' => $payload['model_name'],
+            'runtime_profile' => $payload['runtime_profile'],
+            'max_context' => $payload['max_context'],
+            'max_output_tokens' => $payload['max_output_tokens'],
+            'temperature' => $payload['temperature'],
+            'timeout_seconds' => $payload['timeout_seconds'],
+            'enabled' => $payload['enabled'],
         ]);
 
         return response()->json(['model_profile' => $payload]);
@@ -115,12 +115,12 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_model_profile.created', 'ai_model_profile', $payload['id'], [
-                'profile_key' => $payload['profile_key'],
-                'display_name' => $payload['display_name'],
-                'provider_key' => $payload['provider_key'],
-                'model_name' => $payload['model_name'],
-                'runtime_profile' => $payload['runtime_profile'],
-                'enabled' => $payload['enabled'],
+            'profile_key' => $payload['profile_key'],
+            'display_name' => $payload['display_name'],
+            'provider_key' => $payload['provider_key'],
+            'model_name' => $payload['model_name'],
+            'runtime_profile' => $payload['runtime_profile'],
+            'enabled' => $payload['enabled'],
         ]);
 
         return response()->json(['model_profile' => $payload], 201);
@@ -139,11 +139,11 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_model_profile.deleted', 'ai_model_profile', $payload['id'], [
-                'profile_key' => $payload['profile_key'],
-                'display_name' => $payload['display_name'],
-                'provider_key' => $payload['provider_key'],
-                'model_name' => $payload['model_name'],
-                'unassigned_agent_keys' => $payload['unassigned_agent_keys'] ?? [],
+            'profile_key' => $payload['profile_key'],
+            'display_name' => $payload['display_name'],
+            'provider_key' => $payload['provider_key'],
+            'model_name' => $payload['model_name'],
+            'unassigned_agent_keys' => $payload['unassigned_agent_keys'] ?? [],
         ]);
 
         return response()->noContent();
@@ -162,20 +162,20 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_agent_profile.created', 'ai_agent_profile', $payload['id'], [
-                'agent_key' => $payload['agent_key'],
-                'display_name' => $payload['display_name'],
-                'description' => $payload['description'],
-                'agent_type' => $payload['agent_type'],
-                'delegation_mode' => $payload['delegation_mode'],
-                'parent_agent_key' => $payload['parent_agent_key'],
-                'default_model_profile_id' => $payload['default_model_profile_id'],
-                'requires_human_approval' => $payload['requires_human_approval'],
-                'enabled' => $payload['enabled'],
-                'allowed_tools' => $payload['allowed_tools'],
-                'output_schema' => $payload['output_schema'],
-                'trigger_events' => $payload['trigger_events'],
-                'visibility_scope' => $payload['visibility_scope'],
-                'project_ids' => $payload['project_ids'],
+            'agent_key' => $payload['agent_key'],
+            'display_name' => $payload['display_name'],
+            'description' => $payload['description'],
+            'agent_type' => $payload['agent_type'],
+            'delegation_mode' => $payload['delegation_mode'],
+            'parent_agent_key' => $payload['parent_agent_key'],
+            'default_model_profile_id' => $payload['default_model_profile_id'],
+            'requires_human_approval' => $payload['requires_human_approval'],
+            'enabled' => $payload['enabled'],
+            'allowed_tools' => $payload['allowed_tools'],
+            'output_schema' => $payload['output_schema'],
+            'trigger_events' => $payload['trigger_events'],
+            'visibility_scope' => $payload['visibility_scope'],
+            'project_ids' => $payload['project_ids'],
         ]);
 
         return response()->json(['agent_profile' => $payload], 201);
@@ -194,20 +194,20 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_agent_profile.replaced', 'ai_agent_profile', $payload['id'], [
-                'agent_key' => $payload['agent_key'],
-                'display_name' => $payload['display_name'],
-                'description' => $payload['description'],
-                'agent_type' => $payload['agent_type'],
-                'delegation_mode' => $payload['delegation_mode'],
-                'parent_agent_key' => $payload['parent_agent_key'],
-                'default_model_profile_id' => $payload['default_model_profile_id'],
-                'requires_human_approval' => $payload['requires_human_approval'],
-                'enabled' => $payload['enabled'],
-                'allowed_tools' => $payload['allowed_tools'],
-                'output_schema' => $payload['output_schema'],
-                'trigger_events' => $payload['trigger_events'],
-                'visibility_scope' => $payload['visibility_scope'],
-                'project_ids' => $payload['project_ids'],
+            'agent_key' => $payload['agent_key'],
+            'display_name' => $payload['display_name'],
+            'description' => $payload['description'],
+            'agent_type' => $payload['agent_type'],
+            'delegation_mode' => $payload['delegation_mode'],
+            'parent_agent_key' => $payload['parent_agent_key'],
+            'default_model_profile_id' => $payload['default_model_profile_id'],
+            'requires_human_approval' => $payload['requires_human_approval'],
+            'enabled' => $payload['enabled'],
+            'allowed_tools' => $payload['allowed_tools'],
+            'output_schema' => $payload['output_schema'],
+            'trigger_events' => $payload['trigger_events'],
+            'visibility_scope' => $payload['visibility_scope'],
+            'project_ids' => $payload['project_ids'],
         ]);
 
         return response()->json(['agent_profile' => $payload]);
@@ -224,15 +224,15 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_agent_profile.deleted', 'ai_agent_profile', $payload['id'], [
-                'agent_key' => $payload['agent_key'],
-                'display_name' => $payload['display_name'],
-                'description' => $payload['description'],
-                'agent_type' => $payload['agent_type'],
-                'delegation_mode' => $payload['delegation_mode'],
-                'parent_agent_key' => $payload['parent_agent_key'],
-                'default_model_profile_id' => $payload['default_model_profile_id'],
-                'requires_human_approval' => $payload['requires_human_approval'],
-                'enabled' => $payload['enabled'],
+            'agent_key' => $payload['agent_key'],
+            'display_name' => $payload['display_name'],
+            'description' => $payload['description'],
+            'agent_type' => $payload['agent_type'],
+            'delegation_mode' => $payload['delegation_mode'],
+            'parent_agent_key' => $payload['parent_agent_key'],
+            'default_model_profile_id' => $payload['default_model_profile_id'],
+            'requires_human_approval' => $payload['requires_human_approval'],
+            'enabled' => $payload['enabled'],
         ]);
 
         return response()->noContent();
@@ -249,9 +249,9 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_model_provider.validated', 'ai_model_provider', $validation['provider_key'], [
-                'provider_key' => $validation['provider_key'],
-                'status' => $validation['status'],
-                'checks' => $validation['checks'],
+            'provider_key' => $validation['provider_key'],
+            'status' => $validation['status'],
+            'checks' => $validation['checks'],
         ]);
 
         return response()->json(['validation' => $validation]);
@@ -286,9 +286,9 @@ final class DashboardAiAgentController extends Controller
         }
 
         $this->audit($request, 'ai_agent_profile.updated', 'ai_agent_profile', $payload['id'], [
-                'agent_key' => $payload['agent_key'],
-                'default_model_profile_id' => $payload['default_model_profile_id'],
-                'enabled' => $payload['enabled'],
+            'agent_key' => $payload['agent_key'],
+            'default_model_profile_id' => $payload['default_model_profile_id'],
+            'enabled' => $payload['enabled'],
         ]);
 
         return response()->json(['agent_profile' => $payload]);
@@ -300,7 +300,7 @@ final class DashboardAiAgentController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function audit(Request $request, string $action, string $targetType, string $targetId, array $payload): void
     {

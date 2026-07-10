@@ -13,9 +13,7 @@ use Throwable;
 
 final class BacklogTriageService
 {
-    public function __construct(private readonly ProviderHttpClient $httpClient)
-    {
-    }
+    public function __construct(private readonly ProviderHttpClient $httpClient) {}
 
     /**
      * @return array{run: array<string, mixed>, suggestion: array<string, mixed>}
@@ -110,12 +108,12 @@ final class BacklogTriageService
             ]);
 
             app(AuditLogger::class)->record('assistant.backlog_triage.created', 'project', $project->id, [
-                    'assistant_run_id' => $runId,
-                    'assistant_suggestion_id' => $suggestionId,
-                    'agent_key' => 'backlog_triage',
-                    'external_provider_call' => $execution['external_provider_call'],
-                    'execution_mode' => $execution['execution_mode'],
-                    'mutated_target' => false,
+                'assistant_run_id' => $runId,
+                'assistant_suggestion_id' => $suggestionId,
+                'agent_key' => 'backlog_triage',
+                'external_provider_call' => $execution['external_provider_call'],
+                'execution_mode' => $execution['execution_mode'],
+                'mutated_target' => false,
             ], ['type' => 'user', 'user_id' => $userId]);
         });
 
@@ -233,7 +231,7 @@ final class BacklogTriageService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return list<array<string, string>>
      */
     private function evidenceRefs(object $project, array $context): array
@@ -252,7 +250,7 @@ final class BacklogTriageService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return array{structured: array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>, confidence: float}, prompt: string, execution_mode: string, external_provider_call: bool, model_provider_id: ?string, model_profile_id: ?string, provider_key: ?string, model_name: ?string, provider_failure: ?array<string, string>}
      */
     private function generateSuggestion(object $project, object $agentProfile, array $context): array
@@ -429,7 +427,7 @@ final class BacklogTriageService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      */
     private function promptForContext(array $context): string
     {
@@ -449,8 +447,8 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $structured
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $structured
+     * @param  array<string, mixed>  $context
      * @return array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>, confidence: float}
      */
     private function normalizeStructuredSuggestion(array $structured, array $context): array
@@ -468,7 +466,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>, confidence: float}
      */
     private function structuredSuggestion(array $context): array
@@ -524,7 +522,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $task
+     * @param  array<string, mixed>  $task
      */
     private function isVagueTask(array $task): bool
     {
@@ -534,7 +532,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return list<string>
      */
     private function validTaskIds(array $context): array
@@ -546,8 +544,8 @@ PROMPT;
     }
 
     /**
-     * @param list<array{label: string, task_ids: list<string>, reason: string}> $fallback
-     * @param list<string> $validTaskIds
+     * @param  list<array{label: string, task_ids: list<string>, reason: string}>  $fallback
+     * @param  list<string>  $validTaskIds
      * @return list<array{label: string, task_ids: list<string>, reason: string}>
      */
     private function groups(mixed $value, array $fallback, array $validTaskIds): array
@@ -581,8 +579,8 @@ PROMPT;
     }
 
     /**
-     * @param list<array{title: string, body: string, task_ids: list<string>, priority: string}> $fallback
-     * @param list<string> $validTaskIds
+     * @param  list<array{title: string, body: string, task_ids: list<string>, priority: string}>  $fallback
+     * @param  list<string>  $validTaskIds
      * @return list<array{title: string, body: string, task_ids: list<string>, priority: string}>
      */
     private function recommendations(mixed $value, array $fallback, array $validTaskIds): array
@@ -619,7 +617,7 @@ PROMPT;
     }
 
     /**
-     * @param list<string> $validTaskIds
+     * @param  list<string>  $validTaskIds
      * @return list<string>
      */
     private function taskIds(mixed $value, array $validTaskIds): array
@@ -635,7 +633,7 @@ PROMPT;
     }
 
     /**
-     * @param list<string> $fallback
+     * @param  list<string>  $fallback
      * @return list<string>
      */
     private function stringList(mixed $value, array $fallback, int $limit): array
@@ -653,7 +651,7 @@ PROMPT;
     }
 
     /**
-     * @param array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>} $structured
+     * @param  array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>}  $structured
      */
     private function bodyMarkdown(array $structured): string
     {
@@ -673,7 +671,7 @@ PROMPT;
     }
 
     /**
-     * @param list<string> $taskIds
+     * @param  list<string>  $taskIds
      */
     private function taskSuffix(array $taskIds): string
     {

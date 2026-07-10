@@ -57,7 +57,7 @@ final class RouteSmokeCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $report
      */
     private function markdown(array $report): string
     {
@@ -90,4 +90,3 @@ final class RouteSmokeCommand extends Command
         return implode(PHP_EOL, $lines).PHP_EOL;
     }
 }
-

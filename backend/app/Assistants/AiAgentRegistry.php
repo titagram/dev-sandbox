@@ -17,9 +17,7 @@ final class AiAgentRegistry
         'backlog_triage' => ['agent_key' => 'aristoteles', 'label' => 'Aristoteles'],
     ];
 
-    public function __construct(private readonly ProviderHttpClient $httpClient)
-    {
-    }
+    public function __construct(private readonly ProviderHttpClient $httpClient) {}
 
     /**
      * @return array{providers: list<array<string, mixed>>, modelProfiles: list<array<string, mixed>>, agentProfiles: list<array<string, mixed>>}

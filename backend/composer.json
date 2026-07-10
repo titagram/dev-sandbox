@@ -61,6 +61,7 @@
             "php artisan migrate:fresh --force --ansi",
             "vendor/bin/pest --configuration=phpunit.postgres.xml --display-warnings"
         ],
+        "quality:format": "./vendor/bin/pint --test",
         "quality:static": "vendor/bin/phpstan analyse --memory-limit=-1",
         "quality:test": "@test",
         "quality:audit": "composer audit",
@@ -70,9 +71,10 @@
         ],
         "quality:gates": "@php artisan quality:check-gates --gate=pull_request",
         "quality:all": [
+            "@quality:format",
             "@quality:static",
-            "@quality:test",
             "@quality:audit",
+            "@quality:test",
             "@quality:routes",
             "@quality:gates"
         ],

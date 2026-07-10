@@ -86,7 +86,7 @@ class EmbeddingIndexService
      * Find similar documents by cosine similarity.
      *
      * @param  array<int, float>  $queryEmbedding  Flat array of 1536 float values.
-     * @param  list<string>       $domains         Optional domain filter.
+     * @param  list<string>  $domains  Optional domain filter.
      * @return list<array{source_id: string, source_table: string, similarity: float, evidence_refs: list<mixed>, needs_verification: bool}>
      */
     public function searchSimilar(string $projectId, array $queryEmbedding, int $limit, ?string $workspaceBindingId = null, array $domains = []): array

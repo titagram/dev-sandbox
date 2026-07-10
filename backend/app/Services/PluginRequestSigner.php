@@ -28,7 +28,7 @@ class PluginRequestSigner
 
         $canonical = "{$method}\n{$pathWithQuery}\n{$timestamp}\n{$expectedBodyHash}";
 
-        $expectedSignature = 'v1=' . hash_hmac('sha256', $canonical, $storedSecretHash);
+        $expectedSignature = 'v1='.hash_hmac('sha256', $canonical, $storedSecretHash);
 
         if (! hash_equals($expectedSignature, $providedSignature)) {
             throw new PluginTokenException('device_signature_invalid', 'Device request signature is invalid.');

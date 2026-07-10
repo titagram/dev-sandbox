@@ -134,7 +134,6 @@ class GraphQueryService
     }
 
     /**
-     * @param  mixed  $result
      * @return list<array<string, mixed>>
      */
     private function normaliseRows(mixed $result): array

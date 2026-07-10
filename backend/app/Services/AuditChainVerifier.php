@@ -2,8 +2,8 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 class AuditChainVerifier
 {
@@ -34,7 +34,7 @@ class AuditChainVerifier
     }
 
     /**
-     * @param iterable<int, array<string, mixed>|object> $rows
+     * @param  iterable<int, array<string, mixed>|object>  $rows
      */
     public function verifyRows(iterable $rows): object
     {

@@ -3,6 +3,7 @@
 namespace App\Projects;
 
 use App\Models\User;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -11,10 +12,13 @@ use Symfony\Component\HttpFoundation\Response;
 final class ProjectLifecycleService
 {
     public const ACTIVE = 'active';
+
     public const ARCHIVED = 'archived';
+
     public const DELETED = 'deleted';
 
     private const TERMINAL_RUN_STATUSES = ['finished', 'failed', 'aborted'];
+
     private const ACTIVE_UPLOAD_STATUSES = ['uploading', 'active', 'started', 'queued', 'running'];
 
     public function transition(string $projectId, string $action, User $actor, ?string $reason, Request $request): array|JsonResponse
@@ -64,7 +68,7 @@ final class ProjectLifecycleService
         DB::transaction(function () use ($project, $projectId, $updates, $action, $targetStatus, $actor, $reason, $request): void {
             DB::table('projects')->where('id', $projectId)->update($updates);
 
-            app(\App\Services\AuditLogger::class)->record(
+            app(AuditLogger::class)->record(
                 match ($action) {
                     'archive' => 'project.archived',
                     'delete' => 'project.deleted',

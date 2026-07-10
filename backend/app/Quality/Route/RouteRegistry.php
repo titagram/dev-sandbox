@@ -68,4 +68,3 @@ final class RouteRegistry
         return $normalized === '' ? '/' : $normalized;
     }
 }
-

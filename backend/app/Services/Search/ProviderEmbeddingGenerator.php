@@ -8,9 +8,7 @@ use RuntimeException;
 
 class ProviderEmbeddingGenerator implements EmbeddingGenerator
 {
-    public function __construct(private readonly ProviderHttpClient $httpClient)
-    {
-    }
+    public function __construct(private readonly ProviderHttpClient $httpClient) {}
 
     public function generate(string $input): array
     {

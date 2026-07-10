@@ -25,7 +25,7 @@ final class IntakeNormalizerController extends Controller
             'raw_text' => ['required', 'string', 'min:5', 'max:5000'],
         ]);
 
-        $result = $normalizer->normalize($validated["raw_text"], $project);
+        $result = $normalizer->normalize($validated['raw_text'], $project);
 
         return response()->json([
             'project_id' => $project,

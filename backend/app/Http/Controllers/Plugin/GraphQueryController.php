@@ -16,8 +16,7 @@ class GraphQueryController extends Controller
     public function __construct(
         private readonly ProjectLifecycleService $lifecycle,
         private readonly GraphQueryService $queryService,
-    ) {
-    }
+    ) {}
 
     public function __invoke(Request $request, string $project): JsonResponse
     {

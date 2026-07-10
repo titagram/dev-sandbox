@@ -4,9 +4,7 @@ namespace App\Assistants;
 
 final class ProviderEndpointPolicy
 {
-    public function __construct(private readonly ProviderHostResolver $resolver)
-    {
-    }
+    public function __construct(private readonly ProviderHostResolver $resolver) {}
 
     public function resolve(string $url): ProviderEndpointResolution
     {

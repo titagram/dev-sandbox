@@ -11,9 +11,7 @@ use Illuminate\Validation\Rule;
 
 class SharedMemoryPackController extends Controller
 {
-    public function __construct(private readonly ProjectLifecycleService $lifecycle)
-    {
-    }
+    public function __construct(private readonly ProjectLifecycleService $lifecycle) {}
 
     public function __invoke(Request $request, string $project): JsonResponse
     {

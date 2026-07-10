@@ -55,7 +55,7 @@ final class HadesKanbanTaskIntakeService
             || str_contains($haystack, 'why')
             || str_contains($haystack, 'explain')
             || str_contains($haystack, 'documentation'));
-        $taskType = $isBug ? "bug" : ($isFeature ? "feature" : ($isQuestion ? "question" : "task"));
+        $taskType = $isBug ? 'bug' : ($isFeature ? 'feature' : ($isQuestion ? 'question' : 'task'));
         $questions = [];
         $lines = array_values(array_filter(explode("\n", $rawText), fn (string $line): bool => trim($line) !== ''));
         $firstLine = $lines[0] ?? $rawText;
@@ -73,7 +73,7 @@ final class HadesKanbanTaskIntakeService
             $questions[] = 'Which acceptance criteria prove that the work is complete?';
         }
 
-        if (! $projectContextKnown && ! str_contains($haystack, "project") && ! str_contains($haystack, "repo")) {
+        if (! $projectContextKnown && ! str_contains($haystack, 'project') && ! str_contains($haystack, 'repo')) {
             $questions[] = 'Which project or repository does this apply to?';
         }
 
@@ -90,7 +90,7 @@ final class HadesKanbanTaskIntakeService
             'suggested_title' => $title,
             'suggested_description' => $description !== '' ? $description : $rawText,
             'clarifying_questions' => $questions,
-            "requires_root_cause" => str_contains($haystack, "root cause") || str_contains($haystack, "diagnose") || str_contains($haystack, "diagnosi"),
+            'requires_root_cause' => str_contains($haystack, 'root cause') || str_contains($haystack, 'diagnose') || str_contains($haystack, 'diagnosi'),
             'confidence' => $questions === [] ? 0.70 : 0.40,
             'execution_mode' => 'deterministic_fallback',
         ];

@@ -16,11 +16,10 @@ class AuthenticatePluginToken
     public function __construct(
         private readonly PluginTokenService $tokens,
         private readonly PluginRequestSigner $signer,
-    ) {
-    }
+    ) {}
 
     /**
-     * @param Closure(Request): Response $next
+     * @param  Closure(Request): Response  $next
      */
     public function handle(Request $request, Closure $next, string ...$scopes): Response
     {
@@ -127,7 +126,7 @@ class AuthenticatePluginToken
     }
 
     /**
-     * @param array<int, string> $requiredScopes
+     * @param  array<int, string>  $requiredScopes
      * @return list<string>
      */
     private function missingScopes(string $tokenScopesJson, array $requiredScopes): array
@@ -142,7 +141,7 @@ class AuthenticatePluginToken
     }
 
     /**
-     * @param array<string, mixed> $details
+     * @param  array<string, mixed>  $details
      */
     private function error(string $code, string $message, int $status, array $details = []): JsonResponse
     {

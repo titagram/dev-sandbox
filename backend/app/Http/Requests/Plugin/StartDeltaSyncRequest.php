@@ -2,8 +2,8 @@
 
 namespace App\Http\Requests\Plugin;
 
-use Illuminate\Foundation\Http\FormRequest;
 use App\Support\DevBoardUlid;
+use Illuminate\Foundation\Http\FormRequest;
 
 class StartDeltaSyncRequest extends FormRequest
 {

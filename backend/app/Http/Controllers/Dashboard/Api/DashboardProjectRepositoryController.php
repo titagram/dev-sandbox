@@ -6,6 +6,7 @@ use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Projects\ProjectLifecycleService;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -48,19 +49,19 @@ final class DashboardProjectRepositoryController extends Controller
                 'updated_at' => $now,
             ]);
 
-            app(\App\Services\AuditLogger::class)->record('repository.declared', 'repository', $repositoryId, [
-                    'project_id' => $project,
-                    'repository' => [
-                        'id' => $repositoryId,
-                        'key' => $payload['slug'],
-                        'name' => $payload['name'],
-                        'default_branch' => $payload['default_branch'],
-                        'local_only' => true,
-                        'code_exposure_policy' => 'metadata_only',
-                        'protected_paths' => $payload['protected_paths'],
-                        'excluded_paths' => $payload['excluded_paths'],
-                        'stack_hints' => $payload['stack_hints'],
-                    ],
+            app(AuditLogger::class)->record('repository.declared', 'repository', $repositoryId, [
+                'project_id' => $project,
+                'repository' => [
+                    'id' => $repositoryId,
+                    'key' => $payload['slug'],
+                    'name' => $payload['name'],
+                    'default_branch' => $payload['default_branch'],
+                    'local_only' => true,
+                    'code_exposure_policy' => 'metadata_only',
+                    'protected_paths' => $payload['protected_paths'],
+                    'excluded_paths' => $payload['excluded_paths'],
+                    'stack_hints' => $payload['stack_hints'],
+                ],
             ], [
                 'type' => 'user',
                 'user_id' => $request->user()->id,

@@ -215,21 +215,21 @@ class ArtifactRetentionService
     private function auditIncompleteUploadPurge(object $artifact, int $ttlHours): void
     {
         app(AuditLogger::class)->record('artifact.purged', 'artifact', $artifact->id, [
-                'reason' => 'incomplete_upload_expired',
-                'incomplete_upload_ttl_hours' => $ttlHours,
-                'artifact_type' => $artifact->artifact_type,
-                'previous_status' => $artifact->status,
-                'size_bytes' => (int) $artifact->size_bytes,
+            'reason' => 'incomplete_upload_expired',
+            'incomplete_upload_ttl_hours' => $ttlHours,
+            'artifact_type' => $artifact->artifact_type,
+            'previous_status' => $artifact->status,
+            'size_bytes' => (int) $artifact->size_bytes,
         ]);
     }
 
     private function auditPurge(object $artifact, int $days): void
     {
         app(AuditLogger::class)->record('artifact.purged', 'artifact', $artifact->id, [
-                'retention_days' => $days,
-                'artifact_type' => $artifact->artifact_type,
-                'previous_status' => $artifact->status,
-                'storage_path' => $artifact->storage_path,
+            'retention_days' => $days,
+            'artifact_type' => $artifact->artifact_type,
+            'previous_status' => $artifact->status,
+            'storage_path' => $artifact->storage_path,
         ]);
     }
 }

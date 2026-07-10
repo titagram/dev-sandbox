@@ -38,7 +38,7 @@ class AppServiceProvider extends ServiceProvider
         Gate::define('read-project', [ProjectPolicy::class, 'read']);
         Gate::define('write-project', [ProjectPolicy::class, 'write']);
 
-        Gate::after(function (?User $user, string $ability, bool|null $result) {
+        Gate::after(function (?User $user, string $ability, ?bool $result) {
             if ($result === false && $user !== null && request() instanceof Request) {
                 app(AuditLogger::class)->record(
                     'permission.denied',

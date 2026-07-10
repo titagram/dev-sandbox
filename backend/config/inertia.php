@@ -35,4 +35,3 @@ return [
         'encrypt' => (bool) env('INERTIA_ENCRYPT_HISTORY', false),
     ],
 ];
-

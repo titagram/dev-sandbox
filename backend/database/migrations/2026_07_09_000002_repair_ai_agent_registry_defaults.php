@@ -33,6 +33,7 @@ return new class extends Migration
 
             if ($existingId) {
                 DB::table('ai_agent_profiles')->where('id', $existingId)->update($values);
+
                 continue;
             }
 

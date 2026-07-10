@@ -24,9 +24,7 @@ final class ProviderHttpClient
     /** @var array{times: int, sleep: int}|null */
     private ?array $retry = null;
 
-    public function __construct(private readonly ProviderEndpointPolicy $policy)
-    {
-    }
+    public function __construct(private readonly ProviderEndpointPolicy $policy) {}
 
     public function withToken(string $token): self
     {

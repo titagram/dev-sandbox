@@ -16,8 +16,7 @@ final class DashboardProjectLifecycleController extends Controller
     public function __construct(
         private readonly ProjectLifecycleService $lifecycle,
         private readonly DashboardApiReader $reader,
-    ) {
-    }
+    ) {}
 
     public function archive(Request $request, string $project): JsonResponse
     {

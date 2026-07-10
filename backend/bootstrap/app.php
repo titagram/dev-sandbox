@@ -1,7 +1,7 @@
 <?php
 
-use App\Console\Commands\BootstrapAdminCommand;
 use App\Console\Commands\BackfillAuditChainCommand;
+use App\Console\Commands\BootstrapAdminCommand;
 use App\Console\Commands\Hades\ReindexSearchDocumentsCommand;
 use App\Console\Commands\Quality\CheckGatesCommand;
 use App\Console\Commands\Quality\RouteInventoryCommand;

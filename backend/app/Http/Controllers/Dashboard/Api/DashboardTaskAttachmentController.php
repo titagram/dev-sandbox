@@ -6,6 +6,7 @@ use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Projects\ProjectLifecycleService;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -108,14 +109,14 @@ final class DashboardTaskAttachmentController extends Controller
                 'updated_at' => $now,
             ]);
 
-            app(\App\Services\AuditLogger::class)->record('task_attachment.uploaded', 'task_attachment', $attachmentId, [
-                    'project_id' => (string) $taskRow->project_id,
-                    'task_id' => $task,
-                    'attachment_id' => $attachmentId,
-                    'name' => $originalName,
-                    'mime_type' => $mime,
-                    'size_bytes' => $file->getSize(),
-                    'sha256' => $sha256,
+            app(AuditLogger::class)->record('task_attachment.uploaded', 'task_attachment', $attachmentId, [
+                'project_id' => (string) $taskRow->project_id,
+                'task_id' => $task,
+                'attachment_id' => $attachmentId,
+                'name' => $originalName,
+                'mime_type' => $mime,
+                'size_bytes' => $file->getSize(),
+                'sha256' => $sha256,
             ], [
                 'type' => 'user',
                 'user_id' => $request->user()->id,
@@ -149,14 +150,14 @@ final class DashboardTaskAttachmentController extends Controller
 
         $contents = Storage::disk('local')->get((string) $attachmentRow->storage_path);
 
-        app(\App\Services\AuditLogger::class)->record('task_attachment.downloaded', 'task_attachment', (string) $attachmentRow->id, [
-                'project_id' => (string) $attachmentRow->project_id,
-                'task_id' => (string) $attachmentRow->task_id,
-                'attachment_id' => (string) $attachmentRow->id,
-                'name' => (string) $attachmentRow->original_name,
-                'mime_type' => (string) $attachmentRow->mime_type,
-                'size_bytes' => (int) $attachmentRow->size_bytes,
-                'sha256' => (string) $attachmentRow->sha256,
+        app(AuditLogger::class)->record('task_attachment.downloaded', 'task_attachment', (string) $attachmentRow->id, [
+            'project_id' => (string) $attachmentRow->project_id,
+            'task_id' => (string) $attachmentRow->task_id,
+            'attachment_id' => (string) $attachmentRow->id,
+            'name' => (string) $attachmentRow->original_name,
+            'mime_type' => (string) $attachmentRow->mime_type,
+            'size_bytes' => (int) $attachmentRow->size_bytes,
+            'sha256' => (string) $attachmentRow->sha256,
         ], [
             'type' => 'user',
             'user_id' => $request->user()->id,
@@ -218,14 +219,14 @@ final class DashboardTaskAttachmentController extends Controller
                 ->where('id', $task)
                 ->update(['updated_at' => $now]);
 
-            app(\App\Services\AuditLogger::class)->record('task_attachment.deleted', 'task_attachment', (string) $attachmentRow->id, [
-                    'project_id' => (string) $attachmentRow->project_id,
-                    'task_id' => (string) $attachmentRow->task_id,
-                    'attachment_id' => (string) $attachmentRow->id,
-                    'name' => (string) $attachmentRow->original_name,
-                    'mime_type' => (string) $attachmentRow->mime_type,
-                    'size_bytes' => (int) $attachmentRow->size_bytes,
-                    'sha256' => (string) $attachmentRow->sha256,
+            app(AuditLogger::class)->record('task_attachment.deleted', 'task_attachment', (string) $attachmentRow->id, [
+                'project_id' => (string) $attachmentRow->project_id,
+                'task_id' => (string) $attachmentRow->task_id,
+                'attachment_id' => (string) $attachmentRow->id,
+                'name' => (string) $attachmentRow->original_name,
+                'mime_type' => (string) $attachmentRow->mime_type,
+                'size_bytes' => (int) $attachmentRow->size_bytes,
+                'sha256' => (string) $attachmentRow->sha256,
             ], [
                 'type' => 'user',
                 'user_id' => $request->user()->id,

@@ -79,4 +79,3 @@ final class ReportWriter
         return implode(PHP_EOL, $lines);
     }
 }
-

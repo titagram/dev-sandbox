@@ -6,6 +6,7 @@ use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Projects\ProjectLifecycleService;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -157,13 +158,13 @@ final class DashboardMemoryController extends Controller
                 'updated_at' => now(),
             ]);
 
-            app(\App\Services\AuditLogger::class)->record('project_memory.updated', 'project_memory_entry', $memory, [
-                    'project_id' => $project,
-                    'previous_summary' => (string) $entry->summary,
-                    'summary' => $validated['summary'],
-                    'previous_kind' => (string) $entry->kind,
-                    'kind' => $validated['kind'],
-                    'source' => (string) $entry->source,
+            app(AuditLogger::class)->record('project_memory.updated', 'project_memory_entry', $memory, [
+                'project_id' => $project,
+                'previous_summary' => (string) $entry->summary,
+                'summary' => $validated['summary'],
+                'previous_kind' => (string) $entry->kind,
+                'kind' => $validated['kind'],
+                'source' => (string) $entry->source,
             ], [
                 'type' => 'user',
                 'user_id' => $request->user()->id,
@@ -193,11 +194,11 @@ final class DashboardMemoryController extends Controller
         DB::transaction(function () use ($request, $project, $memory, $entry): void {
             DB::table('project_memory_entries')->where('id', $memory)->delete();
 
-            app(\App\Services\AuditLogger::class)->record('project_memory.deleted', 'project_memory_entry', $memory, [
-                    'project_id' => $project,
-                    'summary' => (string) $entry->summary,
-                    'kind' => (string) $entry->kind,
-                    'source' => (string) $entry->source,
+            app(AuditLogger::class)->record('project_memory.deleted', 'project_memory_entry', $memory, [
+                'project_id' => $project,
+                'summary' => (string) $entry->summary,
+                'kind' => (string) $entry->kind,
+                'source' => (string) $entry->source,
             ], [
                 'type' => 'user',
                 'user_id' => $request->user()->id,

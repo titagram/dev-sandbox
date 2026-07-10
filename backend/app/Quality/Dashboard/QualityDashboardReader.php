@@ -324,7 +324,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param array<string, mixed> $data
+     * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
     private function normalizeQualityReport(array $data): array
@@ -350,7 +350,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param array<string, mixed> $summary
+     * @param  array<string, mixed>  $summary
      * @return array{total: int, passed: int, failed: int, warnings: int, skipped: int}
      */
     private function normalizeSummary(array $summary): array
@@ -365,7 +365,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param array<string, mixed> $finding
+     * @param  array<string, mixed>  $finding
      * @return array<string, mixed>
      */
     private function normalizeFinding(array $finding): array
@@ -384,7 +384,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param array<string, mixed> $finding
+     * @param  array<string, mixed>  $finding
      * @return array{id: string, severity: string, type: string, message: string, route: string, expected: string, actual: string, evidence: array<string, mixed>}
      */
     private function frontendFinding(array $finding): array
@@ -425,7 +425,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param list<string> $statuses
+     * @param  list<string>  $statuses
      */
     private function combinedStatus(array $statuses): string
     {
@@ -441,7 +441,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param list<array<string, mixed>> $reports
+     * @param  list<array<string, mixed>>  $reports
      * @return array{status: string, generated_at: string}
      */
     private function latestSecurityStatus(array $reports): array
@@ -466,7 +466,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param list<array<string, mixed>> $reports
+     * @param  list<array<string, mixed>>  $reports
      * @return list<array{label: string, reason: string}>
      */
     private function staleOrMissing(array $reports): array
@@ -504,7 +504,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param list<array<string, mixed>> $reports
+     * @param  list<array<string, mixed>>  $reports
      * @return array{passed: int, failed: int, warnings: int, skipped: int}
      */
     private function aggregateCounters(array $reports): array
@@ -523,7 +523,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param list<array<string, mixed>> $reports
+     * @param  list<array<string, mixed>>  $reports
      */
     private function latestReportTimestamp(array $reports): string
     {
@@ -537,7 +537,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param list<mixed> $methods
+     * @param  list<mixed>  $methods
      */
     private function primaryHttpMethod(array $methods): string
     {
@@ -553,7 +553,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param array<string, mixed> $route
+     * @param  array<string, mixed>  $route
      */
     private function routeId(array $route, string $method, string $uri): string
     {
@@ -569,7 +569,7 @@ final class QualityDashboardReader
     }
 
     /**
-     * @param array<string, mixed> $result
+     * @param  array<string, mixed>  $result
      */
     private function smokeRowId(array $result): string
     {

@@ -11,12 +11,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AuthenticateHadesAgentToken
 {
-    public function __construct(private readonly HadesTokenService $tokens)
-    {
-    }
+    public function __construct(private readonly HadesTokenService $tokens) {}
 
     /**
-     * @param Closure(Request): Response $next
+     * @param  Closure(Request): Response  $next
      */
     public function handle(Request $request, Closure $next): Response
     {

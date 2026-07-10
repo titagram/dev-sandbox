@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -296,7 +297,7 @@ class DataPrivacyController extends Controller
         $auth = $request->attributes->get('hades_auth') ?? [];
         $agent = is_array($auth) ? ($auth['agent'] ?? null) : null;
 
-        app(\App\Services\AuditLogger::class)->record($action, 'hades_workspace_binding', $bindingId, [
+        app(AuditLogger::class)->record($action, 'hades_workspace_binding', $bindingId, [
             'hades_agent_id' => $agent?->id,
         ] + $payload, [
             'type' => 'hades_agent',

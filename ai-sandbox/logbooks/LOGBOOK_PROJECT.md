@@ -1,5 +1,111 @@
 # Project Logbook
 
+<!-- Task 5.1 intended write paths (Pint and PHPStan CI enforcement) -->
+<!--
+backend/composer.json
+.github/workflows/ci.yml
+backend/app/Assistants/Agents/TaskClarifierAgent.php
+backend/app/Assistants/AiAgentRegistry.php
+backend/app/Assistants/BacklogTriageService.php
+backend/app/Assistants/BehaviorWikiDraftService.php
+backend/app/Assistants/ProviderEndpointPolicy.php
+backend/app/Assistants/ProviderEndpointResolution.php
+backend/app/Assistants/ProviderHostResolver.php
+backend/app/Assistants/ProviderHttpClient.php
+backend/app/Assistants/SystemProviderHostResolver.php
+backend/app/Assistants/TaskClarifierService.php
+backend/app/Assistants/Tools/QueryProjectGraphTool.php
+backend/app/Console/Commands/Quality/CheckGatesCommand.php
+backend/app/Console/Commands/Quality/RouteInventoryCommand.php
+backend/app/Console/Commands/Quality/RouteSmokeCommand.php
+backend/app/Http/Controllers/Dashboard/Api/DashboardAdminController.php
+backend/app/Http/Controllers/Dashboard/Api/DashboardAiAgentController.php
+backend/app/Http/Controllers/Dashboard/Api/DashboardMemoryController.php
+backend/app/Http/Controllers/Dashboard/Api/DashboardProjectLifecycleController.php
+backend/app/Http/Controllers/Dashboard/Api/DashboardProjectRepositoryController.php
+backend/app/Http/Controllers/Dashboard/Api/DashboardTaskAttachmentController.php
+backend/app/Http/Controllers/Dashboard/Api/IntakeNormalizerController.php
+backend/app/Http/Controllers/Dashboard/ArtifactDownloadController.php
+backend/app/Http/Controllers/Dashboard/KanbanController.php
+backend/app/Http/Controllers/Dashboard/PluginTokenController.php
+backend/app/Http/Controllers/Dashboard/RunShowController.php
+backend/app/Http/Controllers/Hades/DataPrivacyController.php
+backend/app/Http/Controllers/Plugin/Concerns/HandlesRunResponses.php
+backend/app/Http/Controllers/Plugin/GraphQueryController.php
+backend/app/Http/Controllers/Plugin/ListRepositoriesController.php
+backend/app/Http/Controllers/Plugin/RegisterLocalWorkspaceController.php
+backend/app/Http/Controllers/Plugin/RepositoryInstructionsController.php
+backend/app/Http/Controllers/Plugin/SharedMemoryPackController.php
+backend/app/Http/Middleware/AuthenticateHadesAgentToken.php
+backend/app/Http/Middleware/AuthenticatePluginToken.php
+backend/app/Http/Requests/Plugin/StartDeltaSyncRequest.php
+backend/app/Http/Requests/Plugin/StartGenesisImportRequest.php
+backend/app/Projects/ProjectLifecycleService.php
+backend/app/Providers/AppServiceProvider.php
+backend/app/Quality/Actor/ActorAuthenticatorInterface.php
+backend/app/Quality/Actor/ActorRegistry.php
+backend/app/Quality/Dashboard/QualityDashboardReader.php
+backend/app/Quality/Gate/QualityGateEvaluator.php
+backend/app/Quality/Report/Finding.php
+backend/app/Quality/Report/QualityReport.php
+backend/app/Quality/Report/ReportWriter.php
+backend/app/Quality/Route/RouteClassification.php
+backend/app/Quality/Route/RouteInventoryBuilder.php
+backend/app/Quality/Route/RouteRegistry.php
+backend/app/Quality/Route/RouteSmokeRunner.php
+backend/app/Rules/ProviderEndpointRule.php
+backend/app/Services/ArtifactRetentionService.php
+backend/app/Services/ArtifactStorageService.php
+backend/app/Services/AuditChainVerifier.php
+backend/app/Services/AuditExportService.php
+backend/app/Services/Backup/BackupBundleService.php
+backend/app/Services/Backup/BackupManifestService.php
+backend/app/Services/Graph/GraphQueryService.php
+backend/app/Services/Hades/HadesKanbanTaskIntakeService.php
+backend/app/Services/Hades/IntakeNormalizerService.php
+backend/app/Services/Neo4j/LaudisNeo4jClient.php
+backend/app/Services/PluginRequestSigner.php
+backend/app/Services/Search/EmbeddingIndexService.php
+backend/app/Services/Search/ProviderEmbeddingGenerator.php
+backend/tests/Feature/ArtifactRetentionTest.php
+backend/tests/Feature/Assistants/BehaviorWikiDraftServiceTest.php
+backend/tests/Feature/AuditExportTest.php
+backend/tests/Feature/Dashboard/AgentWorkDashboardApiTest.php
+backend/tests/Feature/Dashboard/AiAgentRegistryDashboardTest.php
+backend/tests/Feature/Dashboard/BacklogTriageDashboardTest.php
+backend/tests/Feature/Dashboard/BackupDashboardApiTest.php
+backend/tests/Feature/Dashboard/IntakeNormalizerTest.php
+backend/tests/Feature/Dashboard/MultiprojectDashboardApiTest.php
+backend/tests/Feature/Dashboard/ProjectCrudDashboardApiTest.php
+backend/tests/Feature/Dashboard/ProjectKickstartDashboardApiTest.php
+backend/tests/Feature/Dashboard/ProjectLifecycleDashboardApiTest.php
+backend/tests/Feature/Dashboard/TaskAttachmentDashboardApiTest.php
+backend/tests/Feature/Dashboard/TaskClarifierDashboardTest.php
+backend/tests/Feature/DashboardSliceTest.php
+backend/tests/Feature/DomainModelTest.php
+backend/tests/Feature/Hades/HadesM3SharedMemoryTest.php
+backend/tests/Feature/Hades/HadesM4AgentJobsTest.php
+backend/tests/Feature/Plugin/ArtifactIdentityValidationTest.php
+backend/tests/Feature/Plugin/ArtifactUploadLimitsTest.php
+backend/tests/Feature/Plugin/ProjectLifecyclePluginGuardTest.php
+backend/tests/Feature/PluginAuthTest.php
+backend/tests/Feature/PluginGitWorkspaceStateTest.php
+backend/tests/Feature/PluginRepositoryApiTest.php
+backend/tests/Feature/Postgres/AuditChainConstraintsTest.php
+backend/tests/Feature/Postgres/AuditLoggerConcurrencyTest.php
+backend/tests/Feature/Postgres/VectorMemorySearchAcceptanceTest.php
+backend/tests/Feature/Quality/CheckGatesCommandTest.php
+backend/tests/Feature/Quality/QualityDashboardApiTest.php
+backend/tests/Feature/Quality/ReportWriterTest.php
+backend/tests/Feature/Quality/RouteInventoryCommandTest.php
+backend/tests/Feature/Quality/RouteSmokeCommandTest.php
+backend/tests/Feature/Search/SearchDocumentEmbeddingJobTest.php
+backend/tests/Feature/SystemMaintenanceTest.php
+backend/tests/Unit/ProviderEndpointPolicyTest.php
+backend/tests/Unit/ProviderHttpClientTest.php
+ai-sandbox/logbooks/LOGBOOK_PROJECT.md
+-->
+
 <!-- Task 4.2 intended write paths (vector candidates in memory search) -->
 <!--
 backend/app/Http/Controllers/Hades/MemorySearchController.php
@@ -9,6 +115,11 @@ backend/tests/Feature/Postgres/VectorMemorySearchAcceptanceTest.php
 docs/ai-devboard/13_MEMORY_GRAPH_RECONCILIATION.md
 ai-sandbox/logbooks/LOGBOOK_PROJECT.md
 -->
+
+<!-- Task 6.1 intended write paths (full acceptance) -->
+<!--
+ai-sandbox/logbooks/LOGBOOK_PROJECT.md
+--> 
 
 <!-- Task 4.1 intended write paths (embedding generation and indexing lifecycle) -->
 <!--
@@ -80,6 +191,16 @@ backend/tests/Feature/Quality/AuditWriteBoundaryTest.php
 backend/tests/Feature/DomainSchemaTest.php
 ai-sandbox/logbooks/LOGBOOK_PROJECT.md
 -->
+
+## 2026-07-10 - Remediation Task 5.1
+
+- Request: execute Task 5.1 from `docs/superpowers/plans/2026-07-10-devboard-operational-hardening-remediation.md`.
+- Intended write paths: `backend/composer.json`, `.github/workflows/ci.yml`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- RED verification: `N/A` (enforcement-gate task; no production runtime behavior was changed).
+- Work performed: added `quality:format` as `./vendor/bin/pint --test` and moved it before PHPStan/tests in `quality:all`; split CI backend quality execution into explicit commands for `composer validate`, Composer audit, Pint, PHPStan, then Laravel tests.
+- GREEN verification: `docker exec devboard-app-1 sh -lc 'composer validate --strict'` -> `./composer.json is valid`; `docker exec devboard-app-1 sh -lc './vendor/bin/pint --test'` -> PASS (345 files); `docker exec devboard-app-1 sh -lc './vendor/bin/phpstan analyse --configuration=phpstan.neon.dist --no-progress'` -> `[OK] No errors`; `docker exec devboard-app-1 sh -lc 'APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= composer test'` -> `629 passed`, `5 skipped`, `4664 assertions`.
+- Files changed: `backend/composer.json`, `.github/workflows/ci.yml`, `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`.
+- Residual risks: none.
 
 ## 2026-07-10 - Remediation Task 3.2
 

@@ -203,7 +203,7 @@ class PluginTokenController extends Controller
                 'updated_at' => $now,
             ]);
 
-            app(\App\Services\AuditLogger::class)->record('token.rotated', 'api_token', $token, [
+            app(AuditLogger::class)->record('token.rotated', 'api_token', $token, [
                 'token_prefix' => $tokenRow->token_prefix,
                 'device_id' => $tokenRow->device_id,
                 'scopes' => json_decode($tokenRow->scopes, true, 512, JSON_THROW_ON_ERROR),
@@ -243,7 +243,7 @@ class PluginTokenController extends Controller
                     'updated_at' => $now,
                 ]);
 
-            app(\App\Services\AuditLogger::class)->record('device.revoked', 'device', $device, [
+            app(AuditLogger::class)->record('device.revoked', 'device', $device, [
                 'device_name' => $deviceRow->name,
                 'previous_status' => $deviceRow->status,
                 'bound_token_count' => DB::table('api_tokens')->where('device_id', $device)->count(),

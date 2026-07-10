@@ -12,7 +12,6 @@ use Illuminate\Support\Str;
 
 final class DashboardAdminController extends Controller
 {
-
     public function tokens(Request $request, DashboardApiReader $reader): JsonResponse
     {
         Gate::authorize('manage-plugin-tokens');
@@ -137,4 +136,3 @@ final class DashboardAdminController extends Controller
         return response()->json(null, 204);
     }
 }
-

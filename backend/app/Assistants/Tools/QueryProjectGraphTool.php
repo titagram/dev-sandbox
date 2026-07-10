@@ -12,9 +12,7 @@ use Stringable;
 
 final class QueryProjectGraphTool implements Tool
 {
-    public function __construct(private readonly ?GraphQueryService $queryService = null)
-    {
-    }
+    public function __construct(private readonly ?GraphQueryService $queryService = null) {}
 
     public function name(): string
     {
