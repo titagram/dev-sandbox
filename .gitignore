@@ -19,3 +19,4 @@ ai-sandbox/docs/discovery.md
 /backend/var/quality/tmp/
 /backend/test-results/
 /backend/playwright-report/
+.env
