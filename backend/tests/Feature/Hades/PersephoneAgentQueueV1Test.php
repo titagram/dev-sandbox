@@ -8,12 +8,16 @@ use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 
-it('keeps the v1 queue capability absent until the complete contract is installed', function () {
+it('advertises the complete v1 queue contract to authenticated agents', function () {
     $agent = persephoneQueueAgent();
 
     $this->getJson('/api/hades/v1/capabilities', persephoneQueueHeaders($agent['agent_token']))
         ->assertOk()
-        ->assertJsonMissingPath('persephone_agent_queue_v1');
+        ->assertJsonPath('persephone_agent_queue_v1', true)
+        ->assertJsonPath('routes.persephone_inbox', '/api/hades/v1/persephone/inbox')
+        ->assertJsonPath('routes.persephone_events', '/api/hades/v1/persephone/events')
+        ->assertJsonPath('routes.persephone_messages', '/api/hades/v1/persephone/messages')
+        ->assertJsonPath('capabilities.read_files', true);
 });
 
 it('rejects unauthenticated queue and capability requests', function () {

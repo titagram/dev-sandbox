@@ -19,6 +19,7 @@ class CapabilitiesController extends Controller
 
         return response()->json([
             'protocol_version' => 'v1',
+            'persephone_agent_queue_v1' => true,
             'project_id' => $agent->project_id,
             'agent_id' => $agent->external_agent_id,
             'backend_agent_id' => $agent->id,
