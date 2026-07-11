@@ -4,6 +4,43 @@
 
 Record sandbox framework, tooling, graph, wiki seed, and automation changes here.
 
+### 2026-07-11 - DevBoard Project Orientation
+
+**Request**: Inspect the existing codebase before receiving a follow-up implementation request.
+**Context read**:
+- `AGENTS.md`
+- `ai-sandbox/INIT.md`
+- `ai-sandbox/instructions/INDEX.md`
+- `ai-sandbox/instructions/workflows/DISCOVERY.md`
+- `ai-sandbox/instructions/policies/FILE_BOUNDARIES.md`
+- `ai-sandbox/instructions/policies/DOCKER.md`
+- `ai-sandbox/instructions/policies/LOGBOOKS.md`
+- `ai-sandbox/config/project.yaml`
+- `README.md`
+- `docs/ai-devboard/*`
+
+**Work performed**:
+- Detected the local environment and bootstrapped the pinned Graphify dependency from the vendored wheelhouse.
+- Refreshed the allowed discovery artifacts under `ai-sandbox/docs/`.
+- Read the backend, plugin, analyzer, Docker, route, migration, frontend, and test layout to establish project orientation.
+
+**Verification**:
+- `python3 ai-sandbox/scripts/detect_environment.py` -> Linux/x86_64 host, Python 3.13.3, Docker linux/amd64.
+- `python3 ai-sandbox/scripts/bootstrap_dependencies.py` -> passed; Graphify 0.8.19 available, no vendored Docker archives for linux-amd64.
+- `python3 ai-sandbox/scripts/discover_project.py` -> passed; discovery artifacts written.
+- Project code remained unchanged during onboarding.
+
+**Files changed**:
+- `ai-sandbox/config/environment.yaml` - refreshed environment snapshot.
+- `ai-sandbox/config/dependencies.lock.yaml` - refreshed dependency lock.
+- `ai-sandbox/docs/discovery.json` - refreshed discovery output.
+- `ai-sandbox/docs/discovery.md` - refreshed discovery output.
+- `ai-sandbox/logbooks/LOGBOOK_SANDBOX_IA.md` - this entry.
+
+**Residual risks**:
+- Docker images are pinned in Compose but not vendored for the detected platform; starting the stack may require image pulls.
+- The workspace is a monorepo, so the generic discovery stack summary is less informative than the configured project stack and module-level inspection.
+
 ### 2026-07-10 05:38 - Dependency Bootstrap Verification
 
 **Request**: Initialize the required sandbox workflow before a DevBoard seed operation.
