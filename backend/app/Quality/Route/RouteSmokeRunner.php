@@ -15,8 +15,7 @@ final readonly class RouteSmokeRunner
         private RouteRegistry $registry,
         private ActorRegistry $actors,
         private Kernel $kernel,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array{
@@ -129,8 +128,8 @@ final readonly class RouteSmokeRunner
     }
 
     /**
-     * @param list<string> $parameters
-     * @param array<string, mixed>|null $registryEntry
+     * @param  list<string>  $parameters
+     * @param  array<string, mixed>|null  $registryEntry
      */
     private function skipReason(
         string $classification,
@@ -167,7 +166,7 @@ final readonly class RouteSmokeRunner
     }
 
     /**
-     * @param array<string, mixed>|null $registryEntry
+     * @param  array<string, mixed>|null  $registryEntry
      */
     private function hasParameterProvider(?array $registryEntry): bool
     {
@@ -179,7 +178,7 @@ final readonly class RouteSmokeRunner
     }
 
     /**
-     * @param array<string, mixed>|null $registryEntry
+     * @param  array<string, mixed>|null  $registryEntry
      */
     private function expectedStatus(?array $registryEntry, string $actor): int
     {
@@ -189,7 +188,7 @@ final readonly class RouteSmokeRunner
     }
 
     /**
-     * @param array<string, mixed> $evidence
+     * @param  array<string, mixed>  $evidence
      * @return array<string, mixed>
      */
     private function finding(
@@ -272,4 +271,3 @@ final readonly class RouteSmokeRunner
         ];
     }
 }
-

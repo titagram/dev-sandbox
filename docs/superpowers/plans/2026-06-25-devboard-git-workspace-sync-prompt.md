@@ -66,7 +66,9 @@ Verifiche minime:
 - cd /home/ubuntu/emergent_devboard_frontend/frontend && git diff --check
 
 Se deployi sul temporaneo pubblico Traefik, usa sempre:
-DEVBOARD_APP_KEY='base64:6qaz/zOO/vNFxRaNbToyUV9xjlXTM5WMGOCp01kIudQ=' docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml up -d --build app worker frontend
+DEVBOARD_APP_KEY='base64:<redacted-rotated-app-key>' docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml up -d --build app worker frontend
+
+<!-- credential rotated 2026-07-10 per remediation Task 0.2; value redacted -->
 
 Alla fine aggiorna ai-sandbox/logbooks/LOGBOOK_PROJECT.md con lavoro svolto, verifiche, eventuale smoke live e rischi residui.
 

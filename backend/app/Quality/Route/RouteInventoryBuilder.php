@@ -10,8 +10,7 @@ final readonly class RouteInventoryBuilder
     public function __construct(
         private Router $router,
         private RouteRegistry $registry,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array{
@@ -98,7 +97,7 @@ final readonly class RouteInventoryBuilder
     }
 
     /**
-     * @param array<string, mixed>|null $registryEntry
+     * @param  array<string, mixed>|null  $registryEntry
      */
     private function hasParameterProvider(?array $registryEntry): bool
     {
@@ -137,4 +136,3 @@ final readonly class RouteInventoryBuilder
         };
     }
 }
-

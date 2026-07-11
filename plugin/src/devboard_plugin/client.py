@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import hmac
+import json
+import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
+import ipaddress
 
 import httpx
+from httpx import ConnectError, TimeoutException
 
 
 class DevBoardApiError(RuntimeError):
@@ -15,35 +20,78 @@ class DevBoardApiError(RuntimeError):
         self.details = details or {}
 
 
+def normalize_server_url(server_url: str) -> str:
+    try:
+        parsed = urlsplit(server_url.strip())
+        port = parsed.port
+    except (AttributeError, ValueError):
+        raise DevBoardApiError(code="invalid_server_url", message="server_url must be a valid HTTP(S) URL.") from None
+
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname
+    if scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+        raise DevBoardApiError(code="invalid_server_url", message="server_url must be an HTTP(S) origin without credentials.")
+
+    host = host.lower().rstrip(".")
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = host == "localhost" or host.endswith(".localhost")
+    if scheme != "https" and not is_loopback:
+        raise DevBoardApiError(code="insecure_server_url", message="HTTPS is required for non-loopback server hosts.")
+
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    return f"{scheme}://{host}{f':{port}' if port is not None and not default_port else ''}"
+
+
 @dataclass
 class DevBoardClient:
     base_url: str
     token: str
     device_id: str | None = None
+    device_secret: str | None = None
     plugin_version: str = "0.1.0"
     transport: httpx.BaseTransport | None = None
+    max_retries: int = 3
+
+    def __post_init__(self) -> None:
+        self.base_url = normalize_server_url(self.base_url)
+        self._http_client: httpx.Client | None = None
+
+    def _get_client(self) -> httpx.Client:
+        if self._http_client is None:
+            self._http_client = httpx.Client(
+                base_url=self.base_url.rstrip("/"),
+                transport=self.transport,
+                timeout=30.0,
+            )
+        return self._http_client
+
+    def _close_client(self) -> None:
+        if self._http_client is not None:
+            self._http_client.close()
+            self._http_client = None
 
     def get(self, path: str) -> dict[str, Any]:
         return self.request("GET", path)
 
     def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        body = {"protocol_version": "v1"}
+        body: dict[str, Any] = {"protocol_version": "v1"}
         if payload:
             body.update(payload)
 
-        return self.request("POST", path, json=body)
+        return self.request("POST", path, body=body)
 
-    def request(self, method: str, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
-        with httpx.Client(
-            base_url=self.base_url.rstrip("/"),
-            headers=self.headers(),
-            transport=self.transport,
-            timeout=30.0,
-        ) as client:
-            response = client.request(method, path, json=json)
+    def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        body_bytes = b""
+        if body is not None:
+            body_bytes = json.dumps(body, separators=(",", ":")).encode()
 
-        if response.is_error:
-            self._raise_api_error(response)
+        response = self._send_with_retry(
+            method, path, self.headers(method, path, body_bytes), body_bytes if body_bytes else None
+        )
 
         if response.content:
             return response.json()
@@ -51,22 +99,48 @@ class DevBoardClient:
         return {}
 
     def request_bytes(self, method: str, path: str, content: bytes, headers: dict[str, str]) -> dict[str, Any]:
-        merged_headers = self.headers()
+        merged_headers = self.headers(method, path, content)
         merged_headers.update(headers)
-        with httpx.Client(
-            base_url=self.base_url.rstrip("/"),
-            headers=merged_headers,
-            transport=self.transport,
-            timeout=30.0,
-        ) as client:
-            response = client.request(method, path, content=content)
 
-        if response.is_error:
-            self._raise_api_error(response)
+        response = self._send_with_retry(method, path, merged_headers, content if content else None)
 
         return response.json() if response.content else {}
 
-    def headers(self) -> dict[str, str]:
+    def _send_with_retry(
+        self, method: str, path: str, headers: dict[str, str], content: bytes | None
+    ) -> httpx.Response:
+        last_exception: Exception | None = None
+
+        attempts = self.max_retries if method.upper() in {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"} else 1
+        for attempt in range(attempts):
+            try:
+                response = self._get_client().request(method, path, headers=headers, content=content)
+
+                if response.is_error and response.status_code >= 500:
+                    if attempt < attempts - 1:
+                        time.sleep(2 ** attempt)
+                        self._close_client()
+                        continue
+                    self._raise_api_error(response)
+
+                if response.is_error:
+                    self._raise_api_error(response)
+
+                return response
+            except (ConnectError, TimeoutException) as e:
+                last_exception = e
+                if attempt < attempts - 1:
+                    time.sleep(2 ** attempt)
+                    self._close_client()
+                    continue
+                raise DevBoardApiError(code="connect_error", message=str(e)) from None
+
+        if isinstance(last_exception, httpx.HTTPStatusError) and last_exception.response is not None:
+            self._raise_api_error(last_exception.response)
+
+        raise DevBoardApiError(code="request_failed", message="Request failed after all retries") from last_exception
+
+    def headers(self, method: str = "GET", path: str = "/", body_bytes: bytes = b"") -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/json",
@@ -78,13 +152,30 @@ class DevBoardClient:
         if self.device_id:
             headers["X-DevBoard-Device-Id"] = self.device_id
 
+            if self.device_secret:
+                timestamp = int(time.time())
+                signing_key = hashlib.sha256(self.device_secret.encode()).hexdigest()
+                body_hash = hashlib.sha256(body_bytes).hexdigest()
+                canonical = f"{method}\n{path}\n{timestamp}\n{body_hash}"
+                signature = "v1=" + hmac.new(signing_key.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+
+                headers["X-DevBoard-Timestamp"] = str(timestamp)
+                headers["X-DevBoard-Content-SHA256"] = body_hash
+                headers["X-DevBoard-Signature"] = signature
+
         return headers
 
     def auth_check(self) -> dict[str, Any]:
         return self.post("/api/plugin/v1/auth/check")
 
     def register_device(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.post("/api/plugin/v1/devices/register", payload)
+        response = self.post("/api/plugin/v1/devices/register", payload)
+
+        device_secret = response.get("device_secret")
+        if device_secret:
+            self.device_secret = device_secret
+
+        return response
 
     def list_projects(self) -> dict[str, Any]:
         return self.get("/api/plugin/v1/projects")
@@ -240,6 +331,30 @@ class DevBoardClient:
             payload["allow_blocked_security_findings"] = True
 
         return self.post(f"/api/plugin/v1/delta-syncs/{delta_id}/finalize", payload)
+
+    def query_graph(
+        self,
+        project_id: str,
+        type: str,
+        symbol_id: str | None = None,
+        from_symbol_id: str | None = None,
+        to_symbol_id: str | None = None,
+        limit: int = 50,
+        max_depth: int = 5,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"type": type}
+        if symbol_id is not None:
+            payload["symbol_id"] = symbol_id
+        if from_symbol_id is not None:
+            payload["from_symbol_id"] = from_symbol_id
+        if to_symbol_id is not None:
+            payload["to_symbol_id"] = to_symbol_id
+        if type in ("callers", "callees"):
+            payload["limit"] = limit
+        if type == "path":
+            payload["max_depth"] = max_depth
+
+        return self.post(f"/api/plugin/v1/projects/{project_id}/graph/query", payload)
 
     def _path_with_query(self, path: str, query: dict[str, str | None]) -> str:
         params = {key: value for key, value in query.items() if value is not None}

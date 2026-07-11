@@ -1,5 +1,8 @@
 <?php
 
+use App\Assistants\AiAgentRegistry;
+use App\Assistants\ProviderEndpointPolicy;
+use App\Assistants\ProviderHostResolver;
 use App\Models\User;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -13,6 +16,14 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     $this->withoutVite();
     $this->seed(DevBoardSeeder::class);
+    $this->app->instance(
+        ProviderHostResolver::class,
+        new DashboardFakeProviderHostResolver(
+            ['8.8.8.8'],
+            ['opencode.example.test' => ['8.8.8.8']],
+        ),
+    );
+    $this->app->forgetInstance(ProviderEndpointPolicy::class);
 });
 
 it('shows the controlled AI agent registry page to admins only', function () {
@@ -312,6 +323,360 @@ it('lets an admin assign a model profile to a controlled agent', function () {
             ->exists())->toBeTrue();
 });
 
+it('returns agent options for project with scoped visibility and legacy aliases', function () {
+    $registry = app(AiAgentRegistry::class);
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $ownerId = (int) DB::table('users')->value('id');
+    $projectB = (string) Str::ulid();
+    $modelProfileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('projects')->insert([
+        'id' => $projectB,
+        'name' => 'Other Visibility Project',
+        'slug' => 'other-visibility-project',
+        'description' => null,
+        'status' => 'active',
+        'default_code_exposure_policy' => 'full_code_artifacts',
+        'created_by_user_id' => $ownerId,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('ai_agent_profiles')->insert([
+        [
+            'id' => (string) Str::ulid(),
+            'agent_key' => 'global_visibility_reviewer',
+            'display_name' => 'Global Visibility Reviewer',
+            'description' => 'A global custom profile.',
+            'agent_type' => 'specialist',
+            'delegation_mode' => 'controlled_registry',
+            'parent_agent_key' => null,
+            'default_model_profile_id' => $modelProfileId,
+            'requires_human_approval' => true,
+            'enabled' => true,
+            'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+            'visibility_scope' => 'global',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+        [
+            'id' => (string) Str::ulid(),
+            'agent_key' => 'project_visibility_reviewer',
+            'display_name' => 'Project Visibility Reviewer',
+            'description' => 'A project-scoped custom profile.',
+            'agent_type' => 'specialist',
+            'delegation_mode' => 'controlled_registry',
+            'parent_agent_key' => null,
+            'default_model_profile_id' => $modelProfileId,
+            'requires_human_approval' => true,
+            'enabled' => true,
+            'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+            'visibility_scope' => 'project',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+    ]);
+
+    DB::table('ai_agent_project_visibility')->insert([
+        'id' => (string) Str::ulid(),
+        'ai_agent_profile_id' => DB::table('ai_agent_profiles')->where('agent_key', 'project_visibility_reviewer')->value('id'),
+        'project_id' => $projectA,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $projectAOptions = collect($registry->agentOptionsForProject($projectA));
+    $projectAKeys = $projectAOptions->pluck('agent_key')->all();
+
+    expect($projectAKeys)->toContain('socrates')
+        ->and($projectAKeys)->toContain('platon')
+        ->and($projectAKeys)->toContain('aristoteles')
+        ->and($projectAKeys)->toContain('wiki_query')
+        ->and($projectAKeys)->toContain('watchman')
+        ->and($projectAKeys)->toContain('intake_normalizer')
+        ->and($projectAKeys)->toContain('global_visibility_reviewer')
+        ->and($projectAKeys)->toContain('project_visibility_reviewer')
+        ->and($projectAKeys)->toContain('local_agent')
+        ->and($projectAKeys)->not->toContain('socrate_supervisor')
+        ->and($projectAKeys)->not->toContain('task_clarifier')
+        ->and($projectAKeys)->not->toContain('backlog_triage');
+
+    expect($projectAOptions->firstWhere('agent_key', 'socrates')['label'])->toBe('Socrates')
+        ->and($projectAOptions->firstWhere('agent_key', 'platon')['label'])->toBe('Platon')
+        ->and($projectAOptions->firstWhere('agent_key', 'aristoteles')['label'])->toBe('Aristoteles')
+        ->and($projectAOptions->firstWhere('agent_key', 'global_visibility_reviewer')['label'])->toBe('Global Visibility Reviewer')
+        ->and($projectAOptions->firstWhere('agent_key', 'project_visibility_reviewer')['label'])->toBe('Project Visibility Reviewer')
+        ->and($projectAOptions->firstWhere('agent_key', 'local_agent')['runtime'])->toBe('local_agent');
+
+    $projectBOptions = collect($registry->agentOptionsForProject($projectB));
+    $projectBKeys = $projectBOptions->pluck('agent_key')->all();
+
+    expect($projectBKeys)->toContain('socrates')
+        ->and($projectBKeys)->toContain('global_visibility_reviewer')
+        ->and($projectBKeys)->toContain('local_agent')
+        ->and($projectBKeys)->not->toContain('project_visibility_reviewer');
+});
+
+it('returns agent visibility for a project', function () {
+    $registry = app(AiAgentRegistry::class);
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = (string) Str::ulid();
+    $ownerId = (int) DB::table('users')->value('id');
+    $modelProfileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('projects')->insert([
+        'id' => $projectB,
+        'name' => 'Other Visibility Project 2',
+        'slug' => 'other-visibility-project-2',
+        'description' => null,
+        'status' => 'active',
+        'default_code_exposure_policy' => 'full_code_artifacts',
+        'created_by_user_id' => $ownerId,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('ai_agent_profiles')->insert([
+        [
+            'id' => (string) Str::ulid(),
+            'agent_key' => 'global_visibility_checker',
+            'display_name' => 'Global Visibility Checker',
+            'description' => 'A global custom profile.',
+            'agent_type' => 'specialist',
+            'delegation_mode' => 'controlled_registry',
+            'parent_agent_key' => null,
+            'default_model_profile_id' => $modelProfileId,
+            'requires_human_approval' => true,
+            'enabled' => true,
+            'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+            'visibility_scope' => 'global',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+        [
+            'id' => (string) Str::ulid(),
+            'agent_key' => 'project_visibility_checker',
+            'display_name' => 'Project Visibility Checker',
+            'description' => 'A project-scoped custom profile.',
+            'agent_type' => 'specialist',
+            'delegation_mode' => 'controlled_registry',
+            'parent_agent_key' => null,
+            'default_model_profile_id' => $modelProfileId,
+            'requires_human_approval' => true,
+            'enabled' => true,
+            'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+            'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+            'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+            'visibility_scope' => 'project',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ],
+    ]);
+
+    DB::table('ai_agent_project_visibility')->insert([
+        'id' => (string) Str::ulid(),
+        'ai_agent_profile_id' => DB::table('ai_agent_profiles')->where('agent_key', 'project_visibility_checker')->value('id'),
+        'project_id' => $projectA,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    expect($registry->agentVisibleForProject('global_visibility_checker', $projectA))->toBeTrue()
+        ->and($registry->agentVisibleForProject('project_visibility_checker', $projectA))->toBeTrue()
+        ->and($registry->agentVisibleForProject('project_visibility_checker', $projectB))->toBeFalse()
+        ->and($registry->agentVisibleForProject('socrates', $projectA))->toBeTrue()
+        ->and($registry->agentVisibleForProject('local_agent', $projectA))->toBeTrue();
+});
+
+it('lets an admin create replace and delete a custom agent profile', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    $created = $this->actingAs($admin)->postJson('/api/dashboard/admin/ai-agent-profiles', [
+        'agent_key' => 'security_reviewer',
+        'display_name' => 'Security Reviewer',
+        'description' => 'Reviews project memory for security-sensitive decisions.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => ['search_project_memory'],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+    ])->assertCreated()
+        ->assertJsonPath('agent_profile.agent_key', 'security_reviewer')
+        ->assertJsonPath('agent_profile.allowed_tools.0', 'search_project_memory')
+        ->assertJsonPath('agent_profile.output_schema.type', 'object')
+        ->json('agent_profile');
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-agent-profiles/security_reviewer', [
+        'display_name' => 'Security Reviewer',
+        'description' => 'Updated description.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => false,
+        'enabled' => true,
+        'allowed_tools' => ['search_project_memory', 'query_project_graph'],
+        'output_schema' => ['type' => 'object', 'required' => ['answer']],
+        'trigger_events' => ['manual_chat', 'scheduled_scan'],
+    ])->assertOk()
+        ->assertJsonPath('agent_profile.description', 'Updated description.')
+        ->assertJsonPath('agent_profile.requires_human_approval', false)
+        ->assertJsonPath('agent_profile.allowed_tools.1', 'query_project_graph')
+        ->assertJsonPath('agent_profile.output_schema.required.0', 'answer');
+
+    $this->actingAs($admin)
+        ->deleteJson('/api/dashboard/admin/ai-agent-profiles/security_reviewer')
+        ->assertNoContent();
+
+    expect(DB::table('ai_agent_profiles')->where('id', $created['id'])->exists())->toBeFalse()
+        ->and(DB::table('audit_logs')->where('action', 'ai_agent_profile.created')->exists())->toBeTrue()
+        ->and(DB::table('audit_logs')->where('action', 'ai_agent_profile.replaced')->exists())->toBeTrue()
+        ->and(DB::table('audit_logs')->where('action', 'ai_agent_profile.deleted')->exists())->toBeTrue();
+});
+
+it('project visibility persistence for custom agent profiles', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = (string) Str::ulid();
+    $ownerId = (int) DB::table('users')->value('id');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('projects')->insert([
+        'id' => $projectB,
+        'name' => 'Visibility Project B',
+        'slug' => 'visibility-project-b',
+        'description' => null,
+        'status' => 'active',
+        'default_code_exposure_policy' => 'full_code_artifacts',
+        'created_by_user_id' => $ownerId,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $createResponse = $this->actingAs($admin)->postJson('/api/dashboard/admin/ai-agent-profiles', [
+        'agent_key' => 'scoped_dashboard_reviewer',
+        'display_name' => 'Scoped Dashboard Reviewer',
+        'description' => 'A custom agent visible only to selected projects.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => ['search_project_memory'],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+        'visibility_scope' => 'project',
+        'project_ids' => [$projectA],
+    ]);
+
+    $createResponse
+        ->assertCreated()
+        ->assertJsonPath('agent_profile.visibility_scope', 'project')
+        ->assertJsonPath('agent_profile.project_ids.0', $projectA);
+
+    $agentId = DB::table('ai_agent_profiles')->where('agent_key', 'scoped_dashboard_reviewer')->value('id');
+
+    expect(DB::table('ai_agent_profiles')->where('agent_key', 'scoped_dashboard_reviewer')->value('visibility_scope'))
+        ->toBe('project')
+        ->and(DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->count())
+        ->toBe(1)
+        ->and(DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->where('project_id', $projectA)->exists())
+        ->toBeTrue();
+
+    $registry = app(AiAgentRegistry::class);
+
+    expect($registry->agentVisibleForProject('scoped_dashboard_reviewer', $projectA))->toBeTrue()
+        ->and($registry->agentVisibleForProject('scoped_dashboard_reviewer', $projectB))->toBeFalse();
+
+    $updateResponse = $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-agent-profiles/scoped_dashboard_reviewer', [
+        'display_name' => 'Scoped Dashboard Reviewer',
+        'description' => 'A custom agent visible to all projects.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => ['search_project_memory'],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+        'visibility_scope' => 'global',
+        'project_ids' => [],
+    ]);
+
+    $updateResponse
+        ->assertOk()
+        ->assertJsonPath('agent_profile.visibility_scope', 'global')
+        ->assertJsonPath('agent_profile.project_ids', []);
+
+    expect(DB::table('ai_agent_profiles')->where('agent_key', 'scoped_dashboard_reviewer')->value('visibility_scope'))
+        ->toBe('global')
+        ->and(DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->count())
+        ->toBe(0)
+        ->and($registry->agentVisibleForProject('scoped_dashboard_reviewer', $projectB))->toBeTrue();
+});
+
+it('rejects duplicate custom agent profile keys', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    $payload = [
+        'agent_key' => 'duplicate_reviewer',
+        'display_name' => 'Duplicate Reviewer',
+        'description' => 'First profile.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => [],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+    ];
+
+    $this->actingAs($admin)->postJson('/api/dashboard/admin/ai-agent-profiles', $payload)->assertCreated();
+    $this->actingAs($admin)->postJson('/api/dashboard/admin/ai-agent-profiles', $payload)
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['agent_key']);
+});
+
+it('prevents non-admin users from managing custom agent profiles', function () {
+    $sysadmin = aiAgentRegistryUserWithRole('Sysadmin');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    $payload = [
+        'agent_key' => 'forbidden_reviewer',
+        'display_name' => 'Forbidden Reviewer',
+        'description' => 'Sysadmin cannot create this.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $profileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => [],
+        'output_schema' => ['type' => 'object'],
+        'trigger_events' => ['manual_chat'],
+    ];
+
+    $this->actingAs($sysadmin)->postJson('/api/dashboard/admin/ai-agent-profiles', $payload)->assertForbidden();
+    $this->actingAs($sysadmin)->putJson('/api/dashboard/admin/ai-agent-profiles/task_clarifier', array_diff_key($payload, ['agent_key' => true]))->assertForbidden();
+    $this->actingAs($sysadmin)->deleteJson('/api/dashboard/admin/ai-agent-profiles/task_clarifier')->assertForbidden();
+});
+
 it('prevents non-admin users from managing model profiles and agent model selection', function () {
     $sysadmin = aiAgentRegistryUserWithRole('Sysadmin');
     $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
@@ -337,6 +702,196 @@ it('prevents non-admin users from managing model profiles and agent model select
         ->assertForbidden();
 });
 
+it('lists chat models for opencode go provider', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $secret = 'opencode-go-secret-123456';
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/opencode_go', [
+        'display_name' => 'OpenCode Go',
+        'base_url' => 'https://opencode.example.test/zen/go/v1/chat/completions',
+        'api_key' => $secret,
+        'enabled' => true,
+    ])->assertOk();
+
+    Http::fake([
+        'https://opencode.example.test/zen/go/v1/models' => Http::response([
+            'data' => [
+                ['id' => 'glm-5.2'],
+                ['id' => 'kimi-k2.7-code'],
+                ['id' => 'deepseek-v4-flash'],
+                ['id' => 'deepseek-r1-8k'], // /messages model, should be excluded
+                ['id' => 'kimi-k2.5'],       // /messages model, should be excluded
+            ],
+        ]),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/opencode_go/models')
+        ->assertOk();
+
+    $response->assertJsonPath('provider_key', 'opencode_go');
+    $response->assertJsonPath('source', 'remote');
+    $response->assertJsonMissing(['api_key' => $secret]);
+    $response->assertJsonMissing(['encrypted_api_key' => $secret]);
+
+    // Only chat/completions-compatible models returned
+    $models = $response->json('models');
+    expect($models)->toHaveCount(3);
+    expect($models[0]['id'])->toBe('glm-5.2');
+    expect($models[1]['id'])->toBe('kimi-k2.7-code');
+    expect($models[2]['id'])->toBe('deepseek-v4-flash');
+    expect($response->json('message'))->toBeNull();
+});
+
+it('lists all models for generic openai_compatible provider', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'OpenAI',
+        'base_url' => 'https://api.openai.com/v1',
+        'api_key' => 'sk-test-key-1234',
+        'enabled' => true,
+    ])->assertOk();
+
+    Http::fake([
+        'https://api.openai.com/v1/models' => Http::response([
+            'data' => [
+                ['id' => 'gpt-4o'],
+                ['id' => 'gpt-4o-mini'],
+                ['id' => 'gpt-5.4'],
+            ],
+        ]),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/openai/models')
+        ->assertOk();
+
+    $response->assertJsonPath('provider_key', 'openai');
+    expect($response->json('models'))->toHaveCount(3)
+        ->and($response->json('models.0.id'))->toBe('gpt-4o')
+        ->and($response->json('models.1.id'))->toBe('gpt-4o-mini')
+        ->and($response->json('models.2.id'))->toBe('gpt-5.4')
+        ->and($response->json('message'))->toBeNull();
+});
+
+it('returns safe empty response when provider has no api key', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    // Provider must be enabled to reach the API key check
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'OpenAI Enabled',
+        'base_url' => 'https://api.openai.com/v1',
+        'enabled' => true,
+    ])->assertOk();
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/openai/models')
+        ->assertOk();
+
+    expect($response->json('models'))->toBe([])
+        ->and($response->json('message'))->toBe('API key not configured.')
+        ->and($response->json('provider_key'))->toBe('openai')
+        ->and($response->json('source'))->toBe('remote')
+        ->and($response->json('checked_at'))->not->toBeNull();
+});
+
+it('returns safe empty response when provider is disabled', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'OpenAI Disabled',
+        'base_url' => 'https://api.openai.com/v1',
+        'api_key' => 'sk-test-key-1234',
+        'enabled' => false,
+    ])->assertOk();
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/openai/models')
+        ->assertOk();
+
+    expect($response->json('models'))->toBe([])
+        ->and($response->json('message'))->toBe('Provider is disabled.');
+});
+
+it('never exposes secrets in models endpoint response', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+    $secret = 'super-secret-key-never-shown';
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/opencode_go', [
+        'display_name' => 'OpenCode Go',
+        'base_url' => 'https://opencode.example.test/zen/go/v1/chat/completions',
+        'api_key' => $secret,
+        'enabled' => true,
+    ])->assertOk();
+
+    Http::fake([
+        'https://opencode.example.test/zen/go/v1/models' => Http::response([
+            'data' => [['id' => 'glm-5.2']],
+        ]),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/opencode_go/models')
+        ->assertOk();
+
+    $raw = $response->content();
+
+    expect($raw)->not->toContain($secret)
+        ->and($raw)->not->toContain('encrypted_api_key')
+        ->and($raw)->not->toContain('super-secret-key');
+});
+
+it('forbids non-admin access to models endpoint', function () {
+    $sysadmin = aiAgentRegistryUserWithRole('Sysadmin');
+
+    $this->actingAs($sysadmin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/opencode_go/models')
+        ->assertForbidden();
+});
+
+it('returns 404 for unknown provider on models endpoint', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/nonexistent/models')
+        ->assertNotFound();
+});
+
+it('rejects private loopback and link-local provider base URLs to block SSRF', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $invalidUrls = [
+        'http://127.0.0.1:8000',
+        'http://localhost:11434',
+        'http://169.254.169.254/latest/meta-data',
+        'http://10.0.0.5',
+        'http://172.16.0.5',
+        'http://192.168.1.2',
+    ];
+
+    foreach ($invalidUrls as $url) {
+        $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+            'display_name' => 'SSRF Test',
+            'base_url' => $url,
+            'enabled' => true,
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['base_url']);
+    }
+});
+
+it('accepts a valid public HTTPS endpoint for provider base URL', function () {
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'OpenAI Gateway',
+        'base_url' => 'https://api.openai.com/v1',
+        'api_key' => 'sk-test-devboard-secret-123456',
+        'enabled' => true,
+    ])->assertOk()
+        ->assertJsonPath('provider.base_url', 'https://api.openai.com/v1');
+});
+
 function aiAgentRegistryUserWithRole(string $roleName): User
 {
     $user = User::factory()->create();
@@ -350,4 +905,104 @@ function aiAgentRegistryUserWithRole(string $roleName): User
     ]);
 
     return $user;
+}
+
+it('rejects a provider base URL whose host resolves to a private address before any HTTP request', function () {
+    Http::preventStrayRequests();
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->app->instance(ProviderHostResolver::class, new DashboardFakeProviderHostResolver([], [
+        'ssrf-private.example.test' => ['10.0.0.5'],
+    ]));
+
+    $this->actingAs($admin)->putJson('/api/dashboard/admin/ai-model-providers/openai', [
+        'display_name' => 'SSRF Private Resolver',
+        'base_url' => 'https://ssrf-private.example.test',
+        'enabled' => true,
+    ])->assertUnprocessable()
+        ->assertJsonValidationErrors(['base_url']);
+});
+
+it('rejects a stored unsafe provider base URL at model discovery without making an HTTP request', function () {
+    Http::preventStrayRequests();
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->app->instance(ProviderHostResolver::class, new DashboardFakeProviderHostResolver([], [
+        'stored-unsafe.example.test' => ['169.254.169.254'],
+    ]));
+
+    // Insert the provider row directly to bypass controller validation, simulating a persisted unsafe URL.
+    DB::table('ai_model_providers')->where('provider_key', 'openai')->update([
+        'base_url' => 'https://stored-unsafe.example.test',
+        'enabled' => true,
+        'encrypted_api_key' => encrypt('sk-test-stored-secret-654321'),
+        'api_key_last_four' => '4321',
+        'api_key_updated_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/dashboard/admin/ai-model-providers/openai/models')
+        ->assertOk();
+
+    expect($response->json('models'))->toBe([])
+        ->and($response->json('provider_key'))->toBe('openai')
+        ->and($response->json('source'))->toBe('remote')
+        ->and($response->json('message'))->toBe('Provider endpoint URL is not allowed.');
+});
+
+it('rejects a stored unsafe opencode go provider base URL at validation without making an HTTP request', function () {
+    Http::preventStrayRequests();
+    Http::fake(fn () => Http::response('should not be called', 200));
+    $admin = aiAgentRegistryUserWithRole('Admin');
+
+    $this->app->instance(ProviderHostResolver::class, new DashboardFakeProviderHostResolver([], [
+        'ssrf-validate.example.test' => ['169.254.169.254'],
+    ]));
+
+    DB::table('ai_model_providers')->where('provider_key', 'opencode_go')->update([
+        'base_url' => 'https://ssrf-validate.example.test/v1',
+        'enabled' => true,
+        'encrypted_api_key' => encrypt('sk-test-validate-secret-654321'),
+        'api_key_last_four' => '4321',
+        'api_key_updated_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/ai-model-providers/opencode_go/validate')
+        ->assertOk();
+
+    expect($response->json('validation.provider_key'))->toBe('opencode_go')
+        ->and($response->json('validation.status'))->toBe('invalid')
+        ->and($response->json('validation.checks.api_reachable'))->toBeFalse()
+        ->and($response->json('validation.redacted_error'))->toBe('Provider endpoint URL is not allowed.');
+
+    Http::assertNothingSent();
+});
+
+final class DashboardFakeProviderHostResolver implements ProviderHostResolver
+{
+    /** @var list<string> */
+    private array $default;
+
+    /** @var array<string, list<string>> */
+    private array $overrides;
+
+    /**
+     * @param  list<string>  $default
+     * @param  array<string, list<string>>  $overrides
+     */
+    public function __construct(array $default = [], array $overrides = [])
+    {
+        $this->default = $default;
+        $this->overrides = $overrides;
+    }
+
+    public function resolve(string $host): array
+    {
+        $key = strtolower($host);
+
+        return $this->overrides[$key] ?? $this->default;
+    }
 }

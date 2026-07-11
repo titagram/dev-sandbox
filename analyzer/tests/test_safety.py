@@ -1,3 +1,5 @@
+import pytest
+
 from devboard_analyzer.safety import scan_safety
 
 
@@ -32,3 +34,36 @@ def test_vendor_cache_and_build_paths_warn(tmp_path):
     report = scan_safety(tmp_path, paths)
 
     assert {warning["reason"] for warning in report.warnings} == {"generated_or_dependency_path"}
+
+
+def test_credential_filenames_are_hard_blocked(tmp_path):
+    paths = []
+    for name in [".env.production", "server.key", "client.crt", "credentials.json", "access-token.txt"]:
+        path = tmp_path / name
+        path.write_text("sensitive")
+        paths.append(path)
+
+    report = scan_safety(tmp_path, paths)
+
+    assert {item["path"] for item in report.blocked} == {path.name for path in paths}
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "-----BEGIN PRIVATE KEY-----",
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN DSA PRIVATE KEY-----",
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+    ],
+)
+def test_private_key_pem_headers_are_blocked_with_innocent_filenames(tmp_path, header):
+    path = tmp_path / "meeting-notes.txt"
+    path.write_text(f"notes\n{header}\nsecret\n")
+
+    report = scan_safety(tmp_path, [path])
+
+    assert report.blocked == [{"path": "meeting-notes.txt", "reason": "private_key"}]

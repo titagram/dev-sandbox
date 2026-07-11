@@ -6,6 +6,7 @@ use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Projects\ProjectLifecycleService;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -48,31 +49,24 @@ final class DashboardProjectRepositoryController extends Controller
                 'updated_at' => $now,
             ]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $request->user()->id,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'repository.declared',
-                'target_type' => 'repository',
-                'target_id' => $repositoryId,
+            app(AuditLogger::class)->record('repository.declared', 'repository', $repositoryId, [
+                'project_id' => $project,
+                'repository' => [
+                    'id' => $repositoryId,
+                    'key' => $payload['slug'],
+                    'name' => $payload['name'],
+                    'default_branch' => $payload['default_branch'],
+                    'local_only' => true,
+                    'code_exposure_policy' => 'metadata_only',
+                    'protected_paths' => $payload['protected_paths'],
+                    'excluded_paths' => $payload['excluded_paths'],
+                    'stack_hints' => $payload['stack_hints'],
+                ],
+            ], [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
                 'ip_address' => $request->ip(),
                 'user_agent' => $request->userAgent(),
-                'payload' => json_encode([
-                    'project_id' => $project,
-                    'repository' => [
-                        'id' => $repositoryId,
-                        'key' => $payload['slug'],
-                        'name' => $payload['name'],
-                        'default_branch' => $payload['default_branch'],
-                        'local_only' => true,
-                        'code_exposure_policy' => 'metadata_only',
-                        'protected_paths' => $payload['protected_paths'],
-                        'excluded_paths' => $payload['excluded_paths'],
-                        'stack_hints' => $payload['stack_hints'],
-                    ],
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
             ]);
         });
 

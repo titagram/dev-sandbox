@@ -604,7 +604,9 @@ Expected: both commands exit 0.
 If deploying to the temporary Traefik route, use both compose files and the required app key:
 
 ```bash
-DEVBOARD_APP_KEY='base64:6qaz/zOO/vNFxRaNbToyUV9xjlXTM5WMGOCp01kIudQ=' docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml up -d --build app worker frontend
+DEVBOARD_APP_KEY='base64:<redacted-rotated-app-key>' docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml up -d --build app worker frontend
+
+<!-- credential rotated 2026-07-10 per remediation Task 0.2; value redacted -->
 ```
 
 Then smoke:

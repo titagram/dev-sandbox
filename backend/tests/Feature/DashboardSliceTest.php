@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -11,7 +12,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->withoutVite();
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('lets an authenticated PM see the Kanban home', function () {
@@ -162,6 +163,20 @@ it('shows repositories and Genesis status on project detail', function () {
             ->where('repositories.0.wiki_status', 'current')
             ->where('wikiPages.0.source_status', 'verified_from_code')
             ->where('wikiPages.0.evidence_refs.0.path', 'file-inventory.json')
+        );
+});
+
+it('shows agent options on project detail', function () {
+    $pm = dashboardUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $this->actingAs($pm)->get("/projects/{$projectId}")
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('Projects/Show')
+            ->where('assistant.agent_options.0.agent_key', 'socrates')
+            ->where('assistant.agent_options.0.label', 'Socrates')
+            ->where('assistant.agent_options.0.runtime', 'server_agent')
         );
 });
 

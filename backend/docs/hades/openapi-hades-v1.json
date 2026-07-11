@@ -43,6 +43,8 @@
     },
     "/api/hades/v1/capabilities": {
       "get": {
+        "summary": "Discover authenticated Hades protocol capabilities",
+        "description": "Requires an authenticated Hades agent token. `persephone_agent_queue_v1` advertises protocol support only; it is not a per-agent permission to mutate data.",
         "security": [
           {
             "bearerAuth": []
@@ -50,7 +52,17 @@
         ],
         "responses": {
           "200": {
-            "description": "Authenticated capability discovery"
+            "description": "Authenticated capability discovery",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }
@@ -251,6 +263,7 @@
     "/api/hades/v1/persephone/inbox": {
       "get": {
         "summary": "Poll the persistent Persephone inbox",
+        "description": "Returns at most 100 oldest-first, non-expired messages for the authenticated target agent. The cursor is an opaque server ULID scoped to the same project and target. A workspace filter returns unbound messages and messages for exactly the authenticated target's active binding. Polling does not mark messages read. Cross-project and wrong-target requests are denied without a foreign-record existence oracle.",
         "security": [
           {
             "bearerAuth": []
@@ -266,6 +279,33 @@
             }
           },
           {
+            "name": "target_agent_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "target_workspace_binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -278,10 +318,26 @@
         ],
         "responses": {
           "200": {
-            "description": "Inbox events"
+            "description": "Inbox events and the last returned or input cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersephoneInboxResponse"
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/PersephoneError"
+          },
+          "404": {
+            "$ref": "#/components/responses/PersephoneError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
           }
         }
       }
@@ -289,6 +345,7 @@
     "/api/hades/v1/persephone/events": {
       "get": {
         "summary": "Read Persephone inbox events as a bounded SSE stream",
+        "description": "Uses the exact inbox authorization, validation, expiry, workspace filter, cursor, ordering, and limit semantics. The response is bounded, never an infinite PHP worker: each message is one SSE block with `id`, `event: message`, and one-line JSON data containing exactly the 15-field envelope plus `id`, followed by `event: stop` with `{\"reason\":\"bounded\",\"cursor\":...}`. Polling is the fallback transport.",
         "security": [
           {
             "bearerAuth": []
@@ -304,6 +361,33 @@
             }
           },
           {
+            "name": "target_agent_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "target_workspace_binding_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -316,17 +400,35 @@
         ],
         "responses": {
           "200": {
-            "description": "text/event-stream response"
+            "description": "Bounded SSE response with message blocks followed by a stop block",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "id: 01J00000000000000000000000\nevent: message\ndata: {\"schema\":\"hades.persephone.agent-message.v1\",\"message_id\":\"message-1\",\"correlation_id\":\"correlation-1\",\"project_id\":\"project-1\",\"sender_agent_id\":\"sender-1\",\"target_agent_id\":\"target-1\",\"target_workspace_binding_id\":null,\"message_type\":\"information_request\",\"effect\":\"information_read\",\"capability\":\"status_query\",\"expires_at\":4102444800,\"payload\":{},\"causation_id\":null,\"remote_task_id\":null,\"remote_task_version\":null,\"id\":\"01J00000000000000000000000\"}\n\nevent: stop\ndata: {\"reason\":\"bounded\",\"cursor\":\"01J00000000000000000000000\"}\n\n"
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/PersephoneError"
+          },
+          "404": {
+            "$ref": "#/components/responses/PersephoneError"
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
           }
         }
       }
     },
     "/api/hades/v1/persephone/messages": {
       "post": {
-        "summary": "Create a persistent Persephone inbox event",
+        "summary": "Create a project-scoped Persephone agent message",
+        "description": "Accepts only the strict hades.persephone.agent-message.v1 envelope. Required strings are trimmed and non-blank; nullable identifiers are null or trimmed non-blank strings; expires_at is a future Unix timestamp; payload is a JSON object with at most 128 top-level properties and at most 65,536 bytes after canonical compact sorted UTF-8 encoding. The sender token, project, active target agent, and optional active target binding must all agree. Unknown top-level fields are rejected. A first write returns 201, an identical normalized replay returns 200, and a conflicting normalized envelope with the same project_id and message_id returns 409. The transport stores and returns the envelope without deriving authority from payload fields; legacy hades_persephone_events rows are isolated.",
         "security": [
           {
             "bearerAuth": []
@@ -336,21 +438,47 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PersephoneMessageRequest"
-              }
+                "schema": {
+                  "$ref": "#/components/schemas/PersephoneAgentMessageEnvelope"
+                }
             }
           }
         },
         "responses": {
           "201": {
-            "description": "Inbox event stored"
+            "description": "Message stored for the first time",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersephoneMessageResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Identical normalized message replay",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersephoneMessageResponse"
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
           "422": {
-            "description": "Validation error"
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "403": {
+            "$ref": "#/components/responses/PersephoneError"
+          },
+          "404": {
+            "$ref": "#/components/responses/PersephoneError"
+          },
+          "409": {
+            "$ref": "#/components/responses/PersephoneError"
           }
         }
       }
@@ -425,6 +553,36 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Authentication failed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PersephoneErrorResponse"
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Request validation failed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PersephoneErrorResponse"
+            }
+          }
+        }
+      },
+      "PersephoneError": {
+        "description": "Persephone queue authorization, cursor, binding, or idempotency error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/PersephoneErrorResponse"
             }
           }
         }
@@ -519,26 +677,354 @@
           }
         }
       },
-      "PersephoneMessageRequest": {
+      "PersephoneAgentMessageEnvelope": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
+          "schema",
+          "message_id",
+          "correlation_id",
           "project_id",
-          "event_type"
+          "sender_agent_id",
+          "target_agent_id",
+          "target_workspace_binding_id",
+          "message_type",
+          "effect",
+          "capability",
+          "expires_at",
+          "payload"
         ],
         "properties": {
+          "schema": {
+            "type": "string",
+            "const": "hades.persephone.agent-message.v1"
+          },
+          "message_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "correlation_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "project_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "sender_agent_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "target_agent_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "target_workspace_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": ".*\\S.*",
+            "description": "Required and non-null for source_slice, source_search, symbol_lookup, git_metadata, and artifact_metadata."
+          },
+          "message_type": {
+            "type": "string",
+            "enum": [
+              "information_request",
+              "local_decision",
+              "information_response",
+              "status_query",
+              "status_response",
+              "cancel_request"
+            ]
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "information_read",
+              "mutating"
+            ]
+          },
+          "capability": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp strictly in the future."
+          },
+          "payload": {
+            "type": "object",
+            "maxProperties": 128,
+            "description": "JSON object, including {}, whose canonical compact sorted UTF-8 JSON encoding is at most 65,536 bytes. Nested arrays remain valid.",
+            "additionalProperties": true
+          },
+          "causation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": ".*\\S.*"
+          },
+          "remote_task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": ".*\\S.*"
+          },
+          "remote_task_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": ".*\\S.*"
+          }
+        }
+      },
+      "PersephoneEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema",
+          "message_id",
+          "correlation_id",
+          "project_id",
+          "sender_agent_id",
+          "target_agent_id",
+          "target_workspace_binding_id",
+          "message_type",
+          "effect",
+          "capability",
+          "expires_at",
+          "payload",
+          "causation_id",
+          "remote_task_id",
+          "remote_task_version",
+          "id"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string",
+            "const": "hades.persephone.agent-message.v1"
+          },
+          "message_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "correlation_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "project_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "sender_agent_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "target_agent_id": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "target_workspace_binding_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": ".*\\S.*"
+          },
+          "message_type": {
+            "type": "string",
+            "enum": [
+              "information_request",
+              "local_decision",
+              "information_response",
+              "status_query",
+              "status_response",
+              "cancel_request"
+            ]
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "information_read",
+              "mutating"
+            ]
+          },
+          "capability": {
+            "type": "string",
+            "pattern": ".*\\S.*"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "payload": {
+            "type": "object",
+            "maxProperties": 128,
+            "additionalProperties": true
+          },
+          "causation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": ".*\\S.*"
+          },
+          "remote_task_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": ".*\\S.*"
+          },
+          "remote_task_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": ".*\\S.*"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "description": "Server-generated monotonic ULID used as the opaque cursor."
+          }
+        }
+      },
+      "PersephoneMessageResponse": {
+        "type": "object",
+        "required": [
+          "event"
+        ],
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/PersephoneEvent"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PersephoneInboxResponse": {
+        "type": "object",
+        "required": [
+          "events",
+          "cursor"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PersephoneEvent"
+            }
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PersephoneErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "CapabilitiesResponse": {
+        "type": "object",
+        "required": [
+          "protocol_version",
+          "persephone_agent_queue_v1",
+          "project_id",
+          "agent_id",
+          "backend_agent_id",
+          "external_agent_id",
+          "capabilities",
+          "capability_names",
+          "limits",
+          "policy",
+          "routes",
+          "server_time"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "string"
+          },
+          "persephone_agent_queue_v1": {
+            "type": "boolean",
+            "const": true,
+            "description": "Protocol support advertisement, not a mutating-task permission."
+          },
           "project_id": {
             "type": "string"
           },
-          "workspace_binding_id": {
+          "agent_id": {
             "type": "string"
           },
-          "event_type": {
+          "backend_agent_id": {
             "type": "string"
           },
-          "payload": {
-            "type": "object"
+          "external_agent_id": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "boolean"
+            }
+          },
+          "capability_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "limits": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "policy": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "routes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "server_time": {
+            "type": "string",
+            "format": "date-time"
           }
-        }
+        },
+        "additionalProperties": true
       }
     }
   }

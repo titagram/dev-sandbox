@@ -1,3 +1,0 @@
-[console_scripts]
-devboard = devboard_plugin.cli:app
-devboard-mcp = devboard_plugin.mcp_server:main

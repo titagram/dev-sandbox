@@ -2,6 +2,7 @@
 
 namespace App\Assistants\Tools;
 
+use App\Services\Graph\GraphQueryService;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -11,6 +12,8 @@ use Stringable;
 
 final class QueryProjectGraphTool implements Tool
 {
+    public function __construct(private readonly ?GraphQueryService $queryService = null) {}
+
     public function name(): string
     {
         return 'query_project_graph';
@@ -18,7 +21,7 @@ final class QueryProjectGraphTool implements Tool
 
     public function description(): Stringable|string
     {
-        return 'Query the latest stored DevBoard graph artifact for a project. Read-only; returns bounded node and relationship metadata from imported artifacts.';
+        return 'Query the latest stored DevBoard graph artifact for a project. Read-only; supports structured queries (callers/callees/path) against Neo4j or text search against JSON artifacts.';
     }
 
     public function handle(Request $request): Stringable|string
@@ -32,6 +35,12 @@ final class QueryProjectGraphTool implements Tool
     public function payload(array $arguments): array
     {
         $projectId = (string) ($arguments['project_id'] ?? '');
+        $structuredQuery = $arguments['structured_query'] ?? null;
+
+        if (is_array($structuredQuery) && isset($structuredQuery['type'])) {
+            return $this->structuredPayload($projectId, $structuredQuery);
+        }
+
         $query = trim((string) ($arguments['query'] ?? ''));
         $limit = min(25, max(1, (int) ($arguments['limit'] ?? 10)));
 
@@ -78,6 +87,42 @@ final class QueryProjectGraphTool implements Tool
     }
 
     /**
+     * @param  array<string, mixed>  $sq
+     * @return array<string, mixed>
+     */
+    private function structuredPayload(string $projectId, array $sq): array
+    {
+        $type = (string) ($sq['type'] ?? '');
+        $params = ['project_id' => $projectId];
+
+        if ($type === 'callers' || $type === 'callees') {
+            $params['symbol_id'] = (string) ($sq['symbol_id'] ?? '');
+            $params['limit'] = (int) ($sq['limit'] ?? 50);
+        } elseif ($type === 'path') {
+            $params['from_symbol_id'] = (string) ($sq['from_symbol_id'] ?? '');
+            $params['to_symbol_id'] = (string) ($sq['to_symbol_id'] ?? '');
+            $params['max_depth'] = (int) ($sq['max_depth'] ?? 5);
+        } else {
+            return $this->notFound($projectId, '', 'unsupported_query_type');
+        }
+
+        $service = $this->queryService ?? app(GraphQueryService::class);
+        $result = $service->query($type, $params);
+
+        return array_merge([
+            'tool' => $this->name(),
+            'source_status' => 'verified_from_code',
+            'project_id' => $projectId,
+            'query_type' => $type,
+            'symbol_id' => $params['symbol_id'] ?? null,
+            'from_symbol_id' => $params['from_symbol_id'] ?? null,
+            'to_symbol_id' => $params['to_symbol_id'] ?? null,
+            'max_depth' => $params['max_depth'] ?? null,
+            'limit' => $params['limit'] ?? null,
+        ], $result);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function schema(JsonSchema $schema): array
@@ -92,6 +137,8 @@ final class QueryProjectGraphTool implements Tool
                 ->description('Maximum number of nodes to return, capped at 25.')
                 ->min(1)
                 ->max(25),
+            'structured_query' => $schema->object()
+                ->description('Structured graph query (callers, callees, path) that uses Neo4j. Must include type field.'),
         ];
     }
 

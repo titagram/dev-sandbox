@@ -1,9 +1,12 @@
 <?php
 
+use App\Jobs\ImportGenesisGraphToNeo4j;
 use App\Services\GenesisGraphImportService;
+use App\Services\Neo4j\FailingNeo4jClient;
+use App\Services\Neo4j\FakeNeo4jClient;
 use App\Services\Neo4jClientFactory;
 use App\Services\Neo4jRebuildService;
-use App\Jobs\ImportGenesisGraphToNeo4j;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -14,12 +17,12 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('imports a valid graph snapshot with a DevBoardSnapshot command first', function () {
     $context = createGraphImportContext();
-    $client = new FakeNeo4jClient();
+    $client = new FakeNeo4jClient;
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
@@ -32,9 +35,47 @@ it('imports a valid graph snapshot with a DevBoardSnapshot command first', funct
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
+it('does not reapply a graph snapshot that was already imported', function () {
+    $context = createGraphImportContext();
+    $client = new FakeNeo4jClient;
+    $service = app(GenesisGraphImportService::class);
+
+    $service->importGenesis($context['import_id'], $client);
+    $commandCount = count($client->commands);
+    $service->importGenesis($context['import_id'], $client);
+
+    expect($client->commands)->toHaveCount($commandCount);
+    expect(DB::table('run_events')
+        ->where('run_id', $context['run_id'])
+        ->where('event_type', 'graph.imported')
+        ->count())->toBe(1);
+});
+
+it('detects an imported snapshot by decoding candidate event payloads in PHP', function () {
+    $context = createGraphImportContext();
+    $client = new FakeNeo4jClient;
+
+    DB::table('run_events')->insert([
+        'id' => (string) Str::ulid(),
+        'run_id' => $context['run_id'],
+        'event_type' => 'graph.imported',
+        'severity' => 'info',
+        'message' => 'Existing portable graph event.',
+        'payload' => json_encode([
+            'snapshot_id' => $context['snapshot_id'],
+            'mode' => 'fake',
+        ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT),
+        'created_at' => now(),
+    ]);
+
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
+
+    expect($client->commands)->toBe([]);
+});
+
 it('creates Neo4j lookup indexes before importing graph batches', function () {
     $context = createGraphImportContext();
-    $client = new FakeNeo4jClient();
+    $client = new FakeNeo4jClient;
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
@@ -45,23 +86,36 @@ it('creates Neo4j lookup indexes before importing graph batches', function () {
 
 it('imports file and function nodes with snapshot metadata', function () {
     $context = createGraphImportContext();
-    $client = new FakeNeo4jClient();
+    $client = new FakeNeo4jClient;
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
-    $nodeCommand = array_values(array_filter(
+    $nodeCommands = array_values(array_filter(
         $client->commands,
         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes'),
-    ))[0];
+    ));
 
-    expect($nodeCommand['params']['nodes'])->toHaveCount(2);
-    expect($nodeCommand['params']['nodes'][0]['properties']['snapshot_id'])->toBe($context['snapshot_id']);
-    expect($nodeCommand['params']['nodes'][1]['properties']['repository_id'])->toBe($context['repository_id']);
+    expect(count($nodeCommands))->toBeGreaterThanOrEqual(2);
+
+    $allNodes = collect($nodeCommands)->flatMap(
+        fn (array $cmd): array => $cmd['params']['nodes'],
+    )->all();
+
+    expect($allNodes)->toHaveCount(2);
+    expect($allNodes[0]['properties']['snapshot_id'])->toBe($context['snapshot_id']);
+    expect($allNodes[1]['properties']['repository_id'])->toBe($context['repository_id']);
+
+    $functionCommand = collect($nodeCommands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'SET n:Function,'),
+    );
+
+    expect($functionCommand)->not->toBeNull();
+    expect($functionCommand['params']['nodes'][0]['labels'])->toBe(['Symbol', 'Function']);
 });
 
 it('imports relationships with run and repository metadata', function () {
     $context = createGraphImportContext();
-    $client = new FakeNeo4jClient();
+    $client = new FakeNeo4jClient;
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
@@ -78,7 +132,7 @@ it('imports relationships with run and repository metadata', function () {
 
 it('imports nodes and relationships with batched Cypher commands', function () {
     $context = createGraphImportContext();
-    $client = new FakeNeo4jClient();
+    $client = new FakeNeo4jClient;
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
@@ -91,8 +145,7 @@ it('imports nodes and relationships with batched Cypher commands', function () {
         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $relationships'),
     ));
 
-    expect($nodeBatchCommands)->toHaveCount(1);
-    expect($nodeBatchCommands[0]['params']['nodes'])->toHaveCount(2);
+    expect(count($nodeBatchCommands))->toBeGreaterThanOrEqual(2);
     expect($nodeBatchCommands[0]['params']['nodes'][0]['properties'])->toMatchArray([
         'snapshot_id' => $context['snapshot_id'],
         'run_id' => $context['run_id'],
@@ -106,12 +159,13 @@ it('imports nodes and relationships with batched Cypher commands', function () {
         'run_id' => $context['run_id'],
         'repository_id' => $context['repository_id'],
     ]);
+    expect($relationshipBatchCommands[0]['cypher'])->toContain(':DECLARES');
 });
 
 it('marks the import failed when Neo4j import fails', function () {
     $context = createGraphImportContext();
 
-    expect(fn () => app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FailingNeo4jClient()))
+    expect(fn () => app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FailingNeo4jClient))
         ->toThrow(RuntimeException::class);
 
     expect(DB::table('genesis_imports')->where('id', $context['import_id'])->value('status'))->toBe('failed');
@@ -123,7 +177,7 @@ it('keeps the import active while a queued graph retry is still pending', functi
 
     expect(fn () => app(GenesisGraphImportService::class)->importGenesis(
         $context['import_id'],
-        new FailingNeo4jClient(),
+        new FailingNeo4jClient,
         'neo4j',
         false,
     ))->toThrow(RuntimeException::class);
@@ -147,7 +201,7 @@ it('marks the import failed and records a run event after queue retries are exha
 it('builds a Neo4j client from configured basic auth', function () {
     config([
         'services.neo4j.uri' => 'bolt://localhost:7687',
-        'services.neo4j.auth' => ['neo4j', 'graphify-sandbox'],
+        'services.neo4j.auth' => ['neo4j', 'redacted-rotated-neo4j-password'],
     ]);
 
     expect(app(Neo4jClientFactory::class)->client())->toBeObject();
@@ -155,7 +209,17 @@ it('builds a Neo4j client from configured basic auth', function () {
 
 it('rebuilds a Neo4j projection from stored graph artifacts', function () {
     $context = createGraphImportContext();
-    $client = new FakeNeo4jClient();
+    $client = new FakeNeo4jClient;
+
+    DB::table('run_events')->insert([
+        'id' => (string) Str::ulid(),
+        'run_id' => $context['run_id'],
+        'event_type' => 'graph.imported',
+        'severity' => 'info',
+        'message' => 'Graph was already imported before rebuild.',
+        'payload' => json_encode(['snapshot_id' => $context['snapshot_id'], 'mode' => 'fake'], JSON_THROW_ON_ERROR),
+        'created_at' => now(),
+    ]);
 
     $result = app(Neo4jRebuildService::class)->rebuild([
         'snapshot_id' => $context['snapshot_id'],
@@ -169,6 +233,9 @@ it('rebuilds a Neo4j projection from stored graph artifacts', function () {
 
     expect($client->commands[0]['cypher'])->toContain('DETACH DELETE');
     expect($client->commands[0]['params']['snapshot_id'])->toBe($context['snapshot_id']);
+    expect(collect($client->commands)->contains(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes'),
+    ))->toBeTrue();
     expect(collect($client->commands)->contains(
         fn (array $command): bool => str_contains($command['cypher'], 'DevBoardSnapshot'),
     ))->toBeTrue();
@@ -205,7 +272,7 @@ it('exposes an artisan command to rebuild Neo4j projection by snapshot', functio
 
 it('does not purge an existing projection when the stored graph artifact is missing', function () {
     $context = createGraphImportContext();
-    $client = new FakeNeo4jClient();
+    $client = new FakeNeo4jClient;
     $storagePath = DB::table('artifacts')->where('id', $context['artifact_id'])->value('storage_path');
 
     Storage::disk('local')->delete($storagePath);
@@ -222,24 +289,6 @@ it('does not purge an existing projection when the stored graph artifact is miss
     expect($result['failures'][0]['message'])->toContain('Stored graph artifact is not readable');
     expect($client->commands)->toBe([]);
 });
-
-class FakeNeo4jClient
-{
-    public array $commands = [];
-
-    public function run(string $cypher, array $params): void
-    {
-        $this->commands[] = ['cypher' => $cypher, 'params' => $params];
-    }
-}
-
-class FailingNeo4jClient
-{
-    public function run(string $cypher, array $params): void
-    {
-        throw new RuntimeException('neo4j unavailable');
-    }
-}
 
 /**
  * @return array<string, string>
@@ -312,7 +361,7 @@ function createGraphImportContext(): array
     Storage::disk('local')->put($storagePath, json_encode([
         'nodes' => [
             ['id' => 'file:app.py', 'labels' => ['File'], 'properties' => ['path' => 'app.py']],
-            ['id' => 'function:health', 'labels' => ['Function'], 'properties' => ['name' => 'health']],
+            ['id' => 'function:health', 'labels' => ['Symbol', 'Function'], 'properties' => ['name' => 'health']],
         ],
         'relationships' => [
             ['id' => 'rel_1', 'type' => 'DECLARES', 'source_id' => 'file:app.py', 'target_id' => 'function:health', 'properties' => []],

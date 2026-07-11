@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Dashboard;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Services\GenesisGraphImportService;
+use App\Services\Neo4j\FakeNeo4jClient;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,9 +15,7 @@ class RunRetryImportController extends Controller
 {
     use ChecksDashboardRoles;
 
-    public function __construct(private readonly GenesisGraphImportService $graphs)
-    {
-    }
+    public function __construct(private readonly GenesisGraphImportService $graphs) {}
 
     public function __invoke(Request $request, string $run): JsonResponse
     {
@@ -32,12 +31,7 @@ class RunRetryImportController extends Controller
         $client = null;
 
         if ($mode === 'fake') {
-            $client = new class
-            {
-                public function run(string $cypher, array $params): void
-                {
-                }
-            };
+            $client = new FakeNeo4jClient;
         }
 
         $this->graphs->importGraphArtifact(

@@ -151,15 +151,17 @@ DB_HOST=127.0.0.1
 DB_PORT=5432
 DB_DATABASE=devboard
 DB_USERNAME=devboard
-DB_PASSWORD=devboard
+DB_PASSWORD=<redacted-rotated-db-password>
 
 DEVBOARD_ARTIFACT_DISK=local
 DEVBOARD_ARTIFACT_ROOT=artifacts
 
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=graphify-sandbox
+NEO4J_PASSWORD=<redacted-rotated-neo4j-password>
 ```
+
+<!-- credential rotated 2026-07-10 per remediation Task 0.2; values redacted -->
 
 - [x] **Step 4: Write backend smoke test**
 

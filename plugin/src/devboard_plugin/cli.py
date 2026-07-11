@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import typer
@@ -9,7 +10,16 @@ from devboard_plugin.artifacts import upload_delta_bundle, upload_genesis_bundle
 from devboard_plugin.client import DevBoardApiError, DevBoardClient
 from devboard_plugin.config import credentials_from_options, load_credentials, save_credentials, Credentials
 from devboard_plugin.git_local import current_branch, dirty_status, ensure_devboard_excluded, head_sha, local_root_hash
-from devboard_plugin.state import read_repo_state, write_repo_link_state, write_repo_state
+from devboard_plugin.state import (
+    base_snapshot_state,
+    load_base_snapshot_data,
+    read_repo_state,
+    resolve_repo_path,
+    resolve_repo_relative_path,
+    validate_path_component,
+    write_repo_link_state,
+    write_repo_state,
+)
 
 app = typer.Typer(help="DevBoard local plugin")
 auth_app = typer.Typer(help="Authenticate this local plugin")
@@ -72,14 +82,27 @@ def auth_register_device(
             "plugin_version": "0.1.0",
         }
     )
+    device_id = response.get("device_id")
+    if not isinstance(device_id, str) or not device_id:
+        raise DevBoardApiError(code="device_registration_invalid", message="Device registration returned no device_id.")
+    device_secret = response.get("device_secret")
+    if not isinstance(device_secret, str) or not device_secret:
+        if credentials.device_id == device_id and credentials.device_secret:
+            device_secret = credentials.device_secret
+        else:
+            raise DevBoardApiError(
+                code="device_secret_missing",
+                message="Device registration returned no one-shot secret and no matching saved device secret is available.",
+            )
     save_credentials(
         Credentials(
             server_url=credentials.server_url,
             token=credentials.token,
-            device_id=response["device_id"],
+            device_id=device_id,
+            device_secret=device_secret,
         )
     )
-    echo_json(response)
+    echo_json({key: value for key, value in response.items() if key != "device_secret"})
 
 
 @projects_app.command("list")
@@ -98,6 +121,7 @@ def repos_link(
     server_url: str | None = typer.Option(None, "--server-url"),
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
+    repo_path = resolve_repo_path(repo_path)
     client = client_from_options(server_url, token)
     response = client.register_local_workspace(
         repository_id,
@@ -176,6 +200,7 @@ def runs_heartbeat(
     server_url: str | None = typer.Option(None, "--server-url"),
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
+    run_id = validate_path_component(run_id, "run_id")
     payload = {}
     if message is not None:
         payload["message"] = message
@@ -192,6 +217,7 @@ def runs_finish(
     server_url: str | None = typer.Option(None, "--server-url"),
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
+    run_id = validate_path_component(run_id, "run_id")
     payload = {
         "status": status,
         "summary": summary,
@@ -287,6 +313,7 @@ def genesis_run(
     server_url: str | None = typer.Option(None, "--server-url"),
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
+    repo_path = resolve_repo_path(repo_path)
     client = client_from_options(server_url, token)
 
     if run_id is None:
@@ -307,8 +334,13 @@ def genesis_run(
         )
         run_id = start_response["run_id"]
 
+    run_id = validate_path_component(run_id, "run_id")
+
     policy = client.repository_policy(repository_id)
-    output_dir = output or repo_path / ".devboard" / "artifacts" / "genesis" / run_id
+    output_dir = resolve_repo_relative_path(
+        repo_path,
+        output or Path(".devboard") / "artifacts" / "genesis" / run_id,
+    )
     bundle = build_genesis_bundle(
         repo_path,
         output_dir,
@@ -318,6 +350,7 @@ def genesis_run(
             "local_workspace_id": local_workspace_id,
             "run_id": run_id,
             "code_exposure": policy.get("code_exposure", "full_code_artifacts"),
+            "excluded_paths": policy.get("excluded_paths", []),
         },
     )
     write_repo_state(
@@ -350,16 +383,19 @@ def artifacts_upload(
     if genesis == delta:
         raise typer.BadParameter("Choose exactly one upload type: --genesis or --delta.")
 
+    repo_path = resolve_repo_path(repo_path)
     state = read_repo_state(repo_path)
     run_id = run_id or state.get("run_id")
     local_workspace_id = local_workspace_id or state.get("local_workspace_id")
 
     if genesis:
         repository_id = repository_id or state.get("repository_id")
-        bundle_path = bundle_path or resolve_state_path(repo_path, state["genesis_bundle_path"])
+        bundle_value = bundle_path or state.get("genesis_bundle_path")
 
-        if not repository_id or not run_id or not local_workspace_id:
-            raise typer.BadParameter("repository_id, run_id, and local_workspace_id are required.")
+        if not repository_id or not run_id or not local_workspace_id or not bundle_value:
+            raise typer.BadParameter("repository_id, run_id, local_workspace_id, and bundle_path are required.")
+        run_id = validate_path_component(run_id, "run_id")
+        bundle_path = resolve_state_path(repo_path, str(bundle_value))
 
         response = upload_genesis_bundle(
             client_from_options(server_url, token),
@@ -371,10 +407,12 @@ def artifacts_upload(
         )
     else:
         base_snapshot_id = base_snapshot_id or state.get("base_snapshot_id") or state.get("snapshot_id")
-        bundle_path = bundle_path or resolve_state_path(repo_path, state["delta_bundle_path"])
+        bundle_value = bundle_path or state.get("delta_bundle_path")
 
-        if not run_id or not local_workspace_id or not base_snapshot_id:
-            raise typer.BadParameter("run_id, local_workspace_id, and base_snapshot_id are required.")
+        if not run_id or not local_workspace_id or not base_snapshot_id or not bundle_value:
+            raise typer.BadParameter("run_id, local_workspace_id, base_snapshot_id, and bundle_path are required.")
+        run_id = validate_path_component(run_id, "run_id")
+        bundle_path = resolve_state_path(repo_path, str(bundle_value))
 
         response = upload_delta_bundle(
             client_from_options(server_url, token),
@@ -384,6 +422,10 @@ def artifacts_upload(
             bundle_path=bundle_path,
             allow_blocked_security_findings=allow_blocked_security_findings,
         )
+
+    snapshot_id = response.get("snapshot_id")
+    if isinstance(snapshot_id, str) and snapshot_id:
+        write_repo_state(repo_path, {**state, **base_snapshot_state(bundle_path, snapshot_id)})
 
     echo_json(response)
 
@@ -401,6 +443,7 @@ def delta_run(
     server_url: str | None = typer.Option(None, "--server-url"),
     token: str | None = typer.Option(None, "--token", hide_input=True),
 ) -> None:
+    repo_path = resolve_repo_path(repo_path)
     client = client_from_options(server_url, token)
 
     if run_id is None:
@@ -421,9 +464,21 @@ def delta_run(
         )
         run_id = start_response["run_id"]
 
+    run_id = validate_path_component(run_id, "run_id")
+
     state = read_repo_state(repo_path)
     policy = client.repository_policy(repository_id)
-    output_dir = output or repo_path / ".devboard" / "artifacts" / "delta" / run_id
+    output_dir = resolve_repo_relative_path(
+        repo_path,
+        output or Path(".devboard") / "artifacts" / "delta" / run_id,
+    )
+    (
+        base_file_hashes,
+        base_symbols,
+        base_symbols_complete,
+        base_relations,
+        base_relations_complete,
+    ) = load_base_snapshot_data(repo_path, state, base_snapshot_id)
     bundle = build_delta_bundle(
         repo_path,
         output_dir,
@@ -433,8 +488,13 @@ def delta_run(
             "local_workspace_id": local_workspace_id,
             "run_id": run_id,
             "base_snapshot_id": base_snapshot_id,
-            "base_file_hashes": load_base_file_hashes(repo_path, state),
+            "base_file_hashes": base_file_hashes,
+            "base_symbols": base_symbols,
+            "base_symbols_complete": base_symbols_complete,
+            "base_relations": base_relations,
+            "base_relations_complete": base_relations_complete,
             "code_exposure": policy.get("code_exposure", "full_code_artifacts"),
+            "excluded_paths": policy.get("excluded_paths", []),
             "branch": current_branch(repo_path),
             "base_sha": head_sha(repo_path) or "unknown",
             "head_sha": head_sha(repo_path),
@@ -449,16 +509,21 @@ def delta_run(
         bundle_path=output_dir,
         allow_blocked_security_findings=allow_blocked_security_findings,
     )
+    snapshot_id = upload.get("snapshot_id")
+    snapshot_state = base_snapshot_state(output_dir, snapshot_id) if isinstance(snapshot_id, str) and snapshot_id else {}
     write_repo_state(
         repo_path,
         {
+            **state,
             "project_id": project_id,
             "repository_id": repository_id,
             "local_workspace_id": local_workspace_id,
             "run_id": run_id,
-            "base_snapshot_id": base_snapshot_id,
-            "snapshot_id": upload.get("snapshot_id"),
+            "base_snapshot_id": snapshot_id or base_snapshot_id,
+            "previous_base_snapshot_id": base_snapshot_id,
+            "snapshot_id": snapshot_id,
             "delta_bundle_path": str(output_dir),
+            **snapshot_state,
         },
     )
     echo_json({"run_id": run_id, "status": upload.get("status"), "bundle": bundle, "upload": upload})
@@ -473,6 +538,7 @@ def client_from_credentials(credentials: Credentials) -> DevBoardClient:
         base_url=credentials.server_url,
         token=credentials.token,
         device_id=credentials.device_id,
+        device_secret=credentials.device_secret,
     )
 
 
@@ -481,7 +547,15 @@ def echo_json(payload: dict) -> None:
 
 
 def handle_api_error(error: DevBoardApiError) -> None:
-    raise typer.Exit(code=1) from error
+    typer.echo(f"Error: {error}", err=True)
+    raise typer.Exit(code=1)
+
+
+def main_cli() -> None:
+    try:
+        app(standalone_mode=False)
+    except DevBoardApiError as error:
+        handle_api_error(error)
 
 
 def build_genesis_bundle(repo_path: Path, output_dir: Path, context: dict) -> dict:
@@ -496,25 +570,9 @@ def build_delta_bundle(repo_path: Path, output_dir: Path, context: dict) -> dict
     return build(repo_path, output_dir, context)
 
 
-def load_base_file_hashes(repo_path: Path, state: dict) -> dict[str, str]:
-    for key in ("delta_bundle_path", "genesis_bundle_path"):
-        bundle_path = state.get(key)
-        if not bundle_path:
-            continue
-
-        hashes_path = resolve_state_path(repo_path, bundle_path) / "file-hashes.json"
-        if not hashes_path.exists():
-            continue
-
-        document = json.loads(hashes_path.read_text())
-        return {row["path"]: row["sha256"] for row in document.get("hashes", [])}
-
-    return {}
+def load_base_file_hashes(repo_path: Path, state: dict, base_snapshot_id: str) -> dict[str, str]:
+    return load_base_snapshot_data(repo_path, state, base_snapshot_id)[0]
 
 
 def resolve_state_path(repo_path: Path, value: str) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-
-    return repo_path / path
+    return resolve_repo_relative_path(repo_path, value)

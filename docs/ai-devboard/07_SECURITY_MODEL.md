@@ -78,7 +78,11 @@ Required safeguards:
 - never include credentials in generated AGENTS files;
 - never include credentials in MCP responses;
 - never include credentials in artifact bundles;
-- redact token-like values from logs and error messages.
+- redact token-like values from logs and error messages;
+- bind the credential record to a normalized server origin;
+- do not reuse a saved token or device secret when only the destination URL changes;
+- require HTTPS except for explicit loopback development endpoints;
+- write credential and repository state files atomically without following symlinks.
 
 ## Device Registration
 
@@ -97,6 +101,8 @@ status
 last_seen_at
 ```
 
+New-device registration also returns a one-time signing secret. The plugin stores it outside the repository and never returns it to the LLM or normal command output. Device-bound requests use an HMAC over method, exact request URI, timestamp, and body hash; stale timestamps, body mismatches, and device mismatches are rejected.
+
 Rules:
 
 - device registration is required before repository link and artifact upload;
@@ -112,6 +118,7 @@ Every backend write checks:
 authenticated actor
 device status, for plugin calls
 token scopes
+token user and device ownership of the target run
 role permissions
 repository policy
 runtime profile
@@ -207,6 +214,9 @@ uploads/storage directories
 Rules:
 
 - hard-blocked content must not be uploaded;
+- artifact paths must resolve inside the generated bundle and must not be symlinks;
+- manifest size, hash, and chunk count are verified locally before upload;
+- a missing or malformed security report fails closed;
 - blocked findings stop upload/finalize by default;
 - CLI/MCP callers can continue only with explicit local approval through `allow_blocked_security_findings`;
 - approved blocked findings are recorded as `security.blocked_upload_approved` with path/reason metadata only;
@@ -294,6 +304,12 @@ Generated AGENTS/context files must:
 - not contain secrets from local files;
 - be written under `.devboard/`;
 - be regenerable.
+
+## Provider Endpoint Transport
+
+`verified_from_code`: Admin-managed model provider base URLs are revalidated at use time, not only when saved. Runtime provider requests use `App\Assistants\ProviderHttpClient`, which resolves every A and AAAA answer immediately before dispatch through `ProviderEndpointPolicy`, rejects unresolved or non-public answers, preserves the original URL hostname, disables redirects, and pins the validated address set with cURL `CURLOPT_RESOLVE` (`host:port:ip`). If cURL pinning constants are unavailable, provider dispatch fails closed.
+
+`verified_from_code`: The pinned transport is used for Admin model discovery, OpenCode validation, server-side agent work chat calls, and real OpenAI-compatible Task Clarifier, Backlog Triage, and Hades Intake Normalizer provider calls. Laravel AI SDK fake-agent paths remain available for deterministic tests, but real stored provider URLs are not dispatched through an unpinned SDK transport.
 
 ## Audit Requirements
 

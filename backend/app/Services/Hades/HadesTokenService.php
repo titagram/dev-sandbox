@@ -127,7 +127,14 @@ class HadesTokenService
         $secret = Str::random(64);
         $prefix = self::BOOTSTRAP_PREFIX.$id;
         $now = now();
-        $allowed = array_values(array_filter($allowedCapabilities ?? ['read_files', 'read_source_slice', 'sync_git_tree', 'populate_backend_ast'], 'is_string'));
+        $allowed = array_values(array_filter($allowedCapabilities ?? [
+            'read_files',
+            'read_source_slice',
+            'project_inspection',
+            'sync_git_tree',
+            'populate_backend_ast',
+            'populate_project_wiki',
+        ], 'is_string'));
 
         DB::table('hades_bootstrap_tokens')->insert([
             'id' => $id,

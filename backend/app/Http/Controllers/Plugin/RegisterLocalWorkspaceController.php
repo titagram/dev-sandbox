@@ -12,9 +12,7 @@ use Symfony\Component\HttpFoundation\Response;
 
 class RegisterLocalWorkspaceController extends Controller
 {
-    public function __construct(private readonly ProjectLifecycleService $lifecycle)
-    {
-    }
+    public function __construct(private readonly ProjectLifecycleService $lifecycle) {}
 
     public function __invoke(Request $request, string $repository): JsonResponse
     {

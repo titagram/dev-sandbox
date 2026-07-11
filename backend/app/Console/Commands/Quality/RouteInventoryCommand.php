@@ -40,7 +40,7 @@ final class RouteInventoryCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $inventory
+     * @param  array<string, mixed>  $inventory
      *
      * @throws JsonException
      */
@@ -50,7 +50,7 @@ final class RouteInventoryCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $inventory
+     * @param  array<string, mixed>  $inventory
      */
     private function markdown(array $inventory): string
     {
@@ -80,4 +80,3 @@ final class RouteInventoryCommand extends Command
         return implode(PHP_EOL, $lines).PHP_EOL;
     }
 }
-

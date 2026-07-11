@@ -4,13 +4,21 @@ namespace App\Assistants;
 
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use RuntimeException;
 use Throwable;
 
 final class AiAgentRegistry
 {
+    private const LEGACY_VISIBLE_AGENT_KEYS = [
+        'socrate_supervisor' => ['agent_key' => 'socrates', 'label' => 'Socrates'],
+        'task_clarifier' => ['agent_key' => 'platon', 'label' => 'Platon'],
+        'backlog_triage' => ['agent_key' => 'aristoteles', 'label' => 'Aristoteles'],
+    ];
+
+    public function __construct(private readonly ProviderHttpClient $httpClient) {}
+
     /**
      * @return array{providers: list<array<string, mixed>>, modelProfiles: list<array<string, mixed>>, agentProfiles: list<array<string, mixed>>}
      */
@@ -74,6 +82,52 @@ final class AiAgentRegistry
             ->get()
             ->map(fn (object $agent): array => $this->agentProfilePayload($agent))
             ->all();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function agentOptionsForProject(?string $projectId): array
+    {
+        $options = [];
+
+        foreach ($this->visibleServerAgentsForProject($projectId) as $agent) {
+            $visibleKey = $this->visibleAgentKeyFor((string) $agent->agent_key);
+
+            if (isset($options[$visibleKey])) {
+                continue;
+            }
+
+            $options[$visibleKey] = [
+                'agent_key' => $visibleKey,
+                'label' => $this->visibleAgentLabelFor((string) $agent->agent_key, (string) $agent->display_name),
+                'description' => (string) $agent->description,
+                'runtime' => 'server_agent',
+            ];
+        }
+
+        $options['local_agent'] = [
+            'agent_key' => 'local_agent',
+            'label' => 'Local agent',
+            'description' => 'Local plugin work queue.',
+            'runtime' => 'local_agent',
+        ];
+
+        return array_values($options);
+    }
+
+    public function agentVisibleForProject(string $agentKey, ?string $projectId): bool
+    {
+        if ($agentKey === 'local_agent') {
+            return true;
+        }
+
+        $agent = $this->agentProfileRecordForVisibilityKey($agentKey);
+        if (! $agent || ! $agent->enabled || $agent->default_model_profile_id === null) {
+            return false;
+        }
+
+        return $this->agentIsVisibleByScope($agent, $projectId);
     }
 
     /**
@@ -242,6 +296,125 @@ final class AiAgentRegistry
     }
 
     /**
+     * @param  array{
+     *     agent_key: string,
+     *     display_name: string,
+     *     description: string,
+     *     agent_type: string,
+     *     delegation_mode: string,
+     *     parent_agent_key?: string|null,
+     *     default_model_profile_id?: string|null,
+     *     requires_human_approval: bool,
+     *     enabled: bool,
+     *     allowed_tools?: array<int, string>,
+     *     output_schema?: array<string, mixed>|array<int, mixed>,
+     *     trigger_events?: array<int, string>,
+     *     visibility_scope?: string,
+     *     project_ids?: array<int, string>,
+     * } $input
+     * @return array<string, mixed>
+     */
+    public function createAgentProfile(array $input): array
+    {
+        $this->validateAgentKey($input['agent_key']);
+
+        if (DB::table('ai_agent_profiles')->where('agent_key', $input['agent_key'])->exists()) {
+            throw new InvalidArgumentException('Agent profile already exists.');
+        }
+
+        $agentId = (string) Str::ulid();
+        $now = now();
+        $visibilityScope = (string) ($input['visibility_scope'] ?? 'global');
+        $projectIds = $input['project_ids'] ?? [];
+
+        DB::transaction(function () use ($agentId, $input, $now, $projectIds, $visibilityScope): void {
+            DB::table('ai_agent_profiles')->insert([
+                'id' => $agentId,
+                'agent_key' => $input['agent_key'],
+                'display_name' => $input['display_name'],
+                'description' => $input['description'],
+                'agent_type' => $input['agent_type'],
+                'delegation_mode' => $input['delegation_mode'],
+                'parent_agent_key' => $input['parent_agent_key'] ?? null,
+                'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
+                'requires_human_approval' => $input['requires_human_approval'],
+                'enabled' => $input['enabled'],
+                'allowed_tools' => json_encode(array_values($input['allowed_tools'] ?? []), JSON_THROW_ON_ERROR),
+                'output_schema' => json_encode($input['output_schema'] ?? (object) [], JSON_THROW_ON_ERROR),
+                'trigger_events' => json_encode(array_values($input['trigger_events'] ?? []), JSON_THROW_ON_ERROR),
+                'visibility_scope' => $visibilityScope,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $this->syncAgentProjectVisibility($agentId, $visibilityScope, $projectIds, $now);
+        });
+
+        return $this->agentProfileById($agentId);
+    }
+
+    /**
+     * @param  array{
+     *     display_name: string,
+     *     description: string,
+     *     agent_type: string,
+     *     delegation_mode: string,
+     *     parent_agent_key?: string|null,
+     *     default_model_profile_id?: string|null,
+     *     requires_human_approval: bool,
+     *     enabled: bool,
+     *     allowed_tools?: array<int, string>,
+     *     output_schema?: array<string, mixed>|array<int, mixed>,
+     *     trigger_events?: array<int, string>,
+     *     visibility_scope?: string,
+     *     project_ids?: array<int, string>,
+     * } $input
+     * @return array<string, mixed>
+     */
+    public function replaceAgentProfile(string $agentKey, array $input): array
+    {
+        $agent = $this->agentProfileRecordByKey($agentKey);
+        $now = now();
+        $visibilityScope = (string) ($input['visibility_scope'] ?? 'global');
+        $projectIds = $input['project_ids'] ?? [];
+
+        DB::transaction(function () use ($agent, $input, $now, $projectIds, $visibilityScope): void {
+            DB::table('ai_agent_profiles')->where('id', $agent->id)->update([
+                'display_name' => $input['display_name'],
+                'description' => $input['description'],
+                'agent_type' => $input['agent_type'],
+                'delegation_mode' => $input['delegation_mode'],
+                'parent_agent_key' => $input['parent_agent_key'] ?? null,
+                'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
+                'requires_human_approval' => $input['requires_human_approval'],
+                'enabled' => $input['enabled'],
+                'allowed_tools' => json_encode(array_values($input['allowed_tools'] ?? []), JSON_THROW_ON_ERROR),
+                'output_schema' => json_encode($input['output_schema'] ?? (object) [], JSON_THROW_ON_ERROR),
+                'trigger_events' => json_encode(array_values($input['trigger_events'] ?? []), JSON_THROW_ON_ERROR),
+                'visibility_scope' => $visibilityScope,
+                'updated_at' => $now,
+            ]);
+
+            $this->syncAgentProjectVisibility((string) $agent->id, $visibilityScope, $projectIds, $now);
+        });
+
+        return $this->agentProfileById((string) $agent->id);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function deleteAgentProfile(string $agentKey): array
+    {
+        $agent = $this->agentProfileRecordByKey($agentKey);
+        $payload = $this->agentProfileById((string) $agent->id);
+
+        DB::table('ai_agent_profiles')->where('id', $agent->id)->delete();
+
+        return $payload;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function validateProvider(string $providerKey): array
@@ -299,6 +472,7 @@ final class AiAgentRegistry
     private function validateOpenCodeGoConnection(object $provider): array
     {
         $baseUrl = (string) $provider->base_url;
+
         $modelsEndpoint = $this->modelsEndpoint($baseUrl);
         $chatEndpoint = $this->chatCompletionsEndpoint($baseUrl);
         $apiKey = $this->decryptProviderApiKey($provider);
@@ -315,7 +489,8 @@ final class AiAgentRegistry
         }
 
         try {
-            $response = Http::withToken($apiKey)
+            $response = $this->httpClient
+                ->withToken($apiKey)
                 ->acceptJson()
                 ->timeout(10)
                 ->get($modelsEndpoint);
@@ -355,7 +530,8 @@ final class AiAgentRegistry
         }
 
         try {
-            $chatResponse = Http::withToken($apiKey)
+            $chatResponse = $this->httpClient
+                ->withToken($apiKey)
                 ->acceptJson()
                 ->asJson()
                 ->timeout(20)
@@ -433,6 +609,110 @@ final class AiAgentRegistry
     }
 
     /**
+     * @return array{provider_key: string, models: list<array{id: string}>, source: string, checked_at: string, message?: string}
+     */
+    public function getProviderModels(string $providerKey): array
+    {
+        if (! preg_match('/^[a-z0-9][a-z0-9_.-]*$/', $providerKey)) {
+            throw new InvalidArgumentException('Invalid provider key.');
+        }
+
+        $provider = DB::table('ai_model_providers')->where('provider_key', $providerKey)->first();
+        if (! $provider) {
+            throw new InvalidArgumentException('Model provider not found.');
+        }
+
+        $baseUrl = (string) $provider->base_url;
+
+        $modelsEndpoint = $this->modelsEndpoint($baseUrl);
+        $now = now()->toISOString();
+
+        if (! $provider->enabled) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'Provider is disabled.',
+            ];
+        }
+
+        $apiKey = $this->decryptProviderApiKey($provider);
+
+        if ($apiKey === null) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'API key not configured.',
+            ];
+        }
+
+        try {
+            $response = $this->httpClient
+                ->withToken($apiKey)
+                ->acceptJson()
+                ->timeout(10)
+                ->get($modelsEndpoint);
+        } catch (RuntimeException $exception) {
+            if ($exception->getMessage() === 'Provider endpoint URL is not allowed.') {
+                return [
+                    'provider_key' => $providerKey,
+                    'models' => [],
+                    'source' => 'remote',
+                    'checked_at' => $now,
+                    'message' => 'Provider endpoint URL is not allowed.',
+                ];
+            }
+
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'Could not reach the models endpoint.',
+            ];
+        } catch (Throwable) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'Could not reach the models endpoint.',
+            ];
+        }
+
+        if (! $response->successful()) {
+            return [
+                'provider_key' => $providerKey,
+                'models' => [],
+                'source' => 'remote',
+                'checked_at' => $now,
+                'message' => 'Models endpoint returned an error.',
+            ];
+        }
+
+        $allModelIds = $this->modelIdsFromResponse($response->json());
+
+        $models = $allModelIds;
+        if ($providerKey === 'opencode_go') {
+            $models = array_values(array_filter(
+                $allModelIds,
+                fn (string $id): bool => $this->isOpenCodeGoChatModel($id),
+            ));
+        }
+
+        return [
+            'provider_key' => $providerKey,
+            'models' => array_map(fn (string $id): array => ['id' => $id], $models),
+            'source' => 'remote',
+            'checked_at' => $now,
+            'message' => count($models) > 0 ? null : 'No chat/completions-compatible models found.',
+        ];
+    }
+
+    /**
      * @return list<string>
      */
     private function modelIdsFromResponse(mixed $payload): array
@@ -458,7 +738,23 @@ final class AiAgentRegistry
      */
     private function firstOpenCodeGoChatModel(array $models): ?string
     {
-        $preferred = [
+        $preferred = $this->openCodeGoChatModelIds();
+
+        foreach ($preferred as $model) {
+            if (in_array($model, $models, true)) {
+                return $model;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function openCodeGoChatModelIds(): array
+    {
+        return [
             'glm-5.2',
             'glm-5.1',
             'kimi-k2.7-code',
@@ -468,14 +764,11 @@ final class AiAgentRegistry
             'mimo-v2.5',
             'mimo-v2.5-pro',
         ];
+    }
 
-        foreach ($preferred as $model) {
-            if (in_array($model, $models, true)) {
-                return $model;
-            }
-        }
-
-        return null;
+    private function isOpenCodeGoChatModel(string $modelId): bool
+    {
+        return in_array($modelId, $this->openCodeGoChatModelIds(), true);
     }
 
     /**
@@ -499,20 +792,73 @@ final class AiAgentRegistry
     }
 
     /**
+     * @return list<object>
+     */
+    private function visibleServerAgentsForProject(?string $projectId): array
+    {
+        return DB::table('ai_agent_profiles')
+            ->where('enabled', true)
+            ->whereNotNull('default_model_profile_id')
+            ->orderByRaw("case when agent_key = 'socrate_supervisor' then 0 when agent_key = 'task_clarifier' then 1 when agent_key = 'backlog_triage' then 2 else 3 end")
+            ->orderBy('display_name')
+            ->get()
+            ->filter(fn (object $agent): bool => $this->agentIsVisibleByScope($agent, $projectId))
+            ->values()
+            ->all();
+    }
+
+    private function agentIsVisibleByScope(object $agent, ?string $projectId): bool
+    {
+        $visibilityScope = (string) ($agent->visibility_scope ?? 'global');
+
+        if ($visibilityScope === 'global') {
+            return true;
+        }
+
+        if ($visibilityScope !== 'project' || $projectId === null) {
+            return false;
+        }
+
+        return DB::table('ai_agent_project_visibility')
+            ->where('ai_agent_profile_id', $agent->id)
+            ->where('project_id', $projectId)
+            ->exists();
+    }
+
+    private function visibleAgentKeyFor(string $agentKey): string
+    {
+        return self::LEGACY_VISIBLE_AGENT_KEYS[$agentKey]['agent_key'] ?? $agentKey;
+    }
+
+    private function visibleAgentLabelFor(string $agentKey, string $displayName): string
+    {
+        return self::LEGACY_VISIBLE_AGENT_KEYS[$agentKey]['label'] ?? $displayName;
+    }
+
+    private function agentProfileRecordForVisibilityKey(string $agentKey): ?object
+    {
+        $backingAgentKey = $this->backingAgentKeyForVisibility($agentKey);
+
+        return DB::table('ai_agent_profiles')->where('agent_key', $backingAgentKey)->first();
+    }
+
+    private function backingAgentKeyForVisibility(string $agentKey): string
+    {
+        return match ($agentKey) {
+            'socrates' => 'socrate_supervisor',
+            'platon' => 'task_clarifier',
+            'aristoteles' => 'backlog_triage',
+            default => $agentKey,
+        };
+    }
+
+    /**
      * @param  array{default_model_profile_id?: string|null, enabled: bool}  $input
      * @return array<string, mixed>
      */
     public function updateAgentProfile(string $agentKey, array $input): array
     {
-        if (! preg_match('/^[a-z0-9][a-z0-9_.-]*$/', $agentKey)) {
-            throw new InvalidArgumentException('Invalid agent key.');
-        }
-
-        $agent = DB::table('ai_agent_profiles')->where('agent_key', $agentKey)->first();
-
-        if (! $agent) {
-            throw new InvalidArgumentException('Agent profile not found.');
-        }
+        $agent = $this->agentProfileRecordByKey($agentKey);
 
         DB::table('ai_agent_profiles')->where('id', $agent->id)->update([
             'default_model_profile_id' => $input['default_model_profile_id'] ?? null,
@@ -571,6 +917,37 @@ final class AiAgentRegistry
         return $this->modelProfilePayload($profile);
     }
 
+    private function agentProfileById(string $agentId): array
+    {
+        $agent = DB::table('ai_agent_profiles')->where('id', $agentId)->first();
+
+        if (! $agent) {
+            throw new InvalidArgumentException('Agent profile not found.');
+        }
+
+        return $this->agentProfilePayload($agent);
+    }
+
+    private function agentProfileRecordByKey(string $agentKey): object
+    {
+        $this->validateAgentKey($agentKey);
+
+        $agent = DB::table('ai_agent_profiles')->where('agent_key', $agentKey)->first();
+
+        if (! $agent) {
+            throw new InvalidArgumentException('Agent profile not found.');
+        }
+
+        return $agent;
+    }
+
+    private function validateAgentKey(string $agentKey): void
+    {
+        if (! preg_match('/^[a-z0-9][a-z0-9_.-]*$/', $agentKey)) {
+            throw new InvalidArgumentException('Invalid agent key.');
+        }
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -608,10 +985,58 @@ final class AiAgentRegistry
             'default_model_profile_id' => $agent->default_model_profile_id ? (string) $agent->default_model_profile_id : null,
             'requires_human_approval' => (bool) $agent->requires_human_approval,
             'enabled' => (bool) $agent->enabled,
+            'visibility_scope' => (string) ($agent->visibility_scope ?? 'global'),
+            'project_ids' => $this->agentProjectIds((string) $agent->id),
             'allowed_tools' => $this->decodeJsonList($agent->allowed_tools),
             'output_schema' => $this->decodeJsonObject($agent->output_schema),
             'trigger_events' => $this->decodeJsonList($agent->trigger_events),
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function agentProjectIds(string $agentId): array
+    {
+        return DB::table('ai_agent_project_visibility')
+            ->where('ai_agent_profile_id', $agentId)
+            ->orderBy('project_id')
+            ->pluck('project_id')
+            ->map(fn (mixed $projectId): string => (string) $projectId)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  list<string>  $projectIds
+     */
+    private function syncAgentProjectVisibility(string $agentId, string $visibilityScope, array $projectIds, mixed $now): void
+    {
+        DB::table('ai_agent_project_visibility')->where('ai_agent_profile_id', $agentId)->delete();
+
+        if ($visibilityScope !== 'project') {
+            return;
+        }
+
+        $distinctProjectIds = array_values(array_unique(array_map(
+            fn (mixed $projectId): string => (string) $projectId,
+            $projectIds,
+        )));
+
+        if ($distinctProjectIds === []) {
+            return;
+        }
+
+        DB::table('ai_agent_project_visibility')->insert(array_map(
+            fn (string $projectId): array => [
+                'id' => (string) Str::ulid(),
+                'ai_agent_profile_id' => $agentId,
+                'project_id' => $projectId,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            $distinctProjectIds,
+        ));
     }
 
     /**

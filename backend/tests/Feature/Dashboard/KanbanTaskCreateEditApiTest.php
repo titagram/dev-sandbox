@@ -1,6 +1,8 @@
 <?php
 
 use App\Models\User;
+use App\Services\Hades\HadesTokenService;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -8,7 +10,7 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('lets a pm create a project-scoped task with acceptance criteria and repository scope', function () {
@@ -50,7 +52,6 @@ it('lets a pm create a project-scoped task with acceptance criteria and reposito
         ->assertJsonPath('repositories.0.name', 'demo-repository');
 });
 
-
 it('queues local agent work when explicitly requested from a kanban task', function () {
     $pm = kanbanTaskCreateEditApiUserWithRole('PM');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
@@ -78,7 +79,7 @@ it('queues local agent work when explicitly requested from a kanban task', funct
         ->and($workItem->assigned_agent_key)->toBe('local_agent')
         ->and($workItem->status)->toBe('queued')
         ->and($workItem->repository_id)->toBe($repositoryId)
-        ->and($workItem->requires_memory_entry)->toBeTrue()
+        ->and((bool) $workItem->requires_memory_entry)->toBeTrue()
         ->and($payload['schema'])->toBe('hades.kanban_task_work.v1')
         ->and($payload['task_id'])->toBe($taskId)
         ->and($payload['task_type'])->toBe('bug')
@@ -718,7 +719,7 @@ function kanbanTaskCreateEditApiHadesWorkspaceBinding(string $projectId): array
         'updated_at' => $now,
     ]);
 
-    $token = app(\App\Services\Hades\HadesTokenService::class)->createAgentToken((object) [
+    $token = app(HadesTokenService::class)->createAgentToken((object) [
         'id' => $agentId,
         'project_id' => $projectId,
         'external_agent_id' => $externalAgentId,

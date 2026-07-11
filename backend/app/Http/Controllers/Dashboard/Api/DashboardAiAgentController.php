@@ -5,12 +5,13 @@ namespace App\Http\Controllers\Dashboard\Api;
 use App\Assistants\AiAgentRegistry;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
+use App\Rules\ProviderEndpointRule;
+use App\Services\AuditLogger;
 use DomainException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 
 final class DashboardAiAgentController extends Controller
@@ -30,7 +31,7 @@ final class DashboardAiAgentController extends Controller
 
         $validated = $request->validate([
             'display_name' => ['required', 'string', 'max:120'],
-            'base_url' => ['nullable', 'url', 'max:2048'],
+            'base_url' => ['nullable', 'url', 'max:2048', new ProviderEndpointRule],
             'api_key' => ['nullable', 'string', 'max:4096'],
             'clear_api_key' => ['sometimes', 'boolean'],
             'enabled' => ['required', 'boolean'],
@@ -42,24 +43,12 @@ final class DashboardAiAgentController extends Controller
             abort(404);
         }
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'ai_model_provider.updated',
-            'target_type' => 'ai_model_provider',
-            'target_id' => $payload['id'],
-            'ip_address' => $request->ip(),
-            'user_agent' => (string) $request->userAgent(),
-            'payload' => json_encode([
-                'provider_key' => $payload['provider_key'],
-                'display_name' => $payload['display_name'],
-                'base_url' => $payload['base_url'],
-                'enabled' => $payload['enabled'],
-                'api_key_configured' => $payload['api_key_configured'],
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        $this->audit($request, 'ai_model_provider.updated', 'ai_model_provider', $payload['id'], [
+            'provider_key' => $payload['provider_key'],
+            'display_name' => $payload['display_name'],
+            'base_url' => $payload['base_url'],
+            'enabled' => $payload['enabled'],
+            'api_key_configured' => $payload['api_key_configured'],
         ]);
 
         return response()->json(['provider' => $payload]);
@@ -86,29 +75,17 @@ final class DashboardAiAgentController extends Controller
             abort(404);
         }
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'ai_model_profile.updated',
-            'target_type' => 'ai_model_profile',
-            'target_id' => $payload['id'],
-            'ip_address' => $request->ip(),
-            'user_agent' => (string) $request->userAgent(),
-            'payload' => json_encode([
-                'profile_key' => $payload['profile_key'],
-                'display_name' => $payload['display_name'],
-                'provider_key' => $payload['provider_key'],
-                'model_name' => $payload['model_name'],
-                'runtime_profile' => $payload['runtime_profile'],
-                'max_context' => $payload['max_context'],
-                'max_output_tokens' => $payload['max_output_tokens'],
-                'temperature' => $payload['temperature'],
-                'timeout_seconds' => $payload['timeout_seconds'],
-                'enabled' => $payload['enabled'],
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        $this->audit($request, 'ai_model_profile.updated', 'ai_model_profile', $payload['id'], [
+            'profile_key' => $payload['profile_key'],
+            'display_name' => $payload['display_name'],
+            'provider_key' => $payload['provider_key'],
+            'model_name' => $payload['model_name'],
+            'runtime_profile' => $payload['runtime_profile'],
+            'max_context' => $payload['max_context'],
+            'max_output_tokens' => $payload['max_output_tokens'],
+            'temperature' => $payload['temperature'],
+            'timeout_seconds' => $payload['timeout_seconds'],
+            'enabled' => $payload['enabled'],
         ]);
 
         return response()->json(['model_profile' => $payload]);
@@ -137,25 +114,13 @@ final class DashboardAiAgentController extends Controller
             abort(404);
         }
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'ai_model_profile.created',
-            'target_type' => 'ai_model_profile',
-            'target_id' => $payload['id'],
-            'ip_address' => $request->ip(),
-            'user_agent' => (string) $request->userAgent(),
-            'payload' => json_encode([
-                'profile_key' => $payload['profile_key'],
-                'display_name' => $payload['display_name'],
-                'provider_key' => $payload['provider_key'],
-                'model_name' => $payload['model_name'],
-                'runtime_profile' => $payload['runtime_profile'],
-                'enabled' => $payload['enabled'],
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        $this->audit($request, 'ai_model_profile.created', 'ai_model_profile', $payload['id'], [
+            'profile_key' => $payload['profile_key'],
+            'display_name' => $payload['display_name'],
+            'provider_key' => $payload['provider_key'],
+            'model_name' => $payload['model_name'],
+            'runtime_profile' => $payload['runtime_profile'],
+            'enabled' => $payload['enabled'],
         ]);
 
         return response()->json(['model_profile' => $payload], 201);
@@ -173,24 +138,101 @@ final class DashboardAiAgentController extends Controller
             return response()->json(['message' => $exception->getMessage()], 409);
         }
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'ai_model_profile.deleted',
-            'target_type' => 'ai_model_profile',
-            'target_id' => $payload['id'],
-            'ip_address' => $request->ip(),
-            'user_agent' => (string) $request->userAgent(),
-            'payload' => json_encode([
-                'profile_key' => $payload['profile_key'],
-                'display_name' => $payload['display_name'],
-                'provider_key' => $payload['provider_key'],
-                'model_name' => $payload['model_name'],
-                'unassigned_agent_keys' => $payload['unassigned_agent_keys'] ?? [],
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        $this->audit($request, 'ai_model_profile.deleted', 'ai_model_profile', $payload['id'], [
+            'profile_key' => $payload['profile_key'],
+            'display_name' => $payload['display_name'],
+            'provider_key' => $payload['provider_key'],
+            'model_name' => $payload['model_name'],
+            'unassigned_agent_keys' => $payload['unassigned_agent_keys'] ?? [],
+        ]);
+
+        return response()->noContent();
+    }
+
+    public function storeAgentProfile(Request $request, AiAgentRegistry $registry): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        $validated = $request->validate($this->agentProfileRules());
+
+        try {
+            $payload = $registry->createAgentProfile($validated);
+        } catch (InvalidArgumentException) {
+            abort(404);
+        }
+
+        $this->audit($request, 'ai_agent_profile.created', 'ai_agent_profile', $payload['id'], [
+            'agent_key' => $payload['agent_key'],
+            'display_name' => $payload['display_name'],
+            'description' => $payload['description'],
+            'agent_type' => $payload['agent_type'],
+            'delegation_mode' => $payload['delegation_mode'],
+            'parent_agent_key' => $payload['parent_agent_key'],
+            'default_model_profile_id' => $payload['default_model_profile_id'],
+            'requires_human_approval' => $payload['requires_human_approval'],
+            'enabled' => $payload['enabled'],
+            'allowed_tools' => $payload['allowed_tools'],
+            'output_schema' => $payload['output_schema'],
+            'trigger_events' => $payload['trigger_events'],
+            'visibility_scope' => $payload['visibility_scope'],
+            'project_ids' => $payload['project_ids'],
+        ]);
+
+        return response()->json(['agent_profile' => $payload], 201);
+    }
+
+    public function replaceAgentProfile(Request $request, AiAgentRegistry $registry, string $agent): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        $validated = $request->validate($this->agentProfileRules(false));
+
+        try {
+            $payload = $registry->replaceAgentProfile($agent, $validated);
+        } catch (InvalidArgumentException) {
+            abort(404);
+        }
+
+        $this->audit($request, 'ai_agent_profile.replaced', 'ai_agent_profile', $payload['id'], [
+            'agent_key' => $payload['agent_key'],
+            'display_name' => $payload['display_name'],
+            'description' => $payload['description'],
+            'agent_type' => $payload['agent_type'],
+            'delegation_mode' => $payload['delegation_mode'],
+            'parent_agent_key' => $payload['parent_agent_key'],
+            'default_model_profile_id' => $payload['default_model_profile_id'],
+            'requires_human_approval' => $payload['requires_human_approval'],
+            'enabled' => $payload['enabled'],
+            'allowed_tools' => $payload['allowed_tools'],
+            'output_schema' => $payload['output_schema'],
+            'trigger_events' => $payload['trigger_events'],
+            'visibility_scope' => $payload['visibility_scope'],
+            'project_ids' => $payload['project_ids'],
+        ]);
+
+        return response()->json(['agent_profile' => $payload]);
+    }
+
+    public function destroyAgentProfile(Request $request, AiAgentRegistry $registry, string $agent): Response
+    {
+        $this->abortUnlessAdmin($request);
+
+        try {
+            $payload = $registry->deleteAgentProfile($agent);
+        } catch (InvalidArgumentException) {
+            abort(404);
+        }
+
+        $this->audit($request, 'ai_agent_profile.deleted', 'ai_agent_profile', $payload['id'], [
+            'agent_key' => $payload['agent_key'],
+            'display_name' => $payload['display_name'],
+            'description' => $payload['description'],
+            'agent_type' => $payload['agent_type'],
+            'delegation_mode' => $payload['delegation_mode'],
+            'parent_agent_key' => $payload['parent_agent_key'],
+            'default_model_profile_id' => $payload['default_model_profile_id'],
+            'requires_human_approval' => $payload['requires_human_approval'],
+            'enabled' => $payload['enabled'],
         ]);
 
         return response()->noContent();
@@ -206,25 +248,26 @@ final class DashboardAiAgentController extends Controller
             abort(404);
         }
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'ai_model_provider.validated',
-            'target_type' => 'ai_model_provider',
-            'target_id' => $validation['provider_key'],
-            'ip_address' => $request->ip(),
-            'user_agent' => (string) $request->userAgent(),
-            'payload' => json_encode([
-                'provider_key' => $validation['provider_key'],
-                'status' => $validation['status'],
-                'checks' => $validation['checks'],
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        $this->audit($request, 'ai_model_provider.validated', 'ai_model_provider', $validation['provider_key'], [
+            'provider_key' => $validation['provider_key'],
+            'status' => $validation['status'],
+            'checks' => $validation['checks'],
         ]);
 
         return response()->json(['validation' => $validation]);
+    }
+
+    public function providerModels(Request $request, AiAgentRegistry $registry, string $provider): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        try {
+            $result = $registry->getProviderModels($provider);
+        } catch (InvalidArgumentException) {
+            abort(404);
+        }
+
+        return response()->json($result);
     }
 
     public function updateAgentProfile(Request $request, AiAgentRegistry $registry, string $agent): JsonResponse
@@ -242,22 +285,10 @@ final class DashboardAiAgentController extends Controller
             abort(404);
         }
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'ai_agent_profile.updated',
-            'target_type' => 'ai_agent_profile',
-            'target_id' => $payload['id'],
-            'ip_address' => $request->ip(),
-            'user_agent' => (string) $request->userAgent(),
-            'payload' => json_encode([
-                'agent_key' => $payload['agent_key'],
-                'default_model_profile_id' => $payload['default_model_profile_id'],
-                'enabled' => $payload['enabled'],
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        $this->audit($request, 'ai_agent_profile.updated', 'ai_agent_profile', $payload['id'], [
+            'agent_key' => $payload['agent_key'],
+            'default_model_profile_id' => $payload['default_model_profile_id'],
+            'enabled' => $payload['enabled'],
         ]);
 
         return response()->json(['agent_profile' => $payload]);
@@ -266,5 +297,49 @@ final class DashboardAiAgentController extends Controller
     private function abortUnlessAdmin(Request $request): void
     {
         abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function audit(Request $request, string $action, string $targetType, string $targetId, array $payload): void
+    {
+        app(AuditLogger::class)->record($action, $targetType, $targetId, $payload, [
+            'type' => 'user',
+            'user_id' => $request->user()->id,
+            'ip_address' => $request->ip(),
+            'user_agent' => (string) $request->userAgent(),
+        ]);
+    }
+
+    /**
+     * @return array<string, array<int, string>>
+     */
+    private function agentProfileRules(bool $includeAgentKey = true): array
+    {
+        $rules = [
+            'display_name' => ['required', 'string', 'max:120'],
+            'description' => ['required', 'string', 'max:2000'],
+            'agent_type' => ['required', 'string', 'max:80', 'regex:/^[a-z0-9][a-z0-9_.-]*$/'],
+            'delegation_mode' => ['required', 'string', 'max:80', 'regex:/^[a-z0-9][a-z0-9_.-]*$/'],
+            'parent_agent_key' => ['nullable', 'string', 'exists:ai_agent_profiles,agent_key'],
+            'default_model_profile_id' => ['nullable', 'string', 'exists:ai_model_profiles,id'],
+            'requires_human_approval' => ['required', 'boolean'],
+            'enabled' => ['required', 'boolean'],
+            'allowed_tools' => ['sometimes', 'array'],
+            'allowed_tools.*' => ['string', 'max:120', 'regex:/^[a-z0-9][a-z0-9_.-]*$/'],
+            'output_schema' => ['sometimes', 'array'],
+            'trigger_events' => ['sometimes', 'array'],
+            'trigger_events.*' => ['string', 'max:120', 'regex:/^[a-z0-9][a-z0-9_.-]*$/'],
+            'visibility_scope' => ['sometimes', 'string', Rule::in(['global', 'project'])],
+            'project_ids' => ['sometimes', 'array'],
+            'project_ids.*' => ['string', 'exists:projects,id'],
+        ];
+
+        if ($includeAgentKey) {
+            $rules['agent_key'] = ['required', 'string', 'max:80', 'regex:/^[a-z0-9][a-z0-9_.-]*$/', 'unique:ai_agent_profiles,agent_key'];
+        }
+
+        return $rules;
     }
 }

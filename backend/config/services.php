@@ -39,11 +39,23 @@ return [
         'uri' => env('NEO4J_URI', 'bolt://localhost:7687'),
         'auth' => [
             env('NEO4J_USER', 'neo4j'),
-            env('NEO4J_PASSWORD', 'graphify-sandbox'),
+            env('NEO4J_PASSWORD'),
         ],
     ],
 
     'devboard' => [
+        /*
+        |----------------------------------------------------------------------
+        | AI provider endpoints are validated at runtime by ProviderEndpointPolicy
+        | before any HTTP call. The policy resolves each provider host through
+        | a ProviderHostResolver (bound in AppServiceProvider to
+        | SystemProviderHostResolver, which queries A and AAAA records) and
+        | rejects the host unless every returned address is public. Unresolved
+        | hosts fail closed. Private, loopback, link-local, multicast, and
+        | reserved addresses are blocked. See App\Assistants\ProviderEndpointPolicy
+        | and App\Assistants\ProviderHostResolver.
+        |----------------------------------------------------------------------
+        */
         'graph_import_mode' => env('DEVBOARD_GRAPH_IMPORT_MODE', 'neo4j'),
         'graph_import_job_tries' => env('DEVBOARD_GRAPH_IMPORT_JOB_TRIES', 3),
         'graph_import_job_backoff_seconds' => array_map(

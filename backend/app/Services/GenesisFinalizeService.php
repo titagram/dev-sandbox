@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Jobs\ImportGenesisGraphToNeo4j;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -11,115 +10,158 @@ class GenesisFinalizeService
     public function __construct(
         private readonly ArtifactStorageService $storage,
         private readonly WikiRevisionService $wiki,
-    )
-    {
-    }
+        private readonly GraphImportQueueService $graphQueue,
+    ) {}
 
     /**
      * @return array{status: string, snapshot_id: string}
      */
     public function finalize(string $importId, bool $allowBlockedSecurityFindings = false): array
     {
-        $import = DB::table('genesis_imports')->where('id', $importId)->first();
-        if (! $import) {
-            throw new ArtifactStorageException('schema_validation_failed', 'Genesis import was not found.');
-        }
+        $dispatchGraphImportAfterCommit = false;
+        $transactionalQueue = $this->graphQueue->isTransactionalDatabaseQueue();
+        $rejectedArtifact = null;
 
-        $artifacts = DB::table('artifacts')
-            ->where('run_id', $import->run_id)
-            ->where('repository_id', $import->repository_id)
-            ->get();
+        try {
+            $result = DB::transaction(function () use ($importId, $allowBlockedSecurityFindings, $transactionalQueue, &$dispatchGraphImportAfterCommit, &$rejectedArtifact): array {
+                $import = DB::table('genesis_imports')->where('id', $importId)->lockForUpdate()->first();
+                if (! $import) {
+                    throw new ArtifactStorageException('schema_validation_failed', 'Genesis import was not found.');
+                }
 
-        foreach ($artifacts as $artifact) {
-            $this->storage->assembleArtifact($artifact, $importId);
-        }
+                if ($import->snapshot_id !== null) {
+                    $snapshotHasGraph = DB::table('snapshots')
+                        ->where('id', $import->snapshot_id)
+                        ->whereNotNull('graph_snapshot_artifact_id')
+                        ->exists();
+                    if ($snapshotHasGraph && $this->graphQueue->needsDispatch('genesis', $importId)) {
+                        if ($transactionalQueue) {
+                            $this->graphQueue->dispatchIfNeeded('genesis', $importId);
+                        } else {
+                            $dispatchGraphImportAfterCommit = true;
+                        }
+                    }
 
-        $securityReport = $artifacts->firstWhere('artifact_type', 'security_report');
-        if ($securityReport) {
-            $report = json_decode($this->storage->artifactContents($securityReport), true, 512, JSON_THROW_ON_ERROR);
-            $blocked = $this->blockedFindings($report);
-            if ($blocked !== [] && ! $allowBlockedSecurityFindings) {
+                    return ['status' => (string) $import->status, 'snapshot_id' => (string) $import->snapshot_id];
+                }
+
+                $artifacts = DB::table('artifacts')
+                    ->where('project_id', $import->project_id)
+                    ->where('repository_id', $import->repository_id)
+                    ->where('run_id', $import->run_id)
+                    ->where('storage_path', 'like', "devboard/artifacts/genesis/{$importId}/%/artifact")
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
+
+                foreach ($artifacts as $artifact) {
+                    $rejectedArtifact = $artifact;
+                    $this->storage->assembleArtifact($artifact, $importId);
+                    $rejectedArtifact = null;
+                }
+
+                $securityReport = $artifacts->firstWhere('artifact_type', 'security_report');
+                if ($securityReport) {
+                    $report = json_decode($this->storage->artifactContents($securityReport), true, 512, JSON_THROW_ON_ERROR);
+                    $blocked = $this->blockedFindings($report);
+                    if ($blocked !== [] && ! $allowBlockedSecurityFindings) {
+                        throw new ArtifactStorageException('secret_scan_blocked', 'Security report contains blocked findings.');
+                    }
+
+                    if ($blocked !== []) {
+                        $this->recordBlockedSecurityApproval(
+                            runId: $import->run_id,
+                            targetType: 'genesis_import',
+                            targetId: $importId,
+                            blocked: $blocked,
+                        );
+                    }
+                }
+
+                $this->writeWikiRevisions($artifacts, $import);
+
+                $artifactIds = $artifacts->pluck('id')->all();
+                if ($artifactIds !== []) {
+                    DB::table('artifacts')->whereIn('id', $artifactIds)->update([
+                        'status' => 'imported',
+                        'updated_at' => now(),
+                    ]);
+                }
+
+                $fileInventory = $artifacts->firstWhere('artifact_type', 'file_inventory');
+                $graphSnapshot = $artifacts->firstWhere('artifact_type', 'graph_snapshot');
+                $snapshotId = (string) Str::ulid();
+
+                DB::table('snapshots')->insert([
+                    'id' => $snapshotId,
+                    'project_id' => $import->project_id,
+                    'repository_id' => $import->repository_id,
+                    'local_workspace_id' => $import->local_workspace_id,
+                    'source_type' => 'local_plugin_snapshot',
+                    'branch' => $import->base_branch,
+                    'base_sha' => $import->base_sha,
+                    'head_sha' => $import->head_sha,
+                    'dirty_status' => 'clean',
+                    'file_inventory_artifact_id' => $fileInventory?->id,
+                    'graph_snapshot_artifact_id' => $graphSnapshot?->id,
+                    'created_by_run_id' => $import->run_id,
+                    'created_at' => now(),
+                ]);
+
                 DB::table('genesis_imports')->where('id', $importId)->update([
-                    'status' => 'failed',
+                    'status' => 'active',
+                    'snapshot_id' => $snapshotId,
+                    'finished_at' => now(),
                     'updated_at' => now(),
                 ]);
 
-                throw new ArtifactStorageException('secret_scan_blocked', 'Security report contains blocked findings.');
+                DB::table('run_events')->insert([
+                    'id' => (string) Str::ulid(),
+                    'run_id' => $import->run_id,
+                    'event_type' => 'genesis.finalized',
+                    'severity' => 'info',
+                    'message' => 'Genesis import finalized.',
+                    'payload' => json_encode(['genesis_import_id' => $importId, 'snapshot_id' => $snapshotId], JSON_THROW_ON_ERROR),
+                    'created_at' => now(),
+                ]);
+
+                app(AuditLogger::class)->record('genesis.finalized', 'genesis_import', $importId, [
+                    'snapshot_id' => $snapshotId,
+                ], ['type' => 'plugin']);
+
+                if ($graphSnapshot) {
+                    if ($transactionalQueue) {
+                        $this->graphQueue->dispatchIfNeeded('genesis', $importId);
+                    } else {
+                        $dispatchGraphImportAfterCommit = true;
+                    }
+                }
+
+                return ['status' => 'active', 'snapshot_id' => $snapshotId];
+            }, 3);
+
+            if ($dispatchGraphImportAfterCommit) {
+                $this->graphQueue->dispatchIfNeeded('genesis', $importId);
             }
 
-            if ($blocked !== []) {
-                $this->recordBlockedSecurityApproval(
-                    runId: $import->run_id,
-                    targetType: 'genesis_import',
-                    targetId: $importId,
-                    blocked: $blocked,
-                );
+            return $result;
+        } catch (ArtifactStorageException $exception) {
+            if ($rejectedArtifact !== null) {
+                app(AuditLogger::class)->record('artifact.rejected', 'artifact', $rejectedArtifact->id, [
+                    'artifact_type' => $rejectedArtifact->artifact_type,
+                    'reason' => $exception->getMessage(),
+                ], ['type' => 'plugin']);
             }
+
+            if ($exception->errorCode === 'secret_scan_blocked') {
+                DB::table('genesis_imports')->where('id', $importId)->whereNull('snapshot_id')->update([
+                    'status' => 'failed',
+                    'updated_at' => now(),
+                ]);
+            }
+
+            throw $exception;
         }
-
-        $this->writeWikiRevisions($artifacts, $import);
-
-        DB::table('artifacts')
-            ->where('run_id', $import->run_id)
-            ->where('repository_id', $import->repository_id)
-            ->update(['status' => 'imported', 'updated_at' => now()]);
-
-        $fileInventory = $artifacts->firstWhere('artifact_type', 'file_inventory');
-        $graphSnapshot = $artifacts->firstWhere('artifact_type', 'graph_snapshot');
-        $snapshotId = (string) Str::ulid();
-
-        DB::table('snapshots')->insert([
-            'id' => $snapshotId,
-            'project_id' => $import->project_id,
-            'repository_id' => $import->repository_id,
-            'local_workspace_id' => $import->local_workspace_id,
-            'source_type' => 'local_plugin_snapshot',
-            'branch' => $import->base_branch,
-            'base_sha' => $import->base_sha,
-            'head_sha' => $import->head_sha,
-            'dirty_status' => 'clean',
-            'file_inventory_artifact_id' => $fileInventory?->id,
-            'graph_snapshot_artifact_id' => $graphSnapshot?->id,
-            'created_by_run_id' => $import->run_id,
-            'created_at' => now(),
-        ]);
-
-        DB::table('genesis_imports')->where('id', $importId)->update([
-            'status' => 'active',
-            'snapshot_id' => $snapshotId,
-            'finished_at' => now(),
-            'updated_at' => now(),
-        ]);
-
-        DB::table('run_events')->insert([
-            'id' => (string) Str::ulid(),
-            'run_id' => $import->run_id,
-            'event_type' => 'genesis.finalized',
-            'severity' => 'info',
-            'message' => 'Genesis import finalized.',
-            'payload' => json_encode(['genesis_import_id' => $importId, 'snapshot_id' => $snapshotId], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
-        ]);
-
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => null,
-            'actor_device_id' => null,
-            'actor_type' => 'plugin',
-            'action' => 'genesis.finalized',
-            'target_type' => 'genesis_import',
-            'target_id' => $importId,
-            'ip_address' => null,
-            'user_agent' => null,
-            'payload' => json_encode(['snapshot_id' => $snapshotId], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
-        ]);
-
-        if ($graphSnapshot) {
-            ImportGenesisGraphToNeo4j::dispatch($importId);
-        }
-
-        return ['status' => 'active', 'snapshot_id' => $snapshotId];
     }
 
     /**
@@ -151,7 +193,7 @@ class GenesisFinalizeService
     }
 
     /**
-     * @param list<array<string, string>> $blocked
+     * @param  list<array<string, string>>  $blocked
      */
     private function recordBlockedSecurityApproval(string $runId, string $targetType, string $targetId, array $blocked): void
     {
@@ -172,18 +214,9 @@ class GenesisFinalizeService
             'created_at' => now(),
         ]);
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => null,
-            'actor_device_id' => $run?->device_id,
-            'actor_type' => 'plugin',
-            'action' => 'security.blocked_upload_approved',
-            'target_type' => $targetType,
-            'target_id' => $targetId,
-            'ip_address' => null,
-            'user_agent' => null,
-            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-            'created_at' => now(),
+        app(AuditLogger::class)->record('security.blocked_upload_approved', $targetType, $targetId, $payload, [
+            'type' => 'plugin',
+            'device_id' => $run?->device_id,
         ]);
     }
 

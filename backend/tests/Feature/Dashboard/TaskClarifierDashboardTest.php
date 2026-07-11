@@ -1,7 +1,9 @@
 <?php
 
 use App\Assistants\Agents\TaskClarifierAgent;
+use App\Assistants\ProviderHostResolver;
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -13,7 +15,12 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->withoutVite();
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new TaskClarifierFakeHostResolver(['8.8.8.8'], [
+            'ssrf-clarify.example.test' => ['192.168.1.2'],
+        ]);
+    });
 });
 
 it('creates a structured task clarification suggestion without mutating the task', function () {
@@ -450,8 +457,59 @@ function taskClarifierConfigureProvider(): void
     ]);
 }
 
+final class TaskClarifierFakeHostResolver implements ProviderHostResolver
+{
+    /** @param list<string> $default @param array<string, list<string>> $overrides */
+    public function __construct(private array $default, private array $overrides = []) {}
+
+    public function resolve(string $host): array
+    {
+        return $this->overrides[strtolower($host)] ?? $this->default;
+    }
+}
+
+it('revalidates the task clarifier provider endpoint at use time and returns the deterministic fallback without dispatching for an unsafe stored URL', function () {
+    Http::preventStrayRequests();
+    Http::fake(fn () => Http::response('should not be called', 200));
+
+    $providerId = (string) DB::table('ai_model_providers')->where('provider_key', 'openai')->value('id');
+    $agentId = DB::table('ai_agent_profiles')->where('agent_key', 'task_clarifier')->value('id');
+    $profileId = DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+
+    DB::table('ai_model_providers')->where('id', $providerId)->update([
+        'base_url' => 'https://ssrf-clarify.example.test/v1',
+        'encrypted_api_key' => Crypt::encryptString('sk-opencode-test'),
+        'api_key_last_four' => 'test',
+        'enabled' => true,
+    ]);
+    DB::table('ai_agent_profiles')->where('id', $agentId)->update(['default_model_profile_id' => $profileId, 'enabled' => true]);
+    DB::table('ai_model_profiles')->where('id', $profileId)->update(['enabled' => true, 'provider_id' => $providerId]);
+
+    $pm = taskClarifierUserWithRole('PM');
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $taskId = taskClarifierCreateTask($projectId, $pm, [
+        'title' => 'Unsafe endpoint clarify',
+        'description' => 'The task should fall back without calling the provider.',
+    ]);
+
+    $response = $this->actingAs($pm)
+        ->postJson("/api/dashboard/tasks/{$taskId}/assistant/clarify")
+        ->assertCreated();
+
+    $metadata = json_decode(
+        (string) DB::table('assistant_runs')->where('id', $response->json('run.id'))->value('metadata'),
+        true,
+        flags: JSON_THROW_ON_ERROR
+    );
+
+    expect($metadata['execution_mode'])->toBe('deterministic_fallback')
+        ->and($metadata['external_provider_call'])->toBeFalse();
+
+    Http::assertNothingSent();
+});
+
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  */
 function taskClarifierCreateTask(string $projectId, User $user, array $overrides = []): string
 {

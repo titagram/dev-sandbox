@@ -23,9 +23,11 @@ python3 -m venv /tmp/devboard-plugin-venv
 ## Full acceptance
 
 ```bash
-scripts/devboard_runtime_acceptance.sh
+DEVBOARD_RUNTIME_ACCEPTANCE=1 scripts/devboard_runtime_acceptance.sh
 cat /tmp/devboard-runtime-acceptance-report.json
 ```
+
+The harness uses a dedicated Compose project and removes only its isolated volumes. It refuses to run without the explicit acceptance flag.
 
 ## Expected success signals
 

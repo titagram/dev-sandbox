@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Plugin\Concerns;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
 trait HandlesRunResponses
@@ -38,7 +39,7 @@ trait HandlesRunResponses
         array $payload = [],
     ): void {
         DB::table('run_events')->insert([
-            'id' => (string) \Illuminate\Support\Str::ulid(),
+            'id' => (string) Str::ulid(),
             'run_id' => $runId,
             'event_type' => $eventType,
             'severity' => $severity,

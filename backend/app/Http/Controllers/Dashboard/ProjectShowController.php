@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Dashboard;
 
+use App\Assistants\AiAgentRegistry;
 use App\Assistants\BacklogTriageService;
 use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
@@ -15,7 +16,7 @@ class ProjectShowController extends Controller
 {
     use ChecksDashboardRoles;
 
-    public function __invoke(Request $request, BacklogTriageService $triage, DashboardApiReader $reader, string $project): Response
+    public function __invoke(Request $request, BacklogTriageService $triage, DashboardApiReader $reader, AiAgentRegistry $agents, string $project): Response
     {
         $projectRow = DB::table('projects')->where('id', $project)->firstOrFail();
         $repositories = DB::table('repositories')->where('project_id', $project)->orderBy('name')->get()->map(function (object $repository) {
@@ -61,6 +62,7 @@ class ProjectShowController extends Controller
             'assistant' => [
                 'triage_href' => "/api/dashboard/projects/{$projectRow->id}/assistant/backlog-triage",
                 'agent_work_href' => "/api/dashboard/projects/{$projectRow->id}/agent-work",
+                'agent_options' => $agents->agentOptionsForProject((string) $projectRow->id),
                 'can_triage' => $this->userHasRole($request->user(), 'Admin') || $this->userHasRole($request->user(), 'PM'),
                 'latest_backlog_triage_suggestion' => $triage->latestSuggestionForProject((string) $projectRow->id),
             ],

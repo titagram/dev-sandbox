@@ -6,6 +6,7 @@ use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Projects\ProjectLifecycleService;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -108,26 +109,19 @@ final class DashboardTaskAttachmentController extends Controller
                 'updated_at' => $now,
             ]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $request->user()->id,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'task_attachment.uploaded',
-                'target_type' => 'task_attachment',
-                'target_id' => $attachmentId,
+            app(AuditLogger::class)->record('task_attachment.uploaded', 'task_attachment', $attachmentId, [
+                'project_id' => (string) $taskRow->project_id,
+                'task_id' => $task,
+                'attachment_id' => $attachmentId,
+                'name' => $originalName,
+                'mime_type' => $mime,
+                'size_bytes' => $file->getSize(),
+                'sha256' => $sha256,
+            ], [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
                 'ip_address' => $request->ip(),
                 'user_agent' => $request->userAgent(),
-                'payload' => json_encode([
-                    'project_id' => (string) $taskRow->project_id,
-                    'task_id' => $task,
-                    'attachment_id' => $attachmentId,
-                    'name' => $originalName,
-                    'mime_type' => $mime,
-                    'size_bytes' => $file->getSize(),
-                    'sha256' => $sha256,
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
             ]);
         });
 
@@ -154,29 +148,23 @@ final class DashboardTaskAttachmentController extends Controller
         );
         abort_unless(Storage::disk('local')->exists((string) $attachmentRow->storage_path), 404);
 
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $request->user()->id,
-            'actor_device_id' => null,
-            'actor_type' => 'user',
-            'action' => 'task_attachment.downloaded',
-            'target_type' => 'task_attachment',
-            'target_id' => (string) $attachmentRow->id,
+        $contents = Storage::disk('local')->get((string) $attachmentRow->storage_path);
+
+        app(AuditLogger::class)->record('task_attachment.downloaded', 'task_attachment', (string) $attachmentRow->id, [
+            'project_id' => (string) $attachmentRow->project_id,
+            'task_id' => (string) $attachmentRow->task_id,
+            'attachment_id' => (string) $attachmentRow->id,
+            'name' => (string) $attachmentRow->original_name,
+            'mime_type' => (string) $attachmentRow->mime_type,
+            'size_bytes' => (int) $attachmentRow->size_bytes,
+            'sha256' => (string) $attachmentRow->sha256,
+        ], [
+            'type' => 'user',
+            'user_id' => $request->user()->id,
             'ip_address' => $request->ip(),
             'user_agent' => $request->userAgent(),
-            'payload' => json_encode([
-                'project_id' => (string) $attachmentRow->project_id,
-                'task_id' => (string) $attachmentRow->task_id,
-                'attachment_id' => (string) $attachmentRow->id,
-                'name' => (string) $attachmentRow->original_name,
-                'mime_type' => (string) $attachmentRow->mime_type,
-                'size_bytes' => (int) $attachmentRow->size_bytes,
-                'sha256' => (string) $attachmentRow->sha256,
-            ], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
         ]);
 
-        $contents = Storage::disk('local')->get((string) $attachmentRow->storage_path);
         $disposition = $attachmentRow->kind === 'image' ? 'inline' : 'attachment';
         $filename = addcslashes((string) $attachmentRow->original_name, '"\\');
 
@@ -231,26 +219,19 @@ final class DashboardTaskAttachmentController extends Controller
                 ->where('id', $task)
                 ->update(['updated_at' => $now]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $request->user()->id,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'task_attachment.deleted',
-                'target_type' => 'task_attachment',
-                'target_id' => (string) $attachmentRow->id,
+            app(AuditLogger::class)->record('task_attachment.deleted', 'task_attachment', (string) $attachmentRow->id, [
+                'project_id' => (string) $attachmentRow->project_id,
+                'task_id' => (string) $attachmentRow->task_id,
+                'attachment_id' => (string) $attachmentRow->id,
+                'name' => (string) $attachmentRow->original_name,
+                'mime_type' => (string) $attachmentRow->mime_type,
+                'size_bytes' => (int) $attachmentRow->size_bytes,
+                'sha256' => (string) $attachmentRow->sha256,
+            ], [
+                'type' => 'user',
+                'user_id' => $request->user()->id,
                 'ip_address' => $request->ip(),
                 'user_agent' => $request->userAgent(),
-                'payload' => json_encode([
-                    'project_id' => (string) $attachmentRow->project_id,
-                    'task_id' => (string) $attachmentRow->task_id,
-                    'attachment_id' => (string) $attachmentRow->id,
-                    'name' => (string) $attachmentRow->original_name,
-                    'mime_type' => (string) $attachmentRow->mime_type,
-                    'size_bytes' => (int) $attachmentRow->size_bytes,
-                    'sha256' => (string) $attachmentRow->sha256,
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
             ]);
         });
 

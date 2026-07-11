@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -8,7 +9,7 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('lets admin and pm declare repositories and exposes kickstart pairing state', function () {
@@ -193,7 +194,7 @@ function kickstartPluginTokenWithDevice(): array
 }
 
 /**
- * @param array{plain_token: string, device_id: string} $token
+ * @param  array{plain_token: string, device_id: string}  $token
  * @return array<string, string>
  */
 function kickstartPluginHeaders(array $token): array

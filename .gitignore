@@ -7,6 +7,7 @@ __pycache__/
 plugin/src/*.egg-info/
 analyzer/src/*.egg-info/
 .DS_Store
+/.env
 ai-sandbox/.venv/
 graphify-out/
 .devboard/
@@ -15,8 +16,12 @@ ai-sandbox/graph/*.cypher
 ai-sandbox/graph/*.html
 ai-sandbox/docs/discovery.json
 ai-sandbox/docs/discovery.md
+backend/.env
+backend/.env.*
+!backend/.env.example
 /backend/var/quality/reports/
 /backend/var/quality/tmp/
 /backend/test-results/
 /backend/playwright-report/
 .env
+backend/vendor/pestphp/pest/.temp/test-results

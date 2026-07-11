@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -8,7 +9,7 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('persists local agent reported git workspace metadata and exposes it to dashboard readers', function () {
@@ -160,7 +161,7 @@ function gitStatePluginTokenWithDevice(): array
 }
 
 /**
- * @param array{plain_token: string, device_id: string} $token
+ * @param  array{plain_token: string, device_id: string}  $token
  * @return array<string, string>
  */
 function gitStatePluginHeaders(array $token): array

@@ -1,6 +1,8 @@
 <?php
 
+use App\Assistants\ProviderHostResolver;
 use App\Models\User;
+use App\Services\ServerAgentWorkService;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -14,6 +16,11 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->seed(DevBoardSeeder::class);
+    $this->app->singleton(ProviderHostResolver::class, function () {
+        return new AgentWorkFakeHostResolver(['8.8.8.8'], [
+            'ssrf-agent-work.example.test' => ['10.0.0.5'],
+        ]);
+    });
 });
 
 it('lets a developer create and list local agent work with repository and task scope', function () {
@@ -143,6 +150,123 @@ it('runs socrates work through the configured OpenAI compatible provider and sto
         && $request->hasHeader('Authorization', 'Bearer sk-opencode-test'));
 });
 
+it('runs a custom enabled backend agent profile through agent work', function () {
+    Http::fake([
+        'https://opencode.ai/zen/go/v1/chat/completions' => Http::response([
+            'choices' => [['message' => ['content' => 'Custom reviewer answer.']]],
+        ]),
+    ]);
+
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    agentWorkDashboardApiConfigureSocratesProvider();
+
+    DB::table('ai_agent_profiles')->insert([
+        'id' => (string) Str::ulid(),
+        'agent_key' => 'design_reviewer',
+        'display_name' => 'Design Reviewer',
+        'description' => 'Reviews product and architecture decisions from DevBoard context.',
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id'),
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+        'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+        'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $workItem = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => 'design_reviewer',
+            'title' => 'Ask custom reviewer',
+            'prompt' => 'Valuta il contesto disponibile e rispondi in modo sintetico.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('assigned_agent_key', 'design_reviewer')
+        ->assertJsonPath('status', 'completed')
+        ->json();
+
+    expect(DB::table('project_memory_entries')->where('id', $workItem['result_memory_entry_id'])->value('agent_key'))
+        ->toBe('design_reviewer');
+
+    Http::assertSent(fn ($request): bool => $request->url() === 'https://opencode.ai/zen/go/v1/chat/completions'
+        && str_contains($request->body(), 'Design Reviewer (design_reviewer)'));
+});
+
+it('rejects project-scoped agent work for projects without visibility', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = agentWorkDashboardApiProject('Project Scoped Agent Work Project', 'project-scoped-agent-work-project');
+
+    agentWorkDashboardApiProjectScopedAgent('project_limited_worker', 'Project Limited Worker', $projectA);
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectB['project_id']}/agent-work", [
+            'assigned_agent_key' => 'project_limited_worker',
+            'title' => 'Scoped project work',
+            'prompt' => 'This work should be blocked when the agent is not visible.',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['assigned_agent_key']);
+});
+
+it('rejects unknown dashboard agent work keys', function () {
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => 'missing_agent',
+            'title' => 'Unknown agent',
+            'prompt' => 'This should not queue.',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['assigned_agent_key']);
+});
+
+it('fails socrates work closed without dispatching when the provider base URL is unsafe', function () {
+    Http::preventStrayRequests();
+    Http::fake(fn () => Http::response('should not be called', 200));
+
+    $providerId = (string) DB::table('ai_model_providers')->where('provider_key', 'openai')->value('id');
+
+    DB::table('ai_model_providers')->where('id', $providerId)->update([
+        'base_url' => 'https://ssrf-agent-work.example.test/v1',
+        'encrypted_api_key' => Crypt::encryptString('sk-opencode-test'),
+        'api_key_last_four' => 'test',
+        'enabled' => true,
+    ]);
+    DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->update([
+        'provider_id' => $providerId,
+        'model_name' => 'deepseek-v4-flash',
+        'max_output_tokens' => 1024,
+        'timeout_seconds' => 30,
+        'enabled' => true,
+    ]);
+
+    $developer = agentWorkDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $workItem = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/agent-work", [
+            'assigned_agent_key' => 'socrates',
+            'title' => 'Unsafe endpoint work',
+            'prompt' => 'This must fail without calling the unsafe provider.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('status', 'failed')
+        ->json();
+
+    expect($workItem['failure_reason'])->toBe('Provider endpoint URL is not allowed.')
+        ->and($workItem['result_memory_entry_id'])->toBeNull();
+
+    Http::assertNothingSent();
+});
+
 it('fails socrates work visibly when the configured provider rejects the request', function () {
     Http::fake([
         'https://opencode.ai/zen/go/v1/chat/completions' => Http::response(['error' => ['message' => 'unauthorized']], 401),
@@ -166,6 +290,31 @@ it('fails socrates work visibly when the configured provider rejects the request
         ->and($workItem['result_memory_entry_id'])->toBeNull()
         ->and(DB::table('project_memory_entries')->where('project_id', $projectId)->where('agent_key', 'socrates')->exists())->toBeFalse()
         ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItem['id'])->where('event_type', 'failed')->exists())->toBeTrue();
+});
+
+it('fails project-scoped agent work execution when visibility is missing', function () {
+    Http::fake([
+        'https://opencode.ai/zen/go/v1/chat/completions' => Http::response([
+            'choices' => [['message' => ['content' => 'This should not be returned.']]],
+        ]),
+    ]);
+
+    $projectA = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projectB = agentWorkDashboardApiProject('Project Scoped Agent Work Execution Project', 'project-scoped-agent-work-execution-project');
+
+    agentWorkDashboardApiConfigureSocratesProvider();
+    agentWorkDashboardApiProjectScopedAgent('project_limited_worker', 'Project Limited Worker', $projectA);
+
+    $workItemId = agentWorkDashboardApiWorkItem($projectB['project_id'], [
+        'assigned_agent_key' => 'project_limited_worker',
+        'title' => 'Scoped execution work',
+        'prompt' => 'This work should fail when executed outside the visibility project.',
+    ]);
+
+    app(ServerAgentWorkService::class)->process($workItemId);
+
+    expect(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('failed')
+        ->and((string) DB::table('agent_work_items')->where('id', $workItemId)->value('failure_reason'))->toContain('not visible');
 });
 
 it('runs platon and aristoteles work through controlled backend agent profiles', function (string $agentKey, string $answer) {
@@ -860,6 +1009,42 @@ function agentWorkDashboardApiConfigureSocratesProvider(): void
     ]);
 }
 
+function agentWorkDashboardApiProjectScopedAgent(string $agentKey, string $displayName, string $projectId): string
+{
+    $agentProfileId = (string) Str::ulid();
+    $modelProfileId = (string) DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('id');
+    $now = now();
+
+    DB::table('ai_agent_profiles')->insert([
+        'id' => $agentProfileId,
+        'agent_key' => $agentKey,
+        'display_name' => $displayName,
+        'description' => "{$displayName} is limited to one project.",
+        'agent_type' => 'specialist',
+        'delegation_mode' => 'controlled_registry',
+        'parent_agent_key' => null,
+        'default_model_profile_id' => $modelProfileId,
+        'requires_human_approval' => true,
+        'enabled' => true,
+        'allowed_tools' => json_encode(['search_project_memory'], JSON_THROW_ON_ERROR),
+        'output_schema' => json_encode(['type' => 'object'], JSON_THROW_ON_ERROR),
+        'trigger_events' => json_encode(['manual_chat'], JSON_THROW_ON_ERROR),
+        'visibility_scope' => 'project',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('ai_agent_project_visibility')->insert([
+        'id' => (string) Str::ulid(),
+        'ai_agent_profile_id' => $agentProfileId,
+        'project_id' => $projectId,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return $agentProfileId;
+}
+
 function agentWorkDashboardApiProjectMemory(string $projectId, string $summary): string
 {
     $memoryId = (string) Str::ulid();
@@ -884,4 +1069,15 @@ function agentWorkDashboardApiProjectMemory(string $projectId, string $summary):
     ]);
 
     return $memoryId;
+}
+
+final class AgentWorkFakeHostResolver implements ProviderHostResolver
+{
+    /** @param list<string> $default @param array<string, list<string>> $overrides */
+    public function __construct(private array $default, private array $overrides = []) {}
+
+    public function resolve(string $host): array
+    {
+        return $this->overrides[strtolower($host)] ?? $this->default;
+    }
 }

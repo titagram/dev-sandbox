@@ -1,17 +1,23 @@
 <?php
 
+use App\Jobs\ImportGraphToNeo4j;
+use App\Services\GenesisGraphImportService;
+use App\Services\Neo4j\FakeNeo4jClient;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
     config(['services.devboard.graph_import_mode' => 'fake']);
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('records local snapshot metadata before delta sync', function () {
@@ -50,7 +56,150 @@ it('starts delta sync and creates artifact rows', function () {
     expect(DB::table('artifacts')->where('run_id', $context['run_id'])->count())->toBe(2);
 });
 
+it('rejects local snapshot and Delta start with cross-workspace or snapshot references', function () {
+    $context = createDeltaContext();
+    $otherWorkspaceId = (string) Str::ulid();
+    $now = now();
+    DB::table('local_workspaces')->insert([
+        'id' => $otherWorkspaceId,
+        'repository_id' => $context['repository_id'],
+        'device_id' => $context['device_id'],
+        'local_root_hash' => 'sha256:other-delta-workspace',
+        'display_path' => '/tmp/other-delta-workspace',
+        'current_branch' => 'main',
+        'last_head_sha' => 'abc123',
+        'dirty_status' => 'clean',
+        'last_snapshot_id' => null,
+        'last_seen_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    deltaLocalSnapshot($context, [
+        'local_workspace_id' => $otherWorkspaceId,
+        'branch' => 'main',
+        'head_sha' => 'abc123',
+        'dirty_status' => 'clean',
+    ])->assertUnprocessable()->assertJsonPath('error.code', 'schema_validation_failed');
+
+    DB::table('snapshots')->where('id', $context['base_snapshot_id'])->update([
+        'local_workspace_id' => $otherWorkspaceId,
+    ]);
+    deltaStart($context, deltaManifest([
+        deltaArtifact('diff_summary', 'diff-summary.json', '{"changed_file_count":1}'),
+    ]))->assertUnprocessable()->assertJsonPath('error.code', 'schema_validation_failed');
+});
+
+it('rejects a Delta artifact uploaded through another sync URL', function () {
+    $context = createDeltaContext();
+    $firstArtifact = deltaArtifact('file_hashes', 'first.json', 'first');
+    $secondArtifact = deltaArtifact('file_hashes', 'second.json', 'second');
+    deltaStart($context, deltaManifest([$firstArtifact]))->assertOk();
+    $secondDeltaId = deltaStart($context, deltaManifest([$secondArtifact]))->json('delta_id');
+
+    deltaChunk(
+        $context,
+        $secondDeltaId,
+        $firstArtifact['artifact_id'],
+        0,
+        $firstArtifact['content'],
+        hash('sha256', $firstArtifact['content']),
+    )
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'schema_validation_failed');
+});
+
+it('allows duplicate uploads of the same Delta chunk hash', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'hello');
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, 'hello', hash('sha256', 'hello'))->assertOk();
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, 'hello', hash('sha256', 'hello'))
+        ->assertOk()
+        ->assertJsonPath('status', 'received');
+});
+
+it('rejects a negative Delta chunk index with artifact_chunk_out_of_range and no file', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'hello', 1);
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], -1, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/delta/{$deltaId}/{$artifact['artifact_id']}/chunks/-1"
+    );
+});
+
+it('rejects a Delta chunk index equal to chunk_count with artifact_chunk_out_of_range and no file', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'hello', 1);
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 1, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/delta/{$deltaId}/{$artifact['artifact_id']}/chunks/1"
+    );
+});
+
+it('rejects a Delta chunk index far above chunk_count with artifact_chunk_out_of_range and no file', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'hello', 1);
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 999, 'evil', hash('sha256', 'evil'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_chunk_out_of_range');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/delta/{$deltaId}/{$artifact['artifact_id']}/chunks/999"
+    );
+});
+
+it('rejects a Delta chunk whose bytes would exceed declared size_bytes', function () {
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', 'abcde', 2);
+    $artifact['size_bytes'] = 5;
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, 'abc', hash('sha256', 'abc'))->assertOk();
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 1, 'def', hash('sha256', 'def'))
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_size_mismatch');
+
+    Storage::disk('local')->assertMissing(
+        "devboard/artifacts/delta/{$deltaId}/{$artifact['artifact_id']}/chunks/1"
+    );
+});
+
+it('rejects Delta finalize when assembled size does not match declared size_bytes and deletes the partial file', function () {
+    $context = createDeltaContext();
+    $content = 'hello';
+    $artifact = deltaArtifact('file_hashes', 'file-hashes.json', $content, 1);
+    $artifact['size_bytes'] = 10;
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $content, hash('sha256', $content))->assertOk();
+
+    $storagePath = DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('storage_path');
+
+    deltaFinalize($context, $deltaId)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'artifact_size_mismatch');
+
+    Storage::disk('local')->assertMissing($storagePath);
+});
+
 it('finalizes a valid delta bundle and creates a new snapshot', function () {
+    Queue::fake();
+
     $context = createDeltaContext();
     $artifacts = [
         deltaArtifact('delta_manifest', 'delta-manifest.json', '{"protocol_version":"v1"}'),
@@ -71,6 +220,13 @@ it('finalizes a valid delta bundle and creates a new snapshot', function () {
         ->assertJsonPath('status', 'active')
         ->assertJsonStructure(['snapshot_id']);
 
+    Queue::assertPushed(ImportGraphToNeo4j::class, function (ImportGraphToNeo4j $job) use ($deltaId): bool {
+        return $job->scope === 'delta' && $job->importOrDeltaId === $deltaId;
+    });
+
+    $job = new ImportGraphToNeo4j('delta', $deltaId);
+    $job->handle(app(GenesisGraphImportService::class));
+
     $newSnapshotId = DB::table('delta_syncs')->where('id', $deltaId)->value('new_snapshot_id');
 
     expect($newSnapshotId)->not->toBeNull();
@@ -79,6 +235,142 @@ it('finalizes a valid delta bundle and creates a new snapshot', function () {
     expect(DB::table('local_workspaces')->where('id', $context['local_workspace_id'])->value('last_snapshot_id'))->toBe($newSnapshotId);
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'delta.finalized')->exists())->toBeTrue();
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
+});
+
+it('returns the existing Delta result on sequential finalize without duplicate side effects', function () {
+    config(['queue.default' => 'database']);
+    Queue::fake();
+    $context = createDeltaContext();
+    $artifacts = [
+        deltaArtifact('file_hashes', 'file-hashes.json', '{"hashes":[]}'),
+        deltaArtifact('graph_snapshot', 'graph-snapshot.json', '{"nodes":[],"relationships":[]}'),
+        deltaArtifact('security_report', 'security-report.json', '{"blocked":[]}'),
+    ];
+    $deltaId = deltaStart($context, deltaManifest($artifacts))->json('delta_id');
+
+    foreach ($artifacts as $artifact) {
+        deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+    }
+
+    $first = deltaFinalize($context, $deltaId)->assertOk()->json();
+    $second = deltaFinalize($context, $deltaId)->assertOk()->json();
+
+    expect($second['snapshot_id'])->toBe($first['snapshot_id']);
+    expect(DB::table('snapshots')->where('created_by_run_id', $context['run_id'])->count())->toBe(2);
+    expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'delta.finalized')->count())->toBe(1);
+    expect(DB::table('audit_logs')->where('action', 'delta.finalized')->where('target_id', $deltaId)->count())->toBe(1);
+    Queue::assertPushed(ImportGraphToNeo4j::class, 1);
+});
+
+it('inserts the database queue job atomically on first finalize and not on retry', function () {
+    config([
+        'queue.default' => 'database',
+        'queue.connections.database.connection' => null,
+    ]);
+    $context = createDeltaContext();
+    $artifact = deltaArtifact('graph_snapshot', 'graph-snapshot.json', '{"nodes":[],"relationships":[]}');
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+
+    deltaFinalize($context, $deltaId)->assertOk();
+
+    expect(DB::table('jobs')->count())->toBe(1);
+    expect(json_decode(DB::table('jobs')->value('payload'), true, 512, JSON_THROW_ON_ERROR)['displayName'])
+        ->toBe(ImportGraphToNeo4j::class);
+    expect(DB::table('audit_logs')
+        ->where('action', 'graph.import_dispatched')
+        ->where('target_type', 'delta_sync')
+        ->where('target_id', $deltaId)
+        ->count())->toBe(1);
+
+    deltaFinalize($context, $deltaId)->assertOk();
+
+    expect(DB::table('jobs')->count())->toBe(1);
+    expect(DB::table('audit_logs')
+        ->where('action', 'graph.import_dispatched')
+        ->where('target_type', 'delta_sync')
+        ->where('target_id', $deltaId)
+        ->count())->toBe(1);
+});
+
+it('imports an affected subgraph by cloning the base snapshot and applying tombstone lists', function () {
+    Queue::fake();
+    $context = createDeltaContext();
+    $graph = json_encode([
+        'graph_mode' => 'affected_subgraph',
+        'base_snapshot_id' => $context['base_snapshot_id'],
+        'nodes' => [[
+            'id' => 'function:changed',
+            'labels' => ['Function'],
+            'properties' => ['name' => 'changed'],
+        ]],
+        'nodes_deleted' => [
+            'function:removed',
+            ['id' => 'file:deleted.py'],
+        ],
+        'relationships' => [[
+            'id' => 'rel:new',
+            'type' => 'CALLS',
+            'source_id' => 'function:changed',
+            'target_id' => 'function:kept',
+            'properties' => [],
+        ]],
+        'relationships_deleted' => [
+            ['external_id' => 'rel:removed'],
+        ],
+        'affected_file_paths' => ['changed.py'],
+        'affected_symbol_ids' => ['function:changed'],
+    ], JSON_THROW_ON_ERROR);
+    $artifact = deltaArtifact('graph_snapshot', 'graph-snapshot.json', $graph);
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+    deltaFinalize($context, $deltaId)->assertOk();
+
+    $client = new FakeNeo4jClient;
+    app(GenesisGraphImportService::class)->importDelta($deltaId, $client, 'fake');
+
+    $clone = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'base_snapshot_id')
+            && str_contains($command['cypher'], 'MERGE (copy:CodeNode'),
+    );
+    $relationshipDeletion = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'relationship_ids'),
+    );
+    $nodeDeletion = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'node_ids'),
+    );
+    $upsert = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes'),
+    );
+
+    expect($clone)->not->toBeNull();
+    expect($clone['params']['base_snapshot_id'])->toBe($context['base_snapshot_id']);
+    expect($relationshipDeletion['params']['relationship_ids'])->toBe(['rel:removed', 'rel:new']);
+    expect($nodeDeletion['params']['node_ids'])->toBe(['function:removed', 'file:deleted.py']);
+    expect($upsert['params']['nodes'][0]['id'])->toBe('function:changed');
+});
+
+it('rejects affected subgraph deletion counters before snapshot creation or dispatch', function () {
+    Queue::fake();
+    $context = createDeltaContext();
+    $graph = json_encode([
+        'graph_mode' => 'affected_subgraph',
+        'base_snapshot_id' => $context['base_snapshot_id'],
+        'nodes' => [],
+        'nodes_deleted' => 2,
+        'relationships' => [],
+        'relationships_deleted' => 1,
+    ], JSON_THROW_ON_ERROR);
+    $artifact = deltaArtifact('graph_snapshot', 'graph-snapshot.json', $graph);
+    $deltaId = deltaStart($context, deltaManifest([$artifact]))->json('delta_id');
+    deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+
+    deltaFinalize($context, $deltaId)
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'schema_validation_failed');
+
+    expect(DB::table('delta_syncs')->where('id', $deltaId)->value('new_snapshot_id'))->toBeNull();
+    Queue::assertNothingPushed();
 });
 
 it('finalizes a large multi-chunk Delta artifact after retrying a chunk upload', function () {
@@ -173,6 +465,39 @@ it('allows delta finalize with blocked findings only when explicitly approved', 
         ->where('target_type', 'delta_sync')
         ->where('target_id', $deltaId)
         ->exists())->toBeTrue();
+});
+
+it('dispatches a graph import job instead of importing synchronously when finalizing a delta with a graph snapshot', function () {
+    Queue::fake();
+
+    $context = createDeltaContext();
+    $artifacts = [
+        deltaArtifact('delta_manifest', 'delta-manifest.json', '{"protocol_version":"v1"}'),
+        deltaArtifact('file_hashes', 'file-hashes.json', '{"hashes":[]}'),
+        deltaArtifact('diff_summary', 'diff-summary.json', '{"changed_file_count":1}'),
+        deltaArtifact('graph_snapshot', 'graph-snapshot.json', '{"nodes":[],"relationships":[]}'),
+        deltaArtifact('security_report', 'security-report.json', '{"blocked":[]}'),
+        deltaArtifact('wiki_pages', 'wiki-pages.json', '{"pages":[]}'),
+    ];
+    $deltaId = deltaStart($context, deltaManifest($artifacts))->json('delta_id');
+
+    foreach ($artifacts as $artifact) {
+        deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+    }
+
+    deltaFinalize($context, $deltaId)
+        ->assertOk()
+        ->assertJsonPath('status', 'active')
+        ->assertJsonStructure(['snapshot_id']);
+
+    Queue::assertPushed(ImportGraphToNeo4j::class, function (ImportGraphToNeo4j $job) use ($deltaId): bool {
+        return $job->scope === 'delta' && $job->importOrDeltaId === $deltaId;
+    });
+
+    expect(DB::table('run_events')
+        ->where('run_id', $context['run_id'])
+        ->where('event_type', 'graph.imported')
+        ->exists())->toBeFalse();
 });
 
 /**
@@ -286,7 +611,7 @@ function createDeltaContext(): array
 }
 
 /**
- * @param list<array<string, mixed>> $artifacts
+ * @param  list<array<string, mixed>>  $artifacts
  * @return array<string, mixed>
  */
 function deltaManifest(array $artifacts): array
@@ -323,14 +648,14 @@ function deltaArtifact(string $type, string $filename, string $content, int $chu
     ];
 }
 
-function deltaLocalSnapshot(array $context, array $payload): Illuminate\Testing\TestResponse
+function deltaLocalSnapshot(array $context, array $payload): TestResponse
 {
     return test()->postJson("/api/plugin/v1/runs/{$context['run_id']}/local-snapshots", array_merge([
         'protocol_version' => 'v1',
     ], $payload), deltaHeaders($context));
 }
 
-function deltaStart(array $context, array $manifest): Illuminate\Testing\TestResponse
+function deltaStart(array $context, array $manifest): TestResponse
 {
     return test()->postJson("/api/plugin/v1/runs/{$context['run_id']}/delta-syncs", [
         'protocol_version' => 'v1',
@@ -351,7 +676,7 @@ function deltaChunk(
     int $index,
     string $content,
     string $hash,
-): Illuminate\Testing\TestResponse {
+): TestResponse {
     return test()->call(
         'PUT',
         "/api/plugin/v1/delta-syncs/{$deltaId}/artifacts/{$artifactId}/chunks/{$index}",
@@ -367,7 +692,7 @@ function deltaChunk(
     );
 }
 
-function deltaFinalize(array $context, ?string $deltaId, array $payload = []): Illuminate\Testing\TestResponse
+function deltaFinalize(array $context, ?string $deltaId, array $payload = []): TestResponse
 {
     return test()->postJson("/api/plugin/v1/delta-syncs/{$deltaId}/finalize", array_merge([
         'protocol_version' => 'v1',

@@ -1,11 +1,10 @@
 <?php
 
 use App\Services\AuditExportService;
+use App\Services\AuditLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 
@@ -35,6 +34,11 @@ it('exports filtered audit logs as jsonl', function () {
 
     expect($lines)->toHaveCount(1);
     expect($row['action'])->toBe('artifact.purged');
+    expect($row)->toHaveKeys(['sequence', 'chain_version', 'prev_hash', 'row_hash']);
+    expect($row['sequence'])->toBe(1);
+    expect($row['chain_version'])->toBe(1);
+    expect($row['prev_hash'])->toBeNull();
+    expect($row['row_hash'])->toBeString()->toHaveLength(64);
     expect($row['payload']['artifact_id'])->toBe('artifact_1');
     expect($row['payload']['token'])->toBe('[REDACTED]');
     expect($content)->not->toContain('wiki.updated');
@@ -56,27 +60,15 @@ it('exposes an artisan command to export audit logs as csv', function () {
 
     $content = Storage::disk('local')->get('devboard/audit-exports/artifacts.csv');
 
-    expect($content)->toContain('id,actor_type,action,target_type,target_id,created_at,payload');
+    expect($content)->toContain('id,sequence,chain_version,prev_hash,row_hash,actor_type,action,target_type,target_id,created_at,payload');
     expect($content)->toContain('artifact.purged');
     expect($content)->not->toContain('token.created');
 });
 
 /**
- * @param array<string, mixed> $payload
+ * @param  array<string, mixed>  $payload
  */
 function createAuditLog(string $action, array $payload): void
 {
-    DB::table('audit_logs')->insert([
-        'id' => (string) Str::ulid(),
-        'actor_user_id' => null,
-        'actor_device_id' => null,
-        'actor_type' => 'system',
-        'action' => $action,
-        'target_type' => Str::before($action, '.'),
-        'target_id' => (string) Str::ulid(),
-        'ip_address' => null,
-        'user_agent' => null,
-        'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-        'created_at' => now(),
-    ]);
+    app(AuditLogger::class)->record($action, str($action)->before('.')->toString(), null, $payload, ['type' => 'system']);
 }

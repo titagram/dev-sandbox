@@ -1,6 +1,8 @@
 <?php
 
 use App\Services\ArtifactRetentionService;
+use App\Services\ArtifactStorageService;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -11,7 +13,7 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('purges old finalized artifact contents and writes an audit record', function () {
@@ -83,7 +85,7 @@ it('registers a scheduled artifact retention command', function () {
 });
 
 /**
- * @param array<string, mixed> $overrides
+ * @param  array<string, mixed>  $overrides
  * @return array{id: string, project_id: string, repository_id: string, run_id: string, storage_path: string}
  */
 function createRetentionArtifact(array $overrides = []): array
@@ -163,7 +165,7 @@ function createRetentionArtifact(array $overrides = []): array
 }
 
 /**
- * @param array{id: string, project_id: string, repository_id: string, run_id: string} $artifact
+ * @param  array{id: string, project_id: string, repository_id: string, run_id: string}  $artifact
  */
 function createCurrentSnapshotForArtifact(array $artifact): void
 {
@@ -217,4 +219,277 @@ function createCurrentSnapshotForArtifact(array $artifact): void
         'created_by_run_id' => $artifact['run_id'],
         'created_at' => $now,
     ]);
+}
+
+it('retains a recent uploading artifact instead of purging it', function () {
+    $artifact = createIncompleteUploadArtifact([
+        'artifact_updated_at' => now()->subHours(2),
+        'import_updated_at' => now()->subHours(2),
+    ]);
+
+    $result = app(ArtifactRetentionService::class)->purgeIncompleteUploads(24, dryRun: false);
+
+    expect($result)->toMatchArray([
+        'scanned' => 0,
+        'purged' => 0,
+        'skipped' => 0,
+        'would_purge' => 0,
+        'failed' => 0,
+    ]);
+
+    Storage::disk('local')->assertExists($artifact['artifact_dir']);
+    foreach ($artifact['declared_chunks'] as $chunkPath) {
+        Storage::disk('local')->assertExists($chunkPath);
+    }
+    expect(DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('status'))->toBe('uploading');
+});
+
+it('purges a stale uploading artifact and its chunk directory', function () {
+    $artifact = createIncompleteUploadArtifact([
+        'artifact_updated_at' => now()->subHours(30),
+        'import_updated_at' => now()->subHours(30),
+    ]);
+
+    $result = app(ArtifactRetentionService::class)->purgeIncompleteUploads(24, dryRun: false);
+
+    expect($result)->toMatchArray([
+        'scanned' => 1,
+        'purged' => 1,
+        'skipped' => 0,
+        'would_purge' => 0,
+        'failed' => 0,
+    ]);
+
+    Storage::disk('local')->assertMissing($artifact['artifact_dir']);
+    foreach ($artifact['declared_chunks'] as $chunkPath) {
+        Storage::disk('local')->assertMissing($chunkPath);
+    }
+    expect(DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('status'))->toBe('purged');
+    expect(DB::table('audit_logs')
+        ->where('action', 'artifact.purged')
+        ->where('target_type', 'artifact')
+        ->where('target_id', $artifact['artifact_id'])
+        ->exists())->toBeTrue();
+});
+
+it('retains a stale uploading artifact whose parent transfer was updated recently', function () {
+    $artifact = createIncompleteUploadArtifact([
+        'artifact_updated_at' => now()->subHours(30),
+        'import_updated_at' => now()->subHours(1),
+    ]);
+
+    $result = app(ArtifactRetentionService::class)->purgeIncompleteUploads(24, dryRun: false);
+
+    expect($result)->toMatchArray([
+        'scanned' => 1,
+        'purged' => 0,
+        'skipped' => 1,
+        'would_purge' => 0,
+        'failed' => 0,
+    ]);
+
+    Storage::disk('local')->assertExists($artifact['artifact_dir']);
+    foreach ($artifact['declared_chunks'] as $chunkPath) {
+        Storage::disk('local')->assertExists($chunkPath);
+    }
+    expect(DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('status'))->toBe('uploading');
+});
+
+it('purges out-of-range legacy chunk files by deleting the whole artifact directory', function () {
+    $artifact = createIncompleteUploadArtifact([
+        'artifact_updated_at' => now()->subHours(30),
+        'import_updated_at' => now()->subHours(30),
+        'chunk_count' => 2,
+        'legacy_chunk_indexes' => [5],
+    ]);
+
+    expect($artifact['legacy_chunks'])->toHaveCount(1);
+    Storage::disk('local')->assertExists($artifact['legacy_chunks'][0]);
+
+    $result = app(ArtifactRetentionService::class)->purgeIncompleteUploads(24, dryRun: false);
+
+    expect($result)->toMatchArray([
+        'scanned' => 1,
+        'purged' => 1,
+        'failed' => 0,
+    ]);
+
+    Storage::disk('local')->assertMissing($artifact['legacy_chunks'][0]);
+    Storage::disk('local')->assertMissing($artifact['artifact_dir']);
+    expect(DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('status'))->toBe('purged');
+});
+
+it('reports incomplete upload candidates in dry-run without deleting files or mutating rows', function () {
+    $artifact = createIncompleteUploadArtifact([
+        'artifact_updated_at' => now()->subHours(30),
+        'import_updated_at' => now()->subHours(30),
+    ]);
+
+    $result = app(ArtifactRetentionService::class)->purgeIncompleteUploads(24);
+
+    expect($result)->toMatchArray([
+        'scanned' => 1,
+        'purged' => 0,
+        'skipped' => 0,
+        'would_purge' => 1,
+        'failed' => 0,
+    ]);
+
+    Storage::disk('local')->assertExists($artifact['artifact_dir']);
+    foreach ($artifact['declared_chunks'] as $chunkPath) {
+        Storage::disk('local')->assertExists($chunkPath);
+    }
+    expect(DB::table('artifacts')->where('id', $artifact['artifact_id'])->value('status'))->toBe('uploading');
+    expect(DB::table('audit_logs')
+        ->where('action', 'artifact.purged')
+        ->where('target_id', $artifact['artifact_id'])
+        ->exists())->toBeFalse();
+});
+
+/**
+ * @param  array<string, mixed>  $overrides
+ * @return array{import_id: string, artifact_id: string, artifact_dir: string, storage_path: string, declared_chunks: list<string>, legacy_chunks: list<string>}
+ */
+function createIncompleteUploadArtifact(array $overrides = []): array
+{
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
+    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $deviceId = (string) Str::ulid();
+    $workspaceId = (string) Str::ulid();
+    $runId = (string) Str::ulid();
+    $importId = (string) Str::ulid();
+    $artifactId = (string) Str::ulid();
+    $now = now();
+
+    $artifactUpdatedAt = $overrides['artifact_updated_at'] ?? $now->copy()->subHours(2);
+    $importUpdatedAt = $overrides['import_updated_at'] ?? $now->copy()->subHours(2);
+    $chunkCount = (int) ($overrides['chunk_count'] ?? 2);
+    $artifactType = $overrides['artifact_type'] ?? 'graph_snapshot';
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $userId,
+        'name' => 'Incomplete Upload Device',
+        'fingerprint_hash' => 'sha256:incomplete-upload-device-'.$artifactId,
+        'platform_os' => 'linux',
+        'platform_arch' => 'amd64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('local_workspaces')->insert([
+        'id' => $workspaceId,
+        'repository_id' => $repositoryId,
+        'device_id' => $deviceId,
+        'local_root_hash' => 'sha256:incomplete-upload-workspace-'.$artifactId,
+        'display_path' => '/tmp/incomplete-upload-workspace',
+        'current_branch' => 'main',
+        'last_head_sha' => 'abc123',
+        'dirty_status' => 'clean',
+        'last_snapshot_id' => null,
+        'last_seen_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('runs')->insert([
+        'id' => $runId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'task_id' => null,
+        'device_id' => $deviceId,
+        'started_by_user_id' => $userId,
+        'runtime_profile' => 'agent_plugin',
+        'status' => 'running',
+        'branch' => 'main',
+        'base_branch' => 'main',
+        'base_sha' => 'abc123',
+        'head_sha' => 'abc123',
+        'summary' => null,
+        'risk_level' => 'low',
+        'started_at' => $artifactUpdatedAt,
+        'finished_at' => null,
+        'created_at' => $artifactUpdatedAt,
+        'updated_at' => $artifactUpdatedAt,
+    ]);
+
+    DB::table('genesis_imports')->insert([
+        'id' => $importId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'local_workspace_id' => $workspaceId,
+        'run_id' => $runId,
+        'status' => 'uploading',
+        'manifest_artifact_id' => null,
+        'snapshot_id' => null,
+        'base_branch' => 'main',
+        'base_sha' => 'abc123',
+        'head_sha' => 'abc123',
+        'started_at' => $importUpdatedAt,
+        'finished_at' => null,
+        'created_at' => $importUpdatedAt,
+        'updated_at' => $importUpdatedAt,
+    ]);
+
+    $storage = app(ArtifactStorageService::class);
+    $storagePath = $storage->artifactPath($importId, $artifactId, 'genesis');
+    $artifactDir = Str::beforeLast($storagePath, '/artifact');
+
+    $declaredChunks = [];
+    $combinedContent = '';
+    for ($i = 0; $i < $chunkCount; $i++) {
+        $chunkContent = "chunk-{$i}-payload";
+        $chunkPath = $storage->chunkPath($importId, $artifactId, $i, 'genesis');
+        Storage::disk('local')->put($chunkPath, $chunkContent);
+        $declaredChunks[] = $chunkPath;
+        $combinedContent .= $chunkContent;
+    }
+
+    $legacyChunks = [];
+    foreach ($overrides['legacy_chunk_indexes'] ?? [] as $index) {
+        $chunkPath = $storage->chunkPath($importId, $artifactId, (int) $index, 'genesis');
+        Storage::disk('local')->put($chunkPath, "legacy-chunk-{$index}");
+        $legacyChunks[] = $chunkPath;
+    }
+
+    $sizeBytes = strlen($combinedContent);
+    $sha = hash('sha256', $combinedContent);
+
+    DB::table('artifacts')->insert([
+        'id' => $artifactId,
+        'project_id' => $projectId,
+        'repository_id' => $repositoryId,
+        'run_id' => $runId,
+        'artifact_type' => $artifactType,
+        'storage_path' => $storagePath,
+        'sha256' => $sha,
+        'size_bytes' => $sizeBytes,
+        'mime_type' => 'application/json',
+        'schema_version' => 'v1',
+        'status' => 'uploading',
+        'producer' => 'devboard-python-plugin',
+        'metadata' => json_encode([
+            'artifact_id' => $artifactId,
+            'artifact_type' => $artifactType,
+            'sha256' => 'sha256:'.$sha,
+            'size_bytes' => $sizeBytes,
+            'chunk_count' => $chunkCount,
+        ], JSON_THROW_ON_ERROR),
+        'created_at' => $artifactUpdatedAt,
+        'updated_at' => $artifactUpdatedAt,
+    ]);
+
+    return [
+        'import_id' => $importId,
+        'artifact_id' => $artifactId,
+        'artifact_dir' => $artifactDir,
+        'storage_path' => $storagePath,
+        'declared_chunks' => $declaredChunks,
+        'legacy_chunks' => $legacyChunks,
+    ];
 }

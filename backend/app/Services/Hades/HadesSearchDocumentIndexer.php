@@ -2,6 +2,7 @@
 
 namespace App\Services\Hades;
 
+use App\Jobs\GenerateSearchDocumentEmbedding;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -20,6 +21,8 @@ class HadesSearchDocumentIndexer
      */
     public function indexArtifact(object $artifact, array $artifactPayload, string $artifactJson): void
     {
+        $checksum = hash('sha256', $artifact->schema.'|'.$artifact->sha256.'|'.$artifactJson);
+
         DB::table('hades_search_documents')->updateOrInsert(
             [
                 'source_table' => 'hades_agent_artifacts',
@@ -40,11 +43,13 @@ class HadesSearchDocumentIndexer
                     'truncated' => (bool) $artifact->truncated,
                     'redactions' => (int) $artifact->redactions,
                 ], JSON_THROW_ON_ERROR),
-                'checksum' => hash('sha256', $artifact->schema.'|'.$artifact->sha256.'|'.$artifactJson),
+                'checksum' => $checksum,
                 'created_at' => $artifact->created_at,
                 'updated_at' => now(),
             ],
         );
+
+        $this->queueEmbedding('hades_agent_artifacts', (string) $artifact->id, $checksum);
     }
 
     public function indexMemoryEntry(object $entry): void
@@ -52,6 +57,7 @@ class HadesSearchDocumentIndexer
         $payload = $this->decode($entry->payload);
         $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
         $schema = $this->payloadString($payload, ['schema', 'content_schema', 'artifact_schema']);
+        $checksum = hash('sha256', (string) $entry->kind.'|'.(string) $entry->summary.'|'.$payloadJson);
 
         DB::table('hades_search_documents')->updateOrInsert(
             [
@@ -76,11 +82,13 @@ class HadesSearchDocumentIndexer
                     'completeness' => $entry->completeness,
                     'occurred_at' => $entry->occurred_at,
                 ], JSON_THROW_ON_ERROR),
-                'checksum' => hash('sha256', (string) $entry->kind.'|'.(string) $entry->summary.'|'.$payloadJson),
+                'checksum' => $checksum,
                 'created_at' => $entry->created_at,
                 'updated_at' => now(),
             ],
         );
+
+        $this->queueEmbedding('project_memory_entries', (string) $entry->id, $checksum);
     }
 
     public function indexWikiRevision(object $page, object $revision): void
@@ -94,6 +102,7 @@ class HadesSearchDocumentIndexer
             (string) $revision->content_markdown,
             (string) $revision->evidence_refs,
         ])));
+        $checksum = hash('sha256', $body);
 
         DB::table('hades_search_documents')->updateOrInsert(
             [
@@ -116,17 +125,20 @@ class HadesSearchDocumentIndexer
                     'source_type' => $revision->source_type,
                     'source_status' => $revision->source_status,
                 ], JSON_THROW_ON_ERROR),
-                'checksum' => hash('sha256', $body),
+                'checksum' => $checksum,
                 'created_at' => $revision->created_at,
                 'updated_at' => now(),
             ],
         );
+
+        $this->queueEmbedding('wiki_revisions', (string) $revision->id, $checksum);
     }
 
     public function indexBugEvidence(object $item): void
     {
         $payload = $this->decode($item->payload);
         $payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
+        $checksum = hash('sha256', (string) $item->kind.'|'.$item->sha256.'|'.$payloadJson);
 
         DB::table('hades_search_documents')->updateOrInsert(
             [
@@ -149,11 +161,13 @@ class HadesSearchDocumentIndexer
                     'redactions' => (int) $item->redactions,
                     'occurred_at' => $item->occurred_at,
                 ], JSON_THROW_ON_ERROR),
-                'checksum' => hash('sha256', (string) $item->kind.'|'.$item->sha256.'|'.$payloadJson),
+                'checksum' => $checksum,
                 'created_at' => $item->created_at,
                 'updated_at' => now(),
             ],
         );
+
+        $this->queueEmbedding('hades_bug_evidence_items', (string) $item->id, $checksum);
     }
 
     public function indexSourceSlice(object $slice): void
@@ -166,6 +180,7 @@ class HadesSearchDocumentIndexer
             (string) $slice->head_commit,
             (string) $slice->content_redacted,
         ])));
+        $checksum = hash('sha256', (string) $slice->sha256.'|'.$body);
 
         DB::table('hades_search_documents')->updateOrInsert(
             [
@@ -190,11 +205,13 @@ class HadesSearchDocumentIndexer
                     'policy' => $slice->policy,
                     'redactions' => (int) $slice->redactions,
                 ], JSON_THROW_ON_ERROR),
-                'checksum' => hash('sha256', (string) $slice->sha256.'|'.$body),
+                'checksum' => $checksum,
                 'created_at' => $slice->created_at,
                 'updated_at' => now(),
             ],
         );
+
+        $this->queueEmbedding('hades_source_slices', (string) $slice->id, $checksum);
     }
 
     public function indexEvidencePack(object $pack): void
@@ -208,6 +225,7 @@ class HadesSearchDocumentIndexer
             (string) $pack->payload,
             (string) $pack->head_commit,
         ])));
+        $checksum = hash('sha256', (string) $pack->sha256.'|'.$body);
 
         DB::table('hades_search_documents')->updateOrInsert(
             [
@@ -229,11 +247,13 @@ class HadesSearchDocumentIndexer
                     'retention_class' => $pack->retention_class,
                     'redactions' => (int) $pack->redactions,
                 ], JSON_THROW_ON_ERROR),
-                'checksum' => hash('sha256', (string) $pack->sha256.'|'.$body),
+                'checksum' => $checksum,
                 'created_at' => $pack->created_at,
                 'updated_at' => now(),
             ],
         );
+
+        $this->queueEmbedding('hades_evidence_packs', (string) $pack->id, $checksum);
     }
 
     public function indexCausalPack(object $pack): void
@@ -253,6 +273,7 @@ class HadesSearchDocumentIndexer
             (string) $pack->status,
             (string) $pack->blockers,
         ])));
+        $checksum = hash('sha256', (string) $pack->pack_key.'|'.$body);
 
         DB::table('hades_search_documents')->updateOrInsert(
             [
@@ -275,11 +296,22 @@ class HadesSearchDocumentIndexer
                     'failure_classification' => $pack->failure_classification,
                     'status' => $pack->status,
                 ], JSON_THROW_ON_ERROR),
-                'checksum' => hash('sha256', (string) $pack->pack_key.'|'.$body),
+                'checksum' => $checksum,
                 'created_at' => $pack->created_at,
                 'updated_at' => now(),
             ],
         );
+
+        $this->queueEmbedding('hades_causal_packs', (string) $pack->id, $checksum);
+    }
+
+    private function queueEmbedding(string $sourceTable, string $sourceId, string $checksum): void
+    {
+        if (! (bool) config('devboard.embeddings.enabled', false)) {
+            return;
+        }
+
+        DB::afterCommit(fn () => GenerateSearchDocumentEmbedding::dispatch($sourceTable, $sourceId, $checksum));
     }
 
     /**
@@ -306,8 +338,9 @@ class HadesSearchDocumentIndexer
         $tokens = $this->tokens($query);
         $fullTextQuery = $this->fullTextQuery($query);
         $useFullText = $fullTextQuery !== '' && $this->supportsFullTextSearch();
-        $selectRows = function (bool $withFullText) use ($domains, $filters, $fullTextQuery, $includeProjectLevel, $limit, $projectId, $query, $tokens, $workspaceBindingId) {
-            $fullTextMatch = 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE)';
+        $fullTextMatchExpr = $this->fullTextMatchExpression();
+        $fullTextOrderExpr = $this->fullTextOrderExpression();
+        $selectRows = function (bool $withFullText) use ($domains, $filters, $fullTextMatchExpr, $fullTextOrderExpr, $fullTextQuery, $includeProjectLevel, $limit, $projectId, $query, $tokens, $workspaceBindingId) {
 
             return DB::table('hades_search_documents')
                 ->where('project_id', $projectId)
@@ -344,8 +377,8 @@ class HadesSearchDocumentIndexer
                         }
                     });
                 })
-                ->when($withFullText, function ($builder) use ($fullTextMatch, $fullTextQuery): void {
-                    $builder->whereRaw($fullTextMatch, [$fullTextQuery]);
+                ->when($withFullText, function ($builder) use ($fullTextMatchExpr, $fullTextQuery): void {
+                    $builder->whereRaw($fullTextMatchExpr, [$fullTextQuery]);
                 })
                 ->when($query !== '' && ! $withFullText, function ($builder) use ($query, $tokens): void {
                     $patterns = array_values(array_unique(array_filter(array_merge([$query], $tokens))));
@@ -362,7 +395,7 @@ class HadesSearchDocumentIndexer
                 })
                 ->when(
                     $withFullText,
-                    fn ($builder) => $builder->orderByRaw($fullTextMatch.' DESC', [$fullTextQuery]),
+                    fn ($builder) => $builder->orderByRaw($fullTextOrderExpr, [$fullTextQuery]),
                     fn ($builder) => $builder->orderByDesc('updated_at'),
                 )
                 ->limit(max(50, $limit * 15))
@@ -624,7 +657,9 @@ class HadesSearchDocumentIndexer
 
     private function supportsFullTextSearch(): bool
     {
-        return DB::connection()->getDriverName() === 'mysql';
+        $driver = DB::connection()->getDriverName();
+
+        return in_array($driver, ['mysql', 'pgsql'], true);
     }
 
     private function fullTextQuery(string $query): string
@@ -632,7 +667,29 @@ class HadesSearchDocumentIndexer
         preg_match_all('/[A-Za-z0-9]{2,}/', $query, $matches);
         $terms = array_slice(array_values(array_unique(array_map('strtolower', $matches[0] ?? []))), 0, 12);
 
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            return implode(' ', $terms);
+        }
+
         return implode(' ', array_map(fn (string $term): string => '+'.$term.'*', $terms));
+    }
+
+    private function fullTextMatchExpression(): string
+    {
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            return "to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(source_schema, '')) @@ plainto_tsquery('english', ?)";
+        }
+
+        return 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE)';
+    }
+
+    private function fullTextOrderExpression(): string
+    {
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            return "ts_rank(to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(source_schema, '')), plainto_tsquery('english', ?)) DESC";
+        }
+
+        return 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE) DESC';
     }
 
     /**

@@ -112,7 +112,7 @@ sequenceDiagram
     Plugin->>Backend: POST finalize
     Backend->>Storage: Assemble and hash artifacts
     Backend->>PostgreSQL: Validate manifest and create snapshot
-    Backend->>Neo4j: Import graph snapshot
+    Backend->>Neo4j: Import graph snapshot via ImportGraphToNeo4j
     Backend->>PostgreSQL: Write wiki revisions and audit logs
     Backend-->>Plugin: import active
     Plugin->>Backend: POST /runs/{run}/finish
@@ -184,7 +184,7 @@ sequenceDiagram
     end
     Plugin->>Backend: POST finalize
     Backend->>PostgreSQL: Validate and create new snapshot
-    Backend->>Neo4j: Upsert affected graph
+    Backend->>Neo4j: Upsert affected graph via ImportGraphToNeo4j
     Backend->>PostgreSQL: Update wiki revisions or stale markers
     Backend-->>Plugin: delta imported
     Plugin->>Backend: POST /runs/{run}/finish
@@ -334,13 +334,15 @@ Required V1 jobs:
 ```text
 ValidateArtifactChunks
 FinalizeGenesisImport
-ImportGenesisGraphToNeo4j
+ImportGraphToNeo4j(scope=genesis)
 WriteGenesisWikiRevisions
 FinalizeDeltaSync
-ImportDeltaGraphToNeo4j
+ImportGraphToNeo4j(scope=delta)
 MarkStaleWikiPages
 DetectMissedRunHeartbeat
 ```
+
+`ImportGenesisGraphToNeo4j` is a legacy compatibility wrapper around `ImportGraphToNeo4j(scope=genesis)`. There is no separate `ImportDeltaGraphToNeo4j` job in the implemented contract.
 
 Retry rules:
 

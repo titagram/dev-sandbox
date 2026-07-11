@@ -1,5 +1,6 @@
 <?php
 
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -7,7 +8,7 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('lets an authenticated plugin list projects', function () {
@@ -92,7 +93,7 @@ it('returns scope_missing when the plugin token lacks the required scope', funct
 });
 
 /**
- * @param list<string>|null $scopes
+ * @param  list<string>|null  $scopes
  * @return array{id: string, prefix: string, plain_token: string, secret: string, device_id?: string}
  */
 function createRepositoryApiToken(?array $scopes = null): array
@@ -169,7 +170,7 @@ function createRepositoryApiTokenWithDevice(): array
 }
 
 /**
- * @param array{id: string, prefix: string, plain_token: string, secret: string, device_id?: string} $token
+ * @param  array{id: string, prefix: string, plain_token: string, secret: string, device_id?: string}  $token
  * @return array<string, string>
  */
 function repositoryApiHeaders(array $token): array

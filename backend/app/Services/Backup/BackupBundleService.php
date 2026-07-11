@@ -3,7 +3,10 @@
 namespace App\Services\Backup;
 
 use App\Models\User;
+use App\Services\AuditChainVerifier;
+use App\Services\AuditLogger;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use JsonException;
@@ -11,9 +14,10 @@ use RuntimeException;
 
 final class BackupBundleService
 {
-    public function __construct(private readonly BackupManifestService $manifests)
-    {
-    }
+    public function __construct(
+        private readonly BackupManifestService $manifests,
+        private readonly AuditChainVerifier $auditChainVerifier,
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -137,9 +141,37 @@ final class BackupBundleService
 
         $report = $this->validateRequiredSecrets($bundle, $report);
         $report = $this->validateDatabaseChecksums($bundle, $report);
+        $report = $this->validateAuditChain($bundle, $report);
         $report = $this->validateStorageFiles($bundle, $report);
 
         return $this->finishReport($report, null, $actor);
+    }
+
+    /**
+     * @param  array<string, mixed>  $bundle
+     * @param  array<string, mixed>  $report
+     * @return array<string, mixed>
+     */
+    private function validateAuditChain(array $bundle, array $report): array
+    {
+        $rows = $bundle['database']['tables']['audit_logs']['rows'] ?? null;
+        if (! is_array($rows)) {
+            return $this->addBlocker($report, 'missing_audit_logs', 'Audit log rows are missing from the database snapshot.');
+        }
+
+        $result = $this->auditChainVerifier->verifyRows($rows);
+        if (! $result->valid) {
+            $failure = $result->failures[0] ?? null;
+            $message = $failure === null
+                ? 'Audit chain verification failed for the database snapshot.'
+                : "Audit chain verification failed at sequence {$failure->sequence}: {$failure->message}";
+
+            return $this->addBlocker($report, 'audit_chain_invalid', $message);
+        }
+
+        $report['checks'][] = ['key' => 'audit_chain', 'label' => 'Audit hash chain', 'status' => 'ok', 'detail' => "{$result->lastSequence} audit row(s) verified"];
+
+        return $report;
     }
 
     /**
@@ -166,8 +198,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $report
-     * @param array{code: string, message: string}|null $extraBlocker
+     * @param  array<string, mixed>  $report
+     * @param  array{code: string, message: string}|null  $extraBlocker
      * @return array<string, mixed>
      */
     private function finishReport(array $report, ?array $extraBlocker, User $actor): array
@@ -196,8 +228,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $bundle
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $bundle
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function validateRequiredSecrets(array $bundle, array $report): array
@@ -229,8 +261,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $bundle
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $bundle
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function validateDatabaseChecksums(array $bundle, array $report): array
@@ -245,12 +277,14 @@ final class BackupBundleService
         foreach ($tables as $table => $snapshot) {
             if (! is_array($snapshot)) {
                 $report = $this->addBlocker($report, 'invalid_table_snapshot', "Table {$table} snapshot is invalid.");
+
                 continue;
             }
 
             $rows = $snapshot['rows'] ?? [];
             if (! is_array($rows)) {
                 $report = $this->addBlocker($report, 'invalid_table_rows', "Table {$table} rows are invalid.");
+
                 continue;
             }
 
@@ -270,8 +304,8 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $bundle
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $bundle
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function validateStorageFiles(array $bundle, array $report): array
@@ -286,18 +320,21 @@ final class BackupBundleService
         foreach ($files as $file) {
             if (! is_array($file)) {
                 $report = $this->addBlocker($report, 'invalid_storage_file', 'Storage file entry is invalid.');
+
                 continue;
             }
 
             $path = (string) ($file['path'] ?? '');
             if (! $this->isSafeStoragePath($path)) {
                 $report = $this->addBlocker($report, 'unsafe_storage_path', "Storage path {$path} is not safe to restore.");
+
                 continue;
             }
 
             $contents = base64_decode((string) ($file['content_base64'] ?? ''), true);
             if ($contents === false) {
                 $report = $this->addBlocker($report, 'invalid_storage_encoding', "Storage file {$path} is not valid base64.");
+
                 continue;
             }
 
@@ -337,7 +374,7 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $report
      * @return array<string, mixed>
      */
     private function addBlocker(array $report, string $code, string $message): array
@@ -352,7 +389,7 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $manifest
+     * @param  array<string, mixed>  $manifest
      * @return array<string, mixed>
      */
     private function manifestSummary(array $manifest): array
@@ -378,22 +415,13 @@ final class BackupBundleService
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param  array<string, mixed>  $payload
      */
     private function audit(User $actor, string $action, string $targetType, ?string $targetId, array $payload): void
     {
-        DB::table('audit_logs')->insert([
-            'id' => (string) Str::ulid(),
-            'actor_user_id' => $actor->id,
-            'actor_device_id' => null,
-            'actor_type' => 'dashboard',
-            'action' => $action,
-            'target_type' => $targetType,
-            'target_id' => $targetId,
-            'ip_address' => null,
-            'user_agent' => null,
-            'payload' => json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-            'created_at' => now(),
+        app(AuditLogger::class)->record($action, $targetType, $targetId, $payload, [
+            'type' => 'dashboard',
+            'user_id' => $actor->id,
         ]);
     }
 }
@@ -403,7 +431,7 @@ final class SchemaCompat
     public static function hasTable(string $table): bool
     {
         try {
-            return \Illuminate\Support\Facades\Schema::hasTable($table);
+            return Schema::hasTable($table);
         } catch (RuntimeException) {
             return false;
         }

@@ -27,6 +27,33 @@ it('accepts a valid dashboard generated plugin token', function () {
     expect(DB::table('api_tokens')->where('id', $token['id'])->value('last_used_at'))->not->toBeNull();
 });
 
+it('rejects device registration with missing fingerprint_hash', function () {
+    $token = createPluginToken();
+
+    $this->postJson('/api/plugin/v1/devices/register', [
+        'protocol_version' => 'v1',
+        'name' => 'No Fingerprint Device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+    ], pluginHeaders($token['plain_token']))
+        ->assertStatus(422);
+});
+
+it('rejects device registration with oversize plugin_version', function () {
+    $token = createPluginToken();
+
+    $this->postJson('/api/plugin/v1/devices/register', [
+        'protocol_version' => 'v1',
+        'name' => 'Oversize Version Device',
+        'fingerprint_hash' => 'sha256:oversize-version-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => str_repeat('v', 65),
+    ], pluginHeaders($token['plain_token']))
+        ->assertStatus(422);
+});
+
 it('registers a device and binds it to the active token', function () {
     $token = createPluginToken();
 
@@ -103,77 +130,266 @@ it('rejects a plugin token with the wrong secret', function () {
         ->assertJsonPath('error.code', 'unauthorized');
 });
 
-function pluginHeaders(?string $token = null): array
-{
-    $headers = [
-        'X-DevBoard-Protocol' => 'v1',
-        'X-DevBoard-Plugin-Version' => '0.1.0',
-    ];
+it('returns a device secret exactly when registering a new device', function () {
+    $token = createPluginToken();
 
-    if ($token !== null) {
-        $headers['Authorization'] = 'Bearer '.$token;
-    }
-
-    return $headers;
-}
-
-/**
- * @param array<string, mixed> $overrides
- * @return array{id: string, prefix: string, plain_token: string, secret: string, user_id: int}
- */
-function createPluginToken(array $overrides = []): array
-{
-    $user = User::factory()->create(['status' => 'active']);
-    $id = (string) Str::ulid();
-    $secret = $overrides['secret'] ?? 'test-secret';
-    $prefix = 'devb_live_'.$id;
-    $now = now();
-
-    DB::table('api_tokens')->insert(array_merge([
-        'id' => $id,
-        'token_prefix' => $prefix,
-        'token_hash' => hash('sha256', $secret),
-        'user_id' => $user->id,
-        'device_id' => null,
-        'name' => 'Test Plugin Token',
-        'scopes' => json_encode(['projects.read', 'runs.write'], JSON_THROW_ON_ERROR),
-        'expires_at' => now()->addMonth(),
-        'revoked_at' => null,
-        'last_used_at' => null,
-        'created_at' => $now,
-        'updated_at' => $now,
-    ], $overrides));
-
-    return [
-        'id' => $id,
-        'prefix' => $prefix,
-        'plain_token' => $prefix.'|'.$secret,
-        'secret' => $secret,
-        'user_id' => $user->id,
-    ];
-}
-
-/**
- * @param array<string, mixed> $overrides
- */
-function createPluginDevice(int $userId, array $overrides = []): string
-{
-    $id = (string) Str::ulid();
-    $now = now();
-
-    DB::table('devices')->insert(array_merge([
-        'id' => $id,
-        'user_id' => $userId,
-        'name' => 'Test Device',
-        'fingerprint_hash' => 'sha256:test-revoked-device',
+    $response = $this->postJson('/api/plugin/v1/devices/register', [
+        'protocol_version' => 'v1',
+        'name' => 'Signed MacBook Pro',
+        'fingerprint_hash' => 'sha256:signed-device-for-secret',
         'platform_os' => 'darwin',
         'platform_arch' => 'arm64',
         'plugin_version' => '0.1.0',
-        'last_seen_at' => $now,
-        'status' => 'active',
-        'created_at' => $now,
-        'updated_at' => $now,
-    ], $overrides));
+    ], pluginHeaders($token['plain_token']));
 
-    return $id;
+    $response
+        ->assertOk()
+        ->assertJsonPath('status', 'active')
+        ->assertJsonStructure(['device_id', 'device_secret', 'server_time']);
+
+    $deviceSecret = $response->json('device_secret');
+
+    expect($deviceSecret)->not->toBeNull()
+        ->and(strlen($deviceSecret))->toBe(64)
+        ->and(ctype_xdigit($deviceSecret))->toBeTrue();
+});
+
+it('rejects a bound token request without a device signature', function () {
+    $token = createPluginToken();
+    $deviceSecret = bin2hex(random_bytes(32));
+    $deviceId = (string) Str::ulid();
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $token['user_id'],
+        'name' => 'Test Device for Signature',
+        'fingerprint_hash' => 'sha256:sig-test-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => now(),
+        'signing_secret_hash' => hash('sha256', $deviceSecret),
+        'status' => 'active',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('api_tokens')->where('id', $token['id'])->update([
+        'device_id' => $deviceId,
+        'updated_at' => now(),
+    ]);
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], pluginHeaders($token['plain_token']))
+        ->assertUnauthorized()
+        ->assertJsonPath('error.code', 'device_signature_required');
+});
+
+it('rejects a bound token request with a stale timestamp', function () {
+    $token = createPluginToken();
+    $deviceSecret = bin2hex(random_bytes(32));
+    $deviceId = (string) Str::ulid();
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $token['user_id'],
+        'name' => 'Test Device Stale',
+        'fingerprint_hash' => 'sha256:stale-test-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => now(),
+        'signing_secret_hash' => hash('sha256', $deviceSecret),
+        'status' => 'active',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('api_tokens')->where('id', $token['id'])->update([
+        'device_id' => $deviceId,
+        'updated_at' => now(),
+    ]);
+
+    $staleTimestamp = time() - 600;
+    $body = json_encode(['protocol_version' => 'v1'], JSON_THROW_ON_ERROR);
+    $bodyHash = hash('sha256', $body);
+    $signingKey = hash('sha256', $deviceSecret);
+    $canonical = "POST\n/api/plugin/v1/auth/check\n{$staleTimestamp}\n{$bodyHash}";
+    $signature = 'v1='.hash_hmac('sha256', $canonical, $signingKey);
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], array_merge(
+        pluginHeaders($token['plain_token']),
+        [
+            'X-DevBoard-Device-Id' => $deviceId,
+            'X-DevBoard-Timestamp' => (string) $staleTimestamp,
+            'X-DevBoard-Content-SHA256' => $bodyHash,
+            'X-DevBoard-Signature' => $signature,
+        ]
+    ))->assertUnauthorized();
+});
+
+it('rejects a bound token request with a body hash mismatch', function () {
+    $token = createPluginToken();
+    $deviceSecret = bin2hex(random_bytes(32));
+    $deviceId = (string) Str::ulid();
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $token['user_id'],
+        'name' => 'Test Device Hash Mismatch',
+        'fingerprint_hash' => 'sha256:hash-mismatch-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => now(),
+        'signing_secret_hash' => hash('sha256', $deviceSecret),
+        'status' => 'active',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('api_tokens')->where('id', $token['id'])->update([
+        'device_id' => $deviceId,
+        'updated_at' => now(),
+    ]);
+
+    $timestamp = time();
+    $body = json_encode(['protocol_version' => 'v1'], JSON_THROW_ON_ERROR);
+    $wrongBodyHash = hash('sha256', 'wrong body content');
+    $signingKey = hash('sha256', $deviceSecret);
+    $canonical = "POST\n/api/plugin/v1/auth/check\n{$timestamp}\n{$wrongBodyHash}";
+    $signature = 'v1='.hash_hmac('sha256', $canonical, $signingKey);
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], array_merge(
+        pluginHeaders($token['plain_token']),
+        [
+            'X-DevBoard-Device-Id' => $deviceId,
+            'X-DevBoard-Timestamp' => (string) $timestamp,
+            'X-DevBoard-Content-SHA256' => $wrongBodyHash,
+            'X-DevBoard-Signature' => $signature,
+        ]
+    ))->assertUnauthorized();
+});
+
+it('accepts a bound token request with a valid device signature', function () {
+    $token = createPluginToken();
+    $deviceSecret = bin2hex(random_bytes(32));
+    $deviceId = (string) Str::ulid();
+
+    DB::table('devices')->insert([
+        'id' => $deviceId,
+        'user_id' => $token['user_id'],
+        'name' => 'Test Device Valid Sig',
+        'fingerprint_hash' => 'sha256:valid-sig-device',
+        'platform_os' => 'darwin',
+        'platform_arch' => 'arm64',
+        'plugin_version' => '0.1.0',
+        'last_seen_at' => now(),
+        'signing_secret_hash' => hash('sha256', $deviceSecret),
+        'status' => 'active',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('api_tokens')->where('id', $token['id'])->update([
+        'device_id' => $deviceId,
+        'updated_at' => now(),
+    ]);
+
+    $timestamp = time();
+    $body = json_encode(['protocol_version' => 'v1'], JSON_THROW_ON_ERROR);
+    $bodyHash = hash('sha256', $body);
+    $signingKey = hash('sha256', $deviceSecret);
+    $canonical = "POST\n/api/plugin/v1/auth/check\n{$timestamp}\n{$bodyHash}";
+    $signature = 'v1='.hash_hmac('sha256', $canonical, $signingKey);
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], array_merge(
+        pluginHeaders($token['plain_token']),
+        [
+            'X-DevBoard-Device-Id' => $deviceId,
+            'X-DevBoard-Timestamp' => (string) $timestamp,
+            'X-DevBoard-Content-SHA256' => $bodyHash,
+            'X-DevBoard-Signature' => $signature,
+        ]
+    ))->assertOk();
+});
+
+if (! function_exists('pluginHeaders')) {
+    function pluginHeaders(?string $token = null): array
+    {
+        $headers = [
+            'X-DevBoard-Protocol' => 'v1',
+            'X-DevBoard-Plugin-Version' => '0.1.0',
+        ];
+
+        if ($token !== null) {
+            $headers['Authorization'] = 'Bearer '.$token;
+        }
+
+        return $headers;
+    }
+}
+
+/**
+ * @param  array<string, mixed>  $overrides
+ * @return array{id: string, prefix: string, plain_token: string, secret: string, user_id: int}
+ */
+if (! function_exists('createPluginToken')) {
+    function createPluginToken(array $overrides = []): array
+    {
+        $user = User::factory()->create(['status' => 'active']);
+        $id = (string) Str::ulid();
+        $secret = $overrides['secret'] ?? 'test-secret';
+        $prefix = 'devb_live_'.$id;
+        $now = now();
+
+        DB::table('api_tokens')->insert(array_merge([
+            'id' => $id,
+            'token_prefix' => $prefix,
+            'token_hash' => hash('sha256', $secret),
+            'user_id' => $user->id,
+            'device_id' => null,
+            'name' => 'Test Plugin Token',
+            'scopes' => json_encode(['projects.read', 'runs.write'], JSON_THROW_ON_ERROR),
+            'expires_at' => now()->addMonth(),
+            'revoked_at' => null,
+            'last_used_at' => null,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], $overrides));
+
+        return [
+            'id' => $id,
+            'prefix' => $prefix,
+            'plain_token' => $prefix.'|'.$secret,
+            'secret' => $secret,
+            'user_id' => $user->id,
+        ];
+    }
+}
+
+/**
+ * @param  array<string, mixed>  $overrides
+ */
+if (! function_exists('createPluginDevice')) {
+    function createPluginDevice(int $userId, array $overrides = []): string
+    {
+        $id = (string) Str::ulid();
+        $now = now();
+
+        DB::table('devices')->insert(array_merge([
+            'id' => $id,
+            'user_id' => $userId,
+            'name' => 'Test Device',
+            'fingerprint_hash' => 'sha256:test-revoked-device',
+            'platform_os' => 'darwin',
+            'platform_arch' => 'arm64',
+            'plugin_version' => '0.1.0',
+            'last_seen_at' => $now,
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], $overrides));
+
+        return $id;
+    }
 }

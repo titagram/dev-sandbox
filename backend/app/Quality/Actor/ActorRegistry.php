@@ -17,4 +17,3 @@ final class ActorRegistry
         return in_array($actor, $this->supportedActors(), true);
     }
 }
-

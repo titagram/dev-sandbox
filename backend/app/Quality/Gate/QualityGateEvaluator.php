@@ -22,8 +22,7 @@ final class QualityGateEvaluator
     public function __construct(
         private readonly ?string $configPath = null,
         private readonly ?string $reportsDirectory = null,
-    ) {
-    }
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -153,8 +152,8 @@ final class QualityGateEvaluator
     }
 
     /**
-     * @param array<string, mixed> $gateConfig
-     * @param list<array<string, mixed>> $reports
+     * @param  array<string, mixed>  $gateConfig
+     * @param  list<array<string, mixed>>  $reports
      * @return list<string>
      */
     private function missingRequiredReports(array $gateConfig, array $reports): array
@@ -172,8 +171,8 @@ final class QualityGateEvaluator
     }
 
     /**
-     * @param array<string, mixed> $finding
-     * @param array<string, mixed> $gateConfig
+     * @param  array<string, mixed>  $finding
+     * @param  array<string, mixed>  $gateConfig
      */
     private function decision(array $finding, array $gateConfig): string
     {
@@ -205,7 +204,7 @@ final class QualityGateEvaluator
     }
 
     /**
-     * @param array<string, mixed> $finding
+     * @param  array<string, mixed>  $finding
      * @return array<string, mixed>
      */
     private function normalizeFinding(array $finding, string $tool): array

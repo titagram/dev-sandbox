@@ -2,8 +2,18 @@
 
 namespace App\Providers;
 
+use App\Assistants\ProviderEndpointPolicy;
+use App\Assistants\ProviderHostResolver;
+use App\Assistants\SystemProviderHostResolver;
+use App\Contracts\EmbeddingGenerator;
+use App\Models\User;
+use App\Policies\PluginTokenPolicy;
+use App\Policies\ProjectPolicy;
+use App\Services\AuditLogger;
+use App\Services\Search\ProviderEmbeddingGenerator;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
@@ -14,7 +24,9 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(ProviderHostResolver::class, SystemProviderHostResolver::class);
+        $this->app->singleton(ProviderEndpointPolicy::class);
+        $this->app->bind(EmbeddingGenerator::class, ProviderEmbeddingGenerator::class);
     }
 
     /**
@@ -22,6 +34,27 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Gate::define('manage-plugin-tokens', [PluginTokenPolicy::class, 'manage']);
+        Gate::define('read-project', [ProjectPolicy::class, 'read']);
+        Gate::define('write-project', [ProjectPolicy::class, 'write']);
+
+        Gate::after(function (?User $user, string $ability, ?bool $result) {
+            if ($result === false && $user !== null && request() instanceof Request) {
+                app(AuditLogger::class)->record(
+                    'permission.denied',
+                    'authorization',
+                    $ability,
+                    ['ability' => $ability],
+                    [
+                        'type' => 'user',
+                        'user_id' => $user->id,
+                        'ip_address' => request()->ip(),
+                        'user_agent' => request()->userAgent(),
+                    ],
+                );
+            }
+        });
+
         RateLimiter::for('plugin-api-light', fn (Request $request) => $this->pluginRateLimit(
             $request,
             max(1, (int) config('services.devboard.plugin_light_rate_limit_per_minute', 240)),

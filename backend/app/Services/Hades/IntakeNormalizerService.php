@@ -3,6 +3,8 @@
 namespace App\Services\Hades;
 
 use App\Assistants\Agents\IntakeNormalizerAgent;
+use App\Assistants\ProviderEndpointPolicy;
+use App\Assistants\ProviderHttpClient;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Laravel\Ai\Ai;
@@ -14,6 +16,7 @@ final class IntakeNormalizerService
     public function __construct(
         private readonly HadesKanbanTaskIntakeService $kanbanIntake,
         private readonly HadesEvidencePolicy $evidencePolicy,
+        private readonly ProviderHttpClient $httpClient,
     ) {}
 
     /**
@@ -25,13 +28,13 @@ final class IntakeNormalizerService
     {
         $agent = DB::table('ai_agent_profiles')->where('agent_key', 'intake_normalizer')->first();
         $modelProfile = $agent ? $this->modelProfileForAgent($agent) : null;
-        $shouldUseSdk = IntakeNormalizerAgent::isFaked() || $this->modelProfileCanCallProvider($modelProfile);
+        $shouldUseProvider = $this->modelProfileCanCallProvider($modelProfile);
 
-        if (! $shouldUseSdk) {
+        if (! IntakeNormalizerAgent::isFaked() && ! $shouldUseProvider) {
             return $this->kanbanIntake->normalizeFreeText($rawText, $projectId !== null);
         }
 
-        if ($modelProfile) {
+        if (IntakeNormalizerAgent::isFaked() && $modelProfile) {
             $this->configureLaravelAiProvider($modelProfile);
         }
 
@@ -40,12 +43,14 @@ final class IntakeNormalizerService
         $prompt = $this->promptForRawText($redacted['text'], $projectId);
 
         try {
-            $response = IntakeNormalizerAgent::make()->prompt(
-                $prompt,
-                provider: $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
-                model: $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
-                timeout: $modelProfile?->timeout_seconds ? (int) $modelProfile->timeout_seconds : null,
-            );
+            $response = IntakeNormalizerAgent::isFaked()
+                ? IntakeNormalizerAgent::make()->prompt(
+                    $prompt,
+                    provider: $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
+                    model: $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
+                    timeout: $modelProfile?->timeout_seconds ? (int) $modelProfile->timeout_seconds : null,
+                )
+                : $this->callProvider($modelProfile, $prompt);
         } catch (Throwable) {
             return $this->kanbanIntake->normalizeFreeText($rawText, $projectId !== null);
         }
@@ -65,9 +70,9 @@ final class IntakeNormalizerService
             'suggested_title' => $structured['suggested_title'],
             'suggested_description' => $structured['suggested_description'],
             'clarifying_questions' => $structured['clarifying_questions'],
-            "requires_root_cause" => str_contains($haystack, "root cause")
-                || str_contains($haystack, "diagnose")
-                || str_contains($haystack, "diagnosi"),
+            'requires_root_cause' => str_contains($haystack, 'root cause')
+                || str_contains($haystack, 'diagnose')
+                || str_contains($haystack, 'diagnosi'),
             'confidence' => (float) $structured['confidence'],
             'execution_mode' => IntakeNormalizerAgent::isFaked() ? 'laravel_ai_sdk_fake' : 'laravel_ai_sdk',
         ];
@@ -102,7 +107,54 @@ final class IntakeNormalizerService
         return $modelProfile
             && (bool) $modelProfile->model_profile_enabled
             && (bool) $modelProfile->provider_enabled
-            && filled($modelProfile->encrypted_api_key);
+            && (string) $modelProfile->provider_type === 'openai_compatible'
+            && filled($modelProfile->encrypted_api_key)
+            && app(ProviderEndpointPolicy::class)->isAllowed($this->responsesEndpoint((string) ($modelProfile->base_url ?: 'https://api.openai.com/v1')));
+    }
+
+    private function callProvider(object $modelProfile, string $prompt): object
+    {
+        $apiKey = Crypt::decryptString((string) $modelProfile->encrypted_api_key);
+        $response = $this->httpClient
+            ->withToken($apiKey)
+            ->acceptJson()
+            ->asJson()
+            ->timeout((int) ($modelProfile->timeout_seconds ?: 60))
+            ->post($this->responsesEndpoint((string) ($modelProfile->base_url ?: 'https://api.openai.com/v1')), [
+                'model' => (string) $modelProfile->model_name,
+                'instructions' => (string) IntakeNormalizerAgent::make()->instructions(),
+                'input' => $prompt,
+            ]);
+
+        if ($response->failed()) {
+            throw new \RuntimeException('AI provider returned HTTP '.$response->status().'.');
+        }
+
+        return (object) ['text' => $this->extractProviderText($response->json())];
+    }
+
+    private function responsesEndpoint(string $baseUrl): string
+    {
+        $base = rtrim($baseUrl, '/');
+        $base = preg_replace('#/(responses|chat/completions|models)$#', '', $base) ?: $base;
+
+        return $base.'/responses';
+    }
+
+    private function extractProviderText(mixed $payload): string
+    {
+        if (! is_array($payload)) {
+            return '';
+        }
+
+        foreach (['output_text', 'choices.0.message.content', 'output.0.content.0.text'] as $path) {
+            $text = data_get($payload, $path);
+            if (is_string($text) && trim($text) !== '') {
+                return trim($text);
+            }
+        }
+
+        return '';
     }
 
     private function configureLaravelAiProvider(object $modelProfile): void
@@ -134,7 +186,7 @@ final class IntakeNormalizerService
     private function promptForRawText(string $rawText, ?string $projectId): string
     {
         $safeText = json_encode($rawText, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-        $projectContext = $projectId ? "Project context is already known from the route: {$projectId}. Do not ask which project or repository this applies to unless the text explicitly names a conflicting one." : "No project context was provided.";
+        $projectContext = $projectId ? "Project context is already known from the route: {$projectId}. Do not ask which project or repository this applies to unless the text explicitly names a conflicting one." : 'No project context was provided.';
 
         return <<<PROMPT
 Analyze this raw free-text input from a team member and produce an intake normalization.
@@ -150,7 +202,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $structured
+     * @param  array<string, mixed>  $structured
      * @return array{task_type: string, suggested_title: string, suggested_description: string, clarifying_questions: list<string>, confidence: float}
      */
     private function normalizeStructuredResult(array $structured, string $rawText, ?string $projectId): array

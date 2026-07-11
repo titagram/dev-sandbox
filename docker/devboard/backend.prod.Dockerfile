@@ -1,4 +1,16 @@
-FROM php:8.4-fpm-alpine AS php-base
+FROM composer:2.10.1@sha256:7725eb4545c438629ae8bde3ef0bb9a5038ef566126ad878442a69007242d267 AS composer
+
+FROM node:24.16.0-alpine@sha256:21f403ab171f2dc89bad4dd69d7721bfd15f084ccb46cdd225f31f2bc59b5c9a AS assets
+
+WORKDIR /workspace/backend
+
+COPY backend/package.json backend/package-lock.json ./
+RUN npm ci
+
+COPY backend ./
+RUN npm run build
+
+FROM php:8.4.22-fpm-alpine@sha256:b56e1293e6b0b252f8442651a3c66c2794bc52a41c9259bfa7ee80fd1d270745 AS php-base
 
 RUN apk add --no-cache \
     bash \
@@ -26,7 +38,7 @@ WORKDIR /workspace/backend
 
 FROM php-base AS vendor
 
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+COPY --from=composer /usr/bin/composer /usr/bin/composer
 
 ENV COMPOSER_ALLOW_SUPERUSER=1
 ENV COMPOSER_CACHE_DIR=/tmp/composer-cache
@@ -50,6 +62,7 @@ FROM php-base AS runtime
 
 COPY docker/devboard/nginx.prod.conf /etc/nginx/http.d/default.conf
 COPY --from=vendor --chown=www-data:www-data /workspace/backend /workspace/backend
+COPY --from=assets --chown=www-data:www-data /workspace/backend/public/build /workspace/backend/public/build
 
 RUN mkdir -p \
     storage/app/private \

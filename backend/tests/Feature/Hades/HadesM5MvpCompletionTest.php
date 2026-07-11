@@ -98,6 +98,114 @@ it('lets admins queue Hades jobs and review memory proposals for linked workspac
     expect(DB::table('hades_memory_proposals')->where('id', $proposalId)->value('reason_code'))->toBe('duplicate');
 });
 
+it('requires dashboard Admin confirmation before an agent can complete a confirmation gated job', function () {
+    $admin = hadesM5DashboardUserWithRole('Admin');
+    $developer = hadesM5DashboardUserWithRole('Developer');
+    $agent = hadesM5RegisteredAgent($admin);
+    $binding = hadesM5WorkspaceBinding($agent);
+
+    $jobId = $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/hades/jobs', [
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding['workspace_binding_id'],
+            'capability' => 'read_files',
+            'policy' => 'manual_review',
+            'requires_confirmation' => true,
+            'payload' => ['paths' => ['README.md']],
+        ])
+        ->assertCreated()
+        ->json('job.id');
+
+    foreach (['received', 'waiting_confirmation'] as $status) {
+        $this->postJson('/api/hades/v1/agent/jobs/'.$jobId.'/status', [
+            'project_id' => $agent['project_id'],
+            'agent_id' => $agent['external_agent_id'],
+            'workspace_binding_id' => $binding['workspace_binding_id'],
+            'status' => $status,
+        ], hadesM5Headers($agent['agent_token']))->assertOk();
+    }
+
+    $this->postJson('/api/hades/v1/agent/jobs/'.$jobId.'/status', [
+        'project_id' => $agent['project_id'],
+        'agent_id' => $agent['external_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'started',
+    ], hadesM5Headers($agent['agent_token']))
+        ->assertStatus(409)
+        ->assertJsonPath('error.code', 'job_transition_invalid');
+
+    $this->actingAs($developer)
+        ->postJson('/api/dashboard/admin/hades/jobs/'.$jobId.'/confirm')
+        ->assertForbidden();
+
+    $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/hades/jobs/'.$jobId.'/confirm')
+        ->assertOk()
+        ->assertJsonPath('job.status', 'started');
+
+    // Current Hephaistos acknowledges start before executing; after the Admin
+    // confirmation this is an idempotent acknowledgement, not self-approval.
+    $this->postJson('/api/hades/v1/agent/jobs/'.$jobId.'/status', [
+        'project_id' => $agent['project_id'],
+        'agent_id' => $agent['external_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'started',
+    ], hadesM5Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('job.status', 'started');
+
+    $this->postJson('/api/hades/v1/agent/jobs/'.$jobId.'/result', [
+        'project_id' => $agent['project_id'],
+        'agent_id' => $agent['external_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'completed',
+        'result' => ['status' => 'completed', 'summary' => 'Admin-confirmed read completed.'],
+    ], hadesM5Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('job.status', 'completed');
+
+    expect(DB::table('hades_agent_job_events')->where('job_id', $jobId)->where('event_type', 'confirmation')->count())->toBe(1)
+        ->and(DB::table('audit_logs')->where('action', 'hades.job_confirmed')->where('target_id', $jobId)->value('actor_user_id'))->toBe($admin->id);
+});
+
+it('normalizes gated policies and confirms legacy policy gated jobs', function (string $policy) {
+    $admin = hadesM5DashboardUserWithRole('Admin');
+    $agent = hadesM5RegisteredAgent($admin);
+    $binding = hadesM5WorkspaceBinding($agent);
+
+    $jobId = $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/hades/jobs', [
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding['workspace_binding_id'],
+            'capability' => 'read_files',
+            'policy' => $policy,
+            'requires_confirmation' => false,
+            'payload' => ['paths' => ['README.md']],
+        ])
+        ->assertCreated()
+        ->assertJsonPath('job.requires_confirmation', true)
+        ->json('job.id');
+
+    // Simulate a pre-normalization row while retaining the gated policy.
+    DB::table('hades_agent_jobs')->where('id', $jobId)->update(['requires_confirmation' => false]);
+    foreach (['received', 'waiting_confirmation'] as $status) {
+        $this->postJson('/api/hades/v1/agent/jobs/'.$jobId.'/status', [
+            'project_id' => $agent['project_id'],
+            'agent_id' => $agent['external_agent_id'],
+            'workspace_binding_id' => $binding['workspace_binding_id'],
+            'status' => $status,
+        ], hadesM5Headers($agent['agent_token']))->assertOk();
+    }
+
+    $this->actingAs($admin)
+        ->postJson('/api/dashboard/admin/hades/jobs/'.$jobId.'/confirm')
+        ->assertOk()
+        ->assertJsonPath('job.status', 'started')
+        ->assertJsonPath('job.requires_confirmation', true);
+
+    expect((bool) DB::table('hades_agent_jobs')->where('id', $jobId)->value('requires_confirmation'))->toBeTrue();
+})->with(['confirm', 'manual', 'approval_required']);
+
 it('promotes accepted note backfill proposals to project memory once', function () {
     $admin = hadesM5DashboardUserWithRole('Admin');
     $agent = hadesM5RegisteredAgent($admin);
@@ -383,30 +491,47 @@ it('stores explicit doctor reports and exposes a persistent Persephone inbox wit
         ->assertJsonPath('report.workspace_binding_id', $binding['workspace_binding_id']);
 
     $this->postJson('/api/hades/v1/persephone/messages', [
+        'schema' => 'hades.persephone.agent-message.v1',
+        'message_id' => 'm5-proposal-reviewed',
+        'correlation_id' => 'm5-proposal-review-correlation',
         'project_id' => $agent['project_id'],
-        'event_type' => 'proposal.reviewed',
+        'sender_agent_id' => $agent['external_agent_id'],
+        'target_agent_id' => $agent['external_agent_id'],
+        'target_workspace_binding_id' => $binding['workspace_binding_id'],
+        'message_type' => 'information_response',
+        'effect' => 'information_read',
+        'capability' => 'source_slice',
+        'expires_at' => now()->addHour()->timestamp,
         'payload' => ['message' => 'Memory proposal refused.'],
+        'causation_id' => null,
+        'remote_task_id' => null,
+        'remote_task_version' => null,
     ], hadesM5Headers($agent['agent_token']))
         ->assertCreated()
-        ->assertJsonPath('event.event_type', 'proposal.reviewed');
+        ->assertJsonPath('event.message_id', 'm5-proposal-reviewed');
 
     $this->getJson('/api/hades/v1/persephone/inbox?'.http_build_query([
         'project_id' => $agent['project_id'],
+        'target_agent_id' => $agent['external_agent_id'],
+        'target_workspace_binding_id' => $binding['workspace_binding_id'],
     ]), hadesM5Headers($agent['agent_token']))
         ->assertOk()
-        ->assertJsonPath('counts.total', 1)
-        ->assertJsonPath('counts.unread', 1)
-        ->assertJsonPath('events.0.event_type', 'proposal.reviewed');
+        ->assertJsonPath('events.0.message_id', 'm5-proposal-reviewed')
+        ->assertJsonPath('cursor', fn ($cursor) => is_string($cursor) && $cursor !== '');
 
     $this->get('/api/hades/v1/persephone/events?'.http_build_query([
         'project_id' => $agent['project_id'],
+        'target_agent_id' => $agent['external_agent_id'],
     ]), hadesM5Headers($agent['agent_token']))
         ->assertOk()
         ->assertHeader('content-type', 'text/event-stream; charset=UTF-8')
-        ->assertSee('event: proposal.reviewed');
+        ->assertSee('event: message')
+        ->assertSee('event: stop')
+        ->assertDontSee('created_at');
 
     expect(DB::table('hades_doctor_reports')->where('project_id', $agent['project_id'])->count())->toBe(1)
-        ->and(DB::table('hades_persephone_events')->where('project_id', $agent['project_id'])->count())->toBe(1);
+        ->and(DB::table('hades_persephone_events')->where('project_id', $agent['project_id'])->count())->toBe(0)
+        ->and(DB::table('hades_persephone_agent_messages')->where('project_id', $agent['project_id'])->count())->toBe(1);
 });
 
 function hadesM5Headers(?string $token = null): array

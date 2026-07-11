@@ -61,7 +61,7 @@ final class CheckGatesCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $report
+     * @param  array<string, mixed>  $report
      */
     private function markdown(array $report): string
     {

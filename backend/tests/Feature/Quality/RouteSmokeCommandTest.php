@@ -55,4 +55,3 @@ it('runs guest smoke only for configured safe read routes and skips unsafe or un
 
     expect(File::get($markdownPath))->toContain('# route-smoke Quality Report');
 });
-

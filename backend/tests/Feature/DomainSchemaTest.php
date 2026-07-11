@@ -1,8 +1,11 @@
 <?php
 
+use Database\Seeders\DemoDevBoardSeeder;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 
@@ -33,6 +36,7 @@ it('creates the devboard core tables', function () {
         'assistant_messages',
         'assistant_suggestions',
         'audit_logs',
+        'audit_chain_heads',
     ];
 
     foreach ($tables as $table) {
@@ -40,10 +44,30 @@ it('creates the devboard core tables', function () {
     }
 });
 
-it('seeds the required role names and default kanban columns', function () {
-    expect(class_exists(\Database\Seeders\DevBoardSeeder::class))->toBeTrue();
+it('creates audit chain expansion columns and global head row', function () {
+    expect(Schema::hasColumns('audit_logs', [
+        'sequence',
+        'chain_version',
+        'actor_user_ref',
+        'actor_device_ref',
+        'prev_hash',
+        'row_hash',
+    ]))->toBeTrue();
 
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    expect(Schema::hasColumns('audit_chain_heads', [
+        'chain_key',
+        'last_sequence',
+        'last_hash',
+        'updated_at',
+    ]))->toBeTrue();
+
+    expect(DB::table('audit_chain_heads')->where('chain_key', 'global')->value('last_sequence'))->toBe(0);
+});
+
+it('seeds the required role names and default kanban columns', function () {
+    expect(class_exists(DevBoardSeeder::class))->toBeTrue();
+
+    $this->seed(DevBoardSeeder::class);
 
     expect(DB::table('roles')->pluck('name')->all())
         ->toEqualCanonicalizing(['Admin', 'PM', 'Developer', 'Sysadmin', 'Agent']);
@@ -58,6 +82,7 @@ it('seeds the required role names and default kanban columns', function () {
             'backlog_triage',
             'wiki_query',
             'watchman',
+            'intake_normalizer',
         ]);
 
     expect(DB::table('ai_model_profiles')->where('profile_key', 'openai_default_text')->value('model_name'))
@@ -65,4 +90,72 @@ it('seeds the required role names and default kanban columns', function () {
 
     expect(DB::table('ai_agent_profiles')->where('agent_key', 'task_clarifier')->value('default_model_profile_id'))
         ->not->toBeNull();
+});
+
+it('keeps the structural seeder free of demo users and projects in production', function () {
+    $this->app['env'] = 'production';
+
+    try {
+        app(DevBoardSeeder::class)->run();
+
+        expect(DB::table('roles')->count())->toBe(5)
+            ->and(DB::table('users')->count())->toBe(0)
+            ->and(DB::table('projects')->count())->toBe(0)
+            ->and(class_exists(DemoDevBoardSeeder::class))->toBeTrue();
+    } finally {
+        $this->app['env'] = 'testing';
+    }
+});
+
+it('repairs missing default ai agent registry rows and normalizes opencode go defaults', function () {
+    $providerId = DB::table('ai_model_providers')->where('provider_key', 'opencode_go')->value('id');
+    $modelProfileId = (string) Str::ulid();
+    expect($providerId)->not->toBeNull();
+
+    DB::table('ai_model_profiles')->insert([
+        'id' => $modelProfileId,
+        'provider_id' => $providerId,
+        'profile_key' => 'opencode_go_default',
+        'display_name' => 'OpenCode Go Default',
+        'model_name' => 'opencode-go',
+        'runtime_profile' => 'compact_readonly',
+        'max_context' => null,
+        'max_output_tokens' => 2048,
+        'temperature' => 0,
+        'timeout_seconds' => 30,
+        'enabled' => true,
+        'metadata' => json_encode(['source_status' => 'developer_provided'], JSON_THROW_ON_ERROR),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    DB::table('ai_agent_profiles')->delete();
+
+    expect(DB::table('ai_agent_profiles')->count())->toBe(0);
+
+    $migration = require base_path('database/migrations/2026_07_09_000002_repair_ai_agent_registry_defaults.php');
+    $migration->up();
+
+    expect(DB::table('ai_model_profiles')->where('profile_key', 'opencode_go_default')->value('model_name'))
+        ->toBe('glm-5.2');
+
+    foreach (['socrate_supervisor', 'task_clarifier', 'backlog_triage'] as $agentKey) {
+        $agent = DB::table('ai_agent_profiles')->where('agent_key', $agentKey)->first();
+
+        expect($agent)->not->toBeNull();
+        expect($agent->default_model_profile_id)->toBe($modelProfileId);
+
+        expect(json_decode((string) $agent->allowed_tools, true, flags: JSON_THROW_ON_ERROR))->toBeArray();
+        expect(json_decode((string) $agent->output_schema, true, flags: JSON_THROW_ON_ERROR))->toBeArray();
+        expect(json_decode((string) $agent->trigger_events, true, flags: JSON_THROW_ON_ERROR))->toBeArray();
+    }
+
+    expect(DB::table('ai_agent_profiles')->pluck('agent_key')->all())
+        ->toContain('intake_normalizer', 'wiki_query', 'watchman');
+
+    $repairedAgentCount = DB::table('ai_agent_profiles')->count();
+
+    $migration->down();
+
+    expect(DB::table('ai_agent_profiles')->count())->toBe($repairedAgentCount);
 });

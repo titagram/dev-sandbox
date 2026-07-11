@@ -1,71 +1,34 @@
-name: devboard
-
 services:
   app:
-    environment:
-      APP_NAME: DevBoard
-      APP_ENV: production
-      APP_DEBUG: "false"
-      APP_KEY: ${DEVBOARD_APP_KEY:?Set DEVBOARD_APP_KEY before exposing DevBoard}
-      APP_URL: https://home-sweet-home.cloud
-      ASSET_URL: https://home-sweet-home.cloud
-      DEVBOARD_DASHBOARD_ORIGINS: https://home-sweet-home.cloud
-      SANCTUM_STATEFUL_DOMAINS: home-sweet-home.cloud
-      SESSION_DOMAIN: home-sweet-home.cloud
-      SESSION_SECURE_COOKIE: "true"
-      SESSION_SAME_SITE: lax
     labels:
       traefik.enable: "true"
-      traefik.docker.network: traefik_default
+      traefik.docker.network: ${DEVBOARD_TRAEFIK_NETWORK:-traefik_default}
       traefik.http.middlewares.devboard-https-redirect.redirectscheme.scheme: https
       traefik.http.middlewares.devboard-https-redirect.redirectscheme.permanent: "true"
-      traefik.http.middlewares.devboard-basic-auth.basicauth.users: devboard:{SHA}H+mfT02kxLMycA/N3Rd1THEy8NE=
+      traefik.http.middlewares.devboard-basic-auth.basicauth.users: ${DEVBOARD_TRAEFIK_BASIC_AUTH_USERS:?Set DEVBOARD_TRAEFIK_BASIC_AUTH_USERS to an htpasswd entry}
       traefik.http.middlewares.devboard-basic-auth.basicauth.removeheader: "true"
-      traefik.http.routers.devboard-http.entrypoints: web
-      traefik.http.routers.devboard-http.rule: Host(`home-sweet-home.cloud`)
+      traefik.http.routers.devboard-http.entrypoints: ${DEVBOARD_TRAEFIK_HTTP_ENTRYPOINT:-web}
+      traefik.http.routers.devboard-http.rule: Host(`${DEVBOARD_TRAEFIK_HOST:?Set DEVBOARD_TRAEFIK_HOST}`)
       traefik.http.routers.devboard-http.middlewares: devboard-https-redirect
-      traefik.http.routers.devboard-plugin.entrypoints: websecure
-      traefik.http.routers.devboard-plugin.rule: Host(`home-sweet-home.cloud`) && PathPrefix(`/api/plugin/v1`)
+      traefik.http.routers.devboard-plugin.entrypoints: ${DEVBOARD_TRAEFIK_HTTPS_ENTRYPOINT:-websecure}
+      traefik.http.routers.devboard-plugin.rule: Host(`${DEVBOARD_TRAEFIK_HOST:?Set DEVBOARD_TRAEFIK_HOST}`) && PathPrefix(`/api/plugin/v1`)
       traefik.http.routers.devboard-plugin.priority: "120"
-      traefik.http.routers.devboard-plugin.tls.certresolver: le
-      traefik.http.routers.devboard-hades.entrypoints: websecure
-      traefik.http.routers.devboard-hades.rule: Host(`home-sweet-home.cloud`) && PathPrefix(`/api/hades/v1`)
+      traefik.http.routers.devboard-plugin.tls.certresolver: ${DEVBOARD_TRAEFIK_CERT_RESOLVER:-le}
+      traefik.http.routers.devboard-hades.entrypoints: ${DEVBOARD_TRAEFIK_HTTPS_ENTRYPOINT:-websecure}
+      traefik.http.routers.devboard-hades.rule: Host(`${DEVBOARD_TRAEFIK_HOST:?Set DEVBOARD_TRAEFIK_HOST}`) && PathPrefix(`/api/hades/v1`)
       traefik.http.routers.devboard-hades.priority: "120"
-      traefik.http.routers.devboard-hades.tls.certresolver: le
-      traefik.http.routers.devboard-web.entrypoints: websecure
-      traefik.http.routers.devboard-web.rule: Host(`home-sweet-home.cloud`) && (PathPrefix(`/api`) || PathPrefix(`/sanctum`) || PathPrefix(`/storage`))
+      traefik.http.routers.devboard-hades.tls.certresolver: ${DEVBOARD_TRAEFIK_CERT_RESOLVER:-le}
+      traefik.http.routers.devboard-web.entrypoints: ${DEVBOARD_TRAEFIK_HTTPS_ENTRYPOINT:-websecure}
+      traefik.http.routers.devboard-web.rule: Host(`${DEVBOARD_TRAEFIK_HOST:?Set DEVBOARD_TRAEFIK_HOST}`) && (PathPrefix(`/api`) || PathPrefix(`/sanctum`) || PathPrefix(`/storage`))
       traefik.http.routers.devboard-web.priority: "100"
       traefik.http.routers.devboard-web.middlewares: devboard-basic-auth
-      traefik.http.routers.devboard-web.tls.certresolver: le
+      traefik.http.routers.devboard-web.tls.certresolver: ${DEVBOARD_TRAEFIK_CERT_RESOLVER:-le}
       traefik.http.services.devboard-web.loadbalancer.server.port: "8000"
     networks:
       - default
       - traefik
 
-  frontend:
-    build:
-      context: ../emergent_devboard_frontend/frontend
-      args:
-        REACT_APP_USE_MOCK: "false"
-        REACT_APP_API_BASE_URL: https://home-sweet-home.cloud
-    labels:
-      traefik.enable: "true"
-      traefik.docker.network: traefik_default
-      traefik.http.routers.devboard-frontend.entrypoints: websecure
-      traefik.http.routers.devboard-frontend.rule: Host(`home-sweet-home.cloud`)
-      traefik.http.routers.devboard-install.entrypoints: websecure
-      traefik.http.routers.devboard-install.rule: Host(`home-sweet-home.cloud`) && (Path(`/install.sh`) || Path(`/install.ps1`))
-      traefik.http.routers.devboard-install.priority: "130"
-      traefik.http.routers.devboard-install.tls.certresolver: le
-      traefik.http.routers.devboard-install.service: devboard-frontend
-      traefik.http.routers.devboard-frontend.priority: "1"
-      traefik.http.routers.devboard-frontend.middlewares: devboard-basic-auth
-      traefik.http.routers.devboard-frontend.tls.certresolver: le
-      traefik.http.services.devboard-frontend.loadbalancer.server.port: "80"
-    networks:
-      - traefik
-
 networks:
   traefik:
     external: true
-    name: traefik_default
+    name: ${DEVBOARD_TRAEFIK_NETWORK:-traefik_default}

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Dashboard;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Inertia\Inertia;
@@ -143,7 +144,7 @@ class RunShowController extends Controller
     }
 
     /**
-     * @param \Illuminate\Support\Collection<int, object> $artifacts
+     * @param  Collection<int, object>  $artifacts
      * @return list<array{id: string, slug: string, title: string, href: string}>
      */
     private function affectedWikiPages(object $runRow, object $artifacts): array
@@ -186,8 +187,8 @@ class RunShowController extends Controller
     }
 
     /**
-     * @param iterable<object> $events
-     * @param iterable<object> $artifacts
+     * @param  iterable<object>  $events
+     * @param  iterable<object>  $artifacts
      * @return array{triggers: list<string>, severity: string}
      */
     private function riskSummary(iterable $events, iterable $artifacts): array
@@ -218,8 +219,8 @@ class RunShowController extends Controller
     }
 
     /**
-     * @param iterable<object> $events
-     * @param iterable<object> $artifacts
+     * @param  iterable<object>  $events
+     * @param  iterable<object>  $artifacts
      * @return array{summary: ?string, triggers: list<string>, risk_level: string}
      */
     private function riskReport(iterable $events, iterable $artifacts, object $runRow): array

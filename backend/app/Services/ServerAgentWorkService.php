@@ -2,26 +2,63 @@
 
 namespace App\Services;
 
+use App\Assistants\AiAgentRegistry;
+use App\Assistants\ProviderHttpClient;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
 
 final class ServerAgentWorkService
 {
-    private const SERVER_AGENT_KEYS = ['socrates', 'platon', 'aristoteles'];
-
-    private const PROFILE_KEY_BY_AGENT = [
+    private const LEGACY_PROFILE_KEY_BY_AGENT = [
         'socrates' => 'socrate_supervisor',
         'platon' => 'task_clarifier',
         'aristoteles' => 'backlog_triage',
     ];
 
-    public function shouldHandle(string $agentKey): bool
+    public function __construct(
+        private readonly AiAgentRegistry $agentRegistry,
+        private readonly ProviderHttpClient $httpClient,
+    ) {}
+
+    public function isAssignableAgentKey(string $agentKey, ?string $projectId = null): bool
     {
-        return in_array($agentKey, self::SERVER_AGENT_KEYS, true);
+        if ($agentKey === 'local_agent') {
+            return true;
+        }
+
+        return $this->shouldHandle($agentKey, $projectId);
+    }
+
+    public function shouldHandle(string $agentKey, ?string $projectId = null): bool
+    {
+        $profileKey = $this->profileKeyForAgentKey($agentKey);
+
+        if ($profileKey === null) {
+            return false;
+        }
+
+        return DB::table('ai_agent_profiles')
+            ->where('agent_key', $profileKey)
+            ->where('enabled', true)
+            ->whereNotNull('default_model_profile_id')
+            ->exists()
+            && $this->agentRegistry->agentVisibleForProject($agentKey, $projectId);
+    }
+
+    public function profileKeyForAgentKey(string $agentKey): ?string
+    {
+        if ($agentKey === 'local_agent') {
+            return null;
+        }
+
+        if (isset(self::LEGACY_PROFILE_KEY_BY_AGENT[$agentKey])) {
+            return self::LEGACY_PROFILE_KEY_BY_AGENT[$agentKey];
+        }
+
+        return preg_match('/^[a-z0-9][a-z0-9_.-]*$/', $agentKey) === 1 ? $agentKey : null;
     }
 
     public function process(string $workItemId): void
@@ -82,7 +119,7 @@ final class ServerAgentWorkService
     private function modelProfileForWorkItem(object $workItem): object
     {
         $agentKey = (string) $workItem->assigned_agent_key;
-        $profileKey = self::PROFILE_KEY_BY_AGENT[$agentKey] ?? null;
+        $profileKey = $this->profileKeyForAgentKey($agentKey);
 
         if ($profileKey === null) {
             throw new RuntimeException("Server-side agent {$agentKey} is not configured yet.");
@@ -118,6 +155,10 @@ final class ServerAgentWorkService
             throw new RuntimeException("Agent profile {$profileKey} is not enabled or has no model profile.");
         }
 
+        if (! $this->agentRegistry->agentVisibleForProject($agentKey, (string) $workItem->project_id)) {
+            throw new RuntimeException("Server-side agent {$agentKey} is not visible for project {$workItem->project_id}.");
+        }
+
         if (! (bool) $profile->model_profile_enabled || ! (bool) $profile->provider_enabled) {
             throw new RuntimeException('The selected AI model provider is disabled.');
         }
@@ -143,7 +184,8 @@ final class ServerAgentWorkService
         $timeout = max(5, (int) ($modelProfile->timeout_seconds ?? 30));
         $maxTokens = max(256, min(2048, (int) ($modelProfile->max_output_tokens ?? 1024)));
 
-        $response = Http::timeout($timeout)
+        $response = $this->httpClient
+            ->timeout($timeout)
             ->acceptJson()
             ->withToken($apiKey)
             ->post($endpoint, [

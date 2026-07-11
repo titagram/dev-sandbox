@@ -33,7 +33,7 @@ Delta Sync must answer:
 10. Plugin finalizes Delta Sync.
 11. Backend validates payload, hashes, and policy compliance.
 12. Backend creates a new Snapshot.
-13. Backend imports graph changes into Neo4j.
+13. Backend dispatches `ImportGraphToNeo4j` to import graph changes into Neo4j.
 14. Backend marks impacted wiki content stale or writes new revisions.
 15. Backend updates project dashboard state.
 ```
@@ -200,9 +200,14 @@ affected_symbol_ids
 Backend rules:
 
 - for `full_snapshot`, replace the active graph projection for the repository snapshot scope;
-- for `affected_subgraph`, upsert affected nodes and relationships, then mark removed nodes inactive;
+- for `affected_subgraph`, clone the unchanged base projection into the new snapshot scope, apply node and relationship upserts, and omit identifiers listed in `nodes_deleted` and `relationships_deleted`;
+- deletion fields are lists of stable identifiers/tombstones, never aggregate counters;
 - keep previous snapshot data queryable for audit until retention policy removes it;
 - link graph changes to `delta_sync_id` and `run_id`.
+
+Implemented Neo4j contract: Delta imports use the same backend graph importer as Genesis through `ImportGraphToNeo4j('delta', ...)`. Every imported node keeps the base `:CodeNode` label, with additive `:File`, `:Function`, `:Class`, and `:Module` labels when recognized. `Method` maps to `:Function`; all other labels are preserved only in the node `labels` property. Relationship types `CALLS`, `DECLARES`, and `IMPORTS` become native Neo4j relationships; other relationship types become `RELATED` with the original type preserved as a property.
+
+Future target: broader relation and domain node labels from the artifact schema may be added later, but Delta query semantics must not assume them until backend import and query support are implemented.
 
 ## Wiki Updates
 
@@ -268,9 +273,16 @@ Failure handling:
 - invalid base snapshot returns `schema_validation_failed`;
 - blocked findings without explicit approval return `secret_scan_blocked`;
 - approved blocked findings append `security.blocked_upload_approved` run/audit records and do not include raw secret values in audit payloads;
+- a chunk index outside the declared `0..chunk_count-1` range returns `artifact_chunk_out_of_range` (HTTP 422) and creates no file;
+- a chunk whose cumulative bytes would exceed the declared `size_bytes` returns `artifact_size_mismatch` (HTTP 422) and is not stored;
 - missing artifact chunks return `artifact_chunk_missing`;
+- finalize validates the exact assembled size before the artifact SHA: if the streamed size is not exactly `size_bytes` it returns `artifact_size_mismatch` (HTTP 422) and deletes the partial assembled file; SHA validation is a separate check after exact-size validation;
 - mismatch hashes return `artifact_hash_mismatch`;
 - graph import failure marks Delta Sync failed and leaves previous active snapshot unchanged.
+
+### Chunk range and exact size
+
+`size_bytes` is an exact required final size, not an estimate. During chunk upload the backend sums existing expected chunk bytes (indexes `0..chunk_count-1`) plus the incoming chunk and rejects with `artifact_size_mismatch` when the budget would be exceeded. The route chunk parameter is parsed explicitly; negative, non-integer, and overflow indexes are rejected with `artifact_chunk_out_of_range` (HTTP 422) before any file is created. Chunk accounting and finalization are serialized with `artifacts` row locks; the server iterates only declared indexes and never scans an unbounded chunk directory.
 
 ## Snapshot Rules
 
@@ -282,7 +294,8 @@ Rules:
 - the new snapshot references the base snapshot;
 - old evidence becomes stale only after successful finalize;
 - dashboard must label the new snapshot as local plugin state;
-- V1 does not mark branches pushed, PR opened, or merged.
+- V1 does not mark branches pushed, PR opened, or merged;
+- abandoned uploads are cleaned up: artifacts that stay in the `uploading` status past the `DEVBOARD_INCOMPLETE_UPLOAD_TTL_HOURS` window (default `24`), and whose parent `delta_syncs` row has not been updated within that same window, are eligible for purge. Operator-triggered cleanup defaults to a dry run that reports candidates without deleting files or mutating rows; a live purge deletes the complete artifact directory (including any out-of-range legacy chunk files) and marks the row `purged`, auditing only IDs, type, byte counts, and reason.
 
 ## Acceptance Criteria
 

@@ -3,7 +3,11 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import pytest
+
 from devboard_plugin import mcp_tools
+from devboard_plugin.client import DevBoardApiError
+from devboard_plugin.config import Credentials, save_credentials
 from devboard_plugin.state import write_repo_state
 
 
@@ -24,6 +28,7 @@ def test_mcp_tool_names_match_v1_contract():
         "devboard_delta_sync",
         "devboard_upload_artifact",
         "devboard_write_wiki_revision",
+        "devboard_query_graph",
     }
 
 
@@ -49,6 +54,28 @@ def test_auth_check_uses_configured_credentials(monkeypatch):
 
     assert response == {"authenticated": True}
     assert fake_client.calls == [("auth_check", None)]
+
+
+def test_mcp_server_override_rejects_credentials_for_another_origin(monkeypatch, tmp_path):
+    credentials = tmp_path / "credentials.json"
+    save_credentials(Credentials("https://one.example", "token-one"), credentials)
+    monkeypatch.setenv("DEVBOARD_CREDENTIALS_PATH", str(credentials))
+
+    with pytest.raises(DevBoardApiError) as exc_info:
+        mcp_tools.client_from_options("https://two.example")
+
+    assert exc_info.value.code == "credentials_origin_mismatch"
+
+
+def test_mcp_client_receives_saved_device_secret(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(mcp_tools, "DevBoardClient", lambda **kwargs: captured.update(kwargs) or object())
+
+    mcp_tools.client_from_credentials(
+        Credentials("https://devboard.test", "token", "device-1", "device-secret")
+    )
+
+    assert captured["device_secret"] == "device-secret"
 
 
 def test_start_run_forwards_public_payload_fields(monkeypatch):
@@ -165,6 +192,33 @@ def test_delta_sync_forwards_explicit_security_approval(monkeypatch, tmp_path):
     assert uploads[0]["allow_blocked_security_findings"] is True
 
 
+def test_query_graph_calls_graph_query_endpoint(monkeypatch):
+    fake_client = FakeClient()
+    fake_client.query_graph_response = {
+        "protocol_version": "v1",
+        "project_id": "proj_123",
+        "query_type": "callers",
+        "symbol_id": "App\\Services\\InvoiceService",
+        "results": [{"id": "node_1", "labels": ["Function"], "name": "processPayment"}],
+    }
+    monkeypatch.setattr(mcp_tools, "client_from_options", lambda server_url=None: fake_client)
+
+    response = mcp_tools.devboard_query_graph(
+        project_id="proj_123",
+        query_type="callers",
+        symbol_id="App\\Services\\InvoiceService",
+        limit=10,
+    )
+
+    assert response["query_type"] == "callers"
+    assert response["results"][0]["id"] == "node_1"
+    assert fake_client.calls[0][0] == "query_graph"
+    assert fake_client.calls[0][1]["type"] == "callers"
+    assert fake_client.calls[0][1]["symbol_id"] == "App\\Services\\InvoiceService"
+    assert fake_client.calls[0][1]["limit"] == 10
+    assert fake_client.calls[0][1]["project_id"] == "proj_123"
+
+
 def test_upload_artifact_forwards_explicit_security_approval(monkeypatch, tmp_path):
     fake_client = FakeClient()
     uploads = []
@@ -194,9 +248,27 @@ def test_upload_artifact_forwards_explicit_security_approval(monkeypatch, tmp_pa
     assert uploads[0]["bundle_path"] == tmp_path / "bundle"
 
 
+def test_genesis_import_rejects_output_outside_repository(monkeypatch, tmp_path):
+    fake_client = FakeClient()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(mcp_tools, "client_from_options", lambda server_url=None: fake_client)
+
+    with pytest.raises(ValueError, match="inside repository"):
+        mcp_tools.devboard_genesis_import(
+            project_id="proj_123",
+            repository_id="repo_123",
+            local_workspace_id="lw_123",
+            repo_path=str(repo),
+            output_path=str(tmp_path / "outside"),
+            run_id="run_123",
+        )
+
+
 class FakeClient:
     def __init__(self):
         self.calls = []
+        self.query_graph_response = {"protocol_version": "v1", "project_id": "proj_123", "query_type": "callers", "results": []}
 
     def auth_check(self):
         self.calls.append(("auth_check", None))
@@ -209,6 +281,10 @@ class FakeClient:
     def repository_policy(self, repository_id):
         self.calls.append(("repository_policy", repository_id))
         return {"code_exposure": "full_code_artifacts"}
+
+    def query_graph(self, project_id, **kwargs):
+        self.calls.append(("query_graph", {**kwargs, "project_id": project_id}))
+        return self.query_graph_response
 
     def start_run(self, payload):
         self.calls.append(("start_run", payload))

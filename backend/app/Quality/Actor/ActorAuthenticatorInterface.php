@@ -8,4 +8,3 @@ interface ActorAuthenticatorInterface
 {
     public function authenticate(Request $request, string $actor): void;
 }
-

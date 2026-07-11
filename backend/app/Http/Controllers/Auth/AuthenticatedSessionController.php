@@ -29,7 +29,7 @@ class AuthenticatedSessionController extends Controller
             'password' => ['required', 'string'],
         ]);
 
-        if (! Auth::attempt($credentials)) {
+        if (! Auth::attempt([...$credentials, 'status' => 'active'])) {
             throw ValidationException::withMessages([
                 'email' => __('auth.failed'),
             ]);

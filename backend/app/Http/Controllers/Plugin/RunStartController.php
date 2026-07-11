@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Plugin;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Plugin\Concerns\HandlesRunResponses;
 use App\Projects\ProjectLifecycleService;
+use App\Services\PluginInvariantService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,9 +15,10 @@ class RunStartController extends Controller
 {
     use HandlesRunResponses;
 
-    public function __construct(private readonly ProjectLifecycleService $lifecycle)
-    {
-    }
+    public function __construct(
+        private readonly ProjectLifecycleService $lifecycle,
+        private readonly PluginInvariantService $invariants,
+    ) {}
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -38,7 +40,33 @@ class RunStartController extends Controller
             return $error;
         }
 
+        if ($error = $this->invariants->assertAuthenticatedDevice($request)) {
+            return $error;
+        }
+
         $auth = $request->attributes->get('plugin_auth');
+        $repository = isset($validated['repository_id'])
+            ? DB::table('repositories')->where('id', $validated['repository_id'])->first()
+            : null;
+        $workspace = isset($validated['local_workspace_id'])
+            ? DB::table('local_workspaces')->where('id', $validated['local_workspace_id'])->first()
+            : null;
+        $task = isset($validated['task_id'])
+            ? DB::table('tasks')->where('id', $validated['task_id'])->first()
+            : null;
+        $referencesAreConsistent = (! $repository || (string) $repository->project_id === (string) $validated['project_id'])
+            && (! $workspace || ($repository
+                && (string) $workspace->repository_id === (string) $repository->id
+                && (string) $workspace->device_id === (string) $auth['token']->device_id))
+            && (! $task || (string) $task->project_id === (string) $validated['project_id']);
+
+        if ($error = $this->invariants->assertReferences(
+            $referencesAreConsistent,
+            'Run project, repository, workspace, task, and device references are inconsistent.',
+        )) {
+            return $error;
+        }
+
         $now = now();
         $runId = (string) Str::ulid();
 

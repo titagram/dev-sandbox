@@ -23,6 +23,16 @@ X-DevBoard-Plugin-Version: <semver>
 X-DevBoard-Device-Id: <device_id>, after registration
 ```
 
+Requests made with a device-bound token also include:
+
+```text
+X-DevBoard-Timestamp: <unix_seconds>
+X-DevBoard-Content-SHA256: <sha256_of_exact_request_body>
+X-DevBoard-Signature: v1=<hmac_sha256>
+```
+
+The signature canonical value is `METHOD\nREQUEST_URI\nTIMESTAMP\nBODY_SHA256`. The signing key is the SHA-256 hex digest of the one-time device secret. `REQUEST_URI` includes the path and query string exactly as sent.
+
 All JSON payloads include:
 
 ```json
@@ -72,6 +82,8 @@ Token rules:
 - the full token is shown once in the dashboard;
 - the server stores only a hash of the secret;
 - the plugin stores credentials outside the project repository;
+- stored credentials are bound to their normalized server origin and cannot be reused when only the server URL is overridden;
+- HTTPS is required outside explicit loopback development origins;
 - token values must never be written to `.devboard/`, generated AGENTS files, wiki content, logs, artifacts, or committed files.
 
 Recommended local credential path:
@@ -140,7 +152,7 @@ devboard_upload_artifact
 devboard_write_wiki_revision
 ```
 
-MCP tools must not expose raw backend tokens to the LLM. Tools return domain ids, statuses, summaries, and safe errors only.
+MCP tools must not expose raw backend tokens to the LLM. Tools return domain ids, statuses, summaries, and safe errors only. An MCP `server_url` override must not carry credentials saved for another origin.
 
 ## Endpoint Summary
 
@@ -236,10 +248,15 @@ Response:
 ```json
 {
   "device_id": "dev_01J...",
+  "device_secret": "<shown once for a new device>",
   "status": "active",
   "server_time": "2026-06-16T15:30:00Z"
 }
 ```
+
+The plugin persists `device_secret` with the credential record, removes it from CLI/MCP output, and uses it for subsequent signed requests. The backend does not return the secret again for an existing device.
+
+Run mutation endpoints verify that the authenticated token user and bound device own the target run. Repository, workspace, task, snapshot, project, and import references must belong to the same project/repository context.
 
 ### RepositoryPolicy
 
@@ -432,11 +449,22 @@ secret_scan_blocked
 artifact_chunk_missing
 artifact_hash_mismatch
 artifact_finalize_conflict
+artifact_chunk_out_of_range
+artifact_size_mismatch
 run_not_active
 schema_validation_failed
 rate_limited
 server_error
 ```
+
+### Chunk range and exact size
+
+`size_bytes` is an exact required final size, not an estimate. The backend validates it at two layers:
+
+- During chunk upload, the server sums the bytes of existing expected chunks (indexes `0..chunk_count-1`) plus the incoming chunk. If the total would exceed the declared `size_bytes`, the chunk is rejected with `artifact_size_mismatch` (HTTP 422) and is not stored.
+- During finalize assembly, the server streams chunks in declared index order (`0..chunk_count-1`). If the running total exceeds `size_bytes`, or the final assembled size is not exactly equal to `size_bytes`, finalize returns `artifact_size_mismatch` (HTTP 422), the partial assembled file is deleted, and SHA validation is not reached.
+
+A chunk index must be a non-negative integer in the declared range `0..chunk_count-1`. The route chunk parameter is parsed explicitly; negative, non-integer, and overflow values are rejected with `artifact_chunk_out_of_range` (HTTP 422) before any file is created. The server never scans an unbounded chunk directory; it iterates only declared indexes. Chunk accounting is serialized with `artifacts` row locks, so chunk writes and finalization cannot race.
 
 ## Idempotency and Retry
 
@@ -453,9 +481,12 @@ Rules:
 
 - re-uploading the same chunk hash returns success;
 - re-uploading the same chunk index with a different hash returns `artifact_finalize_conflict`;
+- a chunk index outside the declared `0..chunk_count-1` range returns `artifact_chunk_out_of_range` and creates no file;
+- a chunk whose bytes would push the total past the declared `size_bytes` returns `artifact_size_mismatch` and is not stored;
 - finalize can be retried after server-side transient failure;
 - finalize after successful import returns the existing final status;
 - finalize with missing chunks returns `artifact_chunk_missing`;
+- finalize validates exact assembled size before SHA: a size that does not match `size_bytes` returns `artifact_size_mismatch` and deletes the partial file;
 - finalize with mismatched full artifact hash returns `artifact_hash_mismatch`.
 
 ## Scopes
@@ -473,4 +504,3 @@ graph.write
 ```
 
 The backend checks scopes for every request. The plugin cannot bypass policy by choosing a different endpoint.
-

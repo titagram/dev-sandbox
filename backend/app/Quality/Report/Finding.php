@@ -5,7 +5,7 @@ namespace App\Quality\Report;
 final readonly class Finding
 {
     /**
-     * @param array<string, mixed> $evidence
+     * @param  array<string, mixed>  $evidence
      */
     public function __construct(
         public string $id,
@@ -16,8 +16,7 @@ final readonly class Finding
         public string $expected = '',
         public string $actual = '',
         public array $evidence = [],
-    ) {
-    }
+    ) {}
 
     /**
      * @return array{
@@ -45,4 +44,3 @@ final readonly class Finding
         ];
     }
 }
-

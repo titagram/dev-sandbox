@@ -21,14 +21,14 @@ def build_genesis_bundle(root: Path | str, output_dir: Path | str, context: dict
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     context = context or {}
-    files = list(iter_repository_files(repo))
+    files = list(iter_repository_files(repo, excluded_paths=context.get("excluded_paths", [])))
     safety_report = scan_safety(repo, files)
     graph = build_code_graph(repo, files, context, graph_mode="full_snapshot")
 
     _write_json(output / "file-inventory.json", _file_inventory(repo, files))
     _write_json(output / "file-hashes.json", _file_hashes(repo, files))
-    _write_json(output / "symbol-index.json", symbol_index_from_graph(graph))
-    _write_json(output / "relation-index.json", relation_index_from_graph(graph))
+    _write_json(output / "symbol-index.json", {**symbol_index_from_graph(graph), "baseline_complete": True})
+    _write_json(output / "relation-index.json", {**relation_index_from_graph(graph), "baseline_complete": True})
     _write_json(output / "graph-snapshot.json", graph)
     _write_json(output / "wiki-pages.json", _wiki_pages(context))
     _write_json(output / "analysis-quality-report.json", _quality_report(files, safety_report))

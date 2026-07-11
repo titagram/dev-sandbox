@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -8,7 +9,7 @@ use Illuminate\Support\Str;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
-    $this->seed(\Database\Seeders\DevBoardSeeder::class);
+    $this->seed(DevBoardSeeder::class);
 });
 
 it('rate limits plugin api requests by token prefix', function () {
@@ -32,7 +33,7 @@ it('keeps heavy upload throttling separate from lightweight auth checks', functi
         'services.devboard.plugin_heavy_rate_limit_per_minute' => 1,
     ]);
     $token = createRateLimitToken();
-    $context = createHeavyRateLimitContext();
+    $context = createHeavyRateLimitContext($token);
     $payload = [
         'protocol_version' => 'v1',
         'run_id' => $context['run_id'],
@@ -50,21 +51,24 @@ it('keeps heavy upload throttling separate from lightweight auth checks', functi
             ]],
         ],
     ];
+    $heavyUri = "/api/plugin/v1/repositories/{$context['repository_id']}/genesis-imports";
 
-    $this->postJson("/api/plugin/v1/repositories/{$context['repository_id']}/genesis-imports", $payload, rateLimitHeaders($token))->assertOk();
-    $this->postJson("/api/plugin/v1/repositories/{$context['repository_id']}/genesis-imports", $payload, rateLimitHeaders($token))
+    $this->postJson($heavyUri, $payload, signedRateLimitHeaders($token, $context, $heavyUri, $payload))->assertOk();
+    $this->postJson($heavyUri, $payload, signedRateLimitHeaders($token, $context, $heavyUri, $payload))
         ->assertTooManyRequests()
         ->assertJsonPath('error.code', 'rate_limited');
 
-    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], rateLimitHeaders($token))->assertOk();
-    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], rateLimitHeaders($token))->assertOk();
-    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], rateLimitHeaders($token))
+    $lightUri = '/api/plugin/v1/auth/check';
+    $lightPayload = ['protocol_version' => 'v1'];
+    $this->postJson($lightUri, $lightPayload, signedRateLimitHeaders($token, $context, $lightUri, $lightPayload))->assertOk();
+    $this->postJson($lightUri, $lightPayload, signedRateLimitHeaders($token, $context, $lightUri, $lightPayload))->assertOk();
+    $this->postJson($lightUri, $lightPayload, signedRateLimitHeaders($token, $context, $lightUri, $lightPayload))
         ->assertTooManyRequests()
         ->assertJsonPath('error.code', 'rate_limited');
 });
 
 /**
- * @return array{prefix: string, plain_token: string}
+ * @return array{prefix: string, plain_token: string, user_id: int, token_id: string}
  */
 function createRateLimitToken(): array
 {
@@ -92,11 +96,13 @@ function createRateLimitToken(): array
     return [
         'prefix' => $prefix,
         'plain_token' => $prefix.'|'.$secret,
+        'user_id' => $user->id,
+        'token_id' => $id,
     ];
 }
 
 /**
- * @param array{plain_token: string} $token
+ * @param  array{plain_token: string}  $token
  * @return array<string, string>
  */
 function rateLimitHeaders(array $token): array
@@ -109,16 +115,39 @@ function rateLimitHeaders(array $token): array
 }
 
 /**
- * @return array{repository_id: string, local_workspace_id: string, run_id: string}
+ * @param  array{plain_token: string}  $token
+ * @param  array{device_id: string, device_secret: string}  $context
+ * @param  array<string, mixed>  $payload
+ * @return array<string, string>
  */
-function createHeavyRateLimitContext(): array
+function signedRateLimitHeaders(array $token, array $context, string $uri, array $payload): array
 {
-    $userId = DB::table('users')->where('email', 'admin@example.com')->value('id');
+    $timestamp = time();
+    $bodyHash = hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+    $canonical = "POST\n{$uri}\n{$timestamp}\n{$bodyHash}";
+    $signingKey = hash('sha256', $context['device_secret']);
+
+    return array_merge(rateLimitHeaders($token), [
+        'X-DevBoard-Device-Id' => $context['device_id'],
+        'X-DevBoard-Timestamp' => (string) $timestamp,
+        'X-DevBoard-Content-SHA256' => $bodyHash,
+        'X-DevBoard-Signature' => 'v1='.hash_hmac('sha256', $canonical, $signingKey),
+    ]);
+}
+
+/**
+ * @param  array{user_id: int, token_id: string}  $token
+ * @return array{repository_id: string, local_workspace_id: string, run_id: string, device_id: string, device_secret: string}
+ */
+function createHeavyRateLimitContext(array $token): array
+{
+    $userId = $token['user_id'];
     $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
     $deviceId = (string) Str::ulid();
     $workspaceId = (string) Str::ulid();
     $runId = (string) Str::ulid();
+    $deviceSecret = bin2hex(random_bytes(32));
     $now = now();
 
     DB::table('devices')->insert([
@@ -130,8 +159,14 @@ function createHeavyRateLimitContext(): array
         'platform_arch' => 'amd64',
         'plugin_version' => '0.1.0',
         'last_seen_at' => $now,
+        'signing_secret_hash' => hash('sha256', $deviceSecret),
         'status' => 'active',
         'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('api_tokens')->where('id', $token['token_id'])->update([
+        'device_id' => $deviceId,
         'updated_at' => $now,
     ]);
 
@@ -176,5 +211,7 @@ function createHeavyRateLimitContext(): array
         'repository_id' => $repositoryId,
         'local_workspace_id' => $workspaceId,
         'run_id' => $runId,
+        'device_id' => $deviceId,
+        'device_secret' => $deviceSecret,
     ];
 }

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Dashboard\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
+use App\Services\AuditLogger;
 use App\Services\Hades\HadesSearchDocumentIndexer;
 use App\Services\Hades\HadesTokenService;
 use Illuminate\Http\JsonResponse;
@@ -153,6 +154,9 @@ final class DashboardHadesController extends Controller
 
         $id = (string) Str::ulid();
         $now = now();
+        $policy = $validated['policy'] ?? 'manual_review';
+        $requiresConfirmation = (bool) ($validated['requires_confirmation'] ?? false)
+            || in_array($policy, ['confirm', 'manual', 'approval_required'], true);
 
         DB::table('hades_agent_jobs')->insert([
             'id' => $id,
@@ -162,11 +166,11 @@ final class DashboardHadesController extends Controller
             'idempotency_key' => $validated['idempotency_key'] ?? null,
             'capability' => $validated['capability'],
             'status' => 'queued',
-            'policy' => $validated['policy'] ?? 'manual_review',
+            'policy' => $policy,
             'priority' => $validated['priority'] ?? 'normal',
             'payload' => json_encode($validated['payload'], JSON_THROW_ON_ERROR),
             'result' => null,
-            'requires_confirmation' => (bool) ($validated['requires_confirmation'] ?? false),
+            'requires_confirmation' => $requiresConfirmation,
             'deadline_at' => $validated['deadline_at'] ?? null,
             'available_at' => $validated['available_at'] ?? null,
             'claimed_at' => null,
@@ -183,6 +187,83 @@ final class DashboardHadesController extends Controller
         $job = DB::table('hades_agent_jobs')->where('id', $id)->first();
 
         return response()->json(['job' => $this->jobPayload($job)], Response::HTTP_CREATED);
+    }
+
+    public function confirmJob(Request $request, AuditLogger $audit, string $job): JsonResponse
+    {
+        $this->abortUnlessAdmin($request);
+
+        $confirmed = DB::transaction(function () use ($audit, $job, $request): object {
+            $record = DB::table('hades_agent_jobs')->where('id', $job)->lockForUpdate()->first();
+            abort_unless($record, Response::HTTP_NOT_FOUND);
+            abort_unless(
+                DB::table('projects')
+                    ->where('id', $record->project_id)
+                    ->where('status', 'active')
+                    ->whereNull('archived_at')
+                    ->whereNull('deleted_at')
+                    ->exists(),
+                Response::HTTP_CONFLICT,
+                'Hades job project is not active.',
+            );
+            $requiresConfirmation = (bool) $record->requires_confirmation
+                || in_array((string) $record->policy, ['confirm', 'manual', 'approval_required'], true);
+            abort_unless($requiresConfirmation, Response::HTTP_CONFLICT, 'Hades job does not require confirmation.');
+            abort_unless($record->status === 'waiting_confirmation', Response::HTTP_CONFLICT, 'Hades job is not waiting for confirmation.');
+
+            $now = now();
+            $updated = DB::table('hades_agent_jobs')
+                ->where('id', $job)
+                ->where('status', 'waiting_confirmation')
+                ->where(function ($query): void {
+                    $query->where('requires_confirmation', true)
+                        ->orWhereIn('policy', ['confirm', 'manual', 'approval_required']);
+                })
+                ->update([
+                    'status' => 'started',
+                    'requires_confirmation' => true,
+                    'claimed_at' => $record->claimed_at ?: $now,
+                    'started_at' => $record->started_at ?: $now,
+                    'updated_at' => $now,
+                ]);
+            abort_unless($updated === 1, Response::HTTP_CONFLICT, 'Hades job was updated concurrently.');
+
+            DB::table('hades_agent_job_events')->insert([
+                'id' => (string) Str::ulid(),
+                'job_id' => $job,
+                'event_type' => 'confirmation',
+                'status' => 'started',
+                'payload' => json_encode([
+                    'confirmed_by_user_id' => $request->user()->id,
+                    'source' => 'dashboard_admin',
+                    'previous_status' => 'waiting_confirmation',
+                ], JSON_THROW_ON_ERROR),
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+
+            $audit->record(
+                'hades.job_confirmed',
+                'hades_agent_job',
+                $job,
+                [
+                    'project_id' => $record->project_id,
+                    'workspace_binding_id' => $record->workspace_binding_id,
+                    'previous_status' => 'waiting_confirmation',
+                    'status' => 'started',
+                ],
+                [
+                    'type' => 'user',
+                    'user_id' => $request->user()->id,
+                    'ip_address' => $request->ip(),
+                    'user_agent' => $request->userAgent(),
+                ],
+            );
+
+            return DB::table('hades_agent_jobs')->where('id', $job)->first();
+        }, 3);
+
+        return response()->json(['job' => $this->jobPayload($confirmed)]);
     }
 
     public function reviewMemoryProposal(Request $request, string $proposal): JsonResponse

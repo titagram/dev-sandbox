@@ -87,4 +87,3 @@ it('writes quality reports as json and markdown under the quality reports direct
     expect($markdown)->toContain('route-smoke.missing-config.dashboard.runs');
     expect($markdown)->toContain('Route is not configured for smoke testing.');
 });
-

@@ -11,6 +11,8 @@ use App\Assistants\Tools\SearchProjectMemoryTool;
 use App\Assistants\Tools\SearchWikiRevisionsTool;
 use App\Assistants\Tools\WriteWikiRevisionTool;
 use App\Models\User;
+use App\Services\Graph\GraphQueryService;
+use App\Services\Neo4j\FakeNeo4jClient;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -265,6 +267,92 @@ it('queries a bounded read-only project graph from the latest graph artifact', f
         ->and($payload['nodes'][0]['id'])->toBe('App\\Services\\InvoiceService')
         ->and($payload['relationships'][0]['from'])->toBe('app/Http/Controllers/FooController.php')
         ->and($payload['relationships'][0]['to'])->toBe('App\\Services\\InvoiceService');
+});
+
+it('QueryProjectGraphTool accepts structured query arguments for callers', function () {
+    $payload = (new QueryProjectGraphTool)->payload([
+        'project_id' => 'demo-project',
+        'structured_query' => [
+            'type' => 'callers',
+            'symbol_id' => 'App\\Services\\InvoiceService',
+            'limit' => 10,
+        ],
+    ]);
+
+    expect($payload['tool'])->toBe('query_project_graph')
+        ->and($payload['query_type'])->toBe('callers')
+        ->and($payload['symbol_id'])->toBe('App\\Services\\InvoiceService');
+});
+
+it('scopes structured callers graph queries to the requested project latest snapshot', function () {
+    Storage::fake('local');
+
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('project_id', $projectId)->value('id');
+    $snapshotId = aiAgentToolsCreateGraphSnapshot($projectId, $repositoryId, [
+        'nodes' => [
+            ['id' => 'App\\Services\\InvoiceService', 'labels' => ['Symbol', 'Function'], 'properties' => ['name' => 'InvoiceService']],
+            ['id' => 'App\\Http\\Controllers\\InvoiceController', 'labels' => ['Symbol', 'Function'], 'properties' => ['name' => 'InvoiceController']],
+        ],
+        'relationships' => [
+            ['id' => 'calls-1', 'source_id' => 'App\\Http\\Controllers\\InvoiceController', 'target_id' => 'App\\Services\\InvoiceService', 'type' => 'CALLS'],
+        ],
+    ]);
+    $fakeClient = new FakeNeo4jClient;
+
+    $payload = (new QueryProjectGraphTool(new GraphQueryService($fakeClient)))->payload([
+        'project_id' => $projectId,
+        'structured_query' => [
+            'type' => 'callers',
+            'symbol_id' => 'App\\Services\\InvoiceService',
+            'limit' => 10,
+        ],
+    ]);
+
+    expect([
+        'found' => $payload['found'],
+        'project_id' => $payload['project_id'],
+        'reason' => $payload['reason'] ?? null,
+        'commands' => count($fakeClient->commands),
+        'command_snapshot_id' => $fakeClient->commands[0]['params']['snapshot_id'] ?? null,
+    ])->toBe([
+        'found' => true,
+        'project_id' => $projectId,
+        'reason' => null,
+        'commands' => 1,
+        'command_snapshot_id' => $snapshotId,
+    ]);
+});
+
+it('QueryProjectGraphTool accepts structured query arguments for callees', function () {
+    $payload = (new QueryProjectGraphTool)->payload([
+        'project_id' => 'demo-project',
+        'structured_query' => [
+            'type' => 'callees',
+            'symbol_id' => 'App\\Services\\InvoiceService',
+            'limit' => 10,
+        ],
+    ]);
+
+    expect($payload['tool'])->toBe('query_project_graph')
+        ->and($payload['query_type'])->toBe('callees');
+});
+
+it('QueryProjectGraphTool accepts structured query arguments for path', function () {
+    $payload = (new QueryProjectGraphTool)->payload([
+        'project_id' => 'demo-project',
+        'structured_query' => [
+            'type' => 'path',
+            'from_symbol_id' => 'App\\Controllers\\Foo',
+            'to_symbol_id' => 'App\\Services\\Bar',
+            'max_depth' => 5,
+        ],
+    ]);
+
+    expect($payload['tool'])->toBe('query_project_graph')
+        ->and($payload['query_type'])->toBe('path')
+        ->and($payload['from_symbol_id'])->toBe('App\\Controllers\\Foo')
+        ->and($payload['to_symbol_id'])->toBe('App\\Services\\Bar');
 });
 
 it('writes wiki revisions through a controlled audited agent tool', function () {

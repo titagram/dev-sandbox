@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Storage;
 final class BackupManifestService
 {
     public const FORMAT = 'devboard-backup-v1';
+
     public const COMPATIBILITY_VERSION = 1;
 
     /**
@@ -38,6 +39,7 @@ final class BackupManifestService
         'snapshots',
         'wiki_pages',
         'wiki_revisions',
+        'audit_chain_heads',
         'audit_logs',
         'task_attachments',
     ];
@@ -146,8 +148,8 @@ final class BackupManifestService
     }
 
     /**
-     * @param array<string, array{rows: list<array<string, mixed>>, row_count: int, sha256: string}> $tables
-     * @param list<array{path: string, sha256: string, size_bytes: int, content_base64: string}> $storageFiles
+     * @param  array<string, array{rows: list<array<string, mixed>>, row_count: int, sha256: string}>  $tables
+     * @param  list<array{path: string, sha256: string, size_bytes: int, content_base64: string}>  $storageFiles
      * @return array<string, mixed>
      */
     public function manifest(string $backupId, User $actor, array $tables, array $storageFiles): array
@@ -185,8 +187,8 @@ final class BackupManifestService
     }
 
     /**
-     * @param array<string, array{sha256: string}> $tables
-     * @param list<array{path: string, sha256: string}> $storageFiles
+     * @param  array<string, array{sha256: string}>  $tables
+     * @param  list<array{path: string, sha256: string}>  $storageFiles
      * @return array<string, string>
      */
     public function checksums(array $tables, array $storageFiles): array
@@ -266,12 +268,12 @@ final class BackupManifestService
     }
 
     /**
-     * @param array<string, mixed> $row
+     * @param  array<string, mixed>  $row
      * @return array<string, mixed>
      */
     private function normalizeRow(string $table, array $row): array
     {
-        if ($table === 'audit_logs' && isset($row['payload']) && is_string($row['payload'])) {
+        if ($table !== 'audit_logs' && isset($row['payload']) && is_string($row['payload'])) {
             $decoded = json_decode($row['payload'], true);
             if (is_array($decoded)) {
                 $row['payload'] = json_encode($this->sanitize($decoded), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
@@ -283,10 +285,6 @@ final class BackupManifestService
         return $row;
     }
 
-    /**
-     * @param mixed $value
-     * @return mixed
-     */
     private function sanitize(mixed $value): mixed
     {
         if (! is_array($value)) {
@@ -323,7 +321,7 @@ final class BackupManifestService
     }
 
     /**
-     * @param mixed $value
+     * @param  mixed  $value
      */
     private function hashJson($value): string
     {

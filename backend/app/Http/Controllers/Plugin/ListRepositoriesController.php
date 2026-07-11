@@ -9,9 +9,7 @@ use Illuminate\Support\Facades\DB;
 
 class ListRepositoriesController extends Controller
 {
-    public function __construct(private readonly ProjectLifecycleService $lifecycle)
-    {
-    }
+    public function __construct(private readonly ProjectLifecycleService $lifecycle) {}
 
     public function __invoke(string $project): JsonResponse
     {

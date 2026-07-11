@@ -4,26 +4,24 @@ namespace App\Http\Controllers\Dashboard\Api;
 
 use App\Dashboard\DashboardApiReader;
 use App\Http\Controllers\Controller;
-use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 
 final class DashboardAdminController extends Controller
 {
-    use ChecksDashboardRoles;
-
     public function tokens(Request $request, DashboardApiReader $reader): JsonResponse
     {
-        $this->abortUnlessAdmin($request);
+        Gate::authorize('manage-plugin-tokens');
 
         return response()->json($reader->pluginTokens());
     }
 
     public function createToken(Request $request, DashboardApiReader $reader): JsonResponse
     {
-        $this->abortUnlessAdmin($request);
+        Gate::authorize('manage-plugin-tokens');
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
@@ -72,7 +70,7 @@ final class DashboardAdminController extends Controller
 
     public function rotateToken(Request $request, DashboardApiReader $reader, string $token): JsonResponse
     {
-        $this->abortUnlessAdmin($request);
+        Gate::authorize('manage-plugin-tokens');
 
         $tokenRow = DB::table('api_tokens')->where('id', $token)->first();
         abort_unless($tokenRow, 404);
@@ -107,7 +105,7 @@ final class DashboardAdminController extends Controller
 
     public function revokeToken(Request $request, string $token): JsonResponse
     {
-        $this->abortUnlessAdmin($request);
+        Gate::authorize('manage-plugin-tokens');
 
         DB::table('api_tokens')->where('id', $token)->update([
             'revoked_at' => now(),
@@ -119,14 +117,14 @@ final class DashboardAdminController extends Controller
 
     public function devices(Request $request, DashboardApiReader $reader): JsonResponse
     {
-        $this->abortUnlessAdmin($request);
+        Gate::authorize('manage-plugin-tokens');
 
         return response()->json($reader->pluginDevices());
     }
 
     public function revokeDevice(Request $request, string $device): JsonResponse
     {
-        $this->abortUnlessAdmin($request);
+        Gate::authorize('manage-plugin-tokens');
 
         abort_unless(DB::table('devices')->where('id', $device)->exists(), 404);
 
@@ -136,10 +134,5 @@ final class DashboardAdminController extends Controller
         ]);
 
         return response()->json(null, 204);
-    }
-
-    private function abortUnlessAdmin(Request $request): void
-    {
-        abort_unless($this->userHasRole($request->user(), 'Admin'), 403);
     }
 }

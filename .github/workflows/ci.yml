@@ -1,0 +1,195 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compose:
+    name: Compose and production image
+    runs-on: ubuntu-24.04
+    env:
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      DB_PASSWORD: ci-only-db-password
+      NEO4J_PASSWORD: ci-only-neo4j-password
+      DEVBOARD_PUBLIC_BASE_URL: https://devboard.example.test
+      DEVBOARD_APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      DEVBOARD_DB_PASSWORD: ci-only-db-password
+      DEVBOARD_NEO4J_PASSWORD: ci-only-neo4j-password
+      DEVBOARD_SESSION_DOMAIN: devboard.example.test
+      DEVBOARD_STATEFUL_DOMAINS: devboard.example.test
+      DEVBOARD_DASHBOARD_ORIGINS: https://devboard.example.test
+      DEVBOARD_TRAEFIK_HOST: devboard.example.test
+      DEVBOARD_TRAEFIK_BASIC_AUTH_USERS: ci-user:ci-only-hash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate development Compose
+        run: docker compose -f docker-compose.devboard.yaml config --quiet
+      - name: Validate amd64 override
+        run: docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config --quiet
+      - name: Validate production Compose
+        run: docker compose -f docker-compose.devboard.prod.yaml config --quiet
+      - name: Validate production Traefik overlay
+        run: docker compose -f docker-compose.devboard.prod.yaml -f docker-compose.devboard.traefik.yaml config --quiet
+      - name: Build production image
+        run: docker build --file docker/devboard/backend.prod.Dockerfile --tag devboard-backend:ci .
+
+  backend:
+    name: Backend container tests and audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend test image
+        run: docker build --file docker/devboard/backend.Dockerfile --tag devboard-backend-test:ci .
+      - name: Run Composer validate
+        run: >-
+          APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')";
+          docker run --rm
+          --volume "$PWD:/workspace"
+          --workdir /workspace/backend
+          --env APP_KEY
+          devboard-backend-test:ci
+          sh -lc 'composer install --no-interaction --prefer-dist --no-progress && composer validate --strict'
+
+      - name: Run Composer audit
+        run: >-
+          APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')";
+          docker run --rm
+          --volume "$PWD:/workspace"
+          --workdir /workspace/backend
+          --env APP_KEY
+          devboard-backend-test:ci
+          sh -lc 'composer install --no-interaction --prefer-dist --no-progress && composer audit --locked --no-interaction'
+
+      - name: Run Pint checks
+        run: >-
+          APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')";
+          docker run --rm
+          --volume "$PWD:/workspace"
+          --workdir /workspace/backend
+          --env APP_KEY
+          devboard-backend-test:ci
+          sh -lc 'composer install --no-interaction --prefer-dist --no-progress && ./vendor/bin/pint --test'
+
+      - name: Run PHPStan analysis
+        run: >-
+          APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')";
+          docker run --rm
+          --volume "$PWD:/workspace"
+          --workdir /workspace/backend
+          --env APP_KEY
+          devboard-backend-test:ci
+          sh -lc 'composer install --no-interaction --prefer-dist --no-progress && ./vendor/bin/phpstan analyse --configuration=phpstan.neon.dist --no-progress'
+
+      - name: Run Laravel test suite
+        run: >-
+          APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')";
+          docker run --rm
+          --volume "$PWD:/workspace"
+          --workdir /workspace/backend
+          --env APP_KEY
+          devboard-backend-test:ci
+          sh -lc 'composer install --no-interaction --prefer-dist --no-progress && composer test'
+
+  postgres-acceptance:
+    name: PostgreSQL pgvector acceptance
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
+        env:
+          POSTGRES_DB: devboard_acceptance
+          POSTGRES_USER: devboard_acceptance
+          POSTGRES_PASSWORD: ci-postgres-acceptance-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devboard_acceptance -d devboard_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend test image
+        run: docker build --file docker/devboard/backend.Dockerfile --tag devboard-backend-test:ci .
+      - name: Run strict PostgreSQL acceptance suite
+        run: >-
+          APP_KEY="base64:$(openssl rand -base64 32 | tr -d '\n')";
+          docker run --rm
+          --network host
+          --volume "$PWD:/workspace"
+          --workdir /workspace/backend
+          --env APP_KEY
+          --env APP_ENV=testing
+          --env DB_CONNECTION=pgsql
+          --env DB_HOST=127.0.0.1
+          --env DB_PORT=5432
+          --env DB_DATABASE=devboard_acceptance
+          --env DB_USERNAME=devboard_acceptance
+          --env DB_PASSWORD=ci-postgres-acceptance-password
+          --env DB_URL=
+          devboard-backend-test:ci
+          sh -lc 'composer install --no-interaction --prefer-dist --no-progress && composer test:postgres'
+
+  python:
+    name: Python tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install local packages
+        run: python -m pip install -e './analyzer[test]' -e './plugin[test]'
+      - name: Check Python dependency consistency
+        run: python -m pip check
+      - name: Run analyzer and plugin tests
+        run: python -m pytest analyzer/tests plugin/tests -q
+
+  node:
+    name: Node tests, frontend build, and audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Test Node agent
+        working-directory: agent
+        run: npm test
+      - name: Install frontend dependencies
+        working-directory: backend
+        run: npm ci
+      - name: Audit frontend dependencies
+        working-directory: backend
+        run: npm audit --audit-level=high
+      - name: Build Laravel Vite frontend
+        working-directory: backend
+        run: npm run build
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run gitleaks on current checkout
+        run: >-
+          docker run --rm
+          -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          dir /repo
+          --config /repo/.gitleaks.toml
+          --verbose
+          --redact
+          --exit-code 1

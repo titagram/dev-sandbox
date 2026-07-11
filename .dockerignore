@@ -1,5 +1,25 @@
 .git
+.github
 .pytest_cache
+
+**/.env
+**/.env.*
+**/.devboard
+**/.netrc
+**/.npmrc
+**/.pypirc
+**/.ssh
+**/.aws
+**/*credentials*.json
+**/*secret*.json
+**/*secret*.yaml
+**/*secret*.yml
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*.sqlite
+**/*.sqlite3
 
 **/node_modules
 
@@ -12,7 +32,8 @@ plugin/.pytest_cache
 
 backend/vendor
 backend/node_modules
-backend/storage
+backend/storage/
+backend/storage/**
 backend/bootstrap/cache/*.php
 
 docs/production-readiness/*.tmp

@@ -1,0 +1,22 @@
+title = "DevBoard gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Vendored dependencies, generated build artifacts, caches, and legitimate test fixtures that contain synthetic cryptographic material"
+paths = [
+    '''backend/vendor/.*''',
+    '''backend/node_modules/.*''',
+    '''backend/public/build/.*''',
+    '''backend/var/.*''',
+    '''\.pytest_cache/.*''',
+    '''__pycache__/.*''',
+    # Legitimate test fixtures with synthetic private keys, JWTs, or API-key-shaped test values
+    '''analyzer/tests/test_safety\.py''',
+    '''backend/tests/Feature/Dashboard/IntakeNormalizerTest\.php''',
+    '''backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest\.php''',
+    # Documentation files with example token-prefix shapes or keyword false positives (no real secrets)
+    '''docs/ai-devboard/04_PLUGIN_SERVER_CONTRACT\.md''',
+    '''docs/backend-agent-coordination\.md''',
+]

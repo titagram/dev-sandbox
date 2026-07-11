@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Neo4j\Neo4jClient;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -13,14 +14,13 @@ class Neo4jRebuildService
     public function __construct(
         private readonly GenesisGraphImportService $graphs,
         private readonly Neo4jClientFactory $clients,
-    ) {
-    }
+    ) {}
 
     /**
-     * @param array{project_id?: string|null, repository_id?: string|null, snapshot_id?: string|null} $filters
+     * @param  array{project_id?: string|null, repository_id?: string|null, snapshot_id?: string|null}  $filters
      * @return array{scanned: int, rebuilt: int, skipped: int, failed: int, failures: list<array{snapshot_id: string, message: string}>}
      */
-    public function rebuild(array $filters = [], ?object $client = null, ?string $mode = null): array
+    public function rebuild(array $filters = [], ?Neo4jClient $client = null, ?string $mode = null): array
     {
         $mode ??= config('services.devboard.graph_import_mode') === 'fake' ? 'fake' : 'neo4j';
 
@@ -57,6 +57,7 @@ class Neo4jRebuildService
                     $mode,
                     'Neo4j rebuild validated in fake mode.',
                     'Neo4j projection rebuilt from stored artifact.',
+                    force: true,
                 );
                 $result['rebuilt']++;
             } catch (\Throwable $exception) {
@@ -72,7 +73,7 @@ class Neo4jRebuildService
     }
 
     /**
-     * @param array{project_id?: string|null, repository_id?: string|null, snapshot_id?: string|null} $filters
+     * @param  array{project_id?: string|null, repository_id?: string|null, snapshot_id?: string|null}  $filters
      * @return Collection<int, object>
      */
     private function snapshots(array $filters): Collection
@@ -103,7 +104,7 @@ class Neo4jRebuildService
         }
     }
 
-    private function purgeSnapshot(object $client, string $snapshotId): void
+    private function purgeSnapshot(Neo4jClient $client, string $snapshotId): void
     {
         $params = ['snapshot_id' => $snapshotId];
 
@@ -111,12 +112,13 @@ class Neo4jRebuildService
         $client->run('MATCH (s:DevBoardSnapshot {snapshot_id: $snapshot_id}) DETACH DELETE s', $params);
     }
 
-    private function fakeClient(): object
+    private function fakeClient(): Neo4jClient
     {
-        return new class
+        return new class implements Neo4jClient
         {
-            public function run(string $cypher, array $params): void
+            public function run(string $cypher, array $params = []): mixed
             {
+                return [];
             }
         };
     }

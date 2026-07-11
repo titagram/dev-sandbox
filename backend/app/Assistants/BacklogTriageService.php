@@ -3,6 +3,7 @@
 namespace App\Assistants;
 
 use App\Assistants\Agents\BacklogTriageAgent;
+use App\Services\AuditLogger;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -12,6 +13,8 @@ use Throwable;
 
 final class BacklogTriageService
 {
+    public function __construct(private readonly ProviderHttpClient $httpClient) {}
+
     /**
      * @return array{run: array<string, mixed>, suggestion: array<string, mixed>}
      */
@@ -104,26 +107,14 @@ final class BacklogTriageService
                 'updated_at' => $now,
             ]);
 
-            DB::table('audit_logs')->insert([
-                'id' => (string) Str::ulid(),
-                'actor_user_id' => $userId,
-                'actor_device_id' => null,
-                'actor_type' => 'user',
-                'action' => 'assistant.backlog_triage.created',
-                'target_type' => 'project',
-                'target_id' => $project->id,
-                'ip_address' => null,
-                'user_agent' => null,
-                'payload' => json_encode([
-                    'assistant_run_id' => $runId,
-                    'assistant_suggestion_id' => $suggestionId,
-                    'agent_key' => 'backlog_triage',
-                    'external_provider_call' => $execution['external_provider_call'],
-                    'execution_mode' => $execution['execution_mode'],
-                    'mutated_target' => false,
-                ], JSON_THROW_ON_ERROR),
-                'created_at' => $now,
-            ]);
+            app(AuditLogger::class)->record('assistant.backlog_triage.created', 'project', $project->id, [
+                'assistant_run_id' => $runId,
+                'assistant_suggestion_id' => $suggestionId,
+                'agent_key' => 'backlog_triage',
+                'external_provider_call' => $execution['external_provider_call'],
+                'execution_mode' => $execution['execution_mode'],
+                'mutated_target' => false,
+            ], ['type' => 'user', 'user_id' => $userId]);
         });
 
         return [
@@ -240,7 +231,7 @@ final class BacklogTriageService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return list<array<string, string>>
      */
     private function evidenceRefs(object $project, array $context): array
@@ -259,16 +250,16 @@ final class BacklogTriageService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return array{structured: array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>, confidence: float}, prompt: string, execution_mode: string, external_provider_call: bool, model_provider_id: ?string, model_profile_id: ?string, provider_key: ?string, model_name: ?string, provider_failure: ?array<string, string>}
      */
     private function generateSuggestion(object $project, object $agentProfile, array $context): array
     {
         $prompt = $this->promptForContext($context);
         $modelProfile = $this->modelProfileForAgent($agentProfile);
-        $shouldUseSdk = BacklogTriageAgent::isFaked() || $this->modelProfileCanCallProvider($modelProfile);
+        $shouldUseProvider = $this->modelProfileCanCallProvider($modelProfile);
 
-        if (! $shouldUseSdk) {
+        if (! BacklogTriageAgent::isFaked() && ! $shouldUseProvider) {
             return [
                 'structured' => $this->structuredSuggestion($context),
                 'prompt' => $prompt,
@@ -282,17 +273,19 @@ final class BacklogTriageService
             ];
         }
 
-        if ($modelProfile) {
+        if (BacklogTriageAgent::isFaked() && $modelProfile) {
             $this->configureLaravelAiProvider($modelProfile);
         }
 
         try {
-            $response = BacklogTriageAgent::make()->prompt(
-                $prompt,
-                provider: $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
-                model: $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
-                timeout: $modelProfile?->timeout_seconds ? (int) $modelProfile->timeout_seconds : null,
-            );
+            $response = BacklogTriageAgent::isFaked()
+                ? BacklogTriageAgent::make()->prompt(
+                    $prompt,
+                    provider: $modelProfile?->provider_key ? (string) $modelProfile->provider_key : null,
+                    model: $modelProfile?->model_name ? (string) $modelProfile->model_name : null,
+                    timeout: $modelProfile?->timeout_seconds ? (int) $modelProfile->timeout_seconds : null,
+                )
+                : $this->callProvider($modelProfile, $prompt);
         } catch (Throwable $exception) {
             return [
                 'structured' => $this->structuredSuggestion($context),
@@ -357,7 +350,54 @@ final class BacklogTriageService
         return $modelProfile
             && (bool) $modelProfile->model_profile_enabled
             && (bool) $modelProfile->provider_enabled
-            && filled($modelProfile->encrypted_api_key);
+            && (string) $modelProfile->provider_type === 'openai_compatible'
+            && filled($modelProfile->encrypted_api_key)
+            && app(ProviderEndpointPolicy::class)->isAllowed($this->responsesEndpoint((string) ($modelProfile->base_url ?: 'https://api.openai.com/v1')));
+    }
+
+    private function callProvider(object $modelProfile, string $prompt): object
+    {
+        $apiKey = Crypt::decryptString((string) $modelProfile->encrypted_api_key);
+        $response = $this->httpClient
+            ->withToken($apiKey)
+            ->acceptJson()
+            ->asJson()
+            ->timeout((int) ($modelProfile->timeout_seconds ?: 60))
+            ->post($this->responsesEndpoint((string) ($modelProfile->base_url ?: 'https://api.openai.com/v1')), [
+                'model' => (string) $modelProfile->model_name,
+                'instructions' => (string) BacklogTriageAgent::make()->instructions(),
+                'input' => $prompt,
+            ]);
+
+        if ($response->failed()) {
+            throw new \RuntimeException('HTTP request returned status code '.$response->status().'.');
+        }
+
+        return (object) ['text' => $this->extractProviderText($response->json())];
+    }
+
+    private function responsesEndpoint(string $baseUrl): string
+    {
+        $base = rtrim($baseUrl, '/');
+        $base = preg_replace('#/(responses|chat/completions|models)$#', '', $base) ?: $base;
+
+        return $base.'/responses';
+    }
+
+    private function extractProviderText(mixed $payload): string
+    {
+        if (! is_array($payload)) {
+            return '';
+        }
+
+        foreach (['output_text', 'choices.0.message.content', 'output.0.content.0.text'] as $path) {
+            $text = data_get($payload, $path);
+            if (is_string($text) && trim($text) !== '') {
+                return trim($text);
+            }
+        }
+
+        return '';
     }
 
     private function configureLaravelAiProvider(object $modelProfile): void
@@ -387,7 +427,7 @@ final class BacklogTriageService
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      */
     private function promptForContext(array $context): string
     {
@@ -407,8 +447,8 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $structured
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $structured
+     * @param  array<string, mixed>  $context
      * @return array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>, confidence: float}
      */
     private function normalizeStructuredSuggestion(array $structured, array $context): array
@@ -426,7 +466,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>, confidence: float}
      */
     private function structuredSuggestion(array $context): array
@@ -482,7 +522,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $task
+     * @param  array<string, mixed>  $task
      */
     private function isVagueTask(array $task): bool
     {
@@ -492,7 +532,7 @@ PROMPT;
     }
 
     /**
-     * @param array<string, mixed> $context
+     * @param  array<string, mixed>  $context
      * @return list<string>
      */
     private function validTaskIds(array $context): array
@@ -504,8 +544,8 @@ PROMPT;
     }
 
     /**
-     * @param list<array{label: string, task_ids: list<string>, reason: string}> $fallback
-     * @param list<string> $validTaskIds
+     * @param  list<array{label: string, task_ids: list<string>, reason: string}>  $fallback
+     * @param  list<string>  $validTaskIds
      * @return list<array{label: string, task_ids: list<string>, reason: string}>
      */
     private function groups(mixed $value, array $fallback, array $validTaskIds): array
@@ -539,8 +579,8 @@ PROMPT;
     }
 
     /**
-     * @param list<array{title: string, body: string, task_ids: list<string>, priority: string}> $fallback
-     * @param list<string> $validTaskIds
+     * @param  list<array{title: string, body: string, task_ids: list<string>, priority: string}>  $fallback
+     * @param  list<string>  $validTaskIds
      * @return list<array{title: string, body: string, task_ids: list<string>, priority: string}>
      */
     private function recommendations(mixed $value, array $fallback, array $validTaskIds): array
@@ -577,7 +617,7 @@ PROMPT;
     }
 
     /**
-     * @param list<string> $validTaskIds
+     * @param  list<string>  $validTaskIds
      * @return list<string>
      */
     private function taskIds(mixed $value, array $validTaskIds): array
@@ -593,7 +633,7 @@ PROMPT;
     }
 
     /**
-     * @param list<string> $fallback
+     * @param  list<string>  $fallback
      * @return list<string>
      */
     private function stringList(mixed $value, array $fallback, int $limit): array
@@ -611,7 +651,7 @@ PROMPT;
     }
 
     /**
-     * @param array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>} $structured
+     * @param  array{summary: string, groups: list<array{label: string, task_ids: list<string>, reason: string}>, recommendations: list<array{title: string, body: string, task_ids: list<string>, priority: string}>, risks: list<string>}  $structured
      */
     private function bodyMarkdown(array $structured): string
     {
@@ -631,7 +671,7 @@ PROMPT;
     }
 
     /**
-     * @param list<string> $taskIds
+     * @param  list<string>  $taskIds
      */
     private function taskSuffix(array $taskIds): string
     {
