@@ -44,6 +44,7 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->trustProxies(at: '*');
+        $middleware->trimStrings(except: ['content_markdown']);
         $middleware->alias([
             'plugin.token' => AuthenticatePluginToken::class,
             'hades.agent' => AuthenticateHadesAgentToken::class,
