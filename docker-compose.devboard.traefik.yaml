@@ -19,8 +19,8 @@ services:
       traefik.http.routers.devboard-hades.priority: "120"
       traefik.http.routers.devboard-hades.tls.certresolver: ${DEVBOARD_TRAEFIK_CERT_RESOLVER:-le}
       traefik.http.routers.devboard-web.entrypoints: ${DEVBOARD_TRAEFIK_HTTPS_ENTRYPOINT:-websecure}
-      traefik.http.routers.devboard-web.rule: Host(`${DEVBOARD_TRAEFIK_HOST:?Set DEVBOARD_TRAEFIK_HOST}`)
-      traefik.http.routers.devboard-web.priority: "1"
+      traefik.http.routers.devboard-web.rule: Host(`${DEVBOARD_TRAEFIK_HOST:?Set DEVBOARD_TRAEFIK_HOST}`) && (PathPrefix(`/api`) || PathPrefix(`/sanctum`) || PathPrefix(`/storage`))
+      traefik.http.routers.devboard-web.priority: "100"
       traefik.http.routers.devboard-web.middlewares: devboard-basic-auth
       traefik.http.routers.devboard-web.tls.certresolver: ${DEVBOARD_TRAEFIK_CERT_RESOLVER:-le}
       traefik.http.services.devboard-web.loadbalancer.server.port: "8000"
