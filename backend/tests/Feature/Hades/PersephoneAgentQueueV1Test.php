@@ -475,6 +475,194 @@ it('streams a bounded SSE page with matching ids and an explicit stop event', fu
     ]);
 });
 
+it('returns a bounded stop event for an empty SSE page', function () {
+    $target = persephoneQueueAgent();
+
+    $response = $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+        'project_id' => $target['project_id'],
+        'target_agent_id' => $target['external_agent_id'],
+    ]), persephoneQueueHeaders($target['agent_token']))
+        ->assertOk()
+        ->assertHeader('content-type', 'text/event-stream; charset=UTF-8');
+
+    expect($response->getContent())->toBe(
+        "event: stop\ndata: {\"reason\":\"bounded\",\"cursor\":null}\n\n",
+    );
+});
+
+it('excludes expired messages from the SSE page without marking them read', function () {
+    $sender = persephoneQueueAgent();
+    $target = persephoneQueueAgent($sender['project_id'], 'sse-expiry-target');
+
+    $this->postJson(
+        '/api/hades/v1/persephone/messages',
+        persephoneQueueEnvelope($sender, $target, null, [
+            'message_id' => 'sse-expired',
+            'capability' => 'status_query',
+            'target_workspace_binding_id' => null,
+        ]),
+        persephoneQueueHeaders($sender['agent_token']),
+    )->assertCreated();
+
+    Carbon::setTestNow(now()->addHours(2));
+    try {
+        $response = $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+            'project_id' => $target['project_id'],
+            'target_agent_id' => $target['external_agent_id'],
+        ]), persephoneQueueHeaders($target['agent_token']))->assertOk();
+    } finally {
+        Carbon::setTestNow();
+    }
+
+    expect($response->getContent())->toBe(
+        "event: stop\ndata: {\"reason\":\"bounded\",\"cursor\":null}\n\n",
+    )
+        ->and(DB::table('hades_persephone_agent_messages')->where('message_id', 'sse-expired')->value('envelope'))->not->toBeNull();
+});
+
+it('resumes SSE delivery after the last returned ULID', function () {
+    $sender = persephoneQueueAgent();
+    $target = persephoneQueueAgent($sender['project_id'], 'sse-resume-target');
+
+    foreach (['sse-resume-first', 'sse-resume-second'] as $messageId) {
+        $this->postJson(
+            '/api/hades/v1/persephone/messages',
+            persephoneQueueEnvelope($sender, $target, null, [
+                'message_id' => $messageId,
+                'capability' => 'status_query',
+                'target_workspace_binding_id' => null,
+            ]),
+            persephoneQueueHeaders($sender['agent_token']),
+        )->assertCreated();
+    }
+
+    $firstPage = $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+        'project_id' => $target['project_id'],
+        'target_agent_id' => $target['external_agent_id'],
+        'limit' => 1,
+    ]), persephoneQueueHeaders($target['agent_token']))->assertOk();
+    $firstBlocks = persephoneQueueSseBlocks($firstPage->getContent());
+    $firstLines = preg_split('/\n/', $firstBlocks[0]);
+    $firstEvent = json_decode(substr($firstLines[2], strlen('data: ')), true, 512, JSON_THROW_ON_ERROR);
+
+    $secondPage = $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+        'project_id' => $target['project_id'],
+        'target_agent_id' => $target['external_agent_id'],
+        'cursor' => $firstEvent['id'],
+    ]), persephoneQueueHeaders($target['agent_token']))->assertOk();
+    $secondBlocks = persephoneQueueSseBlocks($secondPage->getContent());
+    $secondLines = preg_split('/\n/', $secondBlocks[0]);
+    $secondEvent = json_decode(substr($secondLines[2], strlen('data: ')), true, 512, JSON_THROW_ON_ERROR);
+    $secondId = substr($secondLines[0], strlen('id: '));
+
+    expect($firstEvent['message_id'])->toBe('sse-resume-first')
+        ->and($secondEvent['message_id'])->toBe('sse-resume-second')
+        ->and($secondEvent['id'])->toBe($secondId)
+        ->and($secondBlocks[1])->toBe(
+            "event: stop\ndata: ".json_encode(['reason' => 'bounded', 'cursor' => $secondEvent['id']], JSON_THROW_ON_ERROR),
+        );
+});
+
+it('applies the workspace filter to bounded SSE delivery while retaining unbound messages', function () {
+    $sender = persephoneQueueAgent();
+    $target = persephoneQueueAgent($sender['project_id'], 'sse-workspace-target');
+    $bindingA = persephoneQueueBind($target, 'sse-workspace-a');
+    $bindingB = persephoneQueueBind($target, 'sse-workspace-b');
+
+    foreach ([null, $bindingA, $bindingB] as $index => $binding) {
+        $this->postJson(
+            '/api/hades/v1/persephone/messages',
+            persephoneQueueEnvelope($sender, $target, $binding, [
+                'message_id' => 'sse-workspace-'.$index,
+                'capability' => 'status_query',
+            ]),
+            persephoneQueueHeaders($sender['agent_token']),
+        )->assertCreated();
+    }
+
+    $response = $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+        'project_id' => $target['project_id'],
+        'target_agent_id' => $target['external_agent_id'],
+        'target_workspace_binding_id' => $bindingA['workspace_binding_id'],
+    ]), persephoneQueueHeaders($target['agent_token']))->assertOk();
+    $blocks = persephoneQueueSseBlocks($response->getContent());
+
+    $messageIds = [];
+    foreach (array_slice($blocks, 0, -1) as $block) {
+        $lines = preg_split('/\n/', $block);
+        $messageIds[] = json_decode(substr($lines[2], strlen('data: ')), true, 512, JSON_THROW_ON_ERROR)['message_id'];
+    }
+
+    expect($messageIds)->toEqual(['sse-workspace-0', 'sse-workspace-1'])
+        ->and($blocks)->toHaveCount(3)
+        ->and($blocks[2])->toContain('"cursor":"');
+});
+
+it('rejects SSE requests for another target, project, or cursor before streaming', function () {
+    $sender = persephoneQueueAgent();
+    $target = persephoneQueueAgent($sender['project_id'], 'sse-auth-target');
+    $otherTarget = persephoneQueueAgent($sender['project_id'], 'sse-other-target');
+    $foreign = persephoneQueueAgent();
+
+    $responses = [
+        $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+            'project_id' => $target['project_id'],
+            'target_agent_id' => $otherTarget['external_agent_id'],
+        ]), persephoneQueueHeaders($target['agent_token'])),
+        $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+            'project_id' => $foreign['project_id'],
+            'target_agent_id' => $foreign['external_agent_id'],
+        ]), persephoneQueueHeaders($target['agent_token'])),
+        $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+            'project_id' => $target['project_id'],
+            'target_agent_id' => $target['external_agent_id'],
+            'cursor' => 'not-a-valid-cursor',
+        ]), persephoneQueueHeaders($target['agent_token'])),
+        $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+            'project_id' => $target['project_id'],
+            'target_agent_id' => $target['external_agent_id'],
+            'cursor' => (string) Str::ulid(),
+        ]), persephoneQueueHeaders($target['agent_token'])),
+    ];
+
+    expect($responses[0]->status())->toBe(403)
+        ->and($responses[1]->status())->toBe(403)
+        ->and($responses[2]->status())->toBe(422)
+        ->and($responses[3]->status())->toBe(422);
+
+    foreach ($responses as $response) {
+        expect($response->headers->get('content-type'))->not->toContain('text/event-stream');
+    }
+});
+
+it('keeps an empty object payload as an object in the SSE wire envelope', function () {
+    $sender = persephoneQueueAgent();
+    $target = persephoneQueueAgent($sender['project_id'], 'sse-empty-object-target');
+
+    $this->postJson(
+        '/api/hades/v1/persephone/messages',
+        persephoneQueueEnvelope($sender, $target, null, [
+            'message_id' => 'sse-empty-object',
+            'capability' => 'status_query',
+            'target_workspace_binding_id' => null,
+            'payload' => new stdClass,
+        ]),
+        persephoneQueueHeaders($sender['agent_token']),
+    )->assertCreated();
+
+    $response = $this->get('/api/hades/v1/persephone/events?'.http_build_query([
+        'project_id' => $target['project_id'],
+        'target_agent_id' => $target['external_agent_id'],
+    ]), persephoneQueueHeaders($target['agent_token']))->assertOk();
+    $blocks = persephoneQueueSseBlocks($response->getContent());
+    $lines = preg_split('/\n/', $blocks[0]);
+    $event = json_decode(substr($lines[2], strlen('data: ')), false, 512, JSON_THROW_ON_ERROR);
+
+    expect($event->payload)->toBeInstanceOf(stdClass::class)
+        ->and(property_exists($event, 'created_at'))->toBeFalse()
+        ->and(property_exists($event, 'read_at'))->toBeFalse();
+});
+
 /**
  * @param  array<string, mixed>  $event
  */
@@ -500,6 +688,14 @@ function persephoneQueueAssertEventShape(array $event): void
     ]);
     expect($event['payload'])->toBeArray()
         ->and($event['id'])->toBeString()->not->toBe('');
+}
+
+/**
+ * @return list<string>
+ */
+function persephoneQueueSseBlocks(string $body): array
+{
+    return array_values(array_filter(explode("\n\n", trim($body))));
 }
 
 /**

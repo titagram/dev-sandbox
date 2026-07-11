@@ -525,7 +525,9 @@ it('stores explicit doctor reports and exposes a persistent Persephone inbox wit
     ]), hadesM5Headers($agent['agent_token']))
         ->assertOk()
         ->assertHeader('content-type', 'text/event-stream; charset=UTF-8')
-        ->assertDontSee('event: message');
+        ->assertSee('event: message')
+        ->assertSee('event: stop')
+        ->assertDontSee('created_at');
 
     expect(DB::table('hades_doctor_reports')->where('project_id', $agent['project_id'])->count())->toBe(1)
         ->and(DB::table('hades_persephone_events')->where('project_id', $agent['project_id'])->count())->toBe(0)
