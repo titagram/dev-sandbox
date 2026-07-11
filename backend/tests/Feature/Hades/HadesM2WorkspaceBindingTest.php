@@ -91,6 +91,27 @@ it('marks a workspace binding unlinked without deleting backend history', functi
     ], hadesM2Headers($agent['agent_token']))->assertOk();
 
     $bindingId = $bound->json('workspace_binding_id');
+    $proposalId = (string) Str::ulid();
+    DB::table('hades_memory_proposals')->insert([
+        'id' => $proposalId,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $bindingId,
+        'local_proposal_id' => 'preserve-on-unlink',
+        'action' => 'create',
+        'intent' => 'sync',
+        'summary' => 'Accepted corpus fact must survive unlink.',
+        'provenance' => json_encode(['source' => 'regression-test'], JSON_THROW_ON_ERROR),
+        'base_version' => null,
+        'target_memory_entry_id' => null,
+        'memory_entry_id' => null,
+        'status' => 'accepted',
+        'reason_code' => null,
+        'reason_message' => null,
+        'decided_at' => now(),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
 
     $this->postJson('/api/hades/v1/workspaces/'.$bindingId.'/unlink', [
         'project_id' => $agent['project_id'],
@@ -102,6 +123,7 @@ it('marks a workspace binding unlinked without deleting backend history', functi
 
     expect(DB::table('hades_workspace_bindings')->where('id', $bindingId)->value('status'))->toBe('unlinked');
     expect(DB::table('hades_workspace_bindings')->where('id', $bindingId)->exists())->toBeTrue();
+    expect(DB::table('hades_memory_proposals')->where('id', $proposalId)->value('status'))->toBe('accepted');
 });
 
 function hadesM2Headers(?string $token = null): array

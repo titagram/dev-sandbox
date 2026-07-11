@@ -94,7 +94,7 @@ class AuthenticatePluginToken
                         $request->method(),
                         $request->getRequestUri(),
                         $body,
-                        $device->signing_secret_hash,
+                        $auth['token']->device_signing_secret_hash ?: $device->signing_secret_hash,
                         (int) $timestamp,
                         $contentSha256,
                         $signature,

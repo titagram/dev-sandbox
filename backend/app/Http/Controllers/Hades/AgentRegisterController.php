@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesCapabilityPolicy;
 use App\Services\Hades\HadesTokenException;
 use App\Services\Hades\HadesTokenService;
+use App\Services\Hades\HadesPluginCredentialIssuer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -16,6 +17,7 @@ class AgentRegisterController extends Controller
     public function __construct(
         private readonly HadesTokenService $tokens,
         private readonly HadesCapabilityPolicy $capabilities,
+        private readonly HadesPluginCredentialIssuer $pluginCredentials,
     ) {}
 
     public function __invoke(Request $request): JsonResponse
@@ -27,6 +29,12 @@ class AgentRegisterController extends Controller
             'platform' => ['nullable', 'string', 'max:191'],
             'version' => ['nullable', 'string', 'max:191'],
             'capabilities' => ['nullable', 'array'],
+            'plugin_device' => ['nullable', 'array'],
+            'plugin_device.fingerprint_hash' => ['required_with:plugin_device', 'string', 'max:255'],
+            'plugin_device.name' => ['required_with:plugin_device', 'string', 'max:255'],
+            'plugin_device.platform_os' => ['required_with:plugin_device', 'string', 'max:64'],
+            'plugin_device.platform_arch' => ['required_with:plugin_device', 'string', 'max:64'],
+            'plugin_device.plugin_version' => ['required_with:plugin_device', 'string', 'max:64'],
         ]);
 
         try {
@@ -83,6 +91,9 @@ class AgentRegisterController extends Controller
 
         $agentToken = $this->tokens->createAgentToken($agent);
         $capabilityMap = $this->capabilities->toMap($effectiveCapabilities);
+        $pluginCredentials = isset($validated['plugin_device'])
+            ? $this->pluginCredentials->issue($agent, $validated['plugin_device'])
+            : null;
 
         return response()->json([
             'protocol_version' => 'v1',
@@ -92,6 +103,7 @@ class AgentRegisterController extends Controller
             'external_agent_id' => $agent->external_agent_id,
             'agent_token_id' => $agentToken['id'],
             'agent_token' => $agentToken['plain_token'],
+            'plugin_credentials' => $pluginCredentials,
             'capabilities' => $capabilityMap,
             'capability_names' => array_values($effectiveCapabilities),
             'policy' => $this->capabilities->m1Policy(),

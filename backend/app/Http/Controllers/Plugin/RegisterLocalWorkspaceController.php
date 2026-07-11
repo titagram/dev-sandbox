@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
 use App\Projects\ProjectLifecycleService;
+use App\Services\PluginProjectScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,10 +13,19 @@ use Symfony\Component\HttpFoundation\Response;
 
 class RegisterLocalWorkspaceController extends Controller
 {
-    public function __construct(private readonly ProjectLifecycleService $lifecycle) {}
+    public function __construct(
+        private readonly ProjectLifecycleService $lifecycle,
+        private readonly PluginProjectScope $projectScope,
+    ) {}
 
     public function __invoke(Request $request, string $repository): JsonResponse
     {
+        $repositoryRow = DB::table('repositories')->where('id', $repository)->first();
+        abort_unless($repositoryRow, Response::HTTP_NOT_FOUND);
+        if ($error = $this->projectScope->authorize($request, (string) $repositoryRow->project_id)) {
+            return $error;
+        }
+
         if ($error = $this->lifecycle->pluginRepositoryWriteGuard($repository)) {
             return $error;
         }

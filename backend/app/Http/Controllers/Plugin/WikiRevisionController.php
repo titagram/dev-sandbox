@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Plugin;
 use App\Http\Controllers\Controller;
 use App\Projects\ProjectLifecycleService;
 use App\Services\PluginInvariantService;
+use App\Services\PluginProjectScope;
 use App\Services\WikiRevisionException;
 use App\Services\WikiRevisionService;
 use Illuminate\Http\JsonResponse;
@@ -18,12 +19,17 @@ class WikiRevisionController extends Controller
         private readonly WikiRevisionService $wiki,
         private readonly ProjectLifecycleService $lifecycle,
         private readonly PluginInvariantService $invariants,
+        private readonly PluginProjectScope $projectScope,
     ) {}
 
     public function __invoke(Request $request, string $run): JsonResponse
     {
         $runRow = DB::table('runs')->where('id', $run)->first();
         abort_unless($runRow, Response::HTTP_NOT_FOUND);
+
+        if ($error = $this->projectScope->authorize($request, (string) $runRow->project_id)) {
+            return $error;
+        }
 
         if ($error = $this->lifecycle->pluginRunWriteGuard($run)) {
             return $error;

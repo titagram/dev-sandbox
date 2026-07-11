@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
 use App\Projects\ProjectLifecycleService;
+use App\Services\PluginProjectScope;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -31,7 +32,10 @@ class AgentWorkItemController extends Controller
         'agent_note',
     ];
 
-    public function __construct(private readonly ProjectLifecycleService $lifecycle) {}
+    public function __construct(
+        private readonly ProjectLifecycleService $lifecycle,
+        private readonly PluginProjectScope $projectScope,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -46,7 +50,10 @@ class AgentWorkItemController extends Controller
             'repository_id' => ['sometimes', 'nullable', 'string'],
         ]);
 
-        $projectId = $validated['project_id'] ?? null;
+        $projectId = $validated['project_id'] ?? $this->projectScope->tokenProjectId($request);
+        if ($projectId !== null && ($error = $this->projectScope->authorize($request, $projectId))) {
+            return $error;
+        }
         $repositoryId = $validated['repository_id'] ?? null;
         $repository = null;
 
@@ -104,6 +111,10 @@ class AgentWorkItemController extends Controller
 
     public function claim(Request $request, string $workItem): JsonResponse
     {
+        if ($error = $this->projectScope->authorizeWorkItem($request, $workItem)) {
+            return $error;
+        }
+
         $device = $this->activeDevice($request);
 
         if ($device instanceof JsonResponse) {
@@ -248,6 +259,10 @@ class AgentWorkItemController extends Controller
 
     public function heartbeat(Request $request, string $workItem): JsonResponse
     {
+        if ($error = $this->projectScope->authorizeWorkItem($request, $workItem)) {
+            return $error;
+        }
+
         $device = $this->activeDevice($request);
 
         if ($device instanceof JsonResponse) {
@@ -301,6 +316,10 @@ class AgentWorkItemController extends Controller
 
     public function complete(Request $request, string $workItem): JsonResponse
     {
+        if ($error = $this->projectScope->authorizeWorkItem($request, $workItem)) {
+            return $error;
+        }
+
         $device = $this->activeDevice($request);
 
         if ($device instanceof JsonResponse) {
@@ -409,6 +428,10 @@ class AgentWorkItemController extends Controller
 
     public function fail(Request $request, string $workItem): JsonResponse
     {
+        if ($error = $this->projectScope->authorizeWorkItem($request, $workItem)) {
+            return $error;
+        }
+
         $device = $this->activeDevice($request);
 
         if ($device instanceof JsonResponse) {

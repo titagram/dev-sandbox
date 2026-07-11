@@ -27,6 +27,35 @@ it('accepts a valid dashboard generated plugin token', function () {
     expect(DB::table('api_tokens')->where('id', $token['id'])->value('last_used_at'))->not->toBeNull();
 });
 
+it('rejects a project-scoped Plugin token outside its project', function () {
+    $token = createPluginToken([
+        'scopes' => json_encode(['projects.read', 'repositories.read'], JSON_THROW_ON_ERROR),
+    ]);
+    $now = now();
+    $allowedProject = (string) Str::ulid();
+    $otherProject = (string) Str::ulid();
+
+    foreach ([$allowedProject, $otherProject] as $id) {
+        DB::table('projects')->insert([
+            'id' => $id,
+            'name' => 'Scoped Plugin Project',
+            'slug' => 'scoped-plugin-'.Str::lower(Str::random(8)),
+            'description' => null,
+            'status' => 'active',
+            'default_code_exposure_policy' => 'full_code_artifacts',
+            'created_by_user_id' => $token['user_id'],
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
+    DB::table('api_tokens')->where('id', $token['id'])->update(['project_id' => $allowedProject]);
+
+    $this->getJson('/api/plugin/v1/projects/'.$otherProject.'/repositories', pluginHeaders($token['plain_token']))
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'project_scope_mismatch');
+});
+
 it('rejects device registration with missing fingerprint_hash', function () {
     $token = createPluginToken();
 
@@ -310,6 +339,34 @@ it('accepts a bound token request with a valid device signature', function () {
             'X-DevBoard-Content-SHA256' => $bodyHash,
             'X-DevBoard-Signature' => $signature,
         ]
+    ))->assertOk();
+});
+
+it('accepts a derived token signed with its token-specific device secret', function () {
+    $token = createPluginToken();
+    $deviceId = createPluginDevice($token['user_id'], ['signing_secret_hash' => hash('sha256', 'different-device-secret')]);
+    $tokenSecret = 'derived-token-device-secret';
+
+    DB::table('api_tokens')->where('id', $token['id'])->update([
+        'device_id' => $deviceId,
+        'device_signing_secret_hash' => hash('sha256', $tokenSecret),
+        'updated_at' => now(),
+    ]);
+
+    $timestamp = time();
+    $body = json_encode(['protocol_version' => 'v1'], JSON_THROW_ON_ERROR);
+    $bodyHash = hash('sha256', $body);
+    $canonical = "POST\n/api/plugin/v1/auth/check\n{$timestamp}\n{$bodyHash}";
+    $signature = 'v1='.hash_hmac('sha256', $canonical, hash('sha256', $tokenSecret));
+
+    $this->postJson('/api/plugin/v1/auth/check', ['protocol_version' => 'v1'], array_merge(
+        pluginHeaders($token['plain_token']),
+        [
+            'X-DevBoard-Device-Id' => $deviceId,
+            'X-DevBoard-Timestamp' => (string) $timestamp,
+            'X-DevBoard-Content-SHA256' => $bodyHash,
+            'X-DevBoard-Signature' => $signature,
+        ],
     ))->assertOk();
 });
 

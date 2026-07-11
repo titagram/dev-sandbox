@@ -4,15 +4,24 @@ namespace App\Http\Controllers\Plugin;
 
 use App\Http\Controllers\Controller;
 use App\Projects\ProjectLifecycleService;
+use App\Services\PluginProjectScope;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class ListRepositoriesController extends Controller
 {
-    public function __construct(private readonly ProjectLifecycleService $lifecycle) {}
+    public function __construct(
+        private readonly ProjectLifecycleService $lifecycle,
+        private readonly PluginProjectScope $projectScope,
+    ) {}
 
-    public function __invoke(string $project): JsonResponse
+    public function __invoke(Request $request, string $project): JsonResponse
     {
+        if ($error = $this->projectScope->authorize($request, $project)) {
+            return $error;
+        }
+
         if ($error = $this->lifecycle->pluginProjectWriteGuard($project)) {
             return $error;
         }

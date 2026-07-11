@@ -98,6 +98,47 @@ it('registers an external Hades agent and intersects capabilities with backend p
     expect(DB::table('hades_agent_tokens')->where('hades_agent_id', $backendAgentId)->count())->toBe(1);
 });
 
+it('issues a project-scoped Plugin credential bundle during Hades agent registration', function () {
+    $token = createHadesM1BootstrapToken();
+
+    $response = $this->postJson('/api/hades/v1/agents/register', [
+        'project_id' => $token['project_id'],
+        'agent_id' => 'plugin-bootstrap-agent',
+        'label' => 'Plugin Bootstrap Agent',
+        'platform' => 'darwin-arm64',
+        'version' => '0.1.0',
+        'capabilities' => ['read_files'],
+        'plugin_device' => [
+            'fingerprint_hash' => 'sha256:'.str_repeat('a', 64),
+            'name' => 'Plugin Bootstrap Mac',
+            'platform_os' => 'darwin',
+            'platform_arch' => 'arm64',
+            'plugin_version' => '0.1.0',
+        ],
+    ], hadesM1Headers($token['plain_token']))
+        ->assertOk()
+        ->assertJsonPath('plugin_credentials.project_id', $token['project_id']);
+
+    $credentials = $response->json('plugin_credentials');
+
+    expect($credentials['token'])->toStartWith('devb_live_')
+        ->and($credentials['device_id'])->toBeString()->not->toBeEmpty()
+        ->and($credentials['device_secret'])->toBeString()->not->toBeEmpty()
+        ->and($credentials['scopes'])->toBe([
+            'projects.read',
+            'repositories.read',
+            'policies.read',
+            'runs.write',
+            'wiki.write',
+        ]);
+
+    $stored = DB::table('api_tokens')->where('id', $credentials['token_id'])->first();
+    expect($stored->project_id)->toBe($token['project_id'])
+        ->and($stored->hades_agent_id)->toBe($response->json('backend_agent_id'))
+        ->and($stored->device_id)->toBe($credentials['device_id'])
+        ->and($stored->device_signing_secret_hash)->toBe(hash('sha256', $credentials['device_secret']));
+});
+
 it('updates an existing backend agent when the same external agent registers again', function () {
     $token = createHadesM1BootstrapToken();
 
