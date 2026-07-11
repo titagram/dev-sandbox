@@ -6,6 +6,10 @@ use Illuminate\Database\Eloquent\Model;
 
 class HadesWorkspaceBinding extends Model
 {
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+
     protected $table = 'hades_workspace_bindings';
 
     protected $guarded = [];

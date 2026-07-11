@@ -491,30 +491,45 @@ it('stores explicit doctor reports and exposes a persistent Persephone inbox wit
         ->assertJsonPath('report.workspace_binding_id', $binding['workspace_binding_id']);
 
     $this->postJson('/api/hades/v1/persephone/messages', [
+        'schema' => 'hades.persephone.agent-message.v1',
+        'message_id' => 'm5-proposal-reviewed',
+        'correlation_id' => 'm5-proposal-review-correlation',
         'project_id' => $agent['project_id'],
-        'event_type' => 'proposal.reviewed',
+        'sender_agent_id' => $agent['external_agent_id'],
+        'target_agent_id' => $agent['external_agent_id'],
+        'target_workspace_binding_id' => $binding['workspace_binding_id'],
+        'message_type' => 'information_response',
+        'effect' => 'information_read',
+        'capability' => 'source_slice',
+        'expires_at' => now()->addHour()->timestamp,
         'payload' => ['message' => 'Memory proposal refused.'],
+        'causation_id' => null,
+        'remote_task_id' => null,
+        'remote_task_version' => null,
     ], hadesM5Headers($agent['agent_token']))
         ->assertCreated()
-        ->assertJsonPath('event.event_type', 'proposal.reviewed');
+        ->assertJsonPath('event.message_id', 'm5-proposal-reviewed');
 
     $this->getJson('/api/hades/v1/persephone/inbox?'.http_build_query([
         'project_id' => $agent['project_id'],
+        'target_agent_id' => $agent['external_agent_id'],
+        'target_workspace_binding_id' => $binding['workspace_binding_id'],
     ]), hadesM5Headers($agent['agent_token']))
         ->assertOk()
-        ->assertJsonPath('counts.total', 1)
-        ->assertJsonPath('counts.unread', 1)
-        ->assertJsonPath('events.0.event_type', 'proposal.reviewed');
+        ->assertJsonPath('events.0.message_id', 'm5-proposal-reviewed')
+        ->assertJsonPath('cursor', fn ($cursor) => is_string($cursor) && $cursor !== '');
 
     $this->get('/api/hades/v1/persephone/events?'.http_build_query([
         'project_id' => $agent['project_id'],
+        'target_agent_id' => $agent['external_agent_id'],
     ]), hadesM5Headers($agent['agent_token']))
         ->assertOk()
         ->assertHeader('content-type', 'text/event-stream; charset=UTF-8')
-        ->assertSee('event: proposal.reviewed');
+        ->assertDontSee('event: message');
 
     expect(DB::table('hades_doctor_reports')->where('project_id', $agent['project_id'])->count())->toBe(1)
-        ->and(DB::table('hades_persephone_events')->where('project_id', $agent['project_id'])->count())->toBe(1);
+        ->and(DB::table('hades_persephone_events')->where('project_id', $agent['project_id'])->count())->toBe(0)
+        ->and(DB::table('hades_persephone_agent_messages')->where('project_id', $agent['project_id'])->count())->toBe(1);
 });
 
 function hadesM5Headers(?string $token = null): array

@@ -62,6 +62,14 @@ class PersephoneAgentMessageStore
         'remote_task_version',
     ];
 
+    /** @var list<string> */
+    private const NULLABLE_STRING_FIELDS = [
+        'target_workspace_binding_id',
+        'causation_id',
+        'remote_task_id',
+        'remote_task_version',
+    ];
+
     /**
      * @param  array<string, mixed>  $envelope
      * @return array<string, mixed>
@@ -86,6 +94,12 @@ class PersephoneAgentMessageStore
             $value = $envelope[$field] ?? null;
 
             if (in_array($field, self::STRING_FIELDS, true)) {
+                $nullable = in_array($field, self::NULLABLE_STRING_FIELDS, true);
+
+                if ($value === null && ! $nullable) {
+                    throw new InvalidArgumentException("Persephone envelope field [{$field}] must be a non-blank string.");
+                }
+
                 if ($value !== null && ! is_string($value)) {
                     throw new InvalidArgumentException("Persephone envelope field [{$field}] must be a string or null.");
                 }

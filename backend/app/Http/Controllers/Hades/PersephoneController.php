@@ -3,79 +3,123 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Models\PersephoneAgentMessage;
+use App\Services\Hades\PersephoneAgentMessageConflict;
+use App\Services\Hades\PersephoneAgentMessageStore;
+use App\Services\Hades\PersephoneAgentMessageValidator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
 class PersephoneController extends Controller
 {
+    public function __construct(
+        private readonly PersephoneAgentMessageStore $store,
+        private readonly PersephoneAgentMessageValidator $validator,
+    ) {}
+
     public function store(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'project_id' => ['required', 'string'],
-            'workspace_binding_id' => ['nullable', 'string'],
-            'event_type' => ['required', 'string', 'max:191'],
-            'payload' => ['nullable', 'array'],
-        ]);
-
         $auth = $request->attributes->get('hades_auth');
         $agent = $auth['agent'];
-        $binding = $this->optionalBinding($agent, $validated['project_id'], $validated['workspace_binding_id'] ?? null);
+        $envelope = $this->validator->envelope($request);
+        $target = $this->targetAgent($agent, $envelope);
+
+        if ($target instanceof JsonResponse) {
+            return $target;
+        }
+
+        if ($this->validator->requiresWorkspaceBinding($envelope['capability'])
+            && $envelope['target_workspace_binding_id'] === null) {
+            return $this->error(
+                'workspace_binding_required',
+                'A workspace binding is required for this capability.',
+                Response::HTTP_UNPROCESSABLE_ENTITY,
+            );
+        }
+
+        $binding = $this->targetBinding($target, $envelope);
 
         if ($binding instanceof JsonResponse) {
             return $binding;
         }
 
-        $event = $this->createEvent($validated['project_id'], $agent->id, $binding?->id, $validated['event_type'], $validated['payload'] ?? []);
+        try {
+            $stored = $this->store->store($envelope);
+        } catch (PersephoneAgentMessageConflict $exception) {
+            return $this->error('message_conflict', $exception->getMessage(), Response::HTTP_CONFLICT);
+        }
 
-        return response()->json([
-            'protocol_version' => 'v1',
-            'project_id' => $validated['project_id'],
-            'event' => $this->payload($event),
-            'server_time' => now()->toISOString(),
-        ], Response::HTTP_CREATED);
+        return response()->json(
+            ['event' => $stored['message']->eventEnvelope()],
+            $stored['replayed'] ? Response::HTTP_OK : Response::HTTP_CREATED,
+        );
     }
 
     public function inbox(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'project_id' => ['required', 'string'],
-            'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
-        ]);
-
         $auth = $request->attributes->get('hades_auth');
         $agent = $auth['agent'];
+        $filters = $this->validator->inbox($request);
 
-        if ($agent->project_id !== $validated['project_id']) {
-            return $this->error('project_mismatch', 'Hades agent token is scoped to a different project.', Response::HTTP_FORBIDDEN);
+        $authorizationError = $this->authorizeInbox($agent, $filters);
+
+        if ($authorizationError instanceof JsonResponse) {
+            return $authorizationError;
         }
 
-        $limit = (int) ($validated['limit'] ?? 50);
-        $base = DB::table('hades_persephone_events')
-            ->where('project_id', $validated['project_id'])
-            ->where(function ($query) use ($agent): void {
-                $query->whereNull('hades_agent_id')->orWhere('hades_agent_id', $agent->id);
+        $binding = null;
+
+        if ($filters['target_workspace_binding_id'] !== null) {
+            $binding = $this->targetBinding(
+                $agent,
+                ['target_workspace_binding_id' => $filters['target_workspace_binding_id']],
+            );
+
+            if ($binding instanceof JsonResponse) {
+                return $binding;
+            }
+        }
+
+        if ($filters['cursor'] !== null && ! PersephoneAgentMessage::query()
+            ->forTarget($filters['project_id'], $filters['target_agent_id'])
+            ->whereKey($filters['cursor'])
+            ->exists()) {
+            return $this->error('cursor_not_found', 'The cursor does not belong to this project and target.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $query = PersephoneAgentMessage::query()
+            ->forTarget($filters['project_id'], $filters['target_agent_id'])
+            ->notExpired()
+            ->where(function ($query): void {
+                $query->whereNull('target_workspace_binding_id')
+                    ->orWhereHas('targetWorkspaceBinding', function ($binding): void {
+                        $binding->where('status', 'linked')->whereNull('unlinked_at');
+                    });
             });
 
-        $events = (clone $base)
-            ->orderByDesc('created_at')
-            ->limit($limit)
-            ->get()
-            ->map(fn (object $event): array => $this->payload($event))
-            ->values()
-            ->all();
+        if ($binding !== null) {
+            $query->where(function ($query) use ($binding): void {
+                $query->whereNull('target_workspace_binding_id')
+                    ->orWhere('target_workspace_binding_id', $binding->id);
+            });
+        }
+
+        if ($filters['cursor'] !== null) {
+            $query->where('id', '>', $filters['cursor']);
+        }
+
+        $messages = $query
+            ->orderBy('id')
+            ->limit($filters['limit'])
+            ->get();
 
         return response()->json([
-            'protocol_version' => 'v1',
-            'project_id' => $validated['project_id'],
-            'counts' => [
-                'total' => (clone $base)->count(),
-                'unread' => (clone $base)->whereNull('read_at')->count(),
-            ],
-            'events' => $events,
-            'server_time' => now()->toISOString(),
+            'events' => $messages->map(
+                fn (PersephoneAgentMessage $message): array => $message->eventEnvelope(),
+            )->values()->all(),
+            'cursor' => $messages->last()?->id ?? $filters['cursor'],
         ]);
     }
 
@@ -116,11 +160,43 @@ class PersephoneController extends Controller
         ]);
     }
 
-    private function optionalBinding(object $agent, string $projectId, ?string $bindingId): mixed
+    private function targetAgent(object $agent, array $envelope): mixed
     {
-        if ($agent->project_id !== $projectId) {
+        if ($agent->project_id !== $envelope['project_id']) {
             return $this->error('project_mismatch', 'Hades agent token is scoped to a different project.', Response::HTTP_FORBIDDEN);
         }
+
+        if ($agent->external_agent_id !== $envelope['sender_agent_id']) {
+            return $this->error('sender_mismatch', 'The sender agent does not match the authenticated Hades agent.', Response::HTTP_FORBIDDEN);
+        }
+
+        $target = DB::table('hades_agents')
+            ->where('project_id', $envelope['project_id'])
+            ->where('external_agent_id', $envelope['target_agent_id'])
+            ->first();
+
+        if (! $target) {
+            $foreignTarget = DB::table('hades_agents')
+                ->where('external_agent_id', $envelope['target_agent_id'])
+                ->exists();
+
+            return $this->error(
+                $foreignTarget ? 'target_agent_forbidden' : 'target_agent_not_found',
+                $foreignTarget ? 'The target agent is outside the authenticated project.' : 'The target agent was not found.',
+                $foreignTarget ? Response::HTTP_FORBIDDEN : Response::HTTP_NOT_FOUND,
+            );
+        }
+
+        if ($target->status !== 'active') {
+            return $this->error('target_agent_inactive', 'The target agent is not active.', Response::HTTP_FORBIDDEN);
+        }
+
+        return $target;
+    }
+
+    private function targetBinding(object $target, array $envelope): mixed
+    {
+        $bindingId = $envelope['target_workspace_binding_id'] ?? null;
 
         if ($bindingId === null) {
             return null;
@@ -128,35 +204,37 @@ class PersephoneController extends Controller
 
         $binding = DB::table('hades_workspace_bindings')
             ->where('id', $bindingId)
-            ->where('project_id', $projectId)
-            ->where('hades_agent_id', $agent->id)
+            ->where('project_id', $target->project_id)
+            ->where('hades_agent_id', $target->id)
             ->first();
 
         if (! $binding) {
             return $this->error('workspace_binding_not_found', 'Workspace binding was not found.', Response::HTTP_NOT_FOUND);
         }
 
+        if ($binding->status !== 'linked' || $binding->unlinked_at !== null) {
+            return $this->error('workspace_binding_inactive', 'Workspace binding is not active.', Response::HTTP_FORBIDDEN);
+        }
+
         return $binding;
     }
 
-    private function createEvent(string $projectId, ?string $agentId, ?string $bindingId, string $eventType, array $payload): object
+    private function error(string $code, string $message, int $status): JsonResponse
     {
-        $id = (string) Str::ulid();
-        $now = now();
+        return response()->json(['error' => ['code' => $code, 'message' => $message]], $status);
+    }
 
-        DB::table('hades_persephone_events')->insert([
-            'id' => $id,
-            'project_id' => $projectId,
-            'hades_agent_id' => $agentId,
-            'workspace_binding_id' => $bindingId,
-            'event_type' => $eventType,
-            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
-            'read_at' => null,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
+    private function authorizeInbox(object $agent, array $filters): ?JsonResponse
+    {
+        if ($agent->project_id !== $filters['project_id']) {
+            return $this->error('project_mismatch', 'Hades agent token is scoped to a different project.', Response::HTTP_FORBIDDEN);
+        }
 
-        return DB::table('hades_persephone_events')->where('id', $id)->first();
+        if ($agent->external_agent_id !== $filters['target_agent_id']) {
+            return $this->error('target_agent_mismatch', 'The inbox target must match the authenticated Hades agent.', Response::HTTP_FORBIDDEN);
+        }
+
+        return null;
     }
 
     private function payload(object $event): array
@@ -177,10 +255,5 @@ class PersephoneController extends Controller
         $decoded = is_string($value) ? json_decode($value, true) : $value;
 
         return is_array($decoded) ? $decoded : [];
-    }
-
-    private function error(string $code, string $message, int $status): JsonResponse
-    {
-        return response()->json(['error' => ['code' => $code, 'message' => $message]], $status);
     }
 }
