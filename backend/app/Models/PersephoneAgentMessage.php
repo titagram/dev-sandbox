@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\PersephoneAgentMessageJsonCast;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
@@ -41,8 +42,8 @@ class PersephoneAgentMessage extends Model
     {
         return [
             'expires_at' => 'integer',
-            'payload' => 'array',
-            'envelope' => 'array',
+            'payload' => PersephoneAgentMessageJsonCast::class,
+            'envelope' => PersephoneAgentMessageJsonCast::class,
         ];
     }
 

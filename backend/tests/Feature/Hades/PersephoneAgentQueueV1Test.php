@@ -182,6 +182,24 @@ it('rejects cross-project sender and project access without an existence oracle'
     $binding = persephoneQueueBind($target);
     $foreign = persephoneQueueAgent();
 
+    $targetErrors = [];
+    foreach (['missing-target', $foreign['external_agent_id']] as $targetAgentId) {
+        $response = $this->postJson(
+            '/api/hades/v1/persephone/messages',
+            persephoneQueueEnvelope($sender, $target, $binding, [
+                'message_id' => 'target-not-found-'.Str::lower(Str::random(8)),
+                'target_agent_id' => $targetAgentId,
+                'target_workspace_binding_id' => null,
+                'capability' => 'status_query',
+            ]),
+            persephoneQueueHeaders($sender['agent_token']),
+        )->assertNotFound()->assertJsonPath('error.code', 'target_agent_not_found');
+
+        $targetErrors[] = [$response->status(), $response->json('error.code')];
+    }
+
+    expect($targetErrors[0])->toBe($targetErrors[1]);
+
     $this->postJson(
         '/api/hades/v1/persephone/messages',
         persephoneQueueEnvelope($sender, $target, $binding, [
@@ -218,30 +236,18 @@ it('rejects unknown, foreign, inactive, or unlinked target agents and bindings',
     $foreign = persephoneQueueAgent();
     $foreignBinding = persephoneQueueBind($foreign);
 
-    $cases = [
-        [
-            'message_id' => 'unknown-target',
-            'target_agent_id' => 'missing-target',
-            'target_workspace_binding_id' => null,
-        ],
-        [
-            'message_id' => 'foreign-target',
-            'target_agent_id' => $foreign['external_agent_id'],
-            'target_workspace_binding_id' => null,
-        ],
-        [
-            'message_id' => 'foreign-binding',
-            'target_agent_id' => $target['external_agent_id'],
-            'target_workspace_binding_id' => $foreignBinding['workspace_binding_id'],
-        ],
-    ];
+    $cases = [[
+        'message_id' => 'foreign-binding',
+        'target_agent_id' => $target['external_agent_id'],
+        'target_workspace_binding_id' => $foreignBinding['workspace_binding_id'],
+    ]];
 
     foreach ($cases as $case) {
         $this->postJson(
             '/api/hades/v1/persephone/messages',
             persephoneQueueEnvelope($sender, $target, $binding, $case),
             persephoneQueueHeaders($sender['agent_token']),
-        )->assertStatus(in_array($case['message_id'], ['foreign-target'], true) ? 403 : 404);
+        )->assertNotFound();
     }
 
     DB::table('hades_agents')->where('id', $target['backend_agent_id'])->update([
@@ -576,9 +582,6 @@ function persephoneQueueBind(array $agent, ?string $fingerprint = null): array
     return ['workspace_binding_id' => $response->json('workspace_binding_id')];
 }
 
-/**
- * @return string
- */
 function persephoneQueueProject(): string
 {
     $user = User::factory()->create(['status' => 'active']);

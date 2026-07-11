@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use JsonException;
+use stdClass;
 
 class PersephoneAgentMessageValidator
 {
@@ -108,7 +109,9 @@ class PersephoneAgentMessageValidator
 
         if (! $rawPayloadIsObject) {
             $errors['payload'][] = 'The payload must be a JSON object.';
-        } elseif (count($normalized['payload']) > 128) {
+        } elseif (count($normalized['payload'] instanceof stdClass
+            ? get_object_vars($normalized['payload'])
+            : $normalized['payload']) > 128) {
             $errors['payload'][] = 'The payload may contain at most 128 top-level properties.';
         } else {
             try {

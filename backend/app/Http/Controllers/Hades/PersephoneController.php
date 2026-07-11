@@ -176,14 +176,10 @@ class PersephoneController extends Controller
             ->first();
 
         if (! $target) {
-            $foreignTarget = DB::table('hades_agents')
-                ->where('external_agent_id', $envelope['target_agent_id'])
-                ->exists();
-
             return $this->error(
-                $foreignTarget ? 'target_agent_forbidden' : 'target_agent_not_found',
-                $foreignTarget ? 'The target agent is outside the authenticated project.' : 'The target agent was not found.',
-                $foreignTarget ? Response::HTTP_FORBIDDEN : Response::HTTP_NOT_FOUND,
+                'target_agent_not_found',
+                'The target agent was not found.',
+                Response::HTTP_NOT_FOUND,
             );
         }
 

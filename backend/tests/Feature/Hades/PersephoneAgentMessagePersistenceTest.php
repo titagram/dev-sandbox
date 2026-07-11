@@ -124,6 +124,20 @@ it('uses the normalized envelope for stable idempotency fingerprints', function 
     expect($store->fingerprint($first))->toBe($store->fingerprint($reordered));
 });
 
+it('canonicalizes an empty object payload as {} instead of []', function () {
+    $store = app(PersephoneAgentMessageStore::class);
+    $projectId = persephonePersistenceProject();
+    $base = persephonePersistenceEnvelope($projectId);
+    $emptyArray = array_replace($base, ['payload' => []]);
+    $emptyObject = array_replace($base, ['payload' => new stdClass]);
+    $normalized = $store->normalizeEnvelope($emptyArray);
+
+    expect($normalized['payload'])->toBeInstanceOf(stdClass::class)
+        ->and($store->fingerprint($emptyArray))->toBe($store->fingerprint($emptyObject))
+        ->and($store->canonicalJson($normalized))->toContain('"payload":{}')
+        ->and($store->canonicalJson($normalized))->not->toContain('"payload":[]');
+});
+
 it('persists a ULID cursor and replays identical envelopes without duplicate rows', function () {
     $store = app(PersephoneAgentMessageStore::class);
     $projectId = persephonePersistenceProject();

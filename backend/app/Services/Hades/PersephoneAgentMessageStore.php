@@ -5,6 +5,7 @@ namespace App\Services\Hades;
 use App\Models\PersephoneAgentMessage;
 use Illuminate\Database\QueryException;
 use InvalidArgumentException;
+use stdClass;
 
 class PersephoneAgentMessageStore
 {
@@ -115,13 +116,21 @@ class PersephoneAgentMessageStore
                 throw new InvalidArgumentException('Persephone envelope field [expires_at] must be an integer.');
             }
 
-            if ($field === 'payload' && ! is_array($value)) {
+            if ($field === 'payload' && ! is_array($value) && ! ($value instanceof stdClass)) {
                 throw new InvalidArgumentException('Persephone envelope field [payload] must be an object.');
             }
 
-            $normalized[$field] = $field === 'payload'
-                ? $this->sortKeys($value)
-                : $value;
+            if ($field === 'payload') {
+                if ($value instanceof stdClass) {
+                    $value = get_object_vars($value);
+                }
+
+                $normalized[$field] = $value === []
+                    ? new stdClass
+                    : $this->sortKeys($value);
+            } else {
+                $normalized[$field] = $value;
+            }
         }
 
         return $normalized;
@@ -221,7 +230,7 @@ class PersephoneAgentMessageStore
         string $fingerprint,
     ): array {
         if (! hash_equals((string) $existing->envelope_hash, $fingerprint)
-            || $existing->envelope !== $normalized) {
+            || $this->canonicalJson($existing->envelope) !== $this->canonicalJson($normalized)) {
             throw new PersephoneAgentMessageConflict(
                 (string) $normalized['project_id'],
                 (string) $normalized['message_id'],

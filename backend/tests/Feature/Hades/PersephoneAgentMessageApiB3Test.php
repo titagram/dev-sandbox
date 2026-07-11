@@ -45,6 +45,40 @@ it('rejects inbox workspace filters that are not active bindings of the authenti
     ]), b3PersephoneHeaders($target['agent_token']))->assertNotFound();
 });
 
+it('round-trips and replays an empty object payload without changing its wire shape', function () {
+    $sender = b3PersephoneAgent();
+    $target = b3PersephoneAgent($sender['project_id'], 'b3-target');
+    $binding = b3PersephoneBinding($target);
+    $envelope = b3PersephoneEnvelope($sender, $target, $binding);
+    $envelope['message_id'] = 'b3-empty-object';
+    $envelope['payload'] = new stdClass;
+
+    $first = $this->postJson(
+        '/api/hades/v1/persephone/messages',
+        $envelope,
+        b3PersephoneHeaders($sender['agent_token']),
+    )->assertCreated();
+    $firstWire = json_decode($first->getContent(), false, 512, JSON_THROW_ON_ERROR);
+
+    $replay = $this->postJson(
+        '/api/hades/v1/persephone/messages',
+        $envelope,
+        b3PersephoneHeaders($sender['agent_token']),
+    )->assertOk();
+    $replayWire = json_decode($replay->getContent(), false, 512, JSON_THROW_ON_ERROR);
+
+    $poll = $this->getJson('/api/hades/v1/persephone/inbox?'.http_build_query([
+        'project_id' => $target['project_id'],
+        'target_agent_id' => $target['external_agent_id'],
+    ]), b3PersephoneHeaders($target['agent_token']))->assertOk();
+    $pollWire = json_decode($poll->getContent(), false, 512, JSON_THROW_ON_ERROR);
+
+    expect($firstWire->event->payload)->toBeInstanceOf(stdClass::class)
+        ->and($replayWire->event->payload)->toBeInstanceOf(stdClass::class)
+        ->and($replayWire->event->id)->toBe($firstWire->event->id)
+        ->and($pollWire->events[0]->payload)->toBeInstanceOf(stdClass::class);
+});
+
 /**
  * @return array<string, string>
  */
