@@ -178,8 +178,9 @@ class MemorySearchController extends Controller
         $indexedMemoryScores = $this->searchIndexer->matchingSourceScores($projectId, $workspaceBindingId, $indexedDomains, $query, $filters, $limit);
         $vectorMemoryIds = array_keys($vectorCandidates['project_memory_entries'] ?? []);
         $indexedMemoryIds = array_values(array_unique(array_merge(array_keys($indexedMemoryScores), $vectorMemoryIds)));
+        $candidateLimit = max($filters === [] ? 100 : 250, $limit * ($filters === [] ? 12 : 20));
 
-        $rows = DB::table('project_memory_entries')
+        $rowsQuery = DB::table('project_memory_entries')
             ->when($indexedMemoryIds !== [], function ($builder) use ($indexedMemoryIds, $query, $tokens): void {
                 $builder->where(function ($nested) use ($indexedMemoryIds, $query, $tokens): void {
                     $nested->whereIn('id', $indexedMemoryIds);
@@ -232,15 +233,29 @@ class MemorySearchController extends Controller
                             ->orWhere('agent_key', 'like', $like);
                     }
                 });
-            })
+            });
+
+        $rawChunksOmitted = 0;
+        if (! $includeRawChunks) {
+            $rawChunksOmitted = (clone $rowsQuery)
+                ->where(function ($builder): void {
+                    $this->matchRawChunksInQuery($builder);
+                })
+                ->limit($candidateLimit)
+                ->pluck('id')
+                ->count();
+            $rowsQuery->whereNot(function ($builder): void {
+                $this->matchRawChunksInQuery($builder);
+            });
+        }
+
+        $rows = $rowsQuery
             ->orderByDesc('occurred_at')
             ->orderByDesc('id')
-            ->limit(max($filters === [] ? 100 : 250, $limit * ($filters === [] ? 12 : 20)))
+            ->limit($candidateLimit)
             ->get();
 
         $items = [];
-        $rawChunksOmitted = 0;
-
         foreach ($rows as $entry) {
             $payload = $this->decodePayload($entry->payload);
             $rawChunk = $this->isRawChunk($entry, $payload);
@@ -382,7 +397,7 @@ class MemorySearchController extends Controller
                     'page_type' => (string) $row->page_type,
                     'source_type' => (string) $row->source_type,
                     'source_status' => (string) $row->revision_source_status,
-                    'payload_excerpt' => $this->excerpt((string) $row->content_markdown),
+                    'payload_excerpt' => $this->queryExcerpt((string) $row->content_markdown, $query, $tokens),
                     'evidence_count' => count($this->decodeList($row->evidence_refs)),
                     'score' => max($indexedRevisionScores[(string) $row->revision_id] ?? 0, $this->score($query, $tokens, [
                         (string) $row->title,
@@ -888,6 +903,22 @@ class MemorySearchController extends Controller
         return false;
     }
 
+    private function matchRawChunksInQuery(mixed $builder): void
+    {
+        foreach (self::RAW_CHUNK_MARKERS as $marker) {
+            $like = '%'.$marker.'%';
+            $builder
+                ->orWhere('summary', 'like', $like)
+                ->orWhere('payload', 'like', $like)
+                ->orWhere('kind', 'like', $like)
+                ->orWhere('source', 'like', $like);
+        }
+
+        $builder
+            ->orWhere('payload', 'like', '%"chunk_index"%')
+            ->orWhere('payload', 'like', '%"chunk_count"%');
+    }
+
     /**
      * @return list<string>
      */
@@ -1013,6 +1044,36 @@ class MemorySearchController extends Controller
     private function excerpt(string $content): string
     {
         $normalized = trim((string) preg_replace('/\s+/', ' ', strip_tags($content)));
+
+        return $this->compact($normalized, 500);
+    }
+
+    /**
+     * @param  list<string>  $tokens
+     */
+    private function queryExcerpt(string $content, string $query, array $tokens): string
+    {
+        $normalized = trim((string) preg_replace('/\s+/', ' ', strip_tags($content)));
+        if ($query === '' || $normalized === '') {
+            return $this->compact($normalized, 500);
+        }
+
+        $haystack = Str::lower($normalized);
+        $needles = array_values(array_unique(array_filter(array_merge(array_reverse($tokens), [$query]))));
+        foreach ($needles as $needle) {
+            if (Str::length($needle) < 3) {
+                continue;
+            }
+            $position = Str::position($haystack, Str::lower($needle));
+            if ($position === false) {
+                continue;
+            }
+
+            $start = max(0, $position - 160);
+            $excerpt = Str::substr($normalized, $start, 500);
+
+            return ($start > 0 ? '... ' : '').$excerpt.(($start + Str::length($excerpt)) < Str::length($normalized) ? ' ...' : '');
+        }
 
         return $this->compact($normalized, 500);
     }

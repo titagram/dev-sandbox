@@ -404,7 +404,7 @@ it('searches current wiki revisions through the Hades memory search endpoint', f
         'producer' => 'test',
         'source_type' => 'controlled_agent_tool',
         'source_status' => 'verified_from_code',
-        'content_markdown' => 'The taxonomy route is documented in the Hades memory architecture wiki.',
+        'content_markdown' => str_repeat('Earlier logbook entry. ', 40).'Task #459: The taxonomy route is documented in the Hades memory architecture wiki.',
         'evidence_refs' => json_encode([['path' => 'routes/api.php']], JSON_THROW_ON_ERROR),
         'created_at' => $now,
     ]);
@@ -412,7 +412,7 @@ it('searches current wiki revisions through the Hades memory search endpoint', f
     $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
         'project_id' => $agent['project_id'],
         'workspace_binding_id' => $binding['workspace_binding_id'],
-        'query' => 'taxonomy route',
+        'query' => 'task #459',
         'domain' => 'wiki',
     ]), hadesM3Headers($agent['agent_token']))
         ->assertOk()
@@ -422,6 +422,14 @@ it('searches current wiki revisions through the Hades memory search endpoint', f
         ->assertJsonPath('items.0.page_slug', 'architecture/hades-memory')
         ->assertJsonPath('items.0.evidence_count', 1)
         ->assertJsonPath('items.0.source_status', 'verified_from_code');
+
+    expect($this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'task #459',
+        'domain' => 'wiki',
+    ]), hadesM3Headers($agent['agent_token']))->json('items.0.payload_excerpt'))
+        ->toContain('Task #459');
 });
 
 it('uses materialized search documents for Hades memory search candidates', function () {
@@ -732,6 +740,61 @@ it('quarantines raw source chunks from memory search unless explicitly requested
         ->assertJsonPath('items.0.raw_chunk', true)
         ->assertJsonPath('items.0.schema', 'hades.backend_wiki.file_chunk.v1')
         ->assertJsonPath('items.0.source', 'graphify-sidecar/carnovali-facts.md');
+});
+
+it('does not let excluded raw chunks consume compact memory candidate slots', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $now = now();
+
+    DB::table('project_memory_entries')->insert(collect(range(1, 120))->map(fn (int $index) => [
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => 'raw-import',
+        'source' => 'hades_agent',
+        'kind' => 'proposal',
+        'completeness' => 'complete',
+        'summary' => "Carnovali payroll raw chunk {$index}",
+        'payload' => json_encode(['schema' => 'hades.backend_wiki.file_chunk.v1'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now->copy()->addSeconds($index),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ])->all());
+
+    DB::table('project_memory_entries')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => 'memory-steward',
+        'source' => 'hades_agent',
+        'kind' => 'project_note',
+        'completeness' => 'complete',
+        'summary' => 'Carnovali payroll uses the verified monthly workflow.',
+        'payload' => json_encode(['schema' => 'devboard.memory_note.v1'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now->copy()->subMinute(),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'Carnovali payroll',
+        'domain' => 'project_memory',
+        'limit' => 8,
+        'include_raw_chunks' => false,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('raw_chunks_omitted', 100)
+        ->assertJsonPath('items.0.kind', 'project_note');
 });
 
 it('unions semantic vector candidates into Hades memory search once and reports retrieval metadata', function () {
