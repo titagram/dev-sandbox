@@ -797,6 +797,80 @@ it('does not let excluded raw chunks consume compact memory candidate slots', fu
         ->assertJsonPath('items.0.kind', 'project_note');
 });
 
+it('uses materialized memory candidates without falling back to raw payload scans', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $now = now();
+    $memoryId = (string) Str::ulid();
+
+    DB::table('project_memory_entries')->insert(collect(range(1, 3))->map(fn (int $index) => [
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => 'raw-import',
+        'source' => 'hades_agent',
+        'kind' => 'proposal',
+        'completeness' => 'complete',
+        'summary' => "orientation-indexed-only raw chunk {$index}",
+        'payload' => json_encode(['schema' => 'hades.backend_wiki.file_chunk.v1'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now->copy()->addSeconds($index),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ])->all());
+
+    DB::table('project_memory_entries')->insert([
+        'id' => $memoryId,
+        'project_id' => $agent['project_id'],
+        'repository_id' => null,
+        'task_id' => null,
+        'run_id' => null,
+        'author_user_id' => null,
+        'agent_key' => 'memory-steward',
+        'source' => 'hades_agent',
+        'kind' => 'project_note',
+        'completeness' => 'complete',
+        'summary' => 'orientation-indexed-only canonical project orientation.',
+        'payload' => json_encode(['schema' => 'devboard.memory_note.v1'], JSON_THROW_ON_ERROR),
+        'occurred_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_search_documents')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => null,
+        'domain' => 'agent_notes',
+        'kind' => 'project_note',
+        'source_table' => 'project_memory_entries',
+        'source_id' => $memoryId,
+        'source_schema' => 'devboard.memory_note.v1',
+        'title' => 'Canonical orientation',
+        'body' => 'orientation-indexed-only canonical project orientation.',
+        'metadata' => json_encode(['source' => 'test'], JSON_THROW_ON_ERROR),
+        'checksum' => str_repeat('c', 64),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'orientation-indexed-only',
+        'domain' => 'project_memory',
+        'limit' => 5,
+        'include_raw_chunks' => false,
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 1)
+        ->assertJsonPath('candidate_count', 1)
+        ->assertJsonPath('raw_chunks_omitted', 0)
+        ->assertJsonPath('items.0.id', $memoryId);
+});
+
 it('unions semantic vector candidates into Hades memory search once and reports retrieval metadata', function () {
     config()->set('devboard.embeddings.enabled', true);
     config()->set('devboard.embeddings.provider', 'fake');
@@ -1008,6 +1082,55 @@ it('searches project index artifacts through the Hades memory search endpoint', 
 
     expect($response->json('items.0.summary'))->toContain('GET /hades/memory');
     expect($response->json('items.0.payload_excerpt'))->toContain('laravel/framework');
+});
+
+it('does not scan artifact payloads after a materialized artifact index miss', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    $artifactId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $artifactId,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['backend_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'job_id' => null,
+        'schema' => 'hades.git_tree.v1',
+        'artifact' => json_encode(['note' => 'artifact-index-miss-only'], JSON_THROW_ON_ERROR),
+        'sha256' => str_repeat('8', 64),
+        'truncated' => false,
+        'redactions' => 0,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    DB::table('hades_search_documents')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'domain' => 'artifacts',
+        'kind' => 'artifact',
+        'source_table' => 'hades_agent_artifacts',
+        'source_id' => (string) Str::ulid(),
+        'source_schema' => 'hades.git_tree.v1',
+        'title' => 'Unrelated indexed artifact',
+        'body' => 'materialized artifact catalog is available',
+        'metadata' => json_encode([], JSON_THROW_ON_ERROR),
+        'checksum' => str_repeat('9', 64),
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'query' => 'artifact-index-miss-only',
+        'domain' => 'artifacts',
+    ]), hadesM3Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('count', 0)
+        ->assertJsonPath('candidate_count', 0);
 });
 
 it('searches PHP graph artifacts through the Hades memory search endpoint', function () {
@@ -2226,6 +2349,11 @@ it('uses postgres full text search on pgsql driver', function () {
         'updated_at' => $now,
     ]);
 
+    $searchQueries = [];
+    DB::listen(function ($query) use (&$searchQueries): void {
+        $searchQueries[] = $query->sql;
+    });
+
     $response = $this->getJson('/api/hades/v1/memory/search?'.http_build_query([
         'project_id' => $agent['project_id'],
         'workspace_binding_id' => $binding['workspace_binding_id'],
@@ -2238,7 +2366,8 @@ it('uses postgres full text search on pgsql driver', function () {
         ->assertJsonPath('items.0.id', $memoryId)
         ->assertJsonPath('items.0.domain', 'logbook');
 
-    expect($response->json('items.0.score'))->toBeGreaterThan(0);
+    expect($response->json('items.0.score'))->toBeGreaterThan(0)
+        ->and(collect($searchQueries)->contains(fn (string $sql): bool => str_contains($sql, 'search_vector @@ plainto_tsquery')))->toBeTrue();
 });
 
 it('falls back to LIKE search on sqlite driver', function () {

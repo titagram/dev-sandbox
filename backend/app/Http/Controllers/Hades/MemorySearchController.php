@@ -175,15 +175,24 @@ class MemorySearchController extends Controller
             'source_chunks' => ['source_chunks'],
             default => ['project_memory', 'logbook', 'agent_notes', 'source_chunks'],
         };
+        if (! $includeRawChunks) {
+            $indexedDomains = array_values(array_filter(
+                $indexedDomains,
+                fn (string $indexedDomain): bool => $indexedDomain !== 'source_chunks',
+            ));
+        }
         $indexedMemoryScores = $this->searchIndexer->matchingSourceScores($projectId, $workspaceBindingId, $indexedDomains, $query, $filters, $limit);
         $vectorMemoryIds = array_keys($vectorCandidates['project_memory_entries'] ?? []);
         $indexedMemoryIds = array_values(array_unique(array_merge(array_keys($indexedMemoryScores), $vectorMemoryIds)));
         $candidateLimit = max($filters === [] ? 100 : 250, $limit * ($filters === [] ? 12 : 20));
 
         $rowsQuery = DB::table('project_memory_entries')
-            ->when($indexedMemoryIds !== [], function ($builder) use ($indexedMemoryIds, $query, $tokens): void {
-                $builder->where(function ($nested) use ($indexedMemoryIds, $query, $tokens): void {
-                    $nested->whereIn('id', $indexedMemoryIds);
+            ->when($indexedMemoryScores !== [], function ($builder) use ($indexedMemoryIds): void {
+                $builder->whereIn('id', $indexedMemoryIds);
+            })
+            ->when($indexedMemoryScores === [] && $vectorMemoryIds !== [], function ($builder) use ($query, $tokens, $vectorMemoryIds): void {
+                $builder->where(function ($nested) use ($query, $tokens, $vectorMemoryIds): void {
+                    $nested->whereIn('id', $vectorMemoryIds);
 
                     if ($query === '') {
                         return;
@@ -428,6 +437,12 @@ class MemorySearchController extends Controller
         $tokens = $this->tokens($query);
         $indexedArtifactScores = $this->searchIndexer->matchingSourceScores($projectId, $bindingId, ['artifacts'], $query, $filters, $limit, false);
         $indexedArtifactIds = array_values(array_unique(array_merge(array_keys($indexedArtifactScores), array_keys($vectorCandidates['hades_agent_artifacts'] ?? []))));
+
+        if ($query !== ''
+            && $indexedArtifactIds === []
+            && $this->searchIndexer->hasDocuments($projectId, $bindingId, ['artifacts'], false)) {
+            return [];
+        }
 
         return DB::table('hades_agent_artifacts')
             ->where('project_id', $projectId)

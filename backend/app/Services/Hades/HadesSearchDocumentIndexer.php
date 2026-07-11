@@ -326,6 +326,28 @@ class HadesSearchDocumentIndexer
 
     /**
      * @param  list<string>  $domains
+     */
+    public function hasDocuments(string $projectId, ?string $workspaceBindingId, array $domains, bool $includeProjectLevel = true): bool
+    {
+        return DB::table('hades_search_documents')
+            ->where('project_id', $projectId)
+            ->whereIn('domain', $domains)
+            ->when($workspaceBindingId !== null, function ($builder) use ($includeProjectLevel, $workspaceBindingId): void {
+                if ($includeProjectLevel) {
+                    $builder->where(function ($nested) use ($workspaceBindingId): void {
+                        $nested->whereNull('workspace_binding_id')->orWhere('workspace_binding_id', $workspaceBindingId);
+                    });
+
+                    return;
+                }
+
+                $builder->where('workspace_binding_id', $workspaceBindingId);
+            })
+            ->exists();
+    }
+
+    /**
+     * @param  list<string>  $domains
      * @param  array<string, string>  $filters
      * @return array<string, int>
      */
@@ -677,7 +699,7 @@ class HadesSearchDocumentIndexer
     private function fullTextMatchExpression(): string
     {
         if (DB::connection()->getDriverName() === 'pgsql') {
-            return "to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(source_schema, '')) @@ plainto_tsquery('english', ?)";
+            return "search_vector @@ plainto_tsquery('english', ?)";
         }
 
         return 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE)';
@@ -686,7 +708,7 @@ class HadesSearchDocumentIndexer
     private function fullTextOrderExpression(): string
     {
         if (DB::connection()->getDriverName() === 'pgsql') {
-            return "ts_rank(to_tsvector('english', coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(source_schema, '')), plainto_tsquery('english', ?)) DESC";
+            return "ts_rank(search_vector, plainto_tsquery('english', ?)) DESC";
         }
 
         return 'MATCH(title, body, source_schema) AGAINST (? IN BOOLEAN MODE) DESC';
