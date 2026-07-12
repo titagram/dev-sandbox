@@ -38,6 +38,66 @@ it('selects exact trusted source scoped graphs and adapts legacy contracts', fun
         ->and($repo->findByIdentity($projectId, 'repository', $repositoryId, 'hades_agent_artifact', $hadesId))->toBeNull();
 });
 
+it('isolates exact artifact identities by project scope ownership and binding status', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('project_id', $projectId)->value('id');
+    [$bindingId, $hadesId] = canonicalRepoHades($projectId);
+    [$otherBindingId] = canonicalRepoHades($projectId);
+    [$unlinkedBindingId, $unlinkedArtifactId] = canonicalRepoHades($projectId, 'unlinked');
+    $legacyId = canonicalRepoSnapshot($projectId, $repositoryId);
+    $otherRepositoryId = canonicalRepoRepository($projectId);
+    $repo = app(CanonicalGraphRepository::class);
+    $wrongProjectId = (string) Str::ulid();
+
+    foreach ([
+        [$wrongProjectId, 'workspace_binding', $bindingId, 'hades_agent_artifact', $hadesId],
+        [$projectId, 'workspace_binding', $otherBindingId, 'hades_agent_artifact', $hadesId],
+        [$projectId, 'workspace_binding', $unlinkedBindingId, 'hades_agent_artifact', $unlinkedArtifactId],
+        [$wrongProjectId, 'repository', $repositoryId, 'legacy_artifact', $legacyId],
+        [$projectId, 'repository', $otherRepositoryId, 'legacy_artifact', $legacyId],
+    ] as [$requestedProject, $scopeType, $scopeId, $artifactType, $artifactId]) {
+        expect($repo->findByIdentity($requestedProject, $scopeType, $scopeId, $artifactType, $artifactId))->toBeNull();
+    }
+
+    DB::table('artifacts')->where('id', $legacyId)->update(['repository_id' => $otherRepositoryId]);
+    expect($repo->findByIdentity($projectId, 'repository', $repositoryId, 'legacy_artifact', $legacyId))->toBeNull();
+});
+
+it('never falls back to an alternate source scope with an available graph', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('project_id', $projectId)->value('id');
+    [$bindingWithoutGraph, $deletedArtifact] = canonicalRepoHades($projectId);
+    DB::table('hades_agent_artifacts')->where('id', $deletedArtifact)->delete();
+    canonicalRepoSnapshot($projectId, $repositoryId);
+
+    [$bindingWithGraph] = canonicalRepoHades($projectId);
+    $repositoryWithoutGraph = canonicalRepoRepository($projectId);
+    $repo = app(CanonicalGraphRepository::class);
+
+    expect($repo->latestForScope($projectId, 'workspace_binding', $bindingWithoutGraph))->toBeNull()
+        ->and($repo->latestForScope($projectId, 'repository', $repositoryWithoutGraph))->toBeNull()
+        ->and($repo->latestForScope($projectId, 'workspace_binding', $bindingWithGraph))->not->toBeNull()
+        ->and($repo->latestForScope($projectId, 'repository', $repositoryId))->not->toBeNull();
+});
+
+it('does not expose source display paths through latest or exact identity results', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $repositoryId = DB::table('repositories')->where('project_id', $projectId)->value('id');
+    [$bindingId, $hadesId] = canonicalRepoHades($projectId);
+    $legacyId = canonicalRepoSnapshot($projectId, $repositoryId);
+    $repo = app(CanonicalGraphRepository::class);
+
+    foreach ([
+        $repo->latestForScope($projectId, 'workspace_binding', $bindingId),
+        $repo->findByIdentity($projectId, 'workspace_binding', $bindingId, 'hades_agent_artifact', $hadesId),
+        $repo->latestForScope($projectId, 'repository', $repositoryId),
+        $repo->findByIdentity($projectId, 'repository', $repositoryId, 'legacy_artifact', $legacyId),
+    ] as $graph) {
+        $json = json_encode($graph, JSON_THROW_ON_ERROR);
+        expect($json)->not->toContain('display_path')->not->toContain('/secret');
+    }
+});
+
 it('ignores unlinked bindings and rejects unknown scope types', function () {
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
     [$bindingId] = canonicalRepoHades($projectId, 'unlinked');
@@ -90,4 +150,26 @@ function canonicalRepoSnapshot(string $projectId, string $repositoryId): string
     DB::table('snapshots')->insert(['id' => (string) Str::ulid(), 'project_id' => $projectId, 'repository_id' => $repositoryId, 'local_workspace_id' => $workspaceId, 'source_type' => 'local_plugin_snapshot', 'branch' => 'main', 'base_sha' => 'abc', 'dirty_status' => 'clean', 'graph_snapshot_artifact_id' => $artifactId, 'created_by_run_id' => $runId, 'created_at' => $now]);
 
     return $artifactId;
+}
+
+function canonicalRepoRepository(string $projectId): string
+{
+    $repositoryId = (string) Str::ulid();
+    DB::table('repositories')->insert([
+        'id' => $repositoryId,
+        'project_id' => $projectId,
+        'name' => 'Repository '.$repositoryId,
+        'slug' => 'repository-'.strtolower($repositoryId),
+        'default_branch' => 'main',
+        'local_only' => true,
+        'code_exposure_policy' => 'full_code_artifacts',
+        'protected_paths' => '[]',
+        'excluded_paths' => '[]',
+        'stack_hints' => '[]',
+        'graph_enabled' => true,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    return $repositoryId;
 }
