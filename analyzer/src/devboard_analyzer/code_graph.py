@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+GRAPH_CONTRACT_VERSION = "hades.graph_artifact.v1"
+
 _LIGHTWEIGHT_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
     ".js": [
         ("function", re.compile(r"^\s*(?:export\s+)?function\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE)),
@@ -62,9 +64,9 @@ def build_code_graph(
 ) -> dict[str, Any]:
     repo = Path(root)
     context = context or {}
-    graphify_graph = _build_graphify_graph(repo, files, context, graph_mode)
+    graphify_graph, fallback_reason = _build_graphify_graph(repo, files, context, graph_mode)
     if graphify_graph is not None:
-        return graphify_graph
+        return _attach_graph_contract(graphify_graph, files, fallback_reason)
 
     python_index = _build_python_resolution_index(repo, resolution_files or files)
 
@@ -118,7 +120,7 @@ def build_code_graph(
         lightweight_symbols_found,
     )
 
-    return {
+    graph = {
         "protocol_version": "v1",
         "source_type": "local_analyzer",
         "source_status": "verified_from_code",
@@ -137,6 +139,7 @@ def build_code_graph(
         "nodes": nodes,
         "relationships": relationships,
     }
+    return _attach_graph_contract(graph, files, fallback_reason)
 
 
 class _PythonResolutionIndex:
@@ -227,11 +230,10 @@ def _build_graphify_graph(
     files: list[Path],
     context: dict[str, Any],
     graph_mode: str,
-) -> dict[str, Any] | None:
-    try:
-        from graphify.extract import extract
-    except ImportError:
-        return None
+) -> tuple[dict[str, Any] | None, str | None]:
+    extract, unavailable_reason = _load_graphify_extract()
+    if extract is None:
+        return None, unavailable_reason
 
     try:
         extracted = extract(
@@ -239,8 +241,8 @@ def _build_graphify_graph(
             cache_root=str(repo / ".devboard" / "cache" / "graphify"),
             parallel=True,
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, "graphify_failed:" + type(exc).__name__
 
     nodes = [_graphify_node(repo, node) for node in extracted.get("nodes", [])]
     relationships = [_graphify_relationship(edge) for edge in extracted.get("edges", [])]
@@ -267,7 +269,53 @@ def _build_graphify_graph(
         ],
         "nodes": nodes,
         "relationships": relationships,
+    }, None
+
+
+def _load_graphify_extract() -> tuple[Any | None, str | None]:
+    try:
+        from graphify.extract import extract
+    except ImportError:
+        return None, "graphify_unavailable"
+    return extract, None
+
+
+def _attach_graph_contract(
+    graph: dict[str, Any],
+    files: list[Path],
+    fallback_reason: str | None,
+) -> dict[str, Any]:
+    relationships = graph.get("relationships")
+    has_relationships = isinstance(relationships, list) and bool(relationships)
+    if has_relationships and fallback_reason is None:
+        quality = "full"
+    elif has_relationships:
+        quality = "partial"
+    else:
+        quality = "inventory_only"
+
+    languages = sorted({path.suffix.lstrip(".").lower() or "unknown" for path in files})
+    graph["graph_contract"] = {
+        "version": GRAPH_CONTRACT_VERSION,
+        "extractor": {
+            "name": "graphify" if fallback_reason is None else str(graph.get("analyzer") or "legacy_analyzer"),
+            "version": "1",
+            "mode": "graphify" if fallback_reason is None else "fallback",
+            "quality": quality,
+            "fallback_reason": fallback_reason,
+        },
+        "coverage": {
+            "languages": languages,
+            "files_total": len(files),
+            "files_analyzed": len(files),
+            "files_failed": 0,
+        },
+        "source": {
+            "branch": graph.get("branch"),
+            "head_commit": graph.get("head_commit") or graph.get("workspace_head_commit"),
+        },
     }
+    return graph
 
 
 def _graph_extraction_profile(
