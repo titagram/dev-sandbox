@@ -124,7 +124,7 @@ it('does not clear an existing current candidate before verification on retry', 
                 throw new RuntimeException('write failed');
             }
 
-return [];
+            return [];
         }
     };
     expect(fn () => app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client))->toThrow(RuntimeException::class);
@@ -162,6 +162,19 @@ it('job rejects checksum changes, marks failed, and rethrows', function () {
     expect(fn () => runCanonicalProjectionJob($projection->id, new FakeNeo4jClient))->toThrow(RuntimeException::class, 'artifact_changed');
     expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('artifact_changed');
+});
+
+it('job marks an exact missing artifact failed with a bounded code and rethrows for retry', function () {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+    $projection = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->first();
+    DB::table('hades_agent_artifacts')->where('id', $projection->artifact_id)->delete();
+
+    expect(fn () => runCanonicalProjectionJob($projection->id, new FakeNeo4jClient))
+        ->toThrow(RuntimeException::class, 'artifact_missing');
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('artifact_missing');
 });
 
 it('job marks projecting before client work then marks a bounded failure and rethrows', function () {

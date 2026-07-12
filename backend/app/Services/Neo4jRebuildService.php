@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Services\Neo4j\FakeNeo4jClient;
 use App\Services\Neo4j\Neo4jClient;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -115,6 +114,19 @@ class Neo4jRebuildService
 
     private function fakeClient(): Neo4jClient
     {
-        return new FakeNeo4jClient;
+        return new class implements Neo4jClient
+        {
+            public function run(string $cypher, array $params = []): mixed
+            {
+                if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                    return [[
+                        'nodes' => $params['expected_nodes'],
+                        'relationships' => $params['expected_relationships'],
+                    ]];
+                }
+
+                return [];
+            }
+        };
     }
 }

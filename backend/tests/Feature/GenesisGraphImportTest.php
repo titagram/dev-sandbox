@@ -275,6 +275,18 @@ it('exposes an artisan command to rebuild Neo4j projection by snapshot', functio
     expect(Artisan::output())->toContain('Rebuilt 1 graph projection');
 });
 
+it('uses a non-recording verifier for production fake rebuild mode', function () {
+    $service = app(Neo4jRebuildService::class);
+    $method = new ReflectionMethod($service, 'fakeClient');
+    $client = $method->invoke($service);
+
+    expect($client)->not->toBeInstanceOf(FakeNeo4jClient::class)
+        ->and(property_exists($client, 'commands'))->toBeFalse();
+    $client->run('UNWIND $nodes AS node RETURN node', ['nodes' => array_fill(0, 1000, ['large' => str_repeat('x', 1000)])]);
+    expect($client->run('RETURN nodes, count(r) AS relationships', ['expected_nodes' => 2, 'expected_relationships' => 1]))
+        ->toBe([['nodes' => 2, 'relationships' => 1]]);
+});
+
 it('does not purge an existing projection when the stored graph artifact is missing', function () {
     $context = createGraphImportContext();
     $client = new FakeNeo4jClient;
