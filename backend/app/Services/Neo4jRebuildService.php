@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Neo4j\FakeNeo4jClient;
 use App\Services\Neo4j\Neo4jClient;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -114,12 +115,6 @@ class Neo4jRebuildService
 
     private function fakeClient(): Neo4jClient
     {
-        return new class implements Neo4jClient
-        {
-            public function run(string $cypher, array $params = []): mixed
-            {
-                return [];
-            }
-        };
+        return new FakeNeo4jClient;
     }
 }

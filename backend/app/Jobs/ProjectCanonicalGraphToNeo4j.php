@@ -38,9 +38,27 @@ class ProjectCanonicalGraphToNeo4j implements ShouldQueue
             $counts = $projector->project($graph, $projection, $clients->client());
             $projections->markReady($projection->id, $counts['nodes'], $counts['relationships']);
         } catch (Throwable $exception) {
-            $code = in_array($exception->getMessage(), ['artifact_missing', 'artifact_changed'], true) ? $exception->getMessage() : (str_contains(strtolower($exception->getMessage()), 'connect') ? 'neo4j_unavailable' : 'neo4j_query_failed');
+            $code = in_array($exception->getMessage(), ['artifact_missing', 'artifact_changed'], true)
+                ? $exception->getMessage()
+                : ($this->isNeo4jUnavailable($exception) ? 'neo4j_unavailable' : 'neo4j_query_failed');
             $projections->markFailed($projection->id, $code);
             throw $exception;
         }
+    }
+
+    private function isNeo4jUnavailable(Throwable $exception): bool
+    {
+        for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            $class = strtolower($current::class);
+            if (str_contains($class, 'connectexception') || str_contains($class, 'serviceunavailable') || str_contains($class, 'timeoutexception') || str_contains($class, 'transportexception')) {
+                return true;
+            }
+            $message = strtolower($current->getMessage());
+            if (preg_match('/connection (?:refused|reset)|service\s*unavailable|timed?\s*out|timeout|could not resolve|name or service not known|host unreachable|network is unreachable/', $message) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

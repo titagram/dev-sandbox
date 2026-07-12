@@ -145,6 +145,28 @@ it('imports nodes and relationships with canonical batched Cypher commands', fun
     expect($relationshipBatchCommands[0]['cypher'])->toContain(':DECLARES');
 });
 
+it('routes an affected subgraph resulting version through the canonical projector', function () {
+    $context = createGraphImportContext();
+    $artifact = DB::table('artifacts')->where('id', $context['artifact_id'])->first();
+    $payload = json_decode(Storage::disk('local')->get($artifact->storage_path), true, flags: JSON_THROW_ON_ERROR);
+    $payload['graph_mode'] = 'affected_subgraph';
+    $payload['base_snapshot_id'] = $context['snapshot_id'];
+    $payload['nodes_upserted'] = $payload['nodes'];
+    $payload['relationships_upserted'] = $payload['relationships'];
+    $payload['nodes_deleted'] = [];
+    $payload['relationships_deleted'] = [];
+    Storage::disk('local')->put($artifact->storage_path, json_encode($payload, JSON_THROW_ON_ERROR));
+    DB::table('artifacts')->where('id', $context['artifact_id'])->update(['sha256' => hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR))]);
+    $client = new FakeNeo4jClient;
+
+    app(GenesisGraphImportService::class)->importGraphArtifact($context['snapshot_id'], $context['repository_id'], $context['run_id'], $context['artifact_id'], $client, 'fake', baseSnapshotId: $context['snapshot_id'], deltaId: 'delta-1');
+
+    expect(collect($client->commands)->contains(fn (array $command) => str_contains($command['cypher'], 'clone')))->toBeFalse();
+    expect(collect($client->commands)->contains(fn (array $command) => str_contains($command['cypher'], 'CanonicalGraphVersion')))->toBeTrue()
+        ->and(collect($client->commands)->contains(fn (array $command) => str_contains($command['cypher'], 'UNWIND $nodes AS node MERGE (n:CanonicalGraphNode')))->toBeTrue();
+    expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
+});
+
 it('marks the import failed when Neo4j import fails', function () {
     $context = createGraphImportContext();
 

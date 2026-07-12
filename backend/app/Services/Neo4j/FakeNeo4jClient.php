@@ -12,6 +12,10 @@ class FakeNeo4jClient implements Neo4jClient
     {
         $this->commands[] = ['cypher' => $cypher, 'params' => $params];
 
+        if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+            return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+        }
+
         return [];
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Graph\CanonicalGraphNormalizer;
 use App\Services\Graph\CanonicalGraphProjectionService;
 use App\Services\Graph\CanonicalGraphRepository;
 use App\Services\Graph\Neo4jCanonicalGraphProjector;
@@ -17,6 +18,7 @@ class GenesisGraphImportService
 
     public function __construct(
         private readonly CanonicalGraphRepository $canonicalGraphs,
+        private readonly CanonicalGraphNormalizer $canonicalNormalizer,
         private readonly CanonicalGraphProjectionService $canonicalProjections,
         private readonly Neo4jCanonicalGraphProjector $canonicalProjector,
     ) {}
@@ -474,6 +476,21 @@ class GenesisGraphImportService
             }
         }
 
+        if ($graphMode === 'affected_subgraph') {
+            $canonical = $this->canonicalGraphs->findByIdentity((string) $artifact->project_id, 'repository', $repositoryId, 'legacy_artifact', $artifactId);
+            if ($canonical === null) {
+                throw new RuntimeException('Legacy delta graph artifact could not be normalized.');
+            }
+            $payload = $graph;
+            $payload['graph_contract'] = $canonical['contract'];
+            [$payload['nodes'], $payload['relationships']] = $this->materializeDeltaVersion($graph, $baseSnapshotId, $nodes, $relationships);
+            $canonical = $this->canonicalNormalizer->normalize($payload, $canonical['identity']);
+            $projection = $this->canonicalProjections->queue($canonical);
+            $projection->snapshot_id = $snapshotId;
+            $counts = $this->canonicalProjector->project($canonical, $projection, $client);
+            $this->canonicalProjections->markReady($projection->id, $counts['nodes'], $counts['relationships']);
+        }
+
         DB::table('artifacts')->where('id', $artifactId)->update([
             'status' => 'imported',
             'updated_at' => now(),
@@ -529,6 +546,40 @@ class GenesisGraphImportService
         }
 
         return false;
+    }
+
+    /** @return array{0:list<array<string,mixed>>,1:list<array<string,mixed>>} */
+    private function materializeDeltaVersion(array $delta, ?string $baseSnapshotId, array $nodeUpserts, array $relationshipUpserts): array
+    {
+        $base = DB::table('snapshots')->where('id', $baseSnapshotId)->first();
+        if ($base === null || $base->graph_snapshot_artifact_id === null) {
+            throw new RuntimeException('Affected subgraph base snapshot graph artifact was not found.');
+        }
+        $artifact = DB::table('artifacts')->where('id', $base->graph_snapshot_artifact_id)->first();
+        if ($artifact === null || ! Storage::disk('local')->exists($artifact->storage_path)) {
+            throw new RuntimeException('Affected subgraph base graph artifact is not readable.');
+        }
+        $payload = json_decode(Storage::disk('local')->get($artifact->storage_path), true, flags: JSON_THROW_ON_ERROR);
+        $nodes = collect($payload['nodes'] ?? [])->keyBy('id');
+        $relationships = collect($payload['relationships'] ?? [])->keyBy('id');
+        foreach ($this->tombstoneIds($delta['nodes_deleted'] ?? [], 'nodes_deleted') as $id) {
+            $nodes->forget($id);
+        }
+        foreach ($this->tombstoneIds($delta['relationships_deleted'] ?? [], 'relationships_deleted') as $id) {
+            $relationships->forget($id);
+        }
+        foreach ($nodeUpserts as $node) {
+            if (is_array($node) && isset($node['id'])) {
+                $nodes->put($node['id'], $node);
+            }
+        }
+        foreach ($relationshipUpserts as $relationship) {
+            if (is_array($relationship) && isset($relationship['id'])) {
+                $relationships->put($relationship['id'], $relationship);
+            }
+        }
+
+        return [$nodes->values()->all(), $relationships->values()->all()];
     }
 
     /**
