@@ -2,6 +2,7 @@
 
 namespace App\Dashboard;
 
+use App\Services\Graph\CanonicalGraphRepository;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -11,6 +12,8 @@ final class DashboardApiReader
     private const GRAPH_PREVIEW_NODE_LIMIT = 200;
 
     private const GRAPH_PREVIEW_EDGE_LIMIT = 300;
+
+    public function __construct(private readonly CanonicalGraphRepository $canonicalGraphs) {}
 
     /**
      * @return list<array<string, mixed>>
@@ -621,6 +624,12 @@ final class DashboardApiReader
     {
         $this->abortUnlessProjectExists($projectId);
 
+        if ($projectId !== null && $snapshotId === null && $runId === null) {
+            $this->abortUnlessProjectReadable($projectId);
+
+            return $this->canonicalGraph($projectId);
+        }
+
         $snapshot = DB::table('snapshots')
             ->when($projectId !== null, fn ($query) => $query->where('project_id', $projectId))
             ->when($snapshotId, fn ($query, string $id) => $query->where('id', $id))
@@ -686,6 +695,111 @@ final class DashboardApiReader
             ],
             'nodes' => array_values($graphNodes),
             'edges' => array_values($graphEdges),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function canonicalGraph(string $projectId): array
+    {
+        $scopes = $this->canonicalGraphs->listScopes($projectId);
+
+        if (count($scopes) !== 1) {
+            return $this->canonicalGraphSelection(
+                $projectId,
+                $scopes === [] ? 'unavailable' : 'scope_required',
+                array_map(fn (array $scope): array => $this->canonicalScopeMetadata($projectId, $scope), $scopes),
+            );
+        }
+
+        $scope = $scopes[0];
+        $graph = $this->canonicalGraphs->latestForScope(
+            $projectId,
+            (string) $scope['source_scope_type'],
+            (string) $scope['source_scope_id'],
+        );
+
+        if ($graph === null) {
+            return $this->canonicalGraphSelection($projectId, 'unavailable', [
+                $this->canonicalScopeMetadata($projectId, $scope),
+            ]);
+        }
+
+        $identity = $graph['identity'];
+        $projection = DB::table('canonical_graph_projections')
+            ->where('project_id', $projectId)
+            ->where('artifact_type', $identity['artifact_type'])
+            ->where('artifact_id', $identity['artifact_id'])
+            ->first();
+        $nodes = array_values(array_filter($graph['nodes'] ?? [], 'is_array'));
+        $relationships = $this->graphRelationships($graph['relationships'] ?? []);
+        $degreeByNode = $this->graphDegrees($relationships);
+        $nodeStats = $this->graphNodeStats($nodes);
+        $previewNodes = $this->graphPreviewNodes($nodes, $relationships);
+        $graphNodes = array_map(
+            fn (array $node): array => $this->graphNode($node, (string) $scope['source_scope_type'], $degreeByNode),
+            $previewNodes,
+        );
+        $previewNodeIds = array_fill_keys(array_column($graphNodes, 'id'), true);
+        $previewEdges = array_slice(array_values(array_filter(
+            $relationships,
+            static fn (array $edge): bool => isset($previewNodeIds[$edge['from']], $previewNodeIds[$edge['to']]),
+        )), 0, self::GRAPH_PREVIEW_EDGE_LIMIT);
+
+        return [
+            'snapshot_id' => null,
+            'run_id' => null,
+            'generated_at' => (string) $identity['created_at'],
+            'source' => $this->sourceMeta(type: 'canonical_graph', ref: (string) $identity['artifact_id']),
+            'source_scope' => [
+                'type' => (string) $scope['source_scope_type'],
+                'id' => (string) $scope['source_scope_id'],
+            ],
+            'graph_version' => $projection?->graph_version ? (string) $projection->graph_version : null,
+            'quality' => (string) ($graph['contract']['extractor']['quality'] ?? $projection?->quality ?? 'unknown'),
+            'projection_status' => $projection?->status ? (string) $projection->status : 'unavailable',
+            'stats' => [
+                'nodes' => count($nodes), 'edges' => count($relationships),
+                'modules' => $nodeStats['modules'], 'routes' => $nodeStats['routes'],
+            ],
+            'nodes' => array_values($graphNodes),
+            'edges' => array_map(fn (array $edge, int $index): array => [
+                'id' => (string) ($edge['id'] ?? 'edge-'.$index),
+                'from' => $edge['from'], 'to' => $edge['to'],
+                'kind' => $this->graphEdgeKind((string) ($edge['type'] ?? 'uses')),
+            ], $previewEdges, array_keys($previewEdges)),
+        ];
+    }
+
+    /** @param list<array<string, mixed>> $scopes */
+    private function canonicalGraphSelection(string $projectId, string $status, array $scopes): array
+    {
+        return [
+            ...$this->emptyGraph($projectId),
+            'source_scope' => null,
+            'graph_version' => null,
+            'quality' => null,
+            'projection_status' => $status,
+            'scopes' => $scopes,
+        ];
+    }
+
+    /** @param array{source_scope_type: string, source_scope_id: string} $scope */
+    private function canonicalScopeMetadata(string $projectId, array $scope): array
+    {
+        $graph = $this->canonicalGraphs->latestForScope($projectId, $scope['source_scope_type'], $scope['source_scope_id']);
+        $identity = $graph['identity'] ?? [];
+        $projection = isset($identity['artifact_type'], $identity['artifact_id'])
+            ? DB::table('canonical_graph_projections')->where('project_id', $projectId)
+                ->where('artifact_type', $identity['artifact_type'])->where('artifact_id', $identity['artifact_id'])->first()
+            : null;
+
+        return [
+            'type' => $scope['source_scope_type'],
+            'id' => $scope['source_scope_id'],
+            'quality' => $graph['contract']['extractor']['quality'] ?? $projection?->quality,
+            'head_commit' => $graph['contract']['source']['head_commit'] ?? $projection?->head_commit,
+            'created_at' => $identity['created_at'] ?? null,
+            'projection_status' => $projection?->status ?? 'unavailable',
         ];
     }
 

@@ -160,6 +160,57 @@ it('serves the generated frontend dashboard read contract', function () {
         ->assertJsonPath('url', "/runs/{$ids['run_id']}/artifacts/{$ids['artifact_id']}/download");
 });
 
+it('serves the only canonical Hades graph without leaking its display path', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('stats.nodes', 1)
+        ->assertJsonPath('source_scope.type', 'workspace_binding')
+        ->assertJsonPath('source_scope.id', $canonical['binding_id'])
+        ->assertJsonPath('graph_version', $canonical['graph_version'])
+        ->assertJsonPath('quality', 'full')
+        ->assertJsonPath('projection_status', 'ready');
+
+    expect(json_encode($response->json(), JSON_THROW_ON_ERROR))->not->toContain('/srv/private/project');
+});
+
+it('requires an explicit scope when multiple canonical graph scopes exist', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    createDashboardCanonicalHadesGraph($ids['project_id']);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'scope_required')
+        ->assertJsonPath('graph_version', null)
+        ->assertJsonPath('stats.nodes', 0)
+        ->assertJsonCount(2, 'scopes');
+
+    expect($response->json('nodes'))->toBe([])
+        ->and($response->json('edges'))->toBe([])
+        ->and(json_encode($response->json(), JSON_THROW_ON_ERROR))->not->toContain('/srv/private/project');
+});
+
+it('reports canonical graphs as unavailable when the project has no source scope', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+
+    $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'unavailable')
+        ->assertJsonPath('graph_version', null)
+        ->assertJsonPath('stats.nodes', 0)
+        ->assertJsonCount(0, 'scopes');
+});
+
 it('serves dashboard run, admin, and system operations through the adapter contract', function () {
     config(['services.devboard.graph_import_mode' => 'fake']);
 
@@ -514,4 +565,59 @@ function createDashboardApiContractScenario(bool $retryable = false): array
         'snapshot_id' => $snapshotId,
         'wiki_page_id' => $wikiPageId,
     ];
+}
+
+/** @return array{binding_id: string, graph_version: string} */
+function createDashboardCanonicalHadesGraph(string $projectId): array
+{
+    $agentId = (string) Str::ulid();
+    $bindingId = (string) Str::ulid();
+    $artifactId = (string) Str::ulid();
+    $graphVersion = hash('sha256', 'dashboard-canonical-'.$artifactId);
+    $now = now();
+    $artifact = [
+        'graph_contract' => [
+            'version' => 'hades.graph_artifact.v1',
+            'extractor' => ['name' => 'hades-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full'],
+            'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
+            'source' => ['branch' => 'main', 'head_commit' => str_repeat('a', 40)],
+        ],
+        'nodes' => [[
+            'id' => 'method:DashboardApiReader::graph',
+            'labels' => ['Method'],
+            'properties' => ['name' => 'graph', 'path' => 'app/Dashboard/DashboardApiReader.php'],
+        ]],
+        'relationships' => [],
+    ];
+    $json = json_encode($artifact, JSON_THROW_ON_ERROR);
+
+    DB::table('hades_agents')->insert([
+        'id' => $agentId, 'project_id' => $projectId, 'external_agent_id' => 'dashboard-'.$agentId,
+        'label' => 'Dashboard test agent', 'platform' => 'linux', 'version' => 'test',
+        'declared_capabilities' => '[]', 'effective_capabilities' => '[]', 'status' => 'active',
+        'created_at' => $now, 'updated_at' => $now,
+    ]);
+    DB::table('hades_workspace_bindings')->insert([
+        'id' => $bindingId, 'project_id' => $projectId, 'hades_agent_id' => $agentId,
+        'external_agent_id' => 'dashboard-'.$agentId, 'workspace_fingerprint' => hash('sha256', $bindingId),
+        'display_path' => '/srv/private/project', 'head_commit' => str_repeat('a', 40), 'status' => 'linked',
+        'linked_at' => $now, 'created_at' => $now, 'updated_at' => $now,
+    ]);
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $artifactId, 'project_id' => $projectId, 'hades_agent_id' => $agentId,
+        'workspace_binding_id' => $bindingId, 'schema' => 'hades.php_graph.v1', 'artifact' => $json,
+        'sha256' => hash('sha256', $json), 'truncated' => false, 'redactions' => 0,
+        'created_at' => $now, 'updated_at' => $now,
+    ]);
+    DB::table('canonical_graph_projections')->insert([
+        'id' => (string) Str::ulid(), 'project_id' => $projectId,
+        'source_scope_type' => 'workspace_binding', 'source_scope_id' => $bindingId,
+        'artifact_type' => 'hades_agent_artifact', 'artifact_id' => $artifactId,
+        'graph_version' => $graphVersion, 'checksum' => hash('sha256', $json),
+        'head_commit' => str_repeat('a', 40), 'quality' => 'full', 'status' => 'ready',
+        'node_count' => 1, 'relationship_count' => 0, 'projected_at' => $now,
+        'created_at' => $now, 'updated_at' => $now,
+    ]);
+
+    return ['binding_id' => $bindingId, 'graph_version' => $graphVersion];
 }
