@@ -50,6 +50,13 @@ class CanonicalGraphProjectionService
     public function markReady(string $id, int $nodes, int $relationships): void
     {
         DB::transaction(function () use ($id, $nodes, $relationships): void {
+            $projectId = DB::table('canonical_graph_projections')->where('id', $id)->value('project_id');
+            if ($projectId === null) {
+                throw new RuntimeException('Canonical graph projection not found.');
+            }
+
+            DB::table('projects')->where('id', $projectId)->lockForUpdate()->firstOrFail();
+
             $candidate = DB::table('canonical_graph_projections')->where('id', $id)->lockForUpdate()->first();
             if ($candidate === null) {
                 throw new RuntimeException('Canonical graph projection not found.');

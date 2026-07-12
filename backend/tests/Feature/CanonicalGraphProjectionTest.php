@@ -22,7 +22,31 @@ it('keeps the previous projection ready until its replacement is ready', functio
     expect($service->readyForScope($projectId, 'workspace_binding', 'binding-1')->id)->toBe($first->id);
     $service->markReady($second->id, 12, 7);
     expect($service->readyForScope($projectId, 'workspace_binding', 'binding-1')->id)->toBe($second->id)
-        ->and(DB::table('canonical_graph_projections')->where('id', $first->id)->value('status'))->toBe('stale');
+        ->and(DB::table('canonical_graph_projections')->where('id', $first->id)->value('status'))->toBe('stale')
+        ->and(DB::table('canonical_graph_projections')
+            ->where('project_id', $projectId)
+            ->where('source_scope_type', 'workspace_binding')
+            ->where('source_scope_id', 'binding-1')
+            ->where('status', 'ready')
+            ->count())->toBe(1);
+});
+
+it('locks the stable project row before locking the projection candidate', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $candidate = $service->queue(canonicalProjectionGraph($projectId, 'artifact-1', str_repeat('a', 64)));
+    $queries = [];
+    DB::listen(function ($query) use (&$queries): void {
+        $queries[] = strtolower($query->sql);
+    });
+
+    $service->markReady($candidate->id, 10, 5);
+
+    $projectLock = array_find_key($queries, fn (string $sql): bool => str_contains($sql, 'from "projects"'));
+    $candidateLock = array_find_key($queries, fn (string $sql): bool => str_starts_with($sql, 'select *') && str_contains($sql, 'from "canonical_graph_projections"'));
+    expect($projectLock)->not->toBeNull()
+        ->and($candidateLock)->not->toBeNull()
+        ->and($projectLock)->toBeLessThan($candidateLock);
 });
 
 it('queues an artifact identity idempotently', function () {
