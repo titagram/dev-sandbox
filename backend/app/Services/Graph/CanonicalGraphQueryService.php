@@ -114,13 +114,15 @@ class CanonicalGraphQueryService
             "toLower(coalesce(start.path, '')) CONTAINS \$start_query",
         ]);
 
-        $cypher = 'MATCH p=(start:CanonicalGraphNode {graph_version: $graph_version})'.$pattern.'(node:CanonicalGraphNode {graph_version: $graph_version}) '
-            .'WHERE ('.$startMatch.') AND ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version) '
-            .'WITH p, start LIMIT $path_fetch_limit WITH collect(p) AS candidatePaths, collect(DISTINCT start) AS starts '
+        $cypher = 'MATCH (start:CanonicalGraphNode {graph_version: $graph_version}) WHERE ('.$startMatch.') '
+            .'OPTIONAL MATCH p=(start)'.$pattern.'(node:CanonicalGraphNode {graph_version: $graph_version}) '
+            .'WHERE p IS NULL OR (ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)) '
+            .'WITH start, p ORDER BY start.external_id, length(p) LIMIT $path_fetch_limit '
+            .'WITH collect({nodes: CASE WHEN p IS NULL THEN [start] ELSE nodes(p) END, edges: CASE WHEN p IS NULL THEN [] ELSE [r IN relationships(p) | properties(r) + {source_id: startNode(r).external_id, target_id: endNode(r).external_id}] END}) AS candidatePaths, collect(DISTINCT start) AS starts '
             .'WITH candidatePaths[0..$path_limit] AS paths, starts, size(candidatePaths) > $path_limit AS pathTruncated '
-            .'UNWIND paths AS path UNWIND nodes(path) AS candidate WITH paths, starts, pathTruncated, collect(DISTINCT candidate) AS uniqueNodes '
+            .'UNWIND paths AS path UNWIND path.nodes AS candidate WITH paths, starts, pathTruncated, collect(DISTINCT candidate) AS uniqueNodes '
             .'RETURN [n IN uniqueNodes[0..$fetch_limit] | {node: properties(n), labels: labels(n)}] AS nodes, '
-            .'reduce(allEdges = [], path IN paths | allEdges + [r IN relationships(path) | properties(r)]) AS edges, '
+            .'reduce(allEdges = [], path IN paths | allEdges + path.edges) AS edges, '
             .'size(uniqueNodes) > $limit OR pathTruncated AS truncated, '
             ."[field IN ['external_id', 'name', 'label', 'path'] WHERE any(s IN starts WHERE toLower(coalesce(s[field], '')) CONTAINS \$start_query)] AS match_fields";
 
@@ -193,6 +195,17 @@ class CanonicalGraphQueryService
         if ($limit !== null && count($nodes) > $limit) {
             $truncated = true;
             $nodes = array_slice($nodes, 0, $limit);
+        }
+
+        if ($limit !== null) {
+            $returnedNodeIds = array_fill_keys(array_column($nodes, 'id'), true);
+            $edgesById = array_filter($edgesById, function (array $edge) use ($returnedNodeIds): bool {
+                $source = (string) ($edge['source_id'] ?? $edge['source'] ?? '');
+                $target = (string) ($edge['target_id'] ?? $edge['target'] ?? '');
+
+                return $source !== '' && $target !== ''
+                    && isset($returnedNodeIds[$source], $returnedNodeIds[$target]);
+            });
         }
 
         return [$nodes, array_values($edgesById), $truncated, array_values(array_unique($matchFields))];

@@ -3,6 +3,7 @@
 use App\Services\Graph\CanonicalGraphQueryService;
 use App\Services\Graph\GraphQueryService;
 use App\Services\Neo4j\FakeNeo4jClient;
+use App\Services\Neo4j\Neo4jClient;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -504,6 +505,47 @@ it('returns path relationships and constrains every path node and edge to the gr
         ->and($cypher)->toContain('RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes')
         ->and($cypher)->toContain('[r IN relationships(p) | properties(r)] AS edges')
         ->and($cypher)->not->toContain('UNWIND nodes(p)');
+});
+
+it('includes an isolated matching traversal start without weakening graph version isolation', function () {
+    $fakeClient = new class implements Neo4jClient
+    {
+        public array $commands = [];
+
+        public function run(string $cypher, array $params = []): mixed
+        {
+            $this->commands[] = compact('cypher', 'params');
+
+            return [[
+                'nodes' => [['node' => ['external_id' => 'isolated', 'name' => 'Isolated'], 'labels' => ['CanonicalGraphNode']]],
+                'edges' => [],
+                'truncated' => false,
+                'match_fields' => ['name'],
+            ]];
+        }
+    };
+    $service = new CanonicalGraphQueryService($fakeClient);
+    $projectId = graphQueryProjectId();
+    $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+    graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+
+    $result = $service->query($projectId, 'repository', $repo->id, 'traverse', [
+        'start' => 'Isolated', 'direction' => 'out', 'max_depth' => 2, 'limit' => 2,
+    ]);
+
+    $command = $fakeClient->commands[0];
+    expect($command['cypher'])
+        ->toContain('OPTIONAL MATCH p=(start)-[:CALLS*1..2]->(node:CanonicalGraphNode {graph_version: $graph_version})')
+        ->toContain('WITH start, p ORDER BY start.external_id, length(p)')
+        ->toContain('CASE WHEN p IS NULL THEN [start] ELSE nodes(p) END')
+        ->toContain('CASE WHEN p IS NULL THEN [] ELSE [r IN relationships(p) | properties(r) + {source_id: startNode(r).external_id, target_id: endNode(r).external_id}] END')
+        ->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
+        ->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
+        ->and($command['params']['graph_version'])->toStartWith('graph-version-')
+        ->and($command['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
+        ->and(array_column($result['results'], 'id'))->toBe(['isolated'])
+        ->and($result['edges'])->toBe([])
+        ->and($result['traversal_match_fields'])->toBe(['name']);
 });
 
 it('rejects plugin traversal exposure and graph version overrides', function () {

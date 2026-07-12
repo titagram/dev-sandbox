@@ -1330,6 +1330,9 @@ it('traverses PHP graph artifacts through a bounded Hades graph endpoint', funct
         public function run(string $cypher, array $params = []): mixed
         {
             return [[
+                'node' => ['external_id' => 'route:orders.show'],
+                'labels' => ['CanonicalGraphNode'],
+            ], [
                 'node' => ['external_id' => 'OrderController@show', 'name' => 'OrderController@show'],
                 'labels' => ['CanonicalGraphNode'],
                 'edges' => [['id' => 'edge-1', 'type' => 'CALLS', 'source_id' => 'route:orders.show', 'target_id' => 'OrderController@show']],
@@ -1407,6 +1410,7 @@ it('resolves legacy Hades start fields partially and limits deduplicated travers
                 'edges' => [
                     ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
                     ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
+                    ['id' => 'edge-2', 'source_id' => 'two', 'target_id' => 'three'],
                 ],
                 'truncated' => true,
                 'match_fields' => ['name', 'path'],
@@ -1434,6 +1438,7 @@ it('resolves legacy Hades start fields partially and limits deduplicated travers
         ->and($response['count'])->toBe(2)
         ->and(array_column($response['nodes'], 'id'))->toBe(['one', 'two'])
         ->and($response['edge_count'])->toBe(1)
+        ->and(array_column($response['edges'], 'id'))->toBe(['edge-1'])
         ->and($response['truncated'])->toBeTrue()
         ->and($response['match_fields'])->toContain('name')
         ->and($response['match_fields'])->toContain('path');
