@@ -58,15 +58,23 @@ class CanonicalGraphQueryService
             return array_merge($base, ['found' => false, 'reason' => 'query_error']);
         }
 
-        [$nodes, $edges] = $this->normaliseRows($rows);
+        $limit = $type === 'traverse' ? max(1, min(50, (int) ($params['limit'] ?? 20))) : null;
+        [$nodes, $edges, $truncated, $matchFields] = $this->normaliseRows($rows, $limit);
 
-        return array_merge($base, ['found' => true, 'reason' => null, 'results' => $nodes, 'edges' => $edges]);
+        return array_merge($base, [
+            'found' => true,
+            'reason' => null,
+            'results' => $nodes,
+            'edges' => $edges,
+            'truncated' => $truncated,
+            'traversal_match_fields' => $matchFields,
+        ]);
     }
 
     private function adjacency(string $direction): string
     {
         $match = $direction === 'in'
-            ? '(result:CanonicalGraphNode)-[edge:CALLS {graph_version: $graph_version}]->(node:CanonicalGraphNode {external_id: $external_id, graph_version: $graph_version})'
+            ? '(result:CanonicalGraphNode {graph_version: $graph_version})-[edge:CALLS {graph_version: $graph_version}]->(node:CanonicalGraphNode {external_id: $external_id, graph_version: $graph_version})'
             : '(node:CanonicalGraphNode {external_id: $external_id, graph_version: $graph_version})-[edge:CALLS {graph_version: $graph_version}]->(result:CanonicalGraphNode {graph_version: $graph_version})';
 
         return "MATCH {$match} RETURN properties(result) AS node, labels(result) AS labels, properties(edge) AS edge LIMIT \$limit";
@@ -97,7 +105,35 @@ class CanonicalGraphQueryService
             default => '-[:CALLS*1..'.$depth.']-',
         };
 
-        return $client->run('MATCH p=(start:CanonicalGraphNode {external_id: $start, graph_version: $graph_version})'.$pattern.'(node:CanonicalGraphNode {graph_version: $graph_version}) WHERE ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version) RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes, [r IN relationships(p) | properties(r)] AS edges LIMIT $limit', ['start' => (string) ($params['start'] ?? ''), 'graph_version' => (string) $projection->graph_version, 'limit' => max(1, min(50, (int) ($params['limit'] ?? 20)))]);
+        $limit = max(1, min(50, (int) ($params['limit'] ?? 20)));
+        $query = strtolower((string) ($params['start'] ?? ''));
+        $startMatch = implode(' OR ', [
+            "toLower(coalesce(start.external_id, '')) CONTAINS \$start_query",
+            "toLower(coalesce(start.name, '')) CONTAINS \$start_query",
+            "toLower(coalesce(start.label, '')) CONTAINS \$start_query",
+            "toLower(coalesce(start.path, '')) CONTAINS \$start_query",
+        ]);
+
+        $cypher = 'MATCH p=(start:CanonicalGraphNode {graph_version: $graph_version})'.$pattern.'(node:CanonicalGraphNode {graph_version: $graph_version}) '
+            .'WHERE ('.$startMatch.') AND ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version) '
+            .'WITH p, start LIMIT $path_fetch_limit WITH collect(p) AS candidatePaths, collect(DISTINCT start) AS starts '
+            .'WITH candidatePaths[0..$path_limit] AS paths, starts, size(candidatePaths) > $path_limit AS pathTruncated '
+            .'UNWIND paths AS path UNWIND nodes(path) AS candidate WITH paths, starts, pathTruncated, collect(DISTINCT candidate) AS uniqueNodes '
+            .'RETURN [n IN uniqueNodes[0..$fetch_limit] | {node: properties(n), labels: labels(n)}] AS nodes, '
+            .'reduce(allEdges = [], path IN paths | allEdges + [r IN relationships(path) | properties(r)]) AS edges, '
+            .'size(uniqueNodes) > $limit OR pathTruncated AS truncated, '
+            ."[field IN ['external_id', 'name', 'label', 'path'] WHERE any(s IN starts WHERE toLower(coalesce(s[field], '')) CONTAINS \$start_query)] AS match_fields";
+
+        $pathLimit = min(200, max($limit + 1, $limit * $depth));
+
+        return $client->run($cypher, [
+            'start_query' => $query,
+            'graph_version' => (string) $projection->graph_version,
+            'limit' => $limit,
+            'fetch_limit' => $limit + 1,
+            'path_limit' => $pathLimit,
+            'path_fetch_limit' => $pathLimit + 1,
+        ]);
     }
 
     private function envelope(string $projectId, string $scopeType, string $scopeId, ?object $projection = null): array
@@ -114,34 +150,57 @@ class CanonicalGraphQueryService
         return ['found' => false, 'reason' => null, 'graph_version' => $projection?->graph_version, 'quality' => $projection?->quality, 'results' => [], 'edges' => [], 'metadata' => ['project_id' => $projectId, 'source_scope_type' => $scopeType, 'source_scope_id' => $scopeId, 'projection_id' => $projection?->id, 'graph_version' => $projection?->graph_version, 'artifact_id' => $projection?->artifact_id, 'artifact_type' => $projection?->artifact_type, 'schema' => $schema, 'head_commit' => $headCommit, 'quality' => $projection?->quality, 'node_count' => $projection?->node_count, 'relationship_count' => $projection?->relationship_count]];
     }
 
-    /** @return array{0: list<array<string,mixed>>, 1: list<array<string,mixed>>} */
-    private function normaliseRows(mixed $result): array
+    /** @return array{0: list<array<string,mixed>>, 1: list<array<string,mixed>>, 2: bool, 3: list<string>} */
+    private function normaliseRows(mixed $result, ?int $limit = null): array
     {
         if (! is_array($result)) {
-            return [[], []];
+            return [[], [], false, []];
         }
-        $nodes = [];
-        $edges = [];
+        $nodesById = [];
+        $edgesById = [];
+        $truncated = false;
+        $matchFields = [];
         foreach ($result as $row) {
             if (! is_array($row)) {
                 continue;
             }
             if (isset($row['nodes']) && is_array($row['nodes'])) {
                 foreach ($row['nodes'] as $node) {
-                    $nodes[] = $this->node(is_array($node) ? $node : []);
+                    $normalised = $this->node(is_array($node) ? $node : []);
+                    $nodesById[$normalised['id']] ??= $normalised;
                 }
             } elseif (isset($row['node'])) {
-                $nodes[] = $this->node($row);
+                $normalised = $this->node($row);
+                $nodesById[$normalised['id']] ??= $normalised;
             }
             if (isset($row['edge']) && is_array($row['edge'])) {
-                $edges[] = $row['edge'];
+                $edgesById[$this->edgeIdentity($row['edge'])] ??= $row['edge'];
             }
             if (isset($row['edges']) && is_array($row['edges'])) {
-                $edges = array_merge($edges, $row['edges']);
+                foreach ($row['edges'] as $edge) {
+                    if (is_array($edge)) {
+                        $edgesById[$this->edgeIdentity($edge)] ??= $edge;
+                    }
+                }
+            }
+            $truncated = $truncated || ($row['truncated'] ?? false) === true;
+            if (is_array($row['match_fields'] ?? null)) {
+                $matchFields = array_merge($matchFields, $row['match_fields']);
             }
         }
 
-        return [$nodes, $edges];
+        $nodes = array_values($nodesById);
+        if ($limit !== null && count($nodes) > $limit) {
+            $truncated = true;
+            $nodes = array_slice($nodes, 0, $limit);
+        }
+
+        return [$nodes, array_values($edgesById), $truncated, array_values(array_unique($matchFields))];
+    }
+
+    private function edgeIdentity(array $edge): string
+    {
+        return (string) ($edge['external_id'] ?? $edge['id'] ?? hash('sha256', json_encode($edge)));
     }
 
     private function node(array $row): array

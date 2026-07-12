@@ -1379,6 +1379,66 @@ it('reports missing graph traversal when no graph artifact exists', function () 
         ->assertJsonPath('error.code', 'graph_projection_not_ready');
 });
 
+it('resolves legacy Hades start fields partially and limits deduplicated traversal nodes', function () {
+    $agent = hadesM3RegisteredAgent();
+    $binding = hadesM3WorkspaceBinding($agent);
+    hadesM3Artifact($agent, $binding, 'hades.php_graph.v1', [
+        'schema' => 'hades.php_graph.v1',
+        'symbols' => [],
+        'edges' => [],
+        'raw_source_included' => false,
+    ]);
+
+    $client = new class implements Neo4jClient
+    {
+        public array $commands = [];
+
+        public function run(string $cypher, array $params = []): mixed
+        {
+            $this->commands[] = compact('cypher', 'params');
+
+            return [[
+                'nodes' => [
+                    ['node' => ['external_id' => 'one', 'name' => 'InvoiceController'], 'labels' => ['CanonicalGraphNode']],
+                    ['node' => ['external_id' => 'one', 'name' => 'InvoiceController'], 'labels' => ['CanonicalGraphNode']],
+                    ['node' => ['external_id' => 'two', 'path' => 'app/InvoiceService.php'], 'labels' => ['CanonicalGraphNode']],
+                    ['node' => ['external_id' => 'three', 'label' => 'third'], 'labels' => ['CanonicalGraphNode']],
+                ],
+                'edges' => [
+                    ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
+                    ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
+                ],
+                'truncated' => true,
+                'match_fields' => ['name', 'path'],
+            ]];
+        }
+    };
+    $this->app->bind(CanonicalGraphQueryService::class, fn () => new CanonicalGraphQueryService($client));
+
+    $response = $this->getJson('/api/hades/v1/graph/traverse?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'start' => 'invoice',
+        'limit' => 2,
+    ]), hadesM3Headers($agent['agent_token']))->assertOk()->json();
+
+    expect($client->commands)->toHaveCount(1)
+        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.external_id, \'\')) CONTAINS $start_query')
+        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.name, \'\')) CONTAINS $start_query')
+        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.label, \'\')) CONTAINS $start_query')
+        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.path, \'\')) CONTAINS $start_query')
+        ->and($client->commands[0]['params']['start_query'])->toBe('invoice')
+        ->and($client->commands[0]['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
+        ->and($client->commands[0]['cypher'])->toContain('LIMIT $path_fetch_limit')
+        ->and($client->commands[0]['cypher'])->toContain('size(candidatePaths) > $path_limit AS pathTruncated')
+        ->and($response['count'])->toBe(2)
+        ->and(array_column($response['nodes'], 'id'))->toBe(['one', 'two'])
+        ->and($response['edge_count'])->toBe(1)
+        ->and($response['truncated'])->toBeTrue()
+        ->and($response['match_fields'])->toContain('name')
+        ->and($response['match_fields'])->toContain('path');
+});
+
 it('quarantines raw chunk import bundle entries instead of creating memory proposals', function () {
     $agent = hadesM3RegisteredAgent();
     $binding = hadesM3WorkspaceBinding($agent);

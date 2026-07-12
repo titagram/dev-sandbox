@@ -56,7 +56,11 @@ class GraphTraversalController extends Controller
             (string) $metadata['graph_version'], (string) $validated['start'], $direction,
             (string) ($validated['max_depth'] ?? 2), (string) ($validated['limit'] ?? 20),
         ]));
-        $matchFields = is_array($result['traversal_match_fields'] ?? null) ? $result['traversal_match_fields'] : ['id'];
+        $queryMatchFields = is_array($result['traversal_match_fields'] ?? null) ? $result['traversal_match_fields'] : [];
+        $matchFields = ['id', ...array_map(
+            static fn (string $field): string => $field === 'external_id' ? 'id' : $field,
+            $queryMatchFields,
+        )];
         foreach ($result['results'] as $node) {
             $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
             foreach (['name', 'label', 'path', 'kind'] as $field) {
@@ -68,7 +72,7 @@ class GraphTraversalController extends Controller
         if ($matchFields === ['id'] && $result['edges'] !== []) {
             $matchFields[] = 'edge';
         }
-        $truncated = count($result['results']) >= (int) ($validated['limit'] ?? 20);
+        $truncated = (bool) ($result['truncated'] ?? false);
 
         return response()->json([
             'protocol_version' => 'v1',

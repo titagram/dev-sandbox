@@ -313,6 +313,7 @@ it('callers cypher uses canonical graph version and external_id', function () {
     $cmd = $fakeClient->commands[0];
 
     expect($cmd['cypher'])->toContain('external_id');
+    expect($cmd['cypher'])->toContain('(result:CanonicalGraphNode {graph_version: $graph_version})');
     expect($cmd['cypher'])->toContain('CanonicalGraphNode');
     expect($cmd['cypher'])->not->toContain('{symbol_id:');
 
@@ -474,7 +475,8 @@ it('emits version-isolated Cypher for every traversal direction', function (stri
 
     $cypher = $fakeClient->commands[0]['cypher'];
     expect($cypher)->toContain($pattern)
-        ->and($cypher)->toContain('start:CanonicalGraphNode {external_id: $start, graph_version: $graph_version}')
+        ->and($cypher)->toContain('start:CanonicalGraphNode {graph_version: $graph_version}')
+        ->and($cypher)->toContain("toLower(coalesce(start.external_id, '')) CONTAINS \$start_query")
         ->and($cypher)->toContain('node:CanonicalGraphNode {graph_version: $graph_version}')
         ->and($cypher)->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
         ->and($cypher)->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
