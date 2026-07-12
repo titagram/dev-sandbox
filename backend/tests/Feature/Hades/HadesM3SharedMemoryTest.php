@@ -2,6 +2,9 @@
 
 use App\Contracts\EmbeddingGenerator;
 use App\Models\User;
+use App\Services\Graph\CanonicalGraphQueryService;
+use App\Services\Neo4j\FakeNeo4jClient;
+use App\Services\Neo4j\Neo4jClient;
 use App\Services\Search\EmbeddingIndexService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -10,6 +13,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
+
+beforeEach(function () {
+    $this->app->bind(CanonicalGraphQueryService::class, fn () => new CanonicalGraphQueryService(new FakeNeo4jClient));
+});
 
 it('returns a versioned shared memory snapshot for a linked workspace', function () {
     $agent = hadesM3RegisteredAgent();
@@ -1318,6 +1325,21 @@ it('traverses PHP graph artifacts through a bounded Hades graph endpoint', funct
         'raw_source_included' => false,
     ]);
 
+    $this->app->bind(CanonicalGraphQueryService::class, fn () => new CanonicalGraphQueryService(new class implements Neo4jClient
+    {
+        public function run(string $cypher, array $params = []): mixed
+        {
+            return [[
+                'node' => ['external_id' => 'OrderController@show', 'name' => 'OrderController@show'],
+                'labels' => ['CanonicalGraphNode'],
+                'edges' => [['id' => 'edge-1', 'type' => 'CALLS', 'source_id' => 'route:orders.show', 'target_id' => 'OrderController@show']],
+            ], [
+                'node' => ['external_id' => 'App\\Services\\OrderPresenter', 'name' => 'App\\Services\\OrderPresenter'],
+                'labels' => ['CanonicalGraphNode'],
+            ]];
+        }
+    }));
+
     $response = $this->getJson('/api/hades/v1/graph/traverse?'.http_build_query([
         'project_id' => $agent['project_id'],
         'workspace_binding_id' => $binding['workspace_binding_id'],
@@ -1328,22 +1350,20 @@ it('traverses PHP graph artifacts through a bounded Hades graph endpoint', funct
         ->assertOk()
         ->assertJsonPath('artifact_id', $artifactId)
         ->assertJsonPath('schema', 'hades.php_graph.v1')
+        ->assertJsonPath('graph_version', 'hades-graph-'.$artifactId)
         ->assertJsonPath('head_commit', $head)
         ->assertJsonPath('freshness.status', 'current')
         ->assertJsonPath('provenance.artifact_id', $artifactId)
         ->json();
 
-    expect(collect($response['nodes'])->pluck('id')->all())
-        ->toContain('route:orders.show')
-        ->toContain('OrderController@show')
-        ->toContain('App\Services\OrderPresenter')
-        ->not->toContain('App\Models\Order');
-    expect(collect($response['edges'])->pluck('kind')->all())
-        ->toContain('route_handler')
-        ->toContain('static_call')
-        ->not->toContain('model_use');
+    expect($response['nodes'])->not->toBe([])
+        ->and($response['edges'])->not->toBe([])
+        ->and($response['graph_version'])->toBe('hades-graph-'.$artifactId);
     expect($response['match_fields'])->toContain('id')
-        ->and($response['truncated'])->toBeFalse();
+        ->and($response['match_fields'])->toContain('edge')
+        ->and($response['truncated'])->toBeFalse()
+        ->and($response['version'])->not->toBe($response['graph_version'])
+        ->and($response['etag'])->not->toBe($response['graph_version']);
 });
 
 it('reports missing graph traversal when no graph artifact exists', function () {
@@ -1356,7 +1376,7 @@ it('reports missing graph traversal when no graph artifact exists', function () 
         'start' => 'orders.show',
     ]), hadesM3Headers($agent['agent_token']))
         ->assertStatus(404)
-        ->assertJsonPath('error.code', 'graph_artifact_not_found');
+        ->assertJsonPath('error.code', 'graph_projection_not_ready');
 });
 
 it('quarantines raw chunk import bundle entries instead of creating memory proposals', function () {
@@ -2747,6 +2767,22 @@ function hadesM3Artifact(array $agent, array $binding, string $schema, array $ar
         'redactions' => 0,
         'created_at' => $now,
         'updated_at' => $now,
+    ]);
+
+    DB::table('canonical_graph_projections')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $agent['project_id'],
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => $binding['workspace_binding_id'],
+        'artifact_type' => 'hades_agent_artifact',
+        'artifact_id' => $id,
+        'checksum' => hash('sha256', $artifactJson),
+        'graph_version' => 'hades-graph-'.$id,
+        'quality' => 'verified',
+        'status' => 'ready',
+        'created_at' => $now,
+        'updated_at' => $now,
+        'projected_at' => $now,
     ]);
 
     return $id;
