@@ -3,6 +3,9 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ProjectCanonicalGraphToNeo4j;
+use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\CanonicalGraphRepository;
 use App\Services\Hades\HadesSearchDocumentIndexer;
 use App\Services\Hades\HadesSourceSliceCandidateService;
 use Illuminate\Http\JsonResponse;
@@ -22,6 +25,8 @@ class ArtifactController extends Controller
     public function __construct(
         private readonly HadesSearchDocumentIndexer $searchIndexer,
         private readonly HadesSourceSliceCandidateService $sourceSliceCandidates,
+        private readonly CanonicalGraphRepository $graphs,
+        private readonly CanonicalGraphProjectionService $projections,
     ) {}
 
     public function lookup(Request $request): JsonResponse
@@ -154,6 +159,14 @@ class ArtifactController extends Controller
             $artifactPayload,
             $artifactPayload['head_commit'] ?? $artifactPayload['workspace_head_commit'] ?? null,
         );
+
+        if (in_array($validated['schema'], ['hades.php_graph.v1', 'hades.code_graph.v1'], true)) {
+            $graph = $this->graphs->findByIdentity($validated['project_id'], 'workspace_binding', (string) $binding->id, 'hades_agent_artifact', $id);
+            if ($graph !== null) {
+                $projection = $this->projections->queue($graph);
+                DB::afterCommit(fn () => ProjectCanonicalGraphToNeo4j::dispatch($projection->id)->afterCommit());
+            }
+        }
 
         return response()->json([
             'protocol_version' => 'v1',

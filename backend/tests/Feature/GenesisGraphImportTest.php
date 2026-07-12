@@ -20,18 +20,18 @@ beforeEach(function () {
     $this->seed(DevBoardSeeder::class);
 });
 
-it('imports a valid graph snapshot with a DevBoardSnapshot command first', function () {
+it('delegates a valid full graph snapshot to the canonical projector', function () {
     $context = createGraphImportContext();
     $client = new FakeNeo4jClient;
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client);
 
     $snapshotCommand = collect($client->commands)->first(
-        fn (array $command): bool => str_contains($command['cypher'], 'MERGE (s:DevBoardSnapshot'),
+        fn (array $command): bool => str_contains($command['cypher'], 'MERGE (v:CanonicalGraphVersion'),
     );
 
     expect($snapshotCommand)->not->toBeNull();
-    expect($snapshotCommand['params']['snapshot_id'])->toBe($context['snapshot_id']);
+    expect($snapshotCommand['params']['project_id'])->not->toBeEmpty();
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
@@ -84,7 +84,7 @@ it('creates Neo4j lookup indexes before importing graph batches', function () {
     expect($client->commands[2]['cypher'])->toContain('CALL db.awaitIndexes');
 });
 
-it('imports file and function nodes with snapshot metadata', function () {
+it('imports full snapshot nodes with canonical scope metadata', function () {
     $context = createGraphImportContext();
     $client = new FakeNeo4jClient;
 
@@ -95,25 +95,18 @@ it('imports file and function nodes with snapshot metadata', function () {
         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes'),
     ));
 
-    expect(count($nodeCommands))->toBeGreaterThanOrEqual(2);
+    expect($nodeCommands)->toHaveCount(1);
 
     $allNodes = collect($nodeCommands)->flatMap(
         fn (array $cmd): array => $cmd['params']['nodes'],
     )->all();
 
     expect($allNodes)->toHaveCount(2);
-    expect($allNodes[0]['properties']['snapshot_id'])->toBe($context['snapshot_id']);
-    expect($allNodes[1]['properties']['repository_id'])->toBe($context['repository_id']);
-
-    $functionCommand = collect($nodeCommands)->first(
-        fn (array $command): bool => str_contains($command['cypher'], 'SET n:Function,'),
-    );
-
-    expect($functionCommand)->not->toBeNull();
-    expect($functionCommand['params']['nodes'][0]['labels'])->toBe(['Symbol', 'Function']);
+    expect($nodeCommands[0]['params']['source_scope_type'])->toBe('repository')
+        ->and($nodeCommands[0]['params']['source_scope_id'])->toBe($context['repository_id']);
 });
 
-it('imports relationships with run and repository metadata', function () {
+it('imports relationships with canonical scope metadata', function () {
     $context = createGraphImportContext();
     $client = new FakeNeo4jClient;
 
@@ -124,13 +117,11 @@ it('imports relationships with run and repository metadata', function () {
         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $relationships'),
     ))[0];
 
-    expect($relationshipCommand['params']['relationships'][0]['properties'])->toMatchArray([
-        'run_id' => $context['run_id'],
-        'repository_id' => $context['repository_id'],
-    ]);
+    expect($relationshipCommand['params']['source_scope_type'])->toBe('repository')
+        ->and($relationshipCommand['params']['source_scope_id'])->toBe($context['repository_id']);
 });
 
-it('imports nodes and relationships with batched Cypher commands', function () {
+it('imports nodes and relationships with canonical batched Cypher commands', function () {
     $context = createGraphImportContext();
     $client = new FakeNeo4jClient;
 
@@ -145,20 +136,12 @@ it('imports nodes and relationships with batched Cypher commands', function () {
         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $relationships'),
     ));
 
-    expect(count($nodeBatchCommands))->toBeGreaterThanOrEqual(2);
-    expect($nodeBatchCommands[0]['params']['nodes'][0]['properties'])->toMatchArray([
-        'snapshot_id' => $context['snapshot_id'],
-        'run_id' => $context['run_id'],
-        'repository_id' => $context['repository_id'],
-    ]);
+    expect($nodeBatchCommands)->toHaveCount(1);
+    expect($nodeBatchCommands[0]['params']['graph_version'])->toBeString();
 
     expect($relationshipBatchCommands)->toHaveCount(1);
     expect($relationshipBatchCommands[0]['params']['relationships'])->toHaveCount(1);
-    expect($relationshipBatchCommands[0]['params']['relationships'][0]['properties'])->toMatchArray([
-        'snapshot_id' => $context['snapshot_id'],
-        'run_id' => $context['run_id'],
-        'repository_id' => $context['repository_id'],
-    ]);
+    expect($relationshipBatchCommands[0]['params']['graph_version'])->toBeString();
     expect($relationshipBatchCommands[0]['cypher'])->toContain(':DECLARES');
 });
 

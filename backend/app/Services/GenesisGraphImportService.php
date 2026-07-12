@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\CanonicalGraphRepository;
+use App\Services\Graph\Neo4jCanonicalGraphProjector;
 use App\Services\Neo4j\Neo4jClient;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -11,6 +14,12 @@ use RuntimeException;
 class GenesisGraphImportService
 {
     private const BATCH_SIZE = 500;
+
+    public function __construct(
+        private readonly CanonicalGraphRepository $canonicalGraphs,
+        private readonly CanonicalGraphProjectionService $canonicalProjections,
+        private readonly Neo4jCanonicalGraphProjector $canonicalProjector,
+    ) {}
 
     /**
      * @return list<array{cypher: string, params: array<string, mixed>}>
@@ -394,6 +403,26 @@ class GenesisGraphImportService
         $relationships = is_array($graph['relationships_upserted'] ?? null)
             ? $graph['relationships_upserted']
             : ($graph['relationships'] ?? []);
+
+        if ($graphMode !== 'affected_subgraph') {
+            $canonical = $this->canonicalGraphs->findByIdentity((string) $artifact->project_id, 'repository', $repositoryId, 'legacy_artifact', $artifactId);
+            if ($canonical === null) {
+                throw new RuntimeException('Legacy graph artifact could not be normalized.');
+            }
+            $projection = $this->canonicalProjections->queue($canonical);
+            $projection->snapshot_id = $snapshotId;
+            $counts = $this->canonicalProjector->project($canonical, $projection, $client);
+            $this->canonicalProjections->markReady($projection->id, $counts['nodes'], $counts['relationships']);
+
+            DB::table('artifacts')->where('id', $artifactId)->update(['status' => 'imported', 'updated_at' => now()]);
+            DB::table('run_events')->insert([
+                'id' => (string) Str::ulid(), 'run_id' => $runId, 'event_type' => 'graph.imported', 'severity' => 'info',
+                'message' => $mode === 'fake' ? $fakeMessage : $neo4jMessage,
+                'payload' => json_encode(['snapshot_id' => $snapshotId, 'mode' => $mode], JSON_THROW_ON_ERROR), 'created_at' => now(),
+            ]);
+
+            return;
+        }
 
         if ($graphMode === 'affected_subgraph') {
             if ($baseSnapshotId === null || $deltaId === null) {
