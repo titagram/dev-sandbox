@@ -674,23 +674,6 @@ function hadesNoCodebaseGraphArtifact(string $head): array
     return [
         'schema' => 'hades.php_graph.v1',
         'head_commit' => $head,
-        'graph_contract' => [
-            'version' => 'hades.graph_artifact.v1',
-            'extractor' => [
-                'name' => 'hades-native-php',
-                'version' => '1',
-                'mode' => 'native',
-                'quality' => 'full',
-                'fallback_reason' => null,
-            ],
-            'coverage' => [
-                'languages' => ['php'],
-                'files_total' => 3,
-                'files_analyzed' => 3,
-                'files_failed' => 0,
-            ],
-            'source' => ['branch' => 'main', 'head_commit' => $head],
-        ],
         'raw_source_included' => false,
         'routes' => [
             [

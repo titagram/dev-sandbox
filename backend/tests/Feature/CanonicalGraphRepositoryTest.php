@@ -156,6 +156,41 @@ it('derives stable order invariant identities for identifiable legacy symbols an
         ->toContain('app/Http/Controllers/BookingController.php');
 });
 
+it('rejects idless nodes declared under the canonical contract instead of adapting them as legacy', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    [$bindingId, $artifactId] = canonicalRepoHades($projectId);
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode([
+            'graph_contract' => ['version' => 'hades.graph_artifact.v1'],
+            'nodes' => [[
+                'kind' => 'method',
+                'name' => 'BookingController@store',
+                'path' => 'app/Http/Controllers/BookingController.php',
+            ]],
+            'relationships' => [],
+        ], JSON_THROW_ON_ERROR),
+    ]);
+
+    app(CanonicalGraphRepository::class)->latestForScope($projectId, 'workspace_binding', $bindingId);
+})->throws(InvalidArgumentException::class, 'Canonical graph node id is missing.');
+
+it('does not synthesize a legacy contract when graph contract metadata is explicitly present', function (mixed $contract) {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    [$bindingId, $artifactId] = canonicalRepoHades($projectId);
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode([
+            'graph_contract' => $contract,
+            'nodes' => [['id' => 'class:BookingController']],
+            'relationships' => [],
+        ], JSON_THROW_ON_ERROR),
+    ]);
+
+    app(CanonicalGraphRepository::class)->latestForScope($projectId, 'workspace_binding', $bindingId);
+})->with([
+    'null contract' => null,
+    'unsupported contract' => [['version' => 'hades.graph_artifact.v2']],
+])->throws(InvalidArgumentException::class, 'Canonical graph contract is missing or unsupported.');
+
 it('rejects ambiguous derived legacy node identities', function () {
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
     [$bindingId, $artifactId] = canonicalRepoHades($projectId);

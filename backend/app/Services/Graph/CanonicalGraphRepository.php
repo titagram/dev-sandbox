@@ -388,10 +388,10 @@ class CanonicalGraphRepository
 
     private function adaptLegacy(array $payload, string $extractor, string $language): array
     {
-        $payload = $this->adaptLegacyNodeIdentities($this->adaptLegacyRoutes($payload));
-        if (isset($payload['graph_contract'])) {
+        if (array_key_exists('graph_contract', $payload)) {
             return $payload;
         }
+        $payload = $this->adaptLegacyNodeIdentities($this->adaptLegacyRoutes($payload));
         $filesTotal = is_array($payload['files'] ?? null) ? count($payload['files']) : (int) ($payload['files_total'] ?? 0);
         $payload['graph_contract'] = [
             'version' => 'hades.graph_artifact.v1',

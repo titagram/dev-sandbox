@@ -178,6 +178,22 @@ it('job keeps an exact missing artifact queued with a bounded code and rethrows 
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('artifact_missing');
 });
 
+it('rejects malformed explicit canonical artifacts before projection dispatch', function () {
+    Bus::fake();
+    $this->withoutExceptionHandling();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $payload = canonicalProjectionUpload($agent, $bindingId);
+    unset($payload['artifact']['nodes'][0]['id']);
+    $payload['artifact']['nodes'][0] += [
+        'name' => 'App\\Http\\Controllers\\BookingController',
+        'path' => 'app/Http/Controllers/BookingController.php',
+    ];
+    expect(fn () => $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']]))
+        ->toThrow(InvalidArgumentException::class, 'Canonical graph node id is missing.');
+    expect(DB::table('canonical_graph_projections')->count())->toBe(0);
+    Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+});
+
 it('job marks projecting before client work then queues a bounded retry and rethrows', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();
