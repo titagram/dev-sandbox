@@ -674,14 +674,13 @@ final class DashboardApiReader
         $previewEdges = array_slice($previewEdges, 0, self::GRAPH_PREVIEW_EDGE_LIMIT);
 
         $graphEdges = array_map(
-            fn (array $edge, int $index): array => [
-                'id' => (string) ($edge['id'] ?? 'edge-'.$index),
+            fn (array $edge): array => [
+                'id' => $edge['id'],
                 'from' => $edge['from'],
                 'to' => $edge['to'],
                 'kind' => $this->graphEdgeKind((string) ($edge['type'] ?? 'uses')),
             ],
             $previewEdges,
-            array_keys($previewEdges),
         );
         $preview = $this->sanitizeGraphPreview($graphNodes, $graphEdges);
 
@@ -751,11 +750,11 @@ final class DashboardApiReader
         )), 0, self::GRAPH_PREVIEW_EDGE_LIMIT);
         $preview = $this->sanitizeGraphPreview(
             $graphNodes,
-            array_map(fn (array $edge, int $index): array => [
-                'id' => (string) ($edge['id'] ?? 'edge-'.$index),
+            array_map(fn (array $edge): array => [
+                'id' => $edge['id'],
                 'from' => $edge['from'], 'to' => $edge['to'],
                 'kind' => $this->graphEdgeKind((string) ($edge['type'] ?? 'uses')),
-            ], $previewEdges, array_keys($previewEdges)),
+            ], $previewEdges),
         );
 
         return [
@@ -2032,20 +2031,20 @@ final class DashboardApiReader
      */
     private function sanitizeGraphPreview(array $nodes, array $edges): array
     {
-        $idMap = [];
-        $usedPublicIds = [];
+        $rawNodeIds = array_map(
+            static fn (array $node): string => (string) ($node['id'] ?? 'node'),
+            $nodes,
+        );
+        $idMap = $this->graphPublicIdentifierMap($rawNodeIds, 'node');
         $sanitizedNodes = [];
+        $seenRawNodeIds = [];
 
         foreach ($nodes as $node) {
             $rawId = (string) ($node['id'] ?? 'node');
-            if (! isset($idMap[$rawId])) {
-                $publicId = $this->sanitizeGraphIdentifier($rawId, 'node');
-                if (isset($usedPublicIds[$publicId]) && $usedPublicIds[$publicId] !== $rawId) {
-                    $publicId = 'node-'.substr(hash('sha256', $rawId."\0collision"), 0, 24);
-                }
-                $idMap[$rawId] = $publicId;
-                $usedPublicIds[$publicId] = $rawId;
+            if (isset($seenRawNodeIds[$rawId])) {
+                continue;
             }
+            $seenRawNodeIds[$rawId] = true;
 
             $publicId = $idMap[$rawId];
             $node['id'] = $publicId;
@@ -2058,15 +2057,55 @@ final class DashboardApiReader
             $sanitizedNodes[] = $this->sanitizeGraphPreviewValue($node);
         }
 
-        $sanitizedEdges = [];
-        foreach ($edges as $index => $edge) {
+        $eligibleEdges = [];
+        $rawEdgeIdCounts = [];
+        $signatureOccurrences = [];
+        foreach ($edges as $edge) {
             $rawFrom = (string) ($edge['from'] ?? '');
             $rawTo = (string) ($edge['to'] ?? '');
             if (! isset($idMap[$rawFrom], $idMap[$rawTo])) {
                 continue;
             }
 
-            $edge['id'] = $this->sanitizeGraphIdentifier((string) ($edge['id'] ?? 'edge-'.$index), 'edge');
+            $rawEdgeId = (string) ($edge['id'] ?? '');
+            $signature = json_encode([
+                $rawEdgeId,
+                $rawFrom,
+                $rawTo,
+                (string) ($edge['kind'] ?? ''),
+            ], JSON_THROW_ON_ERROR);
+            $occurrence = $signatureOccurrences[$signature] ?? 0;
+            $signatureOccurrences[$signature] = $occurrence + 1;
+            $identity = $signature."\0".$occurrence;
+            $rawEdgeIdCounts[$rawEdgeId] = ($rawEdgeIdCounts[$rawEdgeId] ?? 0) + 1;
+            $eligibleEdges[] = [
+                'edge' => $edge,
+                'raw_from' => $rawFrom,
+                'raw_to' => $rawTo,
+                'raw_id' => $rawEdgeId,
+                'identity' => $identity,
+            ];
+        }
+
+        $edgeCandidates = [];
+        foreach ($eligibleEdges as $record) {
+            $rawEdgeId = $record['raw_id'];
+            $preserveRawId = $rawEdgeId !== ''
+                && $rawEdgeIdCounts[$rawEdgeId] === 1
+                && ! $this->looksLikeLocalPath($rawEdgeId)
+                && ! str_starts_with($rawEdgeId, $this->graphPublicIdPrefix('edge'));
+            $edgeCandidates[$record['identity']] = $preserveRawId
+                ? $rawEdgeId
+                : $this->graphPublicIdPrefix('edge').hash('sha256', $record['identity']);
+        }
+        $edgeIdMap = $this->resolveGraphPublicIdCandidates($edgeCandidates, 'edge');
+
+        $sanitizedEdges = [];
+        foreach ($eligibleEdges as $record) {
+            $edge = $record['edge'];
+            $edge['id'] = $edgeIdMap[$record['identity']];
+            $rawFrom = $record['raw_from'];
+            $rawTo = $record['raw_to'];
             $edge['from'] = $idMap[$rawFrom];
             $edge['to'] = $idMap[$rawTo];
             $sanitizedEdges[] = $this->sanitizeGraphPreviewValue($edge);
@@ -2075,13 +2114,57 @@ final class DashboardApiReader
         return ['nodes' => $sanitizedNodes, 'edges' => $sanitizedEdges];
     }
 
-    private function sanitizeGraphIdentifier(string $identifier, string $prefix): string
+    /**
+     * @param  list<string>  $identifiers
+     * @return array<string, string>
+     */
+    private function graphPublicIdentifierMap(array $identifiers, string $kind): array
     {
-        if (! $this->looksLikeLocalPath($identifier)) {
-            return $identifier;
+        $prefix = $this->graphPublicIdPrefix($kind);
+        $identifiers = array_values(array_unique($identifiers));
+        sort($identifiers, SORT_STRING);
+        $candidates = [];
+
+        foreach ($identifiers as $identifier) {
+            $candidates[$identifier] = $this->looksLikeLocalPath($identifier)
+                || str_starts_with($identifier, $prefix)
+                ? $prefix.hash('sha256', $identifier)
+                : $identifier;
         }
 
-        return $prefix.'-'.substr(hash('sha256', $identifier), 0, 24);
+        return $this->resolveGraphPublicIdCandidates($candidates, $kind);
+    }
+
+    /**
+     * Resolve against the complete candidate set, in sorted semantic-identity order.
+     * This makes collision expansion independent of artifact ordering.
+     *
+     * @param  array<string, string>  $candidates
+     * @return array<string, string>
+     */
+    private function resolveGraphPublicIdCandidates(array $candidates, string $kind): array
+    {
+        ksort($candidates, SORT_STRING);
+        $prefix = $this->graphPublicIdPrefix($kind);
+        $resolved = [];
+        $used = [];
+
+        foreach ($candidates as $identity => $candidate) {
+            $attempt = 0;
+            while (isset($used[$candidate])) {
+                $attempt++;
+                $candidate = $prefix.hash('sha256', $identity."\0collision\0".$attempt);
+            }
+            $resolved[$identity] = $candidate;
+            $used[$candidate] = true;
+        }
+
+        return $resolved;
+    }
+
+    private function graphPublicIdPrefix(string $kind): string
+    {
+        return "hades-public-v1-{$kind}-";
     }
 
     private function sanitizeGraphPreviewValue(mixed $value): mixed
@@ -2107,8 +2190,28 @@ final class DashboardApiReader
             return false;
         }
 
-        return str_contains(strtolower($trimmed), 'file://')
-            || preg_match('~(?:^|[\\s\'"(=])(?:[a-z]:[\\\\/]|\\\\\\\\|/)~i', $trimmed) === 1;
+        $tokenBoundary = "(?:^|[\\s'\"(\\[<{=,;|])";
+        $absolutePath = '(?:[a-z]:[\\\\/]|\\\\\\\\|/(?!/))';
+
+        if (preg_match('~(?:^|[^a-z0-9_])file:(?:/{1,3}|[a-z]:[\\\\/]|\\\\\\\\)~i', $trimmed) === 1) {
+            return true;
+        }
+
+        if (preg_match("~{$tokenBoundary}{$absolutePath}~i", $trimmed) === 1) {
+            return true;
+        }
+
+        if (preg_match(
+            "~{$tokenBoundary}(?:file|node|path|method|class|function|module|source|target|repo|repository):{$absolutePath}~i",
+            $trimmed,
+        ) === 1) {
+            return true;
+        }
+
+        return preg_match(
+            "~{$tokenBoundary}(?!(?:https?|wss?|ftp|route|urn):)[a-z_][a-z0-9_.-]*:/(?:home|users|srv|var|tmp|opt|workspace|usr)(?:/|$)~i",
+            $trimmed,
+        ) === 1;
     }
 
     /**

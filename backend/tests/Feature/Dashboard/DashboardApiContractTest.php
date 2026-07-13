@@ -364,6 +364,94 @@ it('sanitizes every local path form in canonical graph previews while preserving
     }
 });
 
+it('redacts embedded local path tokens from canonical graph responses without redacting safe identifiers', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    ['unsafe' => $unsafeIdentifiers, 'safe' => $safeIdentifiers, 'nodes' => $nodes, 'relationships' => $relationships] = dashboardGraphPathFixture();
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes, $relationships);
+
+    $canonical = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+    assertDashboardGraphResponseHasNoLocalPaths($canonical, $unsafeIdentifiers);
+    $canonicalStrings = collect(dashboardGraphJsonStrings($canonical));
+    foreach ($safeIdentifiers as $safeIdentifier) {
+        expect($canonicalStrings)->toContain($safeIdentifier);
+    }
+});
+
+it('redacts embedded local path tokens from legacy graph responses without redacting safe identifiers', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    ['unsafe' => $unsafeIdentifiers, 'safe' => $safeIdentifiers, 'nodes' => $nodes, 'relationships' => $relationships] = dashboardGraphPathFixture();
+    $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
+    Storage::disk('local')->put($storagePath, json_encode([
+        'nodes' => $nodes,
+        'relationships' => $relationships,
+    ], JSON_THROW_ON_ERROR));
+    $legacy = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->json();
+    assertDashboardGraphResponseHasNoLocalPaths($legacy, $unsafeIdentifiers);
+    $legacyStrings = collect(dashboardGraphJsonStrings($legacy));
+    foreach ($safeIdentifiers as $safeIdentifier) {
+        expect($legacyStrings)->toContain($safeIdentifier);
+    }
+});
+
+it('assigns deterministic collision safe graph identifiers independent of input order', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    $unsafeNodeId = '/srv/private/collision.php';
+    $oldNodeHashCollision = 'node-'.substr(hash('sha256', $unsafeNodeId), 0, 24);
+    $reservedNodeId = 'hades-public-v1-node-'.str_repeat('a', 64);
+    $unsafeEdgeId = 'file:/home/private/collision-edge.php';
+    $oldEdgeHashCollision = 'edge-'.substr(hash('sha256', $unsafeEdgeId), 0, 24);
+    $reservedEdgeId = 'hades-public-v1-edge-'.str_repeat('b', 64);
+    $nodes = [
+        ['id' => $unsafeNodeId, 'labels' => ['Method'], 'properties' => ['name' => 'unsafe']],
+        ['id' => $oldNodeHashCollision, 'labels' => ['Method'], 'properties' => ['name' => 'old-collision']],
+        ['id' => $reservedNodeId, 'labels' => ['Method'], 'properties' => ['name' => 'reserved']],
+        ['id' => 'method:safeA', 'labels' => ['Method'], 'properties' => ['name' => 'safeA']],
+        ['id' => 'method:safeB', 'labels' => ['Method'], 'properties' => ['name' => 'safeB']],
+    ];
+    $relationships = [
+        ['id' => $unsafeEdgeId, 'source_id' => $unsafeNodeId, 'target_id' => $oldNodeHashCollision, 'type' => 'calls'],
+        ['id' => $oldEdgeHashCollision, 'source_id' => $oldNodeHashCollision, 'target_id' => $reservedNodeId, 'type' => 'imports'],
+        ['id' => $reservedEdgeId, 'source_id' => $reservedNodeId, 'target_id' => 'method:safeA', 'type' => 'calls'],
+        ['id' => 'duplicate-edge', 'source_id' => 'method:safeA', 'target_id' => 'method:safeB', 'type' => 'calls'],
+        ['id' => 'duplicate-edge', 'source_id' => 'method:safeB', 'target_id' => $unsafeNodeId, 'type' => 'calls'],
+        ['source_id' => $unsafeNodeId, 'target_id' => 'method:safeA', 'type' => 'extends'],
+    ];
+    $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
+
+    Storage::disk('local')->put($storagePath, json_encode([
+        'nodes' => $nodes,
+        'relationships' => $relationships,
+    ], JSON_THROW_ON_ERROR));
+    $forward = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->json();
+
+    Storage::disk('local')->put($storagePath, json_encode([
+        'nodes' => array_reverse($nodes),
+        'relationships' => array_reverse($relationships),
+    ], JSON_THROW_ON_ERROR));
+    $reverse = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->json();
+
+    assertDashboardGraphIdentityInvariants($forward);
+    assertDashboardGraphIdentityInvariants($reverse);
+    expect(dashboardGraphSemanticNodeIdMap($forward))->toBe(dashboardGraphSemanticNodeIdMap($reverse))
+        ->and(dashboardGraphSemanticEdgeIdMap($forward))->toBe(dashboardGraphSemanticEdgeIdMap($reverse));
+});
+
 it('reports canonical graphs as unavailable when the project has no source scope', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();
@@ -840,4 +928,119 @@ function dashboardGraphLooksLikeLocalPath(string $value): bool
         || str_starts_with($trimmed, '/')
         || preg_match('/^[a-z]:[\\\\\/]/i', $trimmed) === 1
         || str_starts_with($trimmed, '\\\\');
+}
+
+/** @param list<string> $unsafeIdentifiers */
+function assertDashboardGraphResponseHasNoLocalPaths(array $response, array $unsafeIdentifiers): void
+{
+    $strings = collect(dashboardGraphJsonStrings($response));
+
+    foreach ($unsafeIdentifiers as $unsafeIdentifier) {
+        expect($strings->filter(
+            fn (string $publicValue): bool => str_contains($publicValue, $unsafeIdentifier),
+        ))->toBeEmpty();
+    }
+
+    expect($strings->filter(fn (string $value): bool => preg_match(
+        '~(?:file:/{1,3}|(?:node|path|method|class):(?:/|[a-z]:[\\\\/]|\\\\\\\\)|[\\[(=,|]/{1,2})(?:home|users|srv|var|tmp|opt|workspace|usr)(?:[\\\\/]|$)~i',
+        $value,
+    ) === 1))->toBeEmpty();
+}
+
+/** @return array{unsafe: list<string>, safe: list<string>, nodes: list<array<string, mixed>>, relationships: list<array<string, string>>} */
+function dashboardGraphPathFixture(): array
+{
+    $unsafeIdentifiers = [
+        'file:/home/private/FileUri.php',
+        'node:/home/private/Node.php',
+        'path:/var/private/Path.php',
+        'method:C:\\Users\\private\\Method.php',
+        'class:\\\\server\\private\\Unc.php',
+        'prefix[/opt/private/Bracket.php]',
+        'prefix(/tmp/private/Paren.php)',
+        'prefix=/workspace/private/Equals.php',
+        'prefix,/usr/local/private/Comma.php',
+        'prefix|/srv/private/Pipe.php',
+    ];
+    $safeIdentifiers = [
+        'https://example.com/home/private/File.php',
+        'http://localhost/api/dashboard',
+        'route:/api/dashboard/runs',
+        'method:App\\Dashboard\\Controller::show',
+        'node:module-name',
+        'urn:example:node',
+    ];
+    $nodes = [];
+    foreach ([...$unsafeIdentifiers, ...$safeIdentifiers] as $identifier) {
+        $nodes[] = [
+            'id' => $identifier,
+            'labels' => ['Method'],
+            'properties' => ['name' => $identifier],
+        ];
+    }
+    $relationships = [];
+    foreach (array_keys($nodes) as $index) {
+        if ($index === count($nodes) - 1) {
+            break;
+        }
+        $relationships[] = [
+            'id' => $unsafeIdentifiers[$index % count($unsafeIdentifiers)],
+            'source_id' => $nodes[$index]['id'],
+            'target_id' => $nodes[$index + 1]['id'],
+            'type' => 'calls',
+        ];
+    }
+
+    return [
+        'unsafe' => $unsafeIdentifiers,
+        'safe' => $safeIdentifiers,
+        'nodes' => $nodes,
+        'relationships' => $relationships,
+    ];
+}
+
+function assertDashboardGraphIdentityInvariants(array $response): void
+{
+    $nodeIds = collect($response['nodes'])->pluck('id');
+    $edgeIds = collect($response['edges'])->pluck('id');
+
+    expect($nodeIds->unique()->count())->toBe($nodeIds->count())
+        ->and($edgeIds->unique()->count())->toBe($edgeIds->count())
+        ->and(collect($response['edges'])->every(
+            fn (array $edge): bool => $nodeIds->contains($edge['from']) && $nodeIds->contains($edge['to']),
+        ))->toBeTrue();
+}
+
+/** @return array<string, string> */
+function dashboardGraphSemanticNodeIdMap(array $response): array
+{
+    $map = [];
+    foreach ($response['nodes'] as $node) {
+        $map[(string) $node['label']] = (string) $node['id'];
+    }
+    ksort($map);
+
+    return $map;
+}
+
+/** @return array<string, string> */
+function dashboardGraphSemanticEdgeIdMap(array $response): array
+{
+    $nodeLabels = [];
+    foreach ($response['nodes'] as $node) {
+        $nodeLabels[(string) $node['id']] = (string) $node['label'];
+    }
+
+    $map = [];
+    foreach ($response['edges'] as $edge) {
+        $semanticKey = implode("\0", [
+            $nodeLabels[(string) $edge['from']],
+            $nodeLabels[(string) $edge['to']],
+            (string) $edge['kind'],
+        ]);
+        $map[$semanticKey] = (string) $edge['id'];
+    }
+    ksort($map);
+
+    return $map;
 }
