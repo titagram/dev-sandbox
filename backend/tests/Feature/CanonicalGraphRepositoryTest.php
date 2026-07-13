@@ -161,7 +161,12 @@ it('rejects idless nodes declared under the canonical contract instead of adapti
     [$bindingId, $artifactId] = canonicalRepoHades($projectId);
     DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
         'artifact' => json_encode([
-            'graph_contract' => ['version' => 'hades.graph_artifact.v1'],
+            'graph_contract' => [
+                'version' => 'hades.graph_artifact.v1',
+                'extractor' => ['name' => 'hades-native-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full', 'fallback_reason' => null],
+                'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
+                'source' => ['branch' => 'main', 'head_commit' => str_repeat('a', 40)],
+            ],
             'nodes' => [[
                 'kind' => 'method',
                 'name' => 'BookingController@store',
