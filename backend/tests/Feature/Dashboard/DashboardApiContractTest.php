@@ -251,8 +251,117 @@ it('bounds multi-scope metadata without loading graph artifact payloads', functi
 
     expect($response->json('nodes'))->toBe([])
         ->and($response->json('edges'))->toBe([])
-        ->and($canonicalReads)->toHaveCount(3)
-        ->and($artifactReads)->toHaveCount(0);
+        ->and($canonicalReads->count())->toBeLessThanOrEqual(5)
+        ->and($artifactReads)->toHaveCount(1)
+        ->and(strtolower((string) $artifactReads->first()['query']))->not->toContain('"artifact" from');
+});
+
+it('describes the latest canonical artifact even when it is not projected and leaves empty scopes null', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    $newArtifactId = (string) Str::ulid();
+    $emptyBindingId = createDashboardCanonicalBinding($ids['project_id'], $canonical['agent_id']);
+    $newer = now()->addMinute()->startOfSecond();
+    $payload = json_encode([
+        'graph_contract' => [
+            'version' => 'hades.graph_artifact.v1',
+            'extractor' => ['name' => 'hades-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full'],
+            'coverage' => ['languages' => ['php'], 'files_total' => 0, 'files_analyzed' => 0, 'files_failed' => 0],
+            'source' => ['branch' => 'main', 'head_commit' => str_repeat('b', 40)],
+        ],
+        'nodes' => [],
+        'relationships' => [],
+    ], JSON_THROW_ON_ERROR);
+
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $newArtifactId,
+        'project_id' => $ids['project_id'],
+        'hades_agent_id' => $canonical['agent_id'],
+        'workspace_binding_id' => $canonical['binding_id'],
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => $payload,
+        'sha256' => hash('sha256', $payload),
+        'truncated' => false,
+        'redactions' => 0,
+        'created_at' => $newer,
+        'updated_at' => $newer,
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'scope_required');
+
+    $scopes = collect($response->json('scopes'))->keyBy('id');
+    expect($scopes[$canonical['binding_id']])
+        ->toMatchArray([
+            'type' => 'workspace_binding',
+            'quality' => null,
+            'head_commit' => null,
+            'created_at' => (string) $newer,
+            'projection_status' => 'unavailable',
+        ])
+        ->and($scopes[$emptyBindingId])
+        ->toMatchArray([
+            'type' => 'workspace_binding',
+            'quality' => null,
+            'head_commit' => null,
+            'created_at' => null,
+            'projection_status' => 'unavailable',
+        ]);
+});
+
+it('sanitizes every local path form in canonical graph previews while preserving edge endpoints', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $paths = [
+        '/srv/private/project/Posix.php',
+        'C:\\Users\\private\\Windows.php',
+        '\\\\server\\private\\Unc.php',
+        'file:///home/private/FileUri.php',
+    ];
+    $nodes = [];
+    foreach ($paths as $index => $path) {
+        $nodes[] = [
+            'id' => $path,
+            'labels' => ['Method'],
+            'properties' => [
+                'name' => $paths[($index + 1) % count($paths)],
+                'nested' => ['path' => $path],
+            ],
+        ];
+    }
+    $relationships = [
+        ['id' => $paths[1], 'source_id' => $paths[0], 'target_id' => $paths[1], 'type' => 'calls', 'properties' => ['path' => $paths[2]]],
+        ['id' => $paths[2], 'source_id' => $paths[1], 'target_id' => $paths[2], 'type' => 'imports'],
+        ['id' => $paths[3], 'source_id' => $paths[2], 'target_id' => $paths[3], 'type' => 'calls'],
+    ];
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes, $relationships);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('stats.nodes', 4)
+        ->assertJsonPath('stats.edges', 3)
+        ->assertJsonCount(4, 'nodes')
+        ->assertJsonCount(3, 'edges');
+
+    $publicStrings = collect(dashboardGraphJsonStrings($response->json()));
+    $nodeIds = collect($response->json('nodes'))->pluck('id');
+    $edges = collect($response->json('edges'));
+
+    expect($publicStrings->filter(fn (string $value): bool => dashboardGraphLooksLikeLocalPath($value)))
+        ->toBeEmpty()
+        ->and($nodeIds->unique())->toHaveCount(4)
+        ->and($edges->every(fn (array $edge): bool => $nodeIds->contains($edge['from']) && $nodeIds->contains($edge['to'])))
+        ->toBeTrue();
+
+    foreach ($paths as $path) {
+        expect($publicStrings)->not->toContain($path);
+    }
 });
 
 it('reports canonical graphs as unavailable when the project has no source scope', function () {
@@ -626,8 +735,12 @@ function createDashboardApiContractScenario(bool $retryable = false): array
 }
 
 /** @return array{agent_id: string, binding_id: string, graph_version: string} */
-function createDashboardCanonicalHadesGraph(string $projectId, ?array $nodeProperties = null): array
-{
+function createDashboardCanonicalHadesGraph(
+    string $projectId,
+    ?array $nodeProperties = null,
+    ?array $nodes = null,
+    ?array $relationships = null,
+): array {
     $agentId = (string) Str::ulid();
     $bindingId = (string) Str::ulid();
     $artifactId = (string) Str::ulid();
@@ -640,12 +753,12 @@ function createDashboardCanonicalHadesGraph(string $projectId, ?array $nodePrope
             'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
             'source' => ['branch' => 'main', 'head_commit' => str_repeat('a', 40)],
         ],
-        'nodes' => [[
+        'nodes' => $nodes ?? [[
             'id' => 'method:DashboardApiReader::graph',
             'labels' => ['Method'],
             'properties' => $nodeProperties ?? ['name' => 'graph', 'path' => 'app/Dashboard/DashboardApiReader.php'],
         ]],
-        'relationships' => [],
+        'relationships' => $relationships ?? [],
     ];
     $json = json_encode($artifact, JSON_THROW_ON_ERROR);
 
@@ -673,9 +786,58 @@ function createDashboardCanonicalHadesGraph(string $projectId, ?array $nodePrope
         'artifact_type' => 'hades_agent_artifact', 'artifact_id' => $artifactId,
         'graph_version' => $graphVersion, 'checksum' => hash('sha256', $json),
         'head_commit' => str_repeat('a', 40), 'quality' => 'full', 'status' => 'ready',
-        'node_count' => 1, 'relationship_count' => 0, 'projected_at' => $now,
+        'node_count' => count($artifact['nodes']), 'relationship_count' => count($artifact['relationships']), 'projected_at' => $now,
         'created_at' => $now, 'updated_at' => $now,
     ]);
 
     return ['agent_id' => $agentId, 'binding_id' => $bindingId, 'graph_version' => $graphVersion];
+}
+
+function createDashboardCanonicalBinding(string $projectId, string $agentId): string
+{
+    $bindingId = (string) Str::ulid();
+    $now = now();
+    DB::table('hades_workspace_bindings')->insert([
+        'id' => $bindingId,
+        'project_id' => $projectId,
+        'hades_agent_id' => $agentId,
+        'external_agent_id' => 'dashboard-'.$agentId,
+        'workspace_fingerprint' => hash('sha256', $bindingId),
+        'display_path' => '/srv/private/empty-scope',
+        'head_commit' => str_repeat('c', 40),
+        'status' => 'linked',
+        'linked_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return $bindingId;
+}
+
+/** @return list<string> */
+function dashboardGraphJsonStrings(mixed $value): array
+{
+    if (is_string($value)) {
+        return [$value];
+    }
+    if (! is_array($value)) {
+        return [];
+    }
+
+    $strings = [];
+    foreach ($value as $child) {
+        array_push($strings, ...dashboardGraphJsonStrings($child));
+    }
+
+    return $strings;
+}
+
+function dashboardGraphLooksLikeLocalPath(string $value): bool
+{
+    $trimmed = trim($value);
+
+    return str_starts_with(strtolower($trimmed), 'file://')
+        || str_starts_with($trimmed, '/')
+        || preg_match('/^[a-z]:[\\\\\/]/i', $trimmed) === 1
+        || str_starts_with($trimmed, '\\\\');
 }

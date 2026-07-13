@@ -683,6 +683,7 @@ final class DashboardApiReader
             $previewEdges,
             array_keys($previewEdges),
         );
+        $preview = $this->sanitizeGraphPreview($graphNodes, $graphEdges);
 
         return [
             'snapshot_id' => (string) $snapshot->id,
@@ -695,8 +696,8 @@ final class DashboardApiReader
                 'modules' => $nodeStats['modules'],
                 'routes' => $nodeStats['routes'],
             ],
-            'nodes' => array_values($graphNodes),
-            'edges' => array_values($graphEdges),
+            'nodes' => $preview['nodes'],
+            'edges' => $preview['edges'],
         ];
     }
 
@@ -748,6 +749,14 @@ final class DashboardApiReader
             $relationships,
             static fn (array $edge): bool => isset($previewNodeIds[$edge['from']], $previewNodeIds[$edge['to']]),
         )), 0, self::GRAPH_PREVIEW_EDGE_LIMIT);
+        $preview = $this->sanitizeGraphPreview(
+            $graphNodes,
+            array_map(fn (array $edge, int $index): array => [
+                'id' => (string) ($edge['id'] ?? 'edge-'.$index),
+                'from' => $edge['from'], 'to' => $edge['to'],
+                'kind' => $this->graphEdgeKind((string) ($edge['type'] ?? 'uses')),
+            ], $previewEdges, array_keys($previewEdges)),
+        );
 
         return [
             'snapshot_id' => null,
@@ -765,12 +774,8 @@ final class DashboardApiReader
                 'nodes' => count($nodes), 'edges' => count($relationships),
                 'modules' => $nodeStats['modules'], 'routes' => $nodeStats['routes'],
             ],
-            'nodes' => array_values($graphNodes),
-            'edges' => array_map(fn (array $edge, int $index): array => [
-                'id' => (string) ($edge['id'] ?? 'edge-'.$index),
-                'from' => $edge['from'], 'to' => $edge['to'],
-                'kind' => $this->graphEdgeKind((string) ($edge['type'] ?? 'uses')),
-            ], $previewEdges, array_keys($previewEdges)),
+            'nodes' => $preview['nodes'],
+            'edges' => $preview['edges'],
         ];
     }
 
@@ -2018,6 +2023,92 @@ final class DashboardApiReader
             'risk' => 'medium',
             'source' => $this->sourceMeta(type: 'local_analyzer', ref: $id),
         ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $nodes
+     * @param  list<array<string, mixed>>  $edges
+     * @return array{nodes: list<array<string, mixed>>, edges: list<array<string, mixed>>}
+     */
+    private function sanitizeGraphPreview(array $nodes, array $edges): array
+    {
+        $idMap = [];
+        $usedPublicIds = [];
+        $sanitizedNodes = [];
+
+        foreach ($nodes as $node) {
+            $rawId = (string) ($node['id'] ?? 'node');
+            if (! isset($idMap[$rawId])) {
+                $publicId = $this->sanitizeGraphIdentifier($rawId, 'node');
+                if (isset($usedPublicIds[$publicId]) && $usedPublicIds[$publicId] !== $rawId) {
+                    $publicId = 'node-'.substr(hash('sha256', $rawId."\0collision"), 0, 24);
+                }
+                $idMap[$rawId] = $publicId;
+                $usedPublicIds[$publicId] = $rawId;
+            }
+
+            $publicId = $idMap[$rawId];
+            $node['id'] = $publicId;
+            if (! is_string($node['label'] ?? null) || $this->looksLikeLocalPath($node['label'])) {
+                $node['label'] = $publicId;
+            }
+            if (is_array($node['source'] ?? null)) {
+                $node['source']['ref'] = $publicId;
+            }
+            $sanitizedNodes[] = $this->sanitizeGraphPreviewValue($node);
+        }
+
+        $sanitizedEdges = [];
+        foreach ($edges as $index => $edge) {
+            $rawFrom = (string) ($edge['from'] ?? '');
+            $rawTo = (string) ($edge['to'] ?? '');
+            if (! isset($idMap[$rawFrom], $idMap[$rawTo])) {
+                continue;
+            }
+
+            $edge['id'] = $this->sanitizeGraphIdentifier((string) ($edge['id'] ?? 'edge-'.$index), 'edge');
+            $edge['from'] = $idMap[$rawFrom];
+            $edge['to'] = $idMap[$rawTo];
+            $sanitizedEdges[] = $this->sanitizeGraphPreviewValue($edge);
+        }
+
+        return ['nodes' => $sanitizedNodes, 'edges' => $sanitizedEdges];
+    }
+
+    private function sanitizeGraphIdentifier(string $identifier, string $prefix): string
+    {
+        if (! $this->looksLikeLocalPath($identifier)) {
+            return $identifier;
+        }
+
+        return $prefix.'-'.substr(hash('sha256', $identifier), 0, 24);
+    }
+
+    private function sanitizeGraphPreviewValue(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return $this->looksLikeLocalPath($value) ? '[redacted]' : $value;
+        }
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        foreach ($value as $key => $child) {
+            $value[$key] = $this->sanitizeGraphPreviewValue($child);
+        }
+
+        return $value;
+    }
+
+    private function looksLikeLocalPath(string $value): bool
+    {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return false;
+        }
+
+        return str_contains(strtolower($trimmed), 'file://')
+            || preg_match('~(?:^|[\\s\'"(=])(?:[a-z]:[\\\\/]|\\\\\\\\|/)~i', $trimmed) === 1;
     }
 
     /**

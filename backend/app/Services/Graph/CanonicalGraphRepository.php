@@ -70,23 +70,19 @@ class CanonicalGraphRepository
             ->where('status', 'linked')
             ->orderBy('id')
             ->limit($limit + 1)
-            ->get(['id', 'head_commit', 'created_at'])
+            ->get(['id'])
             ->map(fn (object $scope): array => [
                 'source_scope_type' => 'workspace_binding',
                 'source_scope_id' => (string) $scope->id,
-                'head_commit' => $scope->head_commit ? (string) $scope->head_commit : null,
-                'created_at' => $scope->created_at ? (string) $scope->created_at : null,
             ]);
         $repositories = DB::table('repositories')
             ->where('project_id', $projectId)
             ->orderBy('id')
             ->limit($limit + 1)
-            ->get(['id', 'created_at'])
+            ->get(['id'])
             ->map(fn (object $scope): array => [
                 'source_scope_type' => 'repository',
                 'source_scope_id' => (string) $scope->id,
-                'head_commit' => null,
-                'created_at' => $scope->created_at ? (string) $scope->created_at : null,
             ]);
         $allScopes = $bindings->concat($repositories)->values();
         $scopes = $allScopes->take($limit)->values();
@@ -95,45 +91,93 @@ class CanonicalGraphRepository
             return ['scopes' => [], 'truncated' => false];
         }
 
-        $rankedProjections = DB::table('canonical_graph_projections')
-            ->select([
-                'source_scope_type',
-                'source_scope_id',
-                'quality',
-                'head_commit',
-                'status',
-                'created_at',
-            ])
-            ->selectRaw('ROW_NUMBER() OVER (PARTITION BY source_scope_type, source_scope_id ORDER BY created_at DESC, id DESC) AS scope_rank')
-            ->where('project_id', $projectId)
-            ->where(function ($query) use ($scopes): void {
-                foreach ($scopes->groupBy('source_scope_type') as $scopeType => $typedScopes) {
-                    $query->orWhere(function ($typedQuery) use ($scopeType, $typedScopes): void {
-                        $typedQuery->where('source_scope_type', $scopeType)
-                            ->whereIn('source_scope_id', $typedScopes->pluck('source_scope_id'));
-                    });
-                }
-            });
-        $projections = DB::query()
-            ->fromSub($rankedProjections, 'ranked_scope_projections')
-            ->where('scope_rank', 1)
-            ->get()
-            ->keyBy(fn (object $projection): string => $projection->source_scope_type."\0".$projection->source_scope_id);
+        $artifacts = collect();
+        $bindingIds = $scopes->where('source_scope_type', 'workspace_binding')->pluck('source_scope_id');
+        if ($bindingIds->isNotEmpty()) {
+            $rankedHadesArtifacts = DB::table('hades_agent_artifacts')
+                ->select(['workspace_binding_id as source_scope_id', 'id as artifact_id', 'created_at as artifact_created_at'])
+                ->selectRaw('ROW_NUMBER() OVER (PARTITION BY workspace_binding_id ORDER BY created_at DESC, id DESC) AS artifact_rank')
+                ->where('project_id', $projectId)
+                ->whereIn('workspace_binding_id', $bindingIds)
+                ->whereIn('schema', ['hades.php_graph.v1', 'hades.code_graph.v1']);
+            $artifacts = $artifacts->concat(
+                DB::query()->fromSub($rankedHadesArtifacts, 'ranked_hades_artifacts')
+                    ->where('artifact_rank', 1)
+                    ->get()
+                    ->map(fn (object $artifact): array => [
+                        'source_scope_type' => 'workspace_binding',
+                        'source_scope_id' => (string) $artifact->source_scope_id,
+                        'artifact_type' => 'hades_agent_artifact',
+                        'artifact_id' => (string) $artifact->artifact_id,
+                        'created_at' => $artifact->artifact_created_at ? (string) $artifact->artifact_created_at : null,
+                    ]),
+            );
+        }
+
+        $repositoryIds = $scopes->where('source_scope_type', 'repository')->pluck('source_scope_id');
+        if ($repositoryIds->isNotEmpty()) {
+            $rankedSnapshotArtifacts = DB::table('snapshots')
+                ->join('artifacts', 'artifacts.id', '=', 'snapshots.graph_snapshot_artifact_id')
+                ->select([
+                    'snapshots.repository_id as source_scope_id',
+                    'artifacts.id as artifact_id',
+                    'artifacts.created_at as artifact_created_at',
+                ])
+                ->selectRaw('ROW_NUMBER() OVER (PARTITION BY snapshots.repository_id ORDER BY snapshots.created_at DESC, snapshots.id DESC) AS artifact_rank')
+                ->where('snapshots.project_id', $projectId)
+                ->whereIn('snapshots.repository_id', $repositoryIds)
+                ->whereNotNull('snapshots.graph_snapshot_artifact_id')
+                ->where('artifacts.project_id', $projectId)
+                ->whereColumn('artifacts.repository_id', 'snapshots.repository_id');
+            $artifacts = $artifacts->concat(
+                DB::query()->fromSub($rankedSnapshotArtifacts, 'ranked_snapshot_artifacts')
+                    ->where('artifact_rank', 1)
+                    ->get()
+                    ->map(fn (object $artifact): array => [
+                        'source_scope_type' => 'repository',
+                        'source_scope_id' => (string) $artifact->source_scope_id,
+                        'artifact_type' => 'legacy_artifact',
+                        'artifact_id' => (string) $artifact->artifact_id,
+                        'created_at' => $artifact->artifact_created_at ? (string) $artifact->artifact_created_at : null,
+                    ]),
+            );
+        }
+        $artifacts = $artifacts->keyBy(fn (array $artifact): string => $artifact['source_scope_type']."\0".$artifact['source_scope_id']);
+
+        $projections = collect();
+        if ($artifacts->isNotEmpty()) {
+            $projections = DB::table('canonical_graph_projections')
+                ->where('project_id', $projectId)
+                ->where(function ($query) use ($artifacts): void {
+                    foreach ($artifacts->groupBy('artifact_type') as $artifactType => $typedArtifacts) {
+                        $query->orWhere(function ($typedQuery) use ($artifactType, $typedArtifacts): void {
+                            $typedQuery->where('artifact_type', $artifactType)
+                                ->whereIn('artifact_id', $typedArtifacts->pluck('artifact_id'));
+                        });
+                    }
+                })
+                ->get(['source_scope_type', 'source_scope_id', 'artifact_type', 'artifact_id', 'quality', 'head_commit', 'status'])
+                ->keyBy(fn (object $projection): string => $projection->artifact_type."\0".$projection->artifact_id);
+        }
 
         return [
-            'scopes' => $scopes->map(function (array $scope) use ($projections): array {
-                $projection = $projections->get($scope['source_scope_type']."\0".$scope['source_scope_id']);
+            'scopes' => $scopes->map(function (array $scope) use ($artifacts, $projections): array {
+                $artifact = $artifacts->get($scope['source_scope_type']."\0".$scope['source_scope_id']);
+                $projection = $artifact
+                    ? $projections->get($artifact['artifact_type']."\0".$artifact['artifact_id'])
+                    : null;
+                if ($projection
+                    && ($projection->source_scope_type !== $scope['source_scope_type']
+                        || (string) $projection->source_scope_id !== $scope['source_scope_id'])) {
+                    $projection = null;
+                }
 
                 return [
                     'source_scope_type' => $scope['source_scope_type'],
                     'source_scope_id' => $scope['source_scope_id'],
                     'quality' => $projection?->quality ? (string) $projection->quality : null,
-                    'head_commit' => $projection?->head_commit
-                        ? (string) $projection->head_commit
-                        : $scope['head_commit'],
-                    'created_at' => $projection?->created_at
-                        ? (string) $projection->created_at
-                        : $scope['created_at'],
+                    'head_commit' => $projection?->head_commit ? (string) $projection->head_commit : null,
+                    'created_at' => $artifact['created_at'] ?? null,
                     'projection_status' => $projection?->status ? (string) $projection->status : 'unavailable',
                 ];
             })->all(),
