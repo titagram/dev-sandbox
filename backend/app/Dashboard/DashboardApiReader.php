@@ -2190,27 +2190,52 @@ final class DashboardApiReader
             return false;
         }
 
-        $tokenBoundary = "(?:^|[\\s'\"(\\[<{=,;|])";
-        $absolutePath = '(?:[a-z]:[\\\\/]|\\\\\\\\|/(?!/))';
+        // Prefixes are intentionally not enumerated. A path payload may follow any
+        // semantic wrapper (for example `symbol:`) or ordinary token delimiter.
+        $payloadBoundary = "(?:^|[\\s'\"()\\[\\]{}<>=,;|:])";
 
-        if (preg_match('~(?:^|[^a-z0-9_])file:(?:/{1,3}|[a-z]:[\\\\/]|\\\\\\\\)~i', $trimmed) === 1) {
+        if (preg_match("~{$payloadBoundary}file:(?:/{1,3}|[a-z]:[\\\\/]|\\\\\\\\)~i", $trimmed) === 1) {
             return true;
         }
 
-        if (preg_match("~{$tokenBoundary}{$absolutePath}~i", $trimmed) === 1) {
+        if (preg_match("~{$payloadBoundary}[a-z]:[\\\\/]~i", $trimmed) === 1) {
             return true;
         }
 
-        if (preg_match(
-            "~{$tokenBoundary}(?:file|node|path|method|class|function|module|source|target|repo|repository):{$absolutePath}~i",
+        if (preg_match("~{$payloadBoundary}\\\\\\\\[^\\\\/\\s]+[\\\\/]~", $trimmed) === 1) {
+            return true;
+        }
+
+        preg_match_all(
+            "~{$payloadBoundary}/(?!/)([a-z0-9._-]+)(?=[\\\\/]|$|[\\s'\"()\\[\\]{}<>=,;|?#])~i",
             $trimmed,
-        ) === 1) {
-            return true;
+            $matches,
+        );
+
+        foreach ($matches[1] ?? [] as $root) {
+            if ($this->isGraphWebRouteRoot($root)) {
+                continue;
+            }
+
+            if ($this->isSensitiveFilesystemRoot($root)) {
+                return true;
+            }
         }
 
+        return false;
+    }
+
+    private function isGraphWebRouteRoot(string $root): bool
+    {
+        return preg_match('/\A(?:api|v[0-9]+)\z/i', $root) === 1;
+    }
+
+    private function isSensitiveFilesystemRoot(string $root): bool
+    {
+        // Operating-system and workspace roots, not semantic identifier prefixes.
         return preg_match(
-            "~{$tokenBoundary}(?!(?:https?|wss?|ftp|route|urn):)[a-z_][a-z0-9_.-]*:/(?:home|users|srv|var|tmp|opt|workspace|usr)(?:/|$)~i",
-            $trimmed,
+            '/\A(?:applications|bin|boot|data|dev|etc|home|lib(?:32|64)?|library|media|mnt|opt|private|proc|root|run|sbin|snap|srv|system|tmp|users|usr|var|volumes|workspace|workspaces)\z/i',
+            $root,
         ) === 1;
     }
 
