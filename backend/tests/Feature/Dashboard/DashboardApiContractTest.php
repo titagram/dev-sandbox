@@ -582,6 +582,180 @@ it('keeps raw identity provenance private across canonical and legacy graph boun
     }
 });
 
+it('treats direct path fields as private identity provenance across canonical and legacy graphs', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    $privateLabels = [
+        'PosixPrivateService',
+        'WindowsPrivateClass',
+        'UncPrivateFunction',
+        'FileUriPrivateModule',
+        'BarePrivateService',
+        'BarePropertiesPrivateClass',
+    ];
+    $privatePaths = [
+        '/srv/private/project/'.$privateLabels[0].'.php',
+        'C:\\Users\\private\\'.$privateLabels[1].'.php',
+        '\\\\server\\private\\'.$privateLabels[2].'.php',
+        'file:///home/private/'.$privateLabels[3].'.php',
+        $privateLabels[4].'.php',
+        $privateLabels[5].'.php',
+    ];
+    $nodes = [
+        [
+            'id' => 'service:posix-path',
+            'path' => $privatePaths[0],
+            'labels' => ['Service'],
+            'properties' => ['kind' => 'service', 'name' => $privateLabels[0]],
+        ],
+        [
+            'id' => 'class:windows-path',
+            'labels' => ['Class'],
+            'properties' => [
+                'kind' => 'class',
+                'name' => $privateLabels[1],
+                'path' => $privatePaths[1],
+            ],
+        ],
+        [
+            'id' => 'function:unc-path',
+            'path' => $privatePaths[2],
+            'labels' => ['Function'],
+            'properties' => ['kind' => 'function', 'name' => $privateLabels[2]],
+        ],
+        [
+            'id' => 'module:file-uri-path',
+            'labels' => ['Module'],
+            'properties' => [
+                'kind' => 'module',
+                'name' => $privateLabels[3],
+                'path' => $privatePaths[3],
+            ],
+        ],
+        [
+            'id' => 'service:bare-path',
+            'path' => $privatePaths[4],
+            'labels' => ['Service'],
+            'properties' => ['kind' => 'service', 'name' => $privateLabels[4]],
+        ],
+        [
+            'id' => 'class:bare-properties-path',
+            'labels' => ['Class'],
+            'properties' => [
+                'kind' => 'class',
+                'name' => $privateLabels[5],
+                'path' => $privatePaths[5],
+            ],
+        ],
+        [
+            'id' => 'service:public-readable',
+            'path' => 'DifferentPrivateIdentity.php',
+            'labels' => ['Service'],
+            'properties' => ['kind' => 'service', 'name' => 'PublicReadableService'],
+        ],
+    ];
+    $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
+    Storage::disk('local')->put($storagePath, json_encode(['nodes' => $nodes, 'relationships' => []], JSON_THROW_ON_ERROR));
+
+    $legacy = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->json();
+
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+    $canonical = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+
+    foreach ([$legacy, $canonical] as $response) {
+        $labels = collect($response['nodes'])->pluck('label');
+        $json = json_encode($response, JSON_THROW_ON_ERROR);
+        foreach ([...$privateLabels, ...$privatePaths] as $privateValue) {
+            expect($labels)->not->toContain($privateValue)
+                ->and($json)->not->toContain($privateValue);
+        }
+        expect($labels)->toContain('PublicReadableService');
+    }
+});
+
+it('normalizes code namespace aliases only when comparing private graph identities', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    $privateLabels = [
+        'app.private.orderservice',
+        'app\\private\\customerservice',
+        'Company\\Private\\TokenClass',
+        'Company::Private::ReverseTokenClass',
+    ];
+    $privateIdentities = [
+        'App\\Private\\OrderService',
+        'App.Private.CustomerService',
+        'Company::Private::TokenClass',
+        'Company\\Private\\ReverseTokenClass',
+    ];
+    $nodes = [
+        [
+            'id' => $privateIdentities[0],
+            'labels' => ['Service'],
+            'properties' => ['kind' => 'service', 'name' => $privateLabels[0]],
+        ],
+        [
+            'id' => $privateIdentities[1],
+            'labels' => ['Service'],
+            'properties' => ['kind' => 'service', 'name' => $privateLabels[1]],
+        ],
+        [
+            'id' => $privateIdentities[2],
+            'labels' => ['Class'],
+            'properties' => ['kind' => 'class', 'name' => $privateLabels[2]],
+        ],
+        [
+            'id' => $privateIdentities[3],
+            'labels' => ['Class'],
+            'properties' => ['kind' => 'class', 'name' => $privateLabels[3]],
+        ],
+        [
+            'id' => 'App\\Private\\OrderRepository',
+            'labels' => ['Service'],
+            'properties' => ['kind' => 'service', 'name' => 'App.Public.OrderService'],
+        ],
+        [
+            'id' => 'module:public-domain',
+            'external_id' => 'internal.example.net',
+            'labels' => ['Module'],
+            'properties' => ['kind' => 'module', 'name' => 'internal.example.com'],
+        ],
+    ];
+    $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
+    Storage::disk('local')->put($storagePath, json_encode(['nodes' => $nodes, 'relationships' => []], JSON_THROW_ON_ERROR));
+
+    $legacy = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->json();
+
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+    $canonical = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+
+    foreach ([$legacy, $canonical] as $response) {
+        $labels = collect($response['nodes'])->pluck('label');
+        $json = json_encode($response, JSON_THROW_ON_ERROR);
+        foreach ([...$privateLabels, ...$privateIdentities] as $privateValue) {
+            expect($labels)->not->toContain($privateValue)
+                ->and($json)->not->toContain($privateValue);
+        }
+        expect($labels)
+            ->toContain('App.Public.OrderService')
+            ->toContain('internal.example.com');
+    }
+});
+
 it('uses a closed semantic allowlist for arbitrary producer node kinds', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();

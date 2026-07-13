@@ -258,7 +258,7 @@ class CanonicalGraphRepository
             $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
             $values = [];
             foreach ([$node, $properties] as $identityContainer) {
-                foreach (['id', 'external_id', 'symbol_id', 'source_ref', 'source_path'] as $field) {
+                foreach (['id', 'external_id', 'symbol_id', 'source_ref', 'source_path', 'path'] as $field) {
                     if (is_string($identityContainer[$field] ?? null) && trim($identityContainer[$field]) !== '') {
                         $values[] = $identityContainer[$field];
                     }

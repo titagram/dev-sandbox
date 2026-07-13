@@ -2519,9 +2519,17 @@ final class DashboardApiReader
             }
         }
 
-        return $label !== null && ! isset($privateIdentityTokens[$this->normalizeGraphIdentityToken($label)])
-            ? $label
-            : null;
+        if ($label === null) {
+            return null;
+        }
+
+        foreach ($this->graphPublicLabelComparisonTokens($label) as $token) {
+            if (isset($privateIdentityTokens[$token])) {
+                return null;
+            }
+        }
+
+        return $label;
     }
 
     /**
@@ -2541,14 +2549,23 @@ final class DashboardApiReader
         foreach ($nodes as $node) {
             $nodeId = $this->graphNodeId($node);
             $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+            $publicRoutePaths = $this->graphPublicRoutePathValues($node, $properties);
             $identityValues = is_array($capturedProvenance[$nodeId] ?? null)
                 ? $capturedProvenance[$nodeId]
                 : [];
+            if ($publicRoutePaths !== []) {
+                $identityValues = array_values(array_filter(
+                    $identityValues,
+                    static fn (mixed $value): bool => ! is_string($value) || ! in_array($value, $publicRoutePaths, true),
+                ));
+            }
 
             foreach ([$node, $properties] as $identityContainer) {
-                foreach (['id', 'external_id', 'symbol_id', 'source_ref', 'source_path'] as $field) {
-                    if (is_string($identityContainer[$field] ?? null)) {
-                        $identityValues[] = $identityContainer[$field];
+                foreach (['id', 'external_id', 'symbol_id', 'source_ref', 'source_path', 'path'] as $field) {
+                    $value = $identityContainer[$field] ?? null;
+                    if (is_string($value)
+                        && ($field !== 'path' || ! in_array($value, $publicRoutePaths, true))) {
+                        $identityValues[] = $value;
                     }
                 }
 
@@ -2578,6 +2595,30 @@ final class DashboardApiReader
         return $tokensByNode;
     }
 
+    /**
+     * A route's direct `path` is approved presentation data, not filesystem
+     * provenance. Nested `source.path` remains private and is never exempted.
+     *
+     * @param  array<string, mixed>  $node
+     * @param  array<string, mixed>  $properties
+     * @return list<string>
+     */
+    private function graphPublicRoutePathValues(array $node, array $properties): array
+    {
+        if ($this->graphNodeSemanticKind($node) !== 'route') {
+            return [];
+        }
+
+        $paths = [];
+        foreach ([$node['path'] ?? null, $properties['path'] ?? null] as $path) {
+            if (is_string($path) && $this->isGraphRoutePath(trim($path))) {
+                $paths[] = $path;
+            }
+        }
+
+        return array_values(array_unique($paths));
+    }
+
     /** @return list<string> */
     private function graphIdentityComparisonTokens(string $identity): array
     {
@@ -2586,22 +2627,24 @@ final class DashboardApiReader
             return [];
         }
         $tokens = [$normalized => true];
+        $namespaceToken = $this->graphCodeNamespaceComparisonToken($identity, true);
+        if ($namespaceToken !== null) {
+            $tokens[$namespaceToken] = true;
+        }
         $path = preg_replace('/\Afile:\/\//i', '', trim($identity)) ?? trim($identity);
         $path = str_replace('\\', '/', rawurldecode($path));
 
-        if (str_contains($path, '/')) {
-            foreach (explode('/', $path) as $segment) {
-                $segment = trim($segment);
-                if ($segment === '' || $segment === '.' || $segment === '..') {
-                    continue;
-                }
-                $token = $this->normalizeGraphIdentityToken($segment);
-                $tokens[$token] = true;
+        foreach (explode('/', $path) as $segment) {
+            $segment = trim($segment);
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                continue;
+            }
+            $token = $this->normalizeGraphIdentityToken($segment);
+            $tokens[$token] = true;
 
-                $stem = pathinfo($segment, PATHINFO_FILENAME);
-                if ($stem !== '' && $stem !== $segment) {
-                    $tokens[$this->normalizeGraphIdentityToken($stem)] = true;
-                }
+            $stem = pathinfo($segment, PATHINFO_FILENAME);
+            if ($stem !== '' && $stem !== $segment) {
+                $tokens[$this->normalizeGraphIdentityToken($stem)] = true;
             }
         }
 
@@ -2611,6 +2654,36 @@ final class DashboardApiReader
     private function normalizeGraphIdentityToken(string $identity): string
     {
         return strtolower(trim($identity));
+    }
+
+    /** @return list<string> */
+    private function graphPublicLabelComparisonTokens(string $label): array
+    {
+        $tokens = [$this->normalizeGraphIdentityToken($label)];
+        $namespaceToken = $this->graphCodeNamespaceComparisonToken($label, false);
+        if ($namespaceToken !== null) {
+            $tokens[] = $namespaceToken;
+        }
+
+        return array_values(array_unique(array_filter($tokens, static fn (string $token): bool => $token !== '')));
+    }
+
+    private function graphCodeNamespaceComparisonToken(string $identity, bool $requireCodeEvidence): ?string
+    {
+        $identity = trim($identity);
+        if (preg_match('/\A[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\\\\|::|\.)[A-Za-z_$][A-Za-z0-9_$]*)+\z/', $identity) !== 1) {
+            return null;
+        }
+        if ($requireCodeEvidence
+            && ! str_contains($identity, '\\')
+            && ! str_contains($identity, '::')
+            && preg_match('/[A-Z_$]/', $identity) !== 1) {
+            return null;
+        }
+
+        $canonical = preg_replace('/(?:\\\\|::|\.)/', '::', $identity) ?? $identity;
+
+        return 'namespace:'.strtolower($canonical);
     }
 
     /**
