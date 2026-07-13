@@ -229,6 +229,109 @@
         }
       }
     },
+    "/api/hades/v1/graph/traverse": {
+      "get": {
+        "summary": "Traverse the backend-selected canonical graph projection for one linked workspace",
+        "description": "The workspace binding is the exact source scope. Clients cannot submit or select graph_version; the backend selects the latest verified ready projection. Response graph metadata is additive to the existing Hades traversal envelope.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "workspace_binding_id",
+            "in": "query",
+            "required": true,
+            "description": "Linked workspace binding that defines the exact workspace_binding source scope.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "any",
+                "out",
+                "in"
+              ],
+              "default": "any"
+            }
+          },
+          {
+            "name": "max_depth",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3,
+              "default": 2
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded traversal of the current verified projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanonicalGraphTraverseResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "The exact source scope is unavailable or has no ready canonical projection. graph_projection_not_ready is not an empty graph.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HadesStructuredErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        }
+      }
+    },
     "/api/hades/v1/doctor/reports": {
       "post": {
         "summary": "Submit an explicit Hades doctor report",
@@ -635,7 +738,14 @@
             ]
           },
           "artifact": {
-            "type": "object"
+            "type": "object",
+            "description": "For hades.php_graph.v1 and hades.code_graph.v1, graph_contract is additive and the legacy schema name remains valid.",
+            "properties": {
+              "graph_contract": {
+                "$ref": "#/components/schemas/CanonicalGraphArtifactContract"
+              }
+            },
+            "additionalProperties": true
           },
           "sha256": {
             "type": "string"
@@ -648,6 +758,243 @@
             "minimum": 0
           }
         }
+      },
+      "CanonicalGraphArtifactContract": {
+        "type": "object",
+        "required": [
+          "version",
+          "extractor",
+          "coverage",
+          "source"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "const": "hades.graph_artifact.v1"
+          },
+          "extractor": {
+            "type": "object",
+            "required": [
+              "name",
+              "version",
+              "mode",
+              "quality",
+              "fallback_reason"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "native",
+                  "graphify",
+                  "fallback",
+                  "legacy_adapter"
+                ]
+              },
+              "quality": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "partial",
+                  "inventory_only"
+                ]
+              },
+              "fallback_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Bounded machine-readable reason. Graphify failures use graphify_failed:<ExceptionClass>; raw exception messages and absolute paths are forbidden."
+              }
+            },
+            "additionalProperties": false
+          },
+          "coverage": {
+            "type": "object",
+            "required": [
+              "languages",
+              "files_total",
+              "files_analyzed",
+              "files_failed"
+            ],
+            "properties": {
+              "languages": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "files_total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "files_analyzed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "files_failed": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "source": {
+            "type": "object",
+            "required": [
+              "branch",
+              "head_commit"
+            ],
+            "properties": {
+              "branch": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "head_commit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "CanonicalGraphTraverseResponse": {
+        "type": "object",
+        "required": [
+          "protocol_version",
+          "project_id",
+          "workspace_binding_id",
+          "projection_id",
+          "artifact_id",
+          "schema",
+          "graph_version",
+          "quality",
+          "nodes",
+          "edges",
+          "provenance"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "string",
+            "const": "v1"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "workspace_binding_id": {
+            "type": "string"
+          },
+          "projection_id": {
+            "type": "string"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "string",
+            "enum": [
+              "hades.php_graph.v1",
+              "hades.code_graph.v1"
+            ]
+          },
+          "graph_version": {
+            "type": "string",
+            "description": "Backend-selected verified projection version; this is response-only."
+          },
+          "head_commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "inventory_only"
+            ]
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "projection_id",
+              "artifact_id",
+              "graph_version",
+              "schema"
+            ],
+            "properties": {
+              "projection_id": {
+                "type": "string"
+              },
+              "artifact_id": {
+                "type": "string"
+              },
+              "graph_version": {
+                "type": "string"
+              },
+              "schema": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": true
+      },
+      "HadesStructuredErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "examples": [
+                  "graph_projection_not_ready"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
       },
       "DoctorReportRequest": {
         "type": "object",
