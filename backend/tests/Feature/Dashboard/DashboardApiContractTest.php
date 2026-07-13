@@ -177,12 +177,14 @@ it('serves the only canonical Hades graph without leaking local paths', function
         ->assertJsonPath('source_scope.id', $canonical['binding_id'])
         ->assertJsonPath('graph_version', $canonical['graph_version'])
         ->assertJsonPath('quality', 'full')
-        ->assertJsonPath('projection_status', 'ready')
-        ->assertJsonPath('nodes.0.label', 'method:DashboardApiReader::graph');
+        ->assertJsonPath('projection_status', 'ready');
 
-    expect(json_encode($response->json(), JSON_THROW_ON_ERROR))
+    expect($response->json('nodes.0.id'))->toStartWith('hades-public-v1-node-')
+        ->and($response->json('nodes.0.label'))->toStartWith('function hades-public-v1-node-')
+        ->and(json_encode($response->json(), JSON_THROW_ON_ERROR))
         ->not->toContain('/srv/private/project')
-        ->not->toContain($localNodePath);
+        ->not->toContain($localNodePath)
+        ->not->toContain('method:DashboardApiReader::graph');
 });
 
 it('requires an explicit scope when multiple canonical graph scopes exist', function () {
@@ -364,7 +366,111 @@ it('sanitizes every local path form in canonical graph previews while preserving
     }
 });
 
-it('redacts embedded local path tokens from canonical graph responses without redacting safe identifiers', function () {
+it('publishes only schema-approved route labels while pseudonymizing canonical identities', function (string $expectedLabel, array $properties) {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    $rawNodeId = 'route-internal:'.hash('sha256', $expectedLabel);
+    $routeNode = [
+        'id' => $rawNodeId,
+        'labels' => ['Symbol', 'Route'],
+        'properties' => $properties + [
+            'kind' => 'route',
+            'source' => ['ref' => '/repo/private/routes.php'],
+        ],
+    ];
+    $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
+    Storage::disk('local')->put($storagePath, json_encode([
+        'nodes' => [$routeNode],
+        'relationships' => [],
+    ], JSON_THROW_ON_ERROR));
+    $legacy = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->assertJsonPath('nodes.0.label', $expectedLabel)
+        ->json();
+    expect($legacy['nodes'][0]['id'])->toStartWith('hades-public-v1-node-')
+        ->and($legacy['nodes'][0]['source']['ref'])->toBe($legacy['nodes'][0]['id'])
+        ->and(json_encode($legacy, JSON_THROW_ON_ERROR))->not->toContain($rawNodeId)
+        ->not->toContain('/repo/private/routes.php');
+
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, [$routeNode]);
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('nodes.0.label', $expectedLabel)
+        ->json();
+    expect($response['nodes'][0]['id'])
+        ->toStartWith('hades-public-v1-node-')
+        ->and($response['nodes'][0]['source']['ref'])->toBe($response['nodes'][0]['id'])
+        ->and(json_encode($response, JSON_THROW_ON_ERROR))->not->toContain($rawNodeId)
+        ->not->toContain('/repo/private/routes.php');
+})->with([
+    'users route' => ['/users', ['path' => '/users']],
+    'system route' => ['/system', ['uri' => '/system']],
+    'media route' => ['/media', ['path' => '/media']],
+    'data route' => ['/data', ['route' => '/data']],
+    'method and route' => ['GET /users', ['name' => 'GET /users']],
+]);
+
+it('minimizes non-route and unknown canonical nodes and never publishes raw graph identities', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $unsafeValues = [
+        '/app/private/File.php',
+        '/repo/private/Module.php',
+        'arbitrary-prefix:/secret/Controller.php',
+        'C:\\Users\\private\\Windows.php',
+        '\\\\server\\private\\Unc.php',
+        'file:///private/Uri.php',
+        'unknown arbitrary display text',
+        'symbol@/etc/passwd',
+        'symbol#/root/secret',
+    ];
+    $nodes = [
+        ['id' => 'file:raw-internal', 'labels' => ['File'], 'properties' => ['kind' => 'file', 'name' => $unsafeValues[0], 'path' => $unsafeValues[0]]],
+        ['id' => 'module:raw-internal', 'labels' => ['Module'], 'properties' => ['kind' => 'module', 'name' => $unsafeValues[1]]],
+        ['id' => 'class:raw-internal', 'labels' => ['Class'], 'properties' => ['kind' => 'class', 'name' => $unsafeValues[2]]],
+        ['id' => 'function:raw-internal', 'labels' => ['Function'], 'properties' => ['kind' => 'function', 'name' => $unsafeValues[3]]],
+        ['id' => 'method:raw-internal', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => $unsafeValues[4]]],
+        ['id' => 'model:raw-internal', 'labels' => ['Model'], 'properties' => ['kind' => 'model', 'name' => $unsafeValues[5]]],
+        ['id' => 'unknown:raw-internal', 'labels' => ['UnexpectedProducerType'], 'properties' => ['kind' => 'unexpected_kind', 'name' => $unsafeValues[6], 'nested' => ['source' => ['ref' => '/private/source.php']]]],
+        ['id' => 'unknown-at:raw-internal', 'labels' => ['UnexpectedProducerType'], 'properties' => ['kind' => 'unexpected_kind', 'name' => $unsafeValues[7]]],
+        ['id' => 'unknown-hash:raw-internal', 'labels' => ['UnexpectedProducerType'], 'properties' => ['kind' => 'unexpected_kind', 'name' => $unsafeValues[8]]],
+    ];
+    $relationships = [
+        ['id' => 'raw-edge-alpha', 'source_id' => 'file:raw-internal', 'target_id' => 'module:raw-internal', 'type' => 'imports'],
+        ['id' => 'raw-edge-beta', 'source_id' => 'class:raw-internal', 'target_id' => 'function:raw-internal', 'type' => 'calls'],
+    ];
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes, $relationships);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonCount(count($nodes), 'nodes')
+        ->assertJsonCount(count($relationships), 'edges')
+        ->json();
+    $json = json_encode($response, JSON_THROW_ON_ERROR);
+    $rawIdentities = [
+        ...array_column($nodes, 'id'),
+        ...array_column($relationships, 'id'),
+    ];
+
+    foreach ([...$unsafeValues, ...$rawIdentities, '/private/source.php'] as $privateValue) {
+        expect($json)->not->toContain($privateValue);
+    }
+    expect(collect($response['nodes'])->every(
+        fn (array $node): bool => str_starts_with($node['id'], 'hades-public-v1-node-')
+            && ($node['source']['ref'] ?? null) === $node['id'],
+    ))->toBeTrue()
+        ->and(collect($response['edges'])->every(
+            fn (array $edge): bool => str_starts_with($edge['id'], 'hades-public-v1-edge-'),
+        ))->toBeTrue();
+    assertDashboardGraphIdentityInvariants($response);
+});
+
+it('omits arbitrary canonical identifiers even when they do not look like local paths', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();
     DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
@@ -376,13 +482,12 @@ it('redacts embedded local path tokens from canonical graph responses without re
         ->assertOk()
         ->json();
     assertDashboardGraphResponseHasNoLocalPaths($canonical, $unsafeIdentifiers);
-    $canonicalStrings = collect(dashboardGraphJsonStrings($canonical));
     foreach ($safeIdentifiers as $safeIdentifier) {
-        expect($canonicalStrings)->toContain($safeIdentifier);
+        expect(json_encode($canonical, JSON_THROW_ON_ERROR))->not->toContain($safeIdentifier);
     }
 });
 
-it('redacts embedded local path tokens from legacy graph responses without redacting safe identifiers', function () {
+it('omits arbitrary legacy identifiers even when they do not look like local paths', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();
     ['unsafe' => $unsafeIdentifiers, 'safe' => $safeIdentifiers, 'nodes' => $nodes, 'relationships' => $relationships] = dashboardGraphPathFixture();
@@ -396,9 +501,8 @@ it('redacts embedded local path tokens from legacy graph responses without redac
         ->assertOk()
         ->json();
     assertDashboardGraphResponseHasNoLocalPaths($legacy, $unsafeIdentifiers);
-    $legacyStrings = collect(dashboardGraphJsonStrings($legacy));
     foreach ($safeIdentifiers as $safeIdentifier) {
-        expect($legacyStrings)->toContain($safeIdentifier);
+        expect(json_encode($legacy, JSON_THROW_ON_ERROR))->not->toContain($safeIdentifier);
     }
 });
 
@@ -593,14 +697,19 @@ it('serves a bounded graph preview with total stats and analyzer relationship ke
         ->assertOk()
         ->assertJsonPath('stats.nodes', 300)
         ->assertJsonPath('stats.edges', 249)
-        ->assertJsonPath('edges.0.from', 'function:handler0')
-        ->assertJsonPath('edges.0.to', 'function:handler1')
         ->json();
 
     expect($response['nodes'])->toHaveCount(200);
     expect($response['edges'])->toHaveCount(199);
-    expect($response['nodes'][0]['id'])->toBe('function:handler0');
+    expect($response['nodes'][0]['id'])->toStartWith('hades-public-v1-node-');
+    expect($response['nodes'][0]['label'])->toBe('handler0');
     expect($response['nodes'][0]['degree'])->toBeGreaterThan(0);
+    expect($response['edges'][0]['from'])->toBe($response['nodes'][0]['id']);
+    expect($response['edges'][0]['to'])->toBe($response['nodes'][1]['id']);
+    expect($response['edges'][0]['id'])->toStartWith('hades-public-v1-edge-');
+    expect(json_encode($response, JSON_THROW_ON_ERROR))
+        ->not->toContain('function:handler0')
+        ->not->toContain('rel-0');
 });
 
 function dashboardApiContractUserWithRole(string $roleName): User
@@ -972,6 +1081,10 @@ function dashboardGraphPathFixture(): array
         'prefix=/workspace/private/Equals.php',
         'prefix,/usr/local/private/Comma.php',
         'prefix|/srv/private/Pipe.php',
+        'symbol@/etc/passwd',
+        'symbol#/root/secret',
+        'custom@C:\\Users\\private\\AtDrive.php',
+        'edge@\\\\server\\private\\AtUnc.php',
     ];
     $safeIdentifiers = [
         'https://example.com/home/private/File.php',

@@ -15,6 +15,45 @@ final class DashboardApiReader
 
     private const CANONICAL_SCOPE_LIMIT = 50;
 
+    /**
+     * Dashboard graph previews are a data-minimized public projection, not a
+     * serialization of analyzer nodes. Only these canonical semantic types may
+     * contribute a human label, and only through the fields listed here.
+     * Unknown producer types fall back to their public pseudonym.
+     *
+     * @var array<string, array{types: list<string>, label_fields: list<string>}>
+     */
+    private const GRAPH_PREVIEW_NODE_POLICY = [
+        'route' => [
+            'types' => ['route', 'http_endpoint', 'httpendpoint', 'endpoint'],
+            'label_fields' => ['name', 'label', 'path', 'uri', 'route', 'url'],
+        ],
+        'file' => [
+            'types' => ['file'],
+            'label_fields' => ['name'],
+        ],
+        'module' => [
+            'types' => ['module', 'namespace', 'package'],
+            'label_fields' => ['name'],
+        ],
+        'class' => [
+            'types' => ['class', 'interface', 'trait', 'enum'],
+            'label_fields' => ['name'],
+        ],
+        'function' => [
+            'types' => ['function', 'method'],
+            'label_fields' => ['name'],
+        ],
+        'model' => [
+            'types' => ['model'],
+            'label_fields' => ['name'],
+        ],
+        'service' => [
+            'types' => ['service'],
+            'label_fields' => ['name'],
+        ],
+    ];
+
     public function __construct(private readonly CanonicalGraphRepository $canonicalGraphs) {}
 
     /**
@@ -2008,15 +2047,13 @@ final class DashboardApiReader
      */
     private function graphNode(array $node, string $repository, array $degreeByNode): array
     {
-        $labels = is_array($node['labels'] ?? null) ? $node['labels'] : [];
-        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
         $id = $this->graphNodeId($node);
-        $name = $properties['name'] ?? null;
+        $kind = $this->graphNodeSemanticKind($node);
 
         return [
             'id' => $id,
-            'label' => is_string($name) && trim($name) !== '' ? $name : $id,
-            'kind' => $this->graphNodeKind($labels),
+            'label' => $this->graphNodePublicLabel($node, $kind),
+            'kind' => $kind,
             'repository' => $repository,
             'degree' => $degreeByNode[$id] ?? 0,
             'risk' => 'medium',
@@ -2048,17 +2085,21 @@ final class DashboardApiReader
 
             $publicId = $idMap[$rawId];
             $node['id'] = $publicId;
-            if (! is_string($node['label'] ?? null) || $this->looksLikeLocalPath($node['label'])) {
-                $node['label'] = $publicId;
-            }
+            $publicLabel = is_string($node['label'] ?? null) && trim($node['label']) !== ''
+                ? $node['label']
+                : (string) ($node['kind'] ?? 'service').' '.$publicId;
             if (is_array($node['source'] ?? null)) {
                 $node['source']['ref'] = $publicId;
             }
-            $sanitizedNodes[] = $this->sanitizeGraphPreviewValue($node);
+            $node = $this->sanitizeGraphPreviewValue($node);
+            // The label has already passed the semantic policy for this node
+            // kind. Restoring it here preserves routes such as /system without
+            // weakening the defense-in-depth path detector for other fields.
+            $node['label'] = $publicLabel;
+            $sanitizedNodes[] = $node;
         }
 
         $eligibleEdges = [];
-        $rawEdgeIdCounts = [];
         $signatureOccurrences = [];
         foreach ($edges as $edge) {
             $rawFrom = (string) ($edge['from'] ?? '');
@@ -2067,36 +2108,29 @@ final class DashboardApiReader
                 continue;
             }
 
-            $rawEdgeId = (string) ($edge['id'] ?? '');
+            $publicFrom = $idMap[$rawFrom];
+            $publicTo = $idMap[$rawTo];
+            $kind = (string) ($edge['kind'] ?? 'uses');
             $signature = json_encode([
-                $rawEdgeId,
-                $rawFrom,
-                $rawTo,
-                (string) ($edge['kind'] ?? ''),
+                $kind,
+                $publicFrom,
+                $publicTo,
             ], JSON_THROW_ON_ERROR);
             $occurrence = $signatureOccurrences[$signature] ?? 0;
             $signatureOccurrences[$signature] = $occurrence + 1;
             $identity = $signature."\0".$occurrence;
-            $rawEdgeIdCounts[$rawEdgeId] = ($rawEdgeIdCounts[$rawEdgeId] ?? 0) + 1;
             $eligibleEdges[] = [
                 'edge' => $edge,
                 'raw_from' => $rawFrom,
                 'raw_to' => $rawTo,
-                'raw_id' => $rawEdgeId,
                 'identity' => $identity,
             ];
         }
 
         $edgeCandidates = [];
         foreach ($eligibleEdges as $record) {
-            $rawEdgeId = $record['raw_id'];
-            $preserveRawId = $rawEdgeId !== ''
-                && $rawEdgeIdCounts[$rawEdgeId] === 1
-                && ! $this->looksLikeLocalPath($rawEdgeId)
-                && ! str_starts_with($rawEdgeId, $this->graphPublicIdPrefix('edge'));
-            $edgeCandidates[$record['identity']] = $preserveRawId
-                ? $rawEdgeId
-                : $this->graphPublicIdPrefix('edge').hash('sha256', $record['identity']);
+            $edgeCandidates[$record['identity']] = $this->graphPublicIdPrefix('edge')
+                .hash('sha256', "edge\0".$record['identity']);
         }
         $edgeIdMap = $this->resolveGraphPublicIdCandidates($edgeCandidates, 'edge');
 
@@ -2126,10 +2160,7 @@ final class DashboardApiReader
         $candidates = [];
 
         foreach ($identifiers as $identifier) {
-            $candidates[$identifier] = $this->looksLikeLocalPath($identifier)
-                || str_starts_with($identifier, $prefix)
-                ? $prefix.hash('sha256', $identifier)
-                : $identifier;
+            $candidates[$identifier] = $prefix.hash('sha256', $kind."\0".$identifier);
         }
 
         return $this->resolveGraphPublicIdCandidates($candidates, $kind);
@@ -2397,6 +2428,124 @@ final class DashboardApiReader
         }
 
         return 'service';
+    }
+
+    /** @param array<string, mixed> $node */
+    private function graphNodeSemanticKind(array $node): string
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        $types = [];
+        if (is_string($properties['kind'] ?? null)) {
+            $types[] = strtolower(trim($properties['kind']));
+        }
+        foreach (is_array($node['labels'] ?? null) ? $node['labels'] : [] as $label) {
+            $types[] = strtolower(trim((string) $label));
+        }
+
+        foreach (self::GRAPH_PREVIEW_NODE_POLICY as $publicKind => $policy) {
+            if (array_intersect($types, $policy['types']) !== []) {
+                return $publicKind;
+            }
+        }
+
+        return 'service';
+    }
+
+    /** @param array<string, mixed> $node */
+    private function graphNodePublicLabel(array $node, string $kind): ?string
+    {
+        $policy = self::GRAPH_PREVIEW_NODE_POLICY[$kind] ?? null;
+        if ($policy === null) {
+            return null;
+        }
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+
+        if ($kind === 'route') {
+            return $this->graphRouteLabel($properties, $policy['label_fields']);
+        }
+
+        foreach ($policy['label_fields'] as $field) {
+            $value = $properties[$field] ?? null;
+            if (! is_string($value)) {
+                continue;
+            }
+            $label = $kind === 'file'
+                ? $this->graphFileLabel($value)
+                : $this->graphSymbolLabel($value);
+            if ($label !== null) {
+                return $label;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $properties
+     * @param  list<string>  $labelFields
+     */
+    private function graphRouteLabel(array $properties, array $labelFields): ?string
+    {
+        foreach ($labelFields as $field) {
+            if (! is_string($properties[$field] ?? null)) {
+                continue;
+            }
+            $candidate = trim($properties[$field]);
+            if ($this->isGraphHttpRouteLabel($candidate) || $this->isGraphRoutePath($candidate)) {
+                return $candidate;
+            }
+        }
+
+        $method = $properties['http_method'] ?? $properties['method'] ?? $properties['verb'] ?? null;
+        $path = $properties['path'] ?? $properties['uri'] ?? $properties['route'] ?? $properties['url'] ?? null;
+        if (is_string($method) && is_string($path)) {
+            $method = strtoupper(trim($method));
+            $path = trim($path);
+            if (preg_match('/\A(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\z/', $method) === 1
+                && $this->isGraphRoutePath($path)) {
+                return $method.' '.$path;
+            }
+        }
+
+        return null;
+    }
+
+    private function isGraphHttpRouteLabel(string $value): bool
+    {
+        if (preg_match('/\A(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\s+(?<path>\/.*)\z/', $value, $matches) !== 1) {
+            return false;
+        }
+
+        return $this->isGraphRoutePath((string) $matches['path']);
+    }
+
+    private function isGraphRoutePath(string $value): bool
+    {
+        return strlen($value) <= 512
+            && preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) === 1;
+    }
+
+    private function graphFileLabel(string $value): ?string
+    {
+        $basename = basename(str_replace('\\', '/', trim($value)));
+
+        return $basename !== ''
+            && $basename !== '.'
+            && $basename !== '..'
+            && strlen($basename) <= 200
+            && preg_match('/\A[A-Za-z0-9_@.-]+\z/', $basename) === 1
+                ? $basename
+                : null;
+    }
+
+    private function graphSymbolLabel(string $value): ?string
+    {
+        $value = trim($value);
+
+        return strlen($value) <= 200
+            && preg_match('/\A[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\\\\|::|\.)[A-Za-z_$][A-Za-z0-9_$]*)*\z/', $value) === 1
+                ? $value
+                : null;
     }
 
     private function graphEdgeKind(string $kind): string
