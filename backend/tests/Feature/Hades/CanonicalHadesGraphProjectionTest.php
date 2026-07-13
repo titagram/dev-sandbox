@@ -194,6 +194,19 @@ it('rejects malformed explicit canonical artifacts before projection dispatch', 
     Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
 });
 
+it('rejects malformed explicit graph contracts before projection dispatch', function () {
+    Bus::fake();
+    $this->withoutExceptionHandling();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $payload = canonicalProjectionUpload($agent, $bindingId);
+    $payload['artifact']['graph_contract']['extractor']['mode'] = 'full';
+
+    expect(fn () => $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']]))
+        ->toThrow(InvalidArgumentException::class, 'Canonical graph contract is malformed at extractor.mode.');
+    expect(DB::table('canonical_graph_projections')->count())->toBe(0);
+    Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+});
+
 it('job marks projecting before client work then queues a bounded retry and rethrows', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();
