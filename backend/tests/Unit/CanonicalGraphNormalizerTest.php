@@ -227,3 +227,75 @@ it('rejects malformed explicit canonical graph contracts before graph normalizat
     'invalid source branch type' => ['invalid_branch_type', 'source.branch'],
     'unexpected extractor key' => ['unexpected_extractor_key', 'extractor'],
 ]);
+
+it('accepts bounded metadata emitted by current native and supported legacy producers', function (array $contract) {
+    $normalized = (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => $contract,
+        'nodes' => [['id' => 'class:Compatible']],
+    ], []);
+
+    expect($normalized['contract'])->toBe($contract);
+})->with([
+    'native partial' => [[
+        'version' => 'hades.graph_artifact.v1',
+        'extractor' => ['name' => 'hades-native-typescript', 'version' => '1', 'mode' => 'native', 'quality' => 'partial', 'fallback_reason' => 'canonicalization_omissions'],
+        'coverage' => ['languages' => ['typescript'], 'files_total' => 12, 'files_analyzed' => 10, 'files_failed' => 2],
+        'source' => ['branch' => 'feature/canonical-graph', 'head_commit' => str_repeat('a', 40)],
+    ]],
+    'graphify failure' => [[
+        'version' => 'hades.graph_artifact.v1',
+        'extractor' => ['name' => 'graphify', 'version' => '1.0', 'mode' => 'fallback', 'quality' => 'inventory_only', 'fallback_reason' => 'graphify_failed:RuntimeError'],
+        'coverage' => ['languages' => ['python'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
+        'source' => ['branch' => null, 'head_commit' => null],
+    ]],
+    'legacy adapter' => [[
+        'version' => 'hades.graph_artifact.v1',
+        'extractor' => ['name' => 'hades-legacy-php', 'version' => '1', 'mode' => 'legacy_adapter', 'quality' => 'partial', 'fallback_reason' => 'missing_contract_metadata'],
+        'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
+        'source' => ['branch' => 'main', 'head_commit' => 'abc123'],
+    ]],
+]);
+
+it('rejects unbounded, control-bearing, or grammatically invalid canonical metadata', function (Closure $mutate, string $field) {
+    $contract = unitCanonicalGraphContract();
+    $mutate($contract);
+
+    expect(fn () => (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => $contract,
+        'nodes' => [['id' => 'class:ValidIdentity']],
+    ], []))->toThrow(InvalidArgumentException::class, "Canonical graph contract is malformed at {$field}.");
+})->with([
+    'oversized extractor name' => [fn (array &$c) => $c['extractor']['name'] = str_repeat('a', 65), 'extractor.name'],
+    'control in extractor version' => [fn (array &$c) => $c['extractor']['version'] = "1\nsecret", 'extractor.version'],
+    'too many languages' => [fn (array &$c) => $c['coverage']['languages'] = array_fill(0, 17, 'php'), 'coverage.languages'],
+    'oversized language' => [fn (array &$c) => $c['coverage']['languages'] = [str_repeat('p', 33)], 'coverage.languages'],
+    'invalid language grammar' => [fn (array &$c) => $c['coverage']['languages'] = ['../../private'], 'coverage.languages'],
+    'oversized branch' => [fn (array &$c) => $c['source']['branch'] = str_repeat('b', 256), 'source.branch'],
+    'control in branch' => [fn (array &$c) => $c['source']['branch'] = "main\n/private", 'source.branch'],
+    'invalid head commit' => [fn (array &$c) => $c['source']['head_commit'] = 'not-a-commit', 'source.head_commit'],
+    'oversized head commit' => [fn (array &$c) => $c['source']['head_commit'] = str_repeat('a', 81), 'source.head_commit'],
+    'free-form fallback text' => [fn (array &$c) => $c['extractor']['fallback_reason'] = 'failed at /Users/private/file.php', 'extractor.fallback_reason'],
+    'oversized graphify exception code' => [fn (array &$c) => $c['extractor']['fallback_reason'] = 'graphify_failed:'.str_repeat('E', 65), 'extractor.fallback_reason'],
+]);
+
+it('rejects impossible canonical coverage and quality combinations', function (Closure $mutate, string $field) {
+    $contract = unitCanonicalGraphContract();
+    $mutate($contract);
+
+    expect(fn () => (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => $contract,
+        'nodes' => [['id' => 'class:ValidIdentity']],
+    ], []))->toThrow(InvalidArgumentException::class, "Canonical graph contract is malformed at {$field}.");
+})->with([
+    'analyzed exceeds total' => [fn (array &$c) => $c['coverage']['files_analyzed'] = 2, 'coverage'],
+    'failed exceeds total' => [fn (array &$c) => $c['coverage']['files_failed'] = 2, 'coverage'],
+    'counts do not partition total' => [function (array &$c) {
+        $c['coverage']['files_total'] = 3;
+        $c['coverage']['files_analyzed'] = 1;
+    }, 'coverage'],
+    'full quality has fallback reason' => [fn (array &$c) => $c['extractor']['fallback_reason'] = 'bounded_or_omitted_input', 'extractor'],
+    'partial quality lacks fallback reason' => [function (array &$c) {
+        $c['extractor']['quality'] = 'partial';
+        $c['extractor']['fallback_reason'] = null;
+    }, 'extractor'],
+]);

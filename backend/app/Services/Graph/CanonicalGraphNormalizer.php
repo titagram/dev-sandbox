@@ -6,6 +6,14 @@ use InvalidArgumentException;
 
 class CanonicalGraphNormalizer
 {
+    private const FALLBACK_REASONS = [
+        'no_relationships_extracted',
+        'bounded_or_omitted_input',
+        'canonicalization_omissions',
+        'graphify_unavailable',
+        'missing_contract_metadata',
+    ];
+
     public function normalize(array $payload, array $identity): array
     {
         $contract = $payload['graph_contract'] ?? null;
@@ -30,8 +38,8 @@ class CanonicalGraphNormalizer
             $this->malformed('extractor');
         }
         $this->assertExactKeys($extractor, ['name', 'version', 'mode', 'quality', 'fallback_reason'], 'extractor');
-        $this->assertNonEmptyString($extractor['name'], 'extractor.name');
-        $this->assertNonEmptyString($extractor['version'], 'extractor.version');
+        $this->assertPattern($extractor['name'], 'extractor.name', 64, '/\A[a-z0-9][a-z0-9._-]*\z/D');
+        $this->assertPattern($extractor['version'], 'extractor.version', 32, '/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/D');
         if (! in_array($extractor['mode'], ['native', 'graphify', 'fallback', 'legacy_adapter'], true)) {
             $this->malformed('extractor.mode');
         }
@@ -39,7 +47,14 @@ class CanonicalGraphNormalizer
             $this->malformed('extractor.quality');
         }
         if ($extractor['fallback_reason'] !== null) {
-            $this->assertNonEmptyString($extractor['fallback_reason'], 'extractor.fallback_reason');
+            $reason = $extractor['fallback_reason'];
+            if (! is_string($reason) || strlen($reason) > 100 || (! in_array($reason, self::FALLBACK_REASONS, true)
+                && preg_match('/\Agraphify_failed:[A-Za-z_][A-Za-z0-9_]{0,63}\z/D', $reason) !== 1)) {
+                $this->malformed('extractor.fallback_reason');
+            }
+        }
+        if (($extractor['quality'] === 'full') !== ($extractor['fallback_reason'] === null)) {
+            $this->malformed('extractor');
         }
 
         $coverage = $contract['coverage'] ?? null;
@@ -47,16 +62,23 @@ class CanonicalGraphNormalizer
             $this->malformed('coverage');
         }
         $this->assertExactKeys($coverage, ['languages', 'files_total', 'files_analyzed', 'files_failed'], 'coverage');
-        if (! is_array($coverage['languages']) || ! array_is_list($coverage['languages'])) {
+        if (! is_array($coverage['languages']) || ! array_is_list($coverage['languages'])
+            || $coverage['languages'] === [] || count($coverage['languages']) > 16
+            || count(array_unique($coverage['languages'], SORT_REGULAR)) !== count($coverage['languages'])) {
             $this->malformed('coverage.languages');
         }
         foreach ($coverage['languages'] as $language) {
-            $this->assertNonEmptyString($language, 'coverage.languages');
+            $this->assertPattern($language, 'coverage.languages', 32, '/\A[a-z0-9][a-z0-9+#._-]*\z/D');
         }
         foreach (['files_total', 'files_analyzed', 'files_failed'] as $field) {
             if (! is_int($coverage[$field]) || $coverage[$field] < 0) {
                 $this->malformed('coverage.'.$field);
             }
+        }
+        if ($coverage['files_analyzed'] > $coverage['files_total']
+            || $coverage['files_failed'] > $coverage['files_total']
+            || $coverage['files_total'] !== $coverage['files_analyzed'] + $coverage['files_failed']) {
+            $this->malformed('coverage');
         }
 
         $source = $contract['source'] ?? null;
@@ -64,10 +86,11 @@ class CanonicalGraphNormalizer
             $this->malformed('source');
         }
         $this->assertExactKeys($source, ['branch', 'head_commit'], 'source');
-        foreach (['branch', 'head_commit'] as $field) {
-            if ($source[$field] !== null) {
-                $this->assertNonEmptyString($source[$field], 'source.'.$field);
-            }
+        if ($source['branch'] !== null) {
+            $this->assertPattern($source['branch'], 'source.branch', 255, '/\A[A-Za-z0-9][A-Za-z0-9._\/-]*\z/D');
+        }
+        if ($source['head_commit'] !== null) {
+            $this->assertPattern($source['head_commit'], 'source.head_commit', 80, '/\A[0-9a-fA-F]{4,80}\z/D');
         }
     }
 
@@ -84,6 +107,13 @@ class CanonicalGraphNormalizer
     private function assertNonEmptyString(mixed $value, string $field): void
     {
         if (! is_string($value) || trim($value) === '') {
+            $this->malformed($field);
+        }
+    }
+
+    private function assertPattern(mixed $value, string $field, int $maxLength, string $pattern): void
+    {
+        if (! is_string($value) || strlen($value) > $maxLength || preg_match($pattern, $value) !== 1) {
             $this->malformed($field);
         }
     }

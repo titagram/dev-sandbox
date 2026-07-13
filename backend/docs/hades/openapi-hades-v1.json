@@ -945,11 +945,15 @@
             "properties": {
               "name": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z0-9][a-z0-9._-]*$"
               },
               "version": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 32,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
               },
               "mode": {
                 "type": "string",
@@ -974,6 +978,8 @@
                   "null"
                 ],
                 "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^(no_relationships_extracted|bounded_or_omitted_input|canonicalization_omissions|graphify_unavailable|missing_contract_metadata|graphify_failed:[A-Za-z_][A-Za-z0-9_]{0,63})$",
                 "description": "Bounded machine-readable reason. Graphify failures use graphify_failed:<ExceptionClass>; raw exception messages and absolute paths are forbidden."
               }
             },
@@ -990,9 +996,14 @@
             "properties": {
               "languages": {
                 "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "uniqueItems": true,
                 "items": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "pattern": "^[a-z0-9][a-z0-9+#._-]*$"
                 }
               },
               "files_total": {
@@ -1022,14 +1033,18 @@
                   "string",
                   "null"
                 ],
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 255,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
               },
               "head_commit": {
                 "type": [
                   "string",
                   "null"
                 ],
-                "minLength": 1
+                "minLength": 4,
+                "maxLength": 80,
+                "pattern": "^[0-9a-fA-F]{4,80}$"
               }
             },
             "additionalProperties": false

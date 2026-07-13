@@ -36,7 +36,8 @@ their existing schema or response fields. `hades.php_graph.v1` and
 
 `quality` is `full`, `partial`, or `inventory_only`. Fallback reasons are
 bounded machine values: native Hades may report
-`no_relationships_extracted` or `bounded_or_omitted_input`; the analyzer may
+`no_relationships_extracted`, `bounded_or_omitted_input`, or
+`canonicalization_omissions`; the analyzer may
 report `graphify_unavailable` or `graphify_failed:<ExceptionClass>`. It never
 serializes a raw exception message or an absolute workspace path. Trusted
 pre-contract rows are adapted at read time with `mode=legacy_adapter`,
@@ -49,9 +50,12 @@ level keys above are required. `extractor` must contain exactly `name`,
 `version`, `mode`, `quality`, and nullable `fallback_reason`; `coverage` must
 contain exactly `languages`, `files_total`, `files_analyzed`, and
 `files_failed`; `source` must contain exactly nullable `branch` and
-`head_commit`. Names, versions, and languages are non-empty strings, coverage
-counts are non-negative integers, and `mode` is one of `native`, `graphify`,
-`fallback`, or `legacy_adapter`. An explicit malformed contract is rejected;
+`head_commit`. Extractor names (64 characters), versions (32), languages (up
+to 16 entries of 32), branches (255), commits (80 hexadecimal characters),
+and fallback codes (100) are bounded and grammar checked. Coverage is a
+partition: `files_total = files_analyzed + files_failed`. `full` quality
+requires a null fallback; degraded quality requires a bounded code. `mode` is
+one of `native`, `graphify`, `fallback`, or `legacy_adapter`. An explicit malformed contract is rejected;
 it is never silently downgraded to the legacy adapter.
 
 ## Source resolution and read compatibility
