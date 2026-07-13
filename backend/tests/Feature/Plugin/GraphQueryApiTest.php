@@ -535,16 +535,64 @@ it('includes an isolated matching traversal start without weakening graph versio
 
     $command = $fakeClient->commands[0];
     expect($command['cypher'])
+        ->toContain('WITH start ORDER BY start.external_id LIMIT $fetch_limit WITH collect(start) AS starts UNWIND starts AS start')
         ->toContain('OPTIONAL MATCH p=(start)-[*1..2]->(node:CanonicalGraphNode {graph_version: $graph_version})')
-        ->toContain('WITH start, p ORDER BY start.external_id, length(p)')
-        ->toContain('CASE WHEN p IS NULL THEN [start] ELSE nodes(p) END')
-        ->toContain('CASE WHEN p IS NULL THEN [] ELSE [r IN relationships(p) | properties(r) + {source_id: startNode(r).external_id, target_id: endNode(r).external_id}] END')
+        ->toContain('WITH starts, start, p ORDER BY start.external_id, length(p)')
+        ->not->toContain('collect(DISTINCT start)')
+        ->toContain('collect(p) AS matchedPaths')
+        ->toContain('reduce(candidateNodes = starts, matchedPath IN paths | candidateNodes + nodes(matchedPath))')
+        ->toContain('reduce(candidateEdges = [], matchedPath IN paths | candidateEdges + relationships(matchedPath))')
+        ->toContain('r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}')
+        ->not->toContain('collect({nodes:')
+        ->not->toContain('path.nodes')
+        ->not->toContain('path.edges')
         ->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
         ->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
+        ->not->toMatch('/\\b(?:CREATE|MERGE|SET|DELETE|REMOVE|DROP)\\b/i')
         ->and($command['params']['graph_version'])->toStartWith('graph-version-')
         ->and($command['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
         ->and(array_column($result['results'], 'id'))->toBe(['isolated'])
         ->and($result['edges'])->toBe([])
+        ->and($result['traversal_match_fields'])->toBe(['name']);
+});
+
+it('normalizes iterable rows returned by the real Neo4j driver', function () {
+    $client = new class implements Neo4jClient
+    {
+        public function run(string $cypher, array $params = []): mixed
+        {
+            return new ArrayIterator([
+                new ArrayIterator([
+                    'nodes' => new ArrayIterator([
+                        new ArrayIterator([
+                            'node' => new ArrayIterator(['external_id' => 'driver-start', 'name' => 'DriverStart']),
+                            'labels' => new ArrayIterator(['CanonicalGraphNode']),
+                        ]),
+                        new ArrayIterator([
+                            'node' => new ArrayIterator(['external_id' => 'driver-target', 'name' => 'DriverTarget']),
+                            'labels' => new ArrayIterator(['CanonicalGraphNode']),
+                        ]),
+                    ]),
+                    'edges' => new ArrayIterator([
+                        new ArrayIterator(['external_id' => 'driver-edge', 'source_id' => 'driver-start', 'target_id' => 'driver-target']),
+                    ]),
+                    'truncated' => false,
+                    'match_fields' => new ArrayIterator(['name']),
+                ]),
+            ]);
+        }
+    };
+    $service = new CanonicalGraphQueryService($client);
+    $projectId = graphQueryProjectId();
+    $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+    graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+
+    $result = $service->query($projectId, 'repository', $repo->id, 'traverse', [
+        'start' => 'DriverStart', 'limit' => 5,
+    ]);
+
+    expect(array_column($result['results'], 'id'))->toBe(['driver-start', 'driver-target'])
+        ->and(array_column($result['edges'], 'external_id'))->toBe(['driver-edge'])
         ->and($result['traversal_match_fields'])->toBe(['name']);
 });
 

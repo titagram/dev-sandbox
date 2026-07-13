@@ -115,14 +115,19 @@ class CanonicalGraphQueryService
         ]);
 
         $cypher = 'MATCH (start:CanonicalGraphNode {graph_version: $graph_version}) WHERE ('.$startMatch.') '
+            .'WITH start ORDER BY start.external_id LIMIT $fetch_limit '
+            .'WITH collect(start) AS starts UNWIND starts AS start '
             .'OPTIONAL MATCH p=(start)'.$pattern.'(node:CanonicalGraphNode {graph_version: $graph_version}) '
             .'WHERE p IS NULL OR (ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)) '
-            .'WITH start, p ORDER BY start.external_id, length(p) LIMIT $path_fetch_limit '
-            .'WITH collect({nodes: CASE WHEN p IS NULL THEN [start] ELSE nodes(p) END, edges: CASE WHEN p IS NULL THEN [] ELSE [r IN relationships(p) | properties(r) + {source_id: startNode(r).external_id, target_id: endNode(r).external_id}] END}) AS candidatePaths, collect(DISTINCT start) AS starts '
-            .'WITH candidatePaths[0..$path_limit] AS paths, starts, size(candidatePaths) > $path_limit AS pathTruncated '
-            .'UNWIND paths AS path UNWIND path.nodes AS candidate WITH paths, starts, pathTruncated, collect(DISTINCT candidate) AS uniqueNodes '
+            .'WITH starts, start, p ORDER BY start.external_id, length(p) LIMIT $path_fetch_limit '
+            .'WITH starts, collect(p) AS matchedPaths '
+            .'WITH matchedPaths[0..$path_limit] AS paths, starts, size(matchedPaths) > $path_limit AS pathTruncated '
+            .'WITH starts, pathTruncated, '
+            .'reduce(candidateNodes = starts, matchedPath IN paths | candidateNodes + nodes(matchedPath)) AS candidateNodes, '
+            .'reduce(candidateEdges = [], matchedPath IN paths | candidateEdges + relationships(matchedPath)) AS candidateEdges '
+            .'UNWIND candidateNodes AS candidate WITH starts, pathTruncated, candidateEdges, collect(DISTINCT candidate) AS uniqueNodes '
             .'RETURN [n IN uniqueNodes[0..$fetch_limit] | {node: properties(n), labels: labels(n)}] AS nodes, '
-            .'reduce(allEdges = [], path IN paths | allEdges + path.edges) AS edges, '
+            .'[r IN candidateEdges | r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}] AS edges, '
             .'size(uniqueNodes) > $limit OR pathTruncated AS truncated, '
             ."[field IN ['external_id', 'name', 'label', 'path'] WHERE any(s IN starts WHERE toLower(coalesce(s[field], '')) CONTAINS \$start_query)] AS match_fields";
 
@@ -155,6 +160,7 @@ class CanonicalGraphQueryService
     /** @return array{0: list<array<string,mixed>>, 1: list<array<string,mixed>>, 2: bool, 3: list<string>} */
     private function normaliseRows(mixed $result, ?int $limit = null): array
     {
+        $result = $this->materialiseSequences($result);
         if (! is_array($result)) {
             return [[], [], false, []];
         }
@@ -209,6 +215,21 @@ class CanonicalGraphQueryService
         }
 
         return [$nodes, array_values($edgesById), $truncated, array_values(array_unique($matchFields))];
+    }
+
+    private function materialiseSequences(mixed $value): mixed
+    {
+        if ($value instanceof \Traversable) {
+            $value = iterator_to_array($value);
+        }
+
+        if (is_array($value)) {
+            foreach ($value as $key => $item) {
+                $value[$key] = $this->materialiseSequences($item);
+            }
+        }
+
+        return $value;
     }
 
     private function edgeIdentity(array $edge): string

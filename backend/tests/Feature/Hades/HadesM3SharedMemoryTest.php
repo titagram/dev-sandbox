@@ -1434,7 +1434,7 @@ it('resolves legacy Hades start fields partially and limits deduplicated travers
         ->and($client->commands[0]['params']['start_query'])->toBe('invoice')
         ->and($client->commands[0]['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
         ->and($client->commands[0]['cypher'])->toContain('LIMIT $path_fetch_limit')
-        ->and($client->commands[0]['cypher'])->toContain('size(candidatePaths) > $path_limit AS pathTruncated')
+        ->and($client->commands[0]['cypher'])->toContain('size(matchedPaths) > $path_limit AS pathTruncated')
         ->and($response['count'])->toBe(2)
         ->and(array_column($response['nodes'], 'id'))->toBe(['one', 'two'])
         ->and($response['edge_count'])->toBe(1)
