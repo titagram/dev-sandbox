@@ -413,6 +413,103 @@ it('publishes only schema-approved route labels while pseudonymizing canonical i
     'method and route' => ['GET /users', ['name' => 'GET /users']],
 ]);
 
+it('fails closed for conflicting graph node semantics independent of producer label order', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $privatePath = '/app/private/Secret.php';
+    $privateVerbPath = 'GET /home/private/Secret.php';
+    $nodes = [
+        ['id' => 'conflict:file-route-a', 'labels' => ['File', 'Route'], 'properties' => ['kind' => 'route', 'name' => $privatePath]],
+        ['id' => 'conflict:file-route-b', 'labels' => ['Route', 'File'], 'properties' => ['kind' => 'route', 'name' => $privatePath]],
+        ['id' => 'conflict:function-route', 'labels' => ['Function', 'Route'], 'properties' => ['kind' => 'route', 'name' => $privateVerbPath]],
+        ['id' => 'conflict:unknown-route', 'labels' => ['UnexpectedProducer', 'Route'], 'properties' => ['kind' => 'route', 'name' => $privatePath]],
+        ['id' => 'route:safe', 'labels' => ['Symbol', 'Route'], 'properties' => ['kind' => 'http_endpoint', 'path' => '/api/orders']],
+    ];
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+    $publicNodes = collect($response['nodes']);
+
+    expect($publicNodes->where('kind', 'unknown'))->toHaveCount(4)
+        ->and($publicNodes->where('kind', 'route'))->toHaveCount(1)
+        ->and($publicNodes->firstWhere('kind', 'route')['label'])->toBe('/api/orders')
+        ->and(json_encode($response, JSON_THROW_ON_ERROR))->not->toContain($privatePath)
+        ->not->toContain($privateVerbPath);
+});
+
+it('never republishes raw node external or source identities as public labels', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    $rawIdentities = [
+        'InternalSecretToken',
+        'App\\Services\\OrderService',
+        'ExternalProducerIdentity',
+        'SourceIdentity',
+        'SecretFile.php',
+        'CaseNormalizedToken',
+    ];
+    $nodes = [
+        ['id' => $rawIdentities[0], 'labels' => ['Function'], 'properties' => ['kind' => 'function', 'name' => $rawIdentities[0]]],
+        ['id' => $rawIdentities[1], 'labels' => ['Class'], 'properties' => ['kind' => 'class', 'name' => $rawIdentities[1]]],
+        ['id' => 'function:external', 'labels' => ['Function'], 'properties' => ['kind' => 'function', 'external_id' => $rawIdentities[2], 'name' => $rawIdentities[2]]],
+        ['id' => 'function:source', 'labels' => ['Function'], 'properties' => ['kind' => 'function', 'source' => ['ref' => $rawIdentities[3]], 'name' => $rawIdentities[3]]],
+        ['id' => $rawIdentities[4], 'labels' => ['File'], 'properties' => ['kind' => 'file', 'name' => '/repo/private/'.$rawIdentities[4]]],
+        ['id' => $rawIdentities[5], 'labels' => ['Function'], 'properties' => ['kind' => 'function', 'name' => strtolower($rawIdentities[5])]],
+        ['id' => 'function:public', 'labels' => ['Symbol', 'Function'], 'properties' => ['kind' => 'method', 'name' => 'PublicReadableMethod']],
+    ];
+    $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
+    Storage::disk('local')->put($storagePath, json_encode(['nodes' => $nodes, 'relationships' => []], JSON_THROW_ON_ERROR));
+
+    $legacy = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->json();
+
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+    $canonical = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+
+    foreach ([$legacy, $canonical] as $response) {
+        $json = json_encode($response, JSON_THROW_ON_ERROR);
+        foreach ([...$rawIdentities, strtolower($rawIdentities[5])] as $rawIdentity) {
+            expect($json)->not->toContain($rawIdentity);
+        }
+        expect(collect($response['nodes'])->pluck('label'))->toContain('PublicReadableMethod');
+    }
+});
+
+it('uses a closed semantic allowlist for arbitrary producer node kinds', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $nodes = [
+        ['id' => 'alien:one', 'labels' => ['UnexpectedProducer'], 'properties' => ['kind' => 'alien', 'name' => 'InternalSecretToken']],
+        ['id' => 'alien:two', 'labels' => ['Symbol'], 'properties' => ['kind' => 'arbitrary_producer', 'name' => 'AnotherSecretToken']],
+        ['id' => 'service:known', 'labels' => ['Symbol', 'Service'], 'properties' => ['kind' => 'service', 'name' => 'KnownPublicService']],
+    ];
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+    $publicNodes = collect($response['nodes']);
+    $json = json_encode($response, JSON_THROW_ON_ERROR);
+
+    expect($publicNodes->where('kind', 'unknown'))->toHaveCount(2)
+        ->and($publicNodes->where('kind', 'service'))->toHaveCount(1)
+        ->and($publicNodes->firstWhere('kind', 'service')['label'])->toBe('KnownPublicService')
+        ->and($json)->not->toContain('InternalSecretToken')
+        ->not->toContain('AnotherSecretToken');
+});
+
 it('minimizes non-route and unknown canonical nodes and never publishes raw graph identities', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();

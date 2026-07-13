@@ -2442,13 +2442,35 @@ final class DashboardApiReader
             $types[] = strtolower(trim((string) $label));
         }
 
-        foreach (self::GRAPH_PREVIEW_NODE_POLICY as $publicKind => $policy) {
-            if (array_intersect($types, $policy['types']) !== []) {
-                return $publicKind;
+        $recognizedKinds = [];
+        $hasUnknownType = false;
+        foreach (array_values(array_unique($types)) as $type) {
+            if ($type === '' || $type === 'symbol') {
+                continue;
             }
+
+            $recognizedKind = null;
+            foreach (self::GRAPH_PREVIEW_NODE_POLICY as $publicKind => $policy) {
+                if (in_array($type, $policy['types'], true)) {
+                    $recognizedKind = $publicKind;
+                    break;
+                }
+            }
+
+            if ($recognizedKind === null) {
+                $hasUnknownType = true;
+
+                continue;
+            }
+
+            $recognizedKinds[$recognizedKind] = true;
         }
 
-        return 'service';
+        if ($hasUnknownType || count($recognizedKinds) !== 1) {
+            return 'unknown';
+        }
+
+        return (string) array_key_first($recognizedKinds);
     }
 
     /** @param array<string, mixed> $node */
@@ -2460,24 +2482,71 @@ final class DashboardApiReader
         }
         $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
 
+        $label = null;
         if ($kind === 'route') {
-            return $this->graphRouteLabel($properties, $policy['label_fields']);
+            $label = $this->graphRouteLabel($properties, $policy['label_fields']);
+        } else {
+            foreach ($policy['label_fields'] as $field) {
+                $value = $properties[$field] ?? null;
+                if (! is_string($value)) {
+                    continue;
+                }
+                $label = $kind === 'file'
+                    ? $this->graphFileLabel($value)
+                    : $this->graphSymbolLabel($value);
+                if ($label !== null) {
+                    break;
+                }
+            }
         }
 
-        foreach ($policy['label_fields'] as $field) {
-            $value = $properties[$field] ?? null;
-            if (! is_string($value)) {
+        return $label !== null && ! $this->graphLabelMatchesRawIdentity($label, $node, $kind)
+            ? $label
+            : null;
+    }
+
+    /** @param array<string, mixed> $node */
+    private function graphLabelMatchesRawIdentity(string $label, array $node, string $kind): bool
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        $identities = [
+            $node['id'] ?? null,
+            $node['external_id'] ?? null,
+            $node['symbol_id'] ?? null,
+            $properties['id'] ?? null,
+            $properties['external_id'] ?? null,
+            $properties['symbol_id'] ?? null,
+        ];
+
+        foreach ([$node['source'] ?? null, $properties['source'] ?? null] as $source) {
+            if (is_array($source)) {
+                $identities[] = $source['ref'] ?? null;
+                $identities[] = $source['id'] ?? null;
+                $identities[] = $source['external_id'] ?? null;
+            }
+        }
+
+        $normalizedLabel = $this->normalizeGraphIdentityForLabel($label, $kind);
+        foreach ($identities as $identity) {
+            if (! is_string($identity) || trim($identity) === '') {
                 continue;
             }
-            $label = $kind === 'file'
-                ? $this->graphFileLabel($value)
-                : $this->graphSymbolLabel($value);
-            if ($label !== null) {
-                return $label;
+            if ($normalizedLabel === $this->normalizeGraphIdentityForLabel($identity, $kind)) {
+                return true;
             }
         }
 
-        return null;
+        return false;
+    }
+
+    private function normalizeGraphIdentityForLabel(string $identity, string $kind): string
+    {
+        $identity = trim($identity);
+        if ($kind === 'file') {
+            $identity = $this->graphFileLabel($identity) ?? $identity;
+        }
+
+        return strtolower($identity);
     }
 
     /**
