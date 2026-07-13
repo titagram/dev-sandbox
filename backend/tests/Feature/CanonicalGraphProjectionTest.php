@@ -83,6 +83,70 @@ it('claims a queued worker projection exactly once with an atomic state transiti
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting');
 });
 
+it('atomically claims an exact completed projection for a forced rebuild', function (string $status) {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $graph = canonicalProjectionGraph($projectId, 'artifact-force-'.$status, str_repeat('7', 64));
+    $projection = $service->queue($graph);
+    DB::table('canonical_graph_projections')->where('id', $projection->id)->update([
+        'status' => $status,
+        'error_code' => $status === 'failed' ? 'neo4j_unavailable' : null,
+    ]);
+
+    $claimed = $service->claimForForcedRebuild($projection->id, $graph);
+
+    expect($claimed)->toBeTrue()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBeNull();
+})->with(['ready', 'stale', 'failed']);
+
+it('allows only one forced rebuild owner and leaves active work untouched', function (string $initialStatus) {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $graph = canonicalProjectionGraph($projectId, 'artifact-force-owner-'.$initialStatus, str_repeat('8', 64));
+    $projection = $service->queue($graph);
+    DB::table('canonical_graph_projections')->where('id', $projection->id)->update(['status' => $initialStatus]);
+
+    $first = $service->claimForForcedRebuild($projection->id, $graph);
+    $second = $service->claimForForcedRebuild($projection->id, $graph);
+
+    expect($first)->toBe($initialStatus === 'ready')
+        ->and($second)->toBeFalse()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))
+        ->toBe($initialStatus === 'ready' ? 'projecting' : $initialStatus);
+})->with(['ready', 'queued', 'projecting']);
+
+it('refuses a forced rebuild when checksum or graph version is not exact', function (string $field) {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $graph = canonicalProjectionGraph($projectId, 'artifact-force-conflict-'.$field, str_repeat('9', 64));
+    $projection = $service->queue($graph);
+    DB::table('canonical_graph_projections')->where('id', $projection->id)->update([
+        'status' => 'ready',
+        $field => str_repeat('0', 64),
+    ]);
+
+    expect($service->claimForForcedRebuild($projection->id, $graph))->toBeFalse()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready');
+})->with(['checksum', 'graph_version']);
+
+it('leaves a failed forced rebuild available to canonical reconciliation', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $graph = canonicalProjectionGraph($projectId, 'artifact-force-reconcile', str_repeat('6', 64));
+    $projection = $service->queue($graph);
+    DB::table('canonical_graph_projections')->where('id', $projection->id)->update(['status' => 'ready']);
+    expect($service->claimForForcedRebuild($projection->id, $graph))->toBeTrue();
+
+    expect($service->markForcedRebuildFailed($projection->id, 'neo4j_unavailable'))->toBeTrue()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed');
+
+    $claim = $service->claimForReconcile([$graph])["hades_agent_artifact\0artifact-force-reconcile"];
+    expect($claim['claimed'])->toBeTrue()
+        ->and($claim['conflict'])->toBeFalse()
+        ->and($claim['projection']->status)->toBe('queued');
+});
+
 it('returns the atomic claim result without a fallible post claim read', function () {
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
     $service = app(CanonicalGraphProjectionService::class);

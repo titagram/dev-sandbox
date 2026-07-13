@@ -138,6 +138,41 @@ class CanonicalGraphProjectionService
             ->firstOrFail();
     }
 
+    /**
+     * Acquire a synchronous forced rebuild without stealing an active queue
+     * delivery. A missing projection is created directly as projecting while
+     * the stable project row is locked; existing inactive rows go through the
+     * exact conditional forced-rebuild claim.
+     *
+     * @return array{projection: object, claimed: bool, conflict: bool}
+     */
+    public function acquireForForcedRebuild(array $graph): array
+    {
+        return DB::transaction(function () use ($graph): array {
+            $identity = $graph['identity'];
+            DB::table('projects')->where('id', (string) $identity['project_id'])->lockForUpdate()->firstOrFail();
+
+            $key = $this->identityKey((string) $identity['artifact_type'], (string) $identity['artifact_id']);
+            $proposal = $this->projectionAttributes($graph, (string) Str::ulid(), now());
+            $proposal['status'] = 'projecting';
+            DB::table('canonical_graph_projections')->insertOrIgnore($proposal);
+            $existing = $this->findForGraphs([$graph], lockForUpdate: true)[$key];
+            if ((string) $existing->id === $proposal['id']) {
+                $projection = $existing;
+
+                return ['projection' => $projection, 'claimed' => true, 'conflict' => false];
+            }
+
+            $conflict = ! $this->matchesGraph($existing, $graph);
+            $claimed = ! $conflict && $this->claimForForcedRebuild((string) $existing->id, $graph);
+            $projection = $claimed
+                ? DB::table('canonical_graph_projections')->where('id', $existing->id)->firstOrFail()
+                : $existing;
+
+            return ['projection' => $projection, 'claimed' => $claimed, 'conflict' => $conflict];
+        });
+    }
+
     public function findForWorker(string $id): ?object
     {
         return DB::table('canonical_graph_projections')->where('id', $id)->first();
@@ -161,6 +196,43 @@ class CanonicalGraphProjectionService
                 'status' => 'projecting',
                 'error_code' => null,
                 'updated_at' => $now,
+            ]) === 1;
+    }
+
+    /**
+     * Atomically take ownership of an exact, inactive projection for a
+     * synchronous forced rebuild.
+     *
+     * Ready, stale, and final failed projections are rebuildable. Queued and
+     * projecting rows belong to an active delivery and are never stolen. The
+     * full canonical identity is part of the compare-and-swap so an artifact
+     * id reused with different content cannot be projected accidentally.
+     */
+    public function claimForForcedRebuild(string $id, array $graph): bool
+    {
+        $identity = $graph['identity'];
+        $artifactType = (string) $identity['artifact_type'];
+        $artifactId = (string) $identity['artifact_id'];
+        $checksum = (string) $identity['checksum'];
+        $graphVersion = hash('sha256', $artifactType.'|'.$artifactId.'|'.$checksum);
+
+        return DB::table('canonical_graph_projections')
+            ->where('id', $id)
+            ->where('project_id', (string) $identity['project_id'])
+            ->where('source_scope_type', (string) $identity['source_scope_type'])
+            ->where('source_scope_id', (string) $identity['source_scope_id'])
+            ->where('artifact_type', $artifactType)
+            ->where('artifact_id', $artifactId)
+            ->where('checksum', $checksum)
+            ->where('graph_version', $graphVersion)
+            ->whereIn('status', ['ready', 'stale', 'failed'])
+            ->update([
+                'status' => 'projecting',
+                'node_count' => null,
+                'relationship_count' => null,
+                'error_code' => null,
+                'projected_at' => null,
+                'updated_at' => now(),
             ]) === 1;
     }
 
@@ -252,6 +324,19 @@ class CanonicalGraphProjectionService
                 'error_code' => $this->boundedFailureCode($code),
                 'updated_at' => now(),
             ]);
+    }
+
+    /** Finalize only a forced rebuild claim still owned by this caller. */
+    public function markForcedRebuildFailed(string $id, string $code): bool
+    {
+        return DB::table('canonical_graph_projections')
+            ->where('id', $id)
+            ->where('status', 'projecting')
+            ->update([
+                'status' => 'failed',
+                'error_code' => $this->boundedFailureCode($code),
+                'updated_at' => now(),
+            ]) === 1;
     }
 
     public function readyForScope(string $projectId, string $scopeType, string $scopeId): ?object

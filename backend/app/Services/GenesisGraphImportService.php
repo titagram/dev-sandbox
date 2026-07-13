@@ -428,13 +428,18 @@ class GenesisGraphImportService
             $canonical = $this->canonicalNormalizer->normalize($payload, $canonical['identity']);
         }
 
-        $projection = $this->canonicalProjections->queue($canonical);
-        if (! $this->canonicalProjections->matchesGraph($projection, $canonical)) {
+        $forceClaim = $force ? $this->canonicalProjections->acquireForForcedRebuild($canonical) : null;
+        $projection = $forceClaim['projection'] ?? $this->canonicalProjections->queue($canonical);
+        if (($forceClaim['conflict'] ?? false) || ! $this->canonicalProjections->matchesGraph($projection, $canonical)) {
             throw new CanonicalGraphProjectionException((string) $projection->id, 'projection_conflict');
         }
-        if (! $this->canonicalProjections->claimForWorker((string) $projection->id)) {
+        $claimed = $force
+            ? $forceClaim['claimed']
+            : $this->canonicalProjections->claimForWorker((string) $projection->id);
+        if (! $claimed) {
             $current = $this->canonicalProjections->findForWorker((string) $projection->id);
-            if ($current !== null
+            if (! $force
+                && $current !== null
                 && $this->canonicalProjections->matchesGraph($current, $canonical)
                 && $current->status === 'ready'
                 && is_numeric($current->node_count)
@@ -457,6 +462,9 @@ class GenesisGraphImportService
 
         $projection->snapshot_id = $snapshotId;
         try {
+            if ($force) {
+                $this->purgeLegacySnapshot($client, $snapshotId);
+            }
             $this->ensureIndexes($client);
 
             if ($graphMode === 'affected_subgraph') {
@@ -508,7 +516,11 @@ class GenesisGraphImportService
             $failureCode = $exception instanceof CanonicalGraphProjectionException
                 ? $exception->failureCode
                 : 'neo4j_query_failed';
-            $this->canonicalProjections->markRetryPending((string) $projection->id, $failureCode);
+            if ($force) {
+                $this->canonicalProjections->markForcedRebuildFailed((string) $projection->id, $failureCode);
+            } else {
+                $this->canonicalProjections->markRetryPending((string) $projection->id, $failureCode);
+            }
 
             throw $exception instanceof CanonicalGraphProjectionException
                 ? $exception
@@ -546,6 +558,7 @@ class GenesisGraphImportService
                     'projection_id' => $projection->id,
                     'node_count' => (int) $projection->node_count,
                     'relationship_count' => (int) $projection->relationship_count,
+                    'forced_rebuild' => $allowExistingEvent,
                 ], JSON_THROW_ON_ERROR),
                 'created_at' => now(),
             ]);
@@ -558,6 +571,13 @@ class GenesisGraphImportService
     private function runCommand(Neo4jClient $client, array $command): void
     {
         $client->run($command['cypher'], $command['params']);
+    }
+
+    private function purgeLegacySnapshot(Neo4jClient $client, string $snapshotId): void
+    {
+        $params = ['snapshot_id' => $snapshotId];
+        $client->run('MATCH (n:CodeNode {snapshot_id: $snapshot_id}) DETACH DELETE n', $params);
+        $client->run('MATCH (s:DevBoardSnapshot {snapshot_id: $snapshot_id}) DETACH DELETE s', $params);
     }
 
     private function ensureIndexes(Neo4jClient $client): void

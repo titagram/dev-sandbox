@@ -503,6 +503,144 @@ it('rebuilds a Neo4j projection from stored graph artifacts', function () {
         ->exists())->toBeTrue();
 });
 
+it('force rebuilds an already ready canonical projection instead of taking the idempotent shortcut', function () {
+    $context = createGraphImportContext();
+    $client = new FakeNeo4jClient;
+    $service = app(GenesisGraphImportService::class);
+
+    $service->importGenesis($context['import_id'], $client);
+    $projection = DB::table('canonical_graph_projections')->first();
+    expect($projection->status)->toBe('ready');
+    $client->commands = [];
+
+    $service->importGraphArtifact(
+        $context['snapshot_id'],
+        $context['repository_id'],
+        $context['run_id'],
+        $context['artifact_id'],
+        $client,
+        'fake',
+        'Forced graph rebuild completed.',
+        force: true,
+    );
+
+    $cypher = collect($client->commands)->pluck('cypher');
+    $event = DB::table('run_events')->where('run_id', $context['run_id'])->where('message', 'Forced graph rebuild completed.')->first();
+    $eventPayload = json_decode($event->payload, true, flags: JSON_THROW_ON_ERROR);
+    expect($cypher->filter(fn (string $query): bool => str_contains($query, 'CREATE INDEX'))->count())->toBeGreaterThanOrEqual(2)
+        ->and($cypher->contains(fn (string $query): bool => str_contains($query, 'UNWIND $nodes')))->toBeTrue()
+        ->and($cypher->contains(fn (string $query): bool => str_contains($query, 'UNWIND $relationships')))->toBeTrue()
+        ->and($cypher->contains(fn (string $query): bool => str_contains($query, 'RETURN nodes, count(r) AS relationships')))->toBeTrue()
+        ->and($cypher->contains(fn (string $query): bool => str_contains($query, 'candidate.current = true')))->toBeTrue()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready')
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count())->toBe(2)
+        ->and($eventPayload['node_count'])->toBe(2)
+        ->and($eventPayload['relationship_count'])->toBe(1)
+        ->and($eventPayload['forced_rebuild'])->toBeTrue();
+});
+
+it('allows only one of two interleaved force callers to project and publish', function () {
+    $context = createGraphImportContext();
+    $service = app(GenesisGraphImportService::class);
+    $service->importGenesis($context['import_id'], new FakeNeo4jClient);
+    $secondFailure = null;
+
+    $client = new class implements Neo4jClient
+    {
+        /** @var list<array{cypher: string, params: array<string, mixed>}> */
+        public array $commands = [];
+
+        public bool $interleaved = false;
+
+        public Closure $secondCall;
+
+        public function run(string $cypher, array $params = []): mixed
+        {
+            $this->commands[] = ['cypher' => $cypher, 'params' => $params];
+            if (! $this->interleaved) {
+                $this->interleaved = true;
+                ($this->secondCall)();
+            }
+            if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+            }
+
+            return [];
+        }
+    };
+    $client->secondCall = function () use ($service, $context, $client, &$secondFailure): void {
+        try {
+            $service->importGraphArtifact(
+                $context['snapshot_id'],
+                $context['repository_id'],
+                $context['run_id'],
+                $context['artifact_id'],
+                $client,
+                'fake',
+                force: true,
+            );
+        } catch (Throwable $exception) {
+            $secondFailure = $exception;
+        }
+    };
+
+    $service->importGraphArtifact(
+        $context['snapshot_id'],
+        $context['repository_id'],
+        $context['run_id'],
+        $context['artifact_id'],
+        $client,
+        'fake',
+        force: true,
+    );
+
+    expect($secondFailure)->toBeInstanceOf(CanonicalGraphProjectionException::class)
+        ->and($secondFailure->failureCode)->toBe('projection_busy')
+        ->and(collect($client->commands)->filter(fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes')))->toHaveCount(1)
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count())->toBe(2);
+});
+
+it('does no Neo4j IO or event publishing when a forced rebuild is already active', function (string $status) {
+    $context = createGraphImportContext();
+    $client = new FakeNeo4jClient;
+    $service = app(GenesisGraphImportService::class);
+    $service->importGenesis($context['import_id'], $client);
+    DB::table('canonical_graph_projections')->update(['status' => $status]);
+    $client->commands = [];
+    $eventsBefore = DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count();
+
+    expect(fn () => $service->importGraphArtifact(
+        $context['snapshot_id'],
+        $context['repository_id'],
+        $context['run_id'],
+        $context['artifact_id'],
+        $client,
+        'fake',
+        force: true,
+    ))->toThrow(CanonicalGraphProjectionException::class, 'projection_busy');
+
+    expect($client->commands)->toBe([])
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count())->toBe($eventsBefore);
+})->with(['queued', 'projecting']);
+
+it('counts a rebuild only after a forced projection actually succeeds', function () {
+    $context = createGraphImportContext();
+    $service = app(GenesisGraphImportService::class);
+    $service->importGenesis($context['import_id'], new FakeNeo4jClient);
+    DB::table('canonical_graph_projections')->update(['status' => 'projecting']);
+    $client = new FakeNeo4jClient;
+
+    $result = app(Neo4jRebuildService::class)->rebuild([
+        'snapshot_id' => $context['snapshot_id'],
+    ], $client, 'fake');
+
+    expect($result)->toMatchArray([
+        'scanned' => 1,
+        'rebuilt' => 0,
+        'failed' => 1,
+    ])->and($client->commands)->toBe([]);
+});
+
 it('uses config-driven retry and backoff values for queued graph imports', function () {
     config([
         'services.devboard.graph_import_job_tries' => 4,

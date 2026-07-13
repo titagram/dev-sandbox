@@ -182,7 +182,6 @@ class Neo4jRebuildService
 
             try {
                 $this->ensureGraphArtifactReadable($snapshot);
-                $this->purgeSnapshot($client, $snapshot->snapshot_id);
                 $this->graphs->importGraphArtifact(
                     $snapshot->snapshot_id,
                     $snapshot->repository_id,
@@ -237,14 +236,6 @@ class Neo4jRebuildService
         if (! Storage::disk('local')->exists($snapshot->artifact_storage_path)) {
             throw new RuntimeException('Stored graph artifact is not readable.');
         }
-    }
-
-    private function purgeSnapshot(Neo4jClient $client, string $snapshotId): void
-    {
-        $params = ['snapshot_id' => $snapshotId];
-
-        $client->run('MATCH (n:CodeNode {snapshot_id: $snapshot_id}) DETACH DELETE n', $params);
-        $client->run('MATCH (s:DevBoardSnapshot {snapshot_id: $snapshot_id}) DETACH DELETE s', $params);
     }
 
     private function fakeClient(): Neo4jClient
