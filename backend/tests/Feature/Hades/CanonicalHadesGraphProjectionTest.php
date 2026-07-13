@@ -3,6 +3,7 @@
 use App\Jobs\GenerateSearchDocumentEmbedding;
 use App\Jobs\ProjectCanonicalGraphToNeo4j;
 use App\Models\User;
+use App\Services\Graph\CanonicalGraphNormalizer;
 use App\Services\Graph\CanonicalGraphProjectionService;
 use App\Services\Graph\CanonicalGraphRepository;
 use App\Services\Graph\Neo4jCanonicalGraphProjector;
@@ -65,6 +66,7 @@ it('sends canonical property bags as Bolt maps without changing their scalar val
                 'score' => 0.75,
                 'indexed' => true,
                 'nullable' => null,
+                'tags' => ['domain', 'public'],
             ]],
         ],
         'relationships' => [
@@ -109,6 +111,7 @@ it('sends canonical property bags as Bolt maps without changing their scalar val
             'score' => 0.75,
             'indexed' => true,
             'nullable' => null,
+            'tags' => ['domain', 'public'],
         ])
         ->and($relationships[1]['properties'])->toBe(['line' => 17, 'inferred' => false]);
 });
@@ -288,6 +291,59 @@ it('rejects malformed explicit canonical artifacts without upload side effects',
         ->and(DB::table('canonical_graph_projections')->count())->toBe(0);
     Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
     Bus::assertNotDispatched(GenerateSearchDocumentEmbedding::class);
+});
+
+it('rejects explicit canonical node property lists before every upload side effect on every retry', function () {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $payload = canonicalProjectionUpload($agent, $bindingId);
+    $payload['artifact']['nodes'][0]['properties'] = ['not', 'a', 'map'];
+    $payload['artifact']['source_slice_candidates'] = [[
+        'candidate_key' => 'invalid-properties',
+        'path' => 'app/Invalid.php',
+        'start_line' => 1,
+        'end_line' => 2,
+    ]];
+
+    foreach (range(1, 2) as $attempt) {
+        $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']])
+            ->assertUnprocessable()
+            ->assertExactJson(['error' => [
+                'code' => 'invalid_graph_artifact',
+                'message' => 'Graph artifact payload is invalid.',
+            ]]);
+    }
+
+    expect(DB::table('hades_agent_artifacts')->count())->toBe(0)
+        ->and(DB::table('hades_search_documents')->count())->toBe(0)
+        ->and(DB::table('hades_source_slice_candidates')->count())->toBe(0)
+        ->and(DB::table('hades_agent_jobs')->count())->toBe(0)
+        ->and(DB::table('canonical_graph_projections')->count())->toBe(0);
+    Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+    Bus::assertNotDispatched(GenerateSearchDocumentEmbedding::class);
+});
+
+it('stops an integrated normalization and projection path before Neo4j client commands', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'][0]['properties'] = [0 => 'list-entry', 'name' => 'mixed-map'];
+    $client = new FakeNeo4jClient;
+    $projection = (object) [
+        'graph_version' => 'graph-invalid-normalizer',
+        'project_id' => 'project-test',
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => 'scope-test',
+        'snapshot_id' => null,
+    ];
+
+    expect(function () use ($payload, $projection, $client): void {
+        $graph = app(CanonicalGraphNormalizer::class)->normalize($payload, [
+            'project_id' => 'project-test',
+            'source_scope_type' => 'workspace_binding',
+            'source_scope_id' => 'scope-test',
+        ]);
+        app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+    })->toThrow(InvalidArgumentException::class, 'Canonical graph node properties must be a map.')
+        ->and($client->commands)->toBe([]);
 });
 
 it('keeps artifact upload runtime responses aligned with the documented 422 contracts', function () {

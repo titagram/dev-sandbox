@@ -99,7 +99,7 @@ class CanonicalGraphNormalizer
         if (! is_string($id) || trim($id) === '') {
             throw new InvalidArgumentException('Canonical graph node id is missing.');
         }
-        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        $properties = $this->propertyBag($node, 'node');
         foreach (['name', 'kind', 'path', 'line_start', 'line_end', 'confidence'] as $key) {
             if (array_key_exists($key, $node)) {
                 $properties[$key] = $node[$key];
@@ -129,12 +129,32 @@ class CanonicalGraphNormalizer
             'type' => preg_replace('/[^A-Z0-9_]/', '_', $type) ?? '',
             'source_id' => $sourceId,
             'target_id' => $targetId,
-            'properties' => is_array($edge['properties'] ?? null) ? $edge['properties'] : [],
+            'properties' => $this->propertyBag($edge, 'edge'),
         ];
         if (array_key_exists('id', $edge)) {
             $normalized = ['id' => $edge['id']] + $normalized;
         }
 
         return $normalized;
+    }
+
+    private function propertyBag(array $item, string $kind): array
+    {
+        if (! array_key_exists('properties', $item)) {
+            return [];
+        }
+
+        $properties = $item['properties'];
+        if (! is_array($properties)) {
+            throw new InvalidArgumentException("Canonical graph {$kind} properties must be a map.");
+        }
+
+        foreach (array_keys($properties) as $key) {
+            if (! is_string($key)) {
+                throw new InvalidArgumentException("Canonical graph {$kind} properties must be a map.");
+            }
+        }
+
+        return $properties;
     }
 }

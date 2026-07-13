@@ -100,6 +100,86 @@ it('rejects edges with blank endpoints', function () {
     ], []);
 })->throws(InvalidArgumentException::class, 'Canonical graph edge endpoints are missing.');
 
+it('rejects explicit node property bags that are not string-keyed maps', function (mixed $properties) {
+    (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => unitCanonicalGraphContract(),
+        'nodes' => [['id' => 'class:InvalidProperties', 'properties' => $properties]],
+    ], []);
+})->with([
+    'null' => [null],
+    'non-empty list' => [['first', 'second']],
+    'mixed numeric and string keys' => [[0 => 'first', 'name' => 'ValidName']],
+])->throws(InvalidArgumentException::class, 'Canonical graph node properties must be a map.');
+
+it('rejects explicit edge property bags that are not string-keyed maps', function (mixed $properties) {
+    (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => unitCanonicalGraphContract(),
+        'nodes' => [
+            ['id' => 'class:Source'],
+            ['id' => 'class:Target'],
+        ],
+        'relationships' => [[
+            'type' => 'CALLS',
+            'source_id' => 'class:Source',
+            'target_id' => 'class:Target',
+            'properties' => $properties,
+        ]],
+    ], []);
+})->with([
+    'null' => [null],
+    'non-empty list' => [['first', 'second']],
+    'mixed numeric and string keys' => [[0 => 'first', 'confidence' => 0.9]],
+])->throws(InvalidArgumentException::class, 'Canonical graph edge properties must be a map.');
+
+it('accepts omitted and empty property bags while preserving maps and nested list values', function () {
+    $normalized = (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => unitCanonicalGraphContract(),
+        'nodes' => [
+            ['id' => 'class:Omitted'],
+            ['id' => 'class:Empty', 'properties' => []],
+            ['id' => 'class:Mapped', 'properties' => [
+                'name' => 'Mapped',
+                'tags' => ['domain', 'public'],
+            ]],
+        ],
+        'relationships' => [
+            [
+                'type' => 'CALLS',
+                'source_id' => 'class:Omitted',
+                'target_id' => 'class:Empty',
+            ],
+            [
+                'type' => 'CALLS',
+                'source_id' => 'class:Empty',
+                'target_id' => 'class:Mapped',
+                'properties' => [],
+            ],
+            [
+                'type' => 'CALLS',
+                'source_id' => 'class:Mapped',
+                'target_id' => 'class:Omitted',
+                'properties' => [
+                    'confidence' => 0.9,
+                    'evidence_lines' => [10, 14],
+                ],
+            ],
+        ],
+    ], []);
+
+    expect($normalized['nodes'][0]['properties'])->toBe([])
+        ->and($normalized['nodes'][1]['properties'])->toBe([])
+        ->and($normalized['nodes'][2]['properties'])->toBe([
+            'name' => 'Mapped',
+            'tags' => ['domain', 'public'],
+        ])
+        ->and($normalized['relationships'][0]['properties'])->toBe([])
+        ->and($normalized['relationships'][1]['properties'])->toBe([])
+        ->and($normalized['relationships'][2]['properties'])->toBe([
+            'confidence' => 0.9,
+            'evidence_lines' => [10, 14],
+        ]);
+});
+
 it('rejects missing and unsupported graph contracts', function (array $payload) {
     (new CanonicalGraphNormalizer)->normalize($payload, []);
 })->with([
