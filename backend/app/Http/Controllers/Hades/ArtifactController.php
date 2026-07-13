@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\Response;
 
 class ArtifactController extends Controller
@@ -111,6 +112,18 @@ class ArtifactController extends Controller
 
         if (($artifactPayload['schema'] ?? null) !== $validated['schema']) {
             return $this->error('artifact_schema_mismatch', 'Artifact payload schema does not match the requested schema.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        if (in_array($validated['schema'], ['hades.php_graph.v1', 'hades.code_graph.v1'], true)) {
+            try {
+                $this->graphs->prepareHadesUpload($artifactPayload);
+            } catch (InvalidArgumentException $exception) {
+                if (str_starts_with($exception->getMessage(), 'Canonical graph contract')) {
+                    return $this->error('invalid_graph_contract', 'Graph artifact contract is invalid.', Response::HTTP_UNPROCESSABLE_ENTITY);
+                }
+
+                return $this->error('invalid_graph_artifact', 'Graph artifact payload is invalid.', Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
         }
 
         $artifactJson = json_encode($artifactPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);

@@ -13,6 +13,15 @@ class CanonicalGraphRepository
 
     public function __construct(private readonly CanonicalGraphNormalizer $normalizer) {}
 
+    /**
+     * Validate and prepare a Hades graph upload without reading or writing
+     * persistence. This is the same adapter/normalizer path used after storage.
+     */
+    public function prepareHadesUpload(array $payload): array
+    {
+        return $this->prepareHadesPayload($payload, [], is_string($payload['schema'] ?? null) ? $payload['schema'] : null);
+    }
+
     public function latestForScope(string $projectId, string $scopeType, string $scopeId): ?array
     {
         $this->assertScope($scopeType);
@@ -316,11 +325,21 @@ class CanonicalGraphRepository
     {
         $json = (string) $artifact->artifact;
         $payload = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
-        $language = (string) ($payload['language'] ?? ($artifact->schema === 'hades.php_graph.v1' ? 'php' : 'unknown'));
+
+        return $this->prepareHadesPayload(
+            $payload,
+            $this->identity($projectId, 'workspace_binding', $bindingId, 'hades_agent_artifact', $artifact, $json),
+            (string) $artifact->schema,
+        );
+    }
+
+    private function prepareHadesPayload(array $payload, array $identity, ?string $schema): array
+    {
+        $language = (string) ($payload['language'] ?? ($schema === 'hades.php_graph.v1' ? 'php' : 'unknown'));
         $payload = $this->adaptLegacy($payload, 'hades-legacy-'.$language, $language);
         $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
 
-        return $this->normalizer->normalize($payload, $this->identity($projectId, 'workspace_binding', $bindingId, 'hades_agent_artifact', $artifact, $json))
+        return $this->normalizer->normalize($payload, $identity)
             + ['private_identity_provenance' => $privateIdentityProvenance];
     }
 

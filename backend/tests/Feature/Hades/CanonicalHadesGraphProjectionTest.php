@@ -1,5 +1,6 @@
 <?php
 
+use App\Jobs\GenerateSearchDocumentEmbedding;
 use App\Jobs\ProjectCanonicalGraphToNeo4j;
 use App\Models\User;
 use App\Services\Graph\CanonicalGraphProjectionService;
@@ -178,9 +179,8 @@ it('job keeps an exact missing artifact queued with a bounded code and rethrows 
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('artifact_missing');
 });
 
-it('rejects malformed explicit canonical artifacts before projection dispatch', function () {
+it('rejects malformed explicit canonical artifacts without upload side effects', function () {
     Bus::fake();
-    $this->withoutExceptionHandling();
     [$agent, $bindingId] = canonicalProjectionAgent();
     $payload = canonicalProjectionUpload($agent, $bindingId);
     unset($payload['artifact']['nodes'][0]['id']);
@@ -188,23 +188,50 @@ it('rejects malformed explicit canonical artifacts before projection dispatch', 
         'name' => 'App\\Http\\Controllers\\BookingController',
         'path' => 'app/Http/Controllers/BookingController.php',
     ];
-    expect(fn () => $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']]))
-        ->toThrow(InvalidArgumentException::class, 'Canonical graph node id is missing.');
-    expect(DB::table('canonical_graph_projections')->count())->toBe(0);
+    $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']])
+        ->assertUnprocessable()
+        ->assertExactJson(['error' => [
+            'code' => 'invalid_graph_artifact',
+            'message' => 'Graph artifact payload is invalid.',
+        ]]);
+
+    expect(DB::table('hades_agent_artifacts')->count())->toBe(0)
+        ->and(DB::table('hades_search_documents')->count())->toBe(0)
+        ->and(DB::table('hades_source_slice_candidates')->count())->toBe(0)
+        ->and(DB::table('canonical_graph_projections')->count())->toBe(0);
     Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+    Bus::assertNotDispatched(GenerateSearchDocumentEmbedding::class);
 });
 
-it('rejects malformed explicit graph contracts before projection dispatch', function () {
+it('rejects malformed explicit graph contracts before dedupe and every upload side effect', function () {
     Bus::fake();
-    $this->withoutExceptionHandling();
     [$agent, $bindingId] = canonicalProjectionAgent();
     $payload = canonicalProjectionUpload($agent, $bindingId);
     $payload['artifact']['graph_contract']['extractor']['mode'] = 'full';
+    $payload['artifact']['source_slice_candidates'] = [[
+        'candidate_key' => 'malformed-contract',
+        'path' => 'app/Invalid.php',
+        'start_line' => 1,
+        'end_line' => 2,
+    ]];
+    $payload['sha256'] = str_repeat('b', 64);
 
-    expect(fn () => $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']]))
-        ->toThrow(InvalidArgumentException::class, 'Canonical graph contract is malformed at extractor.mode.');
-    expect(DB::table('canonical_graph_projections')->count())->toBe(0);
+    foreach (range(1, 2) as $attempt) {
+        $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']])
+            ->assertUnprocessable()
+            ->assertExactJson(['error' => [
+                'code' => 'invalid_graph_contract',
+                'message' => 'Graph artifact contract is invalid.',
+            ]]);
+    }
+
+    expect(DB::table('hades_agent_artifacts')->count())->toBe(0)
+        ->and(DB::table('hades_search_documents')->count())->toBe(0)
+        ->and(DB::table('hades_source_slice_candidates')->count())->toBe(0)
+        ->and(DB::table('hades_agent_jobs')->where('capability', 'read_source_slice')->count())->toBe(0)
+        ->and(DB::table('canonical_graph_projections')->count())->toBe(0);
     Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+    Bus::assertNotDispatched(GenerateSearchDocumentEmbedding::class);
 });
 
 it('job marks projecting before client work then queues a bounded retry and rethrows', function () {

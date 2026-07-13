@@ -101,11 +101,11 @@ Persisted failure codes are bounded and never contain raw exception text.
 
 ## Reconcile and rebuild
 
-The canonical command always requires `--reconcile` and `--project`:
+The canonical command always requires `--reconcile` and `--project`. Before the
+human gate, only its bounded read-only preview may be run:
 
 ```bash
 php artisan devboard:neo4j-rebuild --reconcile --project=<project_uuid> --dry-run
-php artisan devboard:neo4j-rebuild --reconcile --project=<project_uuid>
 ```
 
 Optionally restrict the operation to one exact source. `--scope-type` and
@@ -114,10 +114,12 @@ Optionally restrict the operation to one exact source. `--scope-type` and
 ```bash
 php artisan devboard:neo4j-rebuild --reconcile --project=<project_uuid> \
   --scope-type=workspace_binding --scope-id=<binding_uuid> --dry-run
-
-php artisan devboard:neo4j-rebuild --reconcile --project=<project_uuid> \
-  --scope-type=repository --scope-id=<repository_uuid>
 ```
+
+The non-dry syntax is intentionally not executable in this pre-gate section:
+`devboard:neo4j-rebuild --reconcile --project PROJECT [--scope-type TYPE
+--scope-id ID]`. Its real invocation appears only in the authorized procedure
+below.
 
 The JSON summary contains `scanned`, `queued`, `ready`, `failed`, `skipped`,
 and `dry_run`. Dry run performs bounded reads only: it neither creates
@@ -136,21 +138,99 @@ service.
 
 ## Migration, backup, and verification order
 
-Before any live migration, non-dry canonical reconciliation, or legacy rebuild:
+The order below is mandatory. No migration, deployment, non-dry canonical
+reconciliation, or legacy rebuild command may be copied or run before steps
+1-4 are complete.
 
-1. Create a PostgreSQL backup outside the application host's mutable data path.
-2. Verify the archive can be listed/restored and record users, projects,
-   canonical artifacts, and projection row counts.
-3. Run the SQLite test suite and Pint, then inspect `php artisan migrate:status`.
-4. Present the backup evidence, test results, exact command, and affected scope
-   to a human. Do not continue without explicit authorization.
-5. Apply the additive migration only when it is needed and authorized.
-6. For canonical work, run project-wide or scoped `--dry-run`; stop on a
-   nonzero `failed` count. The legacy path has no dry-run and remains gated.
-7. Run the matching authorized non-dry command, drain the queue, and verify one `ready`
-   projection per selected source with nonzero expected counts.
-8. Compare Hades and plugin reads: both must report the backend-selected graph
-   version for the same source. Confirm no authentication 401 regression.
+1. **Create and verify the PostgreSQL backup.** Store it outside the mutable
+   application data path. Listing the archive with `pg_restore -l` is required;
+   file existence alone is not verification.
+
+   ```bash
+   mkdir -p /home/ubuntu/backups/devboard
+   BACKUP=/home/ubuntu/backups/devboard/devboard-before-canonical-graph-$(date -u +%Y%m%dT%H%M%SZ).dump
+   docker compose -f docker-compose.devboard.yaml exec -T postgres \
+     pg_dump -U devboard -d devboard -Fc > "$BACKUP"
+   test -s "$BACKUP"
+   docker compose -f docker-compose.devboard.yaml exec -T postgres \
+     pg_restore -l < "$BACKUP" >/dev/null
+   printf '%s\n' "$BACKUP"
+   ```
+
+   Record users, projects, canonical artifacts, and projection row counts with
+   read-only SQL before continuing.
+
+2. **Pass the test and formatting gates.** Run the selected SQLite suites, the
+   canonical graph tests, Pint, and the read-only migration status command.
+
+   ```bash
+   docker compose -f docker-compose.devboard.yaml exec -T app sh -lc \
+     'APP_ENV=testing DB_CONNECTION=sqlite DB_DATABASE=:memory: DB_URL= php artisan test tests/Feature/Hades tests/Feature/CanonicalGraphRepositoryTest.php tests/Feature/CanonicalGraphRebuildCommandTest.php'
+   docker compose -f docker-compose.devboard.yaml exec -T app \
+     vendor/bin/pint --test
+   docker compose -f docker-compose.devboard.yaml exec -T app \
+     php artisan migrate:status
+   ```
+
+3. **Run the read-only canonical preview.** Select the exact project and,
+   optionally, the exact scope. Stop on any nonzero `failed` count.
+
+   ```bash
+   docker compose -f docker-compose.devboard.yaml exec -T app \
+     php artisan devboard:neo4j-rebuild --reconcile \
+       --project=<project_uuid> --dry-run
+   ```
+
+4. **Obtain explicit human authorization.** Present the backup path, successful
+   `pg_restore -l` result, recorded counts, test/Pint results, migration status,
+   dry-run JSON, exact mutating commands, and affected project/scope. Stop here
+   until a human explicitly authorizes those commands.
+
+5. **Only after authorization, apply the required additive migration.** Skip
+   this command if `migrate:status` showed nothing pending.
+
+   ```bash
+   docker compose -f docker-compose.devboard.yaml exec -T app \
+     php artisan migrate --force
+   ```
+
+6. **Run exactly one authorized graph mutation.** Use canonical reconciliation
+   for canonical sources:
+
+   ```bash
+   docker compose -f docker-compose.devboard.yaml exec -T app \
+     php artisan devboard:neo4j-rebuild --reconcile \
+       --project=<project_uuid>
+   ```
+
+   To restrict it, append both `--scope-type=workspace_binding
+   --scope-id=<binding_uuid>` or both `--scope-type=repository
+   --scope-id=<repository_uuid>`. For an explicitly authorized legacy rebuild,
+   use the historical forceful path instead:
+
+   ```bash
+   docker compose -f docker-compose.devboard.yaml exec -T app \
+     php artisan devboard:neo4j-rebuild \
+       --repository=<repository_uuid> --snapshot=<snapshot_uuid> --mode=fake
+   ```
+
+7. **Drain the queue and verify.** Confirm one `ready` projection per selected
+   source with expected nonzero counts. Compare Hades and plugin reads: both
+   must report the backend-selected graph version for the same source. Confirm
+   there is no authentication 401 regression.
+
+8. **Deploy only if separately authorized, preserving Traefik.** Never use the
+   base Compose file alone for an app recreation.
+
+   ```bash
+   docker compose -f docker-compose.devboard.yaml \
+     -f docker-compose.devboard.traefik.yaml up -d --build
+   ```
+
+   Preserve `traefik_default`, router priorities, redirect and Basic Auth
+   middleware, and the distinct frontend/API/Hades/plugin routes. Smoke the
+   root without credentials (Basic Auth challenge) and with credentials, then
+   the login flow, Hades health/auth, and a plugin endpoint.
 
 Do not restore the backup after a successful additive migration. Restore is an
 authorized rollback only if a destructive/reset operation or data loss occurs;
@@ -159,14 +239,8 @@ the environment usable. Neo4j can be dropped and reconstructed from canonical
 artifacts, but PostgreSQL artifacts and projection lifecycle state must be
 protected.
 
-Deploys must retain both `docker-compose.devboard.yaml` and
-`docker-compose.devboard.traefik.yaml` (plus an architecture override when the
-host requires it). Never recreate the app from a minimal/base-only Compose
-invocation: preserve `traefik_default`, router priorities, redirect and Basic
-Auth middleware, and the distinct frontend/API/Hades/plugin routes. Smoke the
-root both without credentials (Basic Auth challenge) and with credentials,
-then the login flow, Hades health/auth, and a plugin endpoint before declaring
-the deployment healthy.
+When the host requires an architecture override, add it after the two required
+Compose files. The Traefik override is never optional.
 
 The React frontend cutover and complete removal of Inertia are a separate
 delivery tranche. They are not implemented or deployed by this runbook.
