@@ -70,6 +70,20 @@ it('stores only bounded failure codes and rejects raw exception text', function 
         ->and(DB::table('canonical_graph_projections')->where('id', $bounded->id)->value('error_code'))->toBe('neo4j_timeout');
 });
 
+it('claims a queued worker projection exactly once with an atomic state transition', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $projection = $service->queue(canonicalProjectionGraph($projectId, 'artifact-claim', str_repeat('c', 64)));
+
+    $first = $service->claimForWorker($projection->id);
+    $second = $service->claimForWorker($projection->id);
+
+    expect($first)->not->toBeNull()
+        ->and($first->status)->toBe('projecting')
+        ->and($second)->toBeNull()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting');
+});
+
 function canonicalProjectionGraph(string $projectId, string $artifactId, string $checksum): array
 {
     return [

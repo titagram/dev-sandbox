@@ -8,6 +8,7 @@ use App\Services\Graph\Neo4jCanonicalGraphProjector;
 use App\Services\Neo4j\FakeNeo4jClient;
 use App\Services\Neo4j\Neo4jClient;
 use App\Services\Neo4jClientFactory;
+use App\Services\Neo4jRebuildService;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -152,7 +153,7 @@ it('job projects the exact older artifact identity and marks it ready', function
     expect(DB::table('canonical_graph_projections')->where('id', $olderProjection->id)->value('status'))->toBe('ready');
 });
 
-it('job rejects checksum changes, marks failed, and rethrows', function () {
+it('job rejects checksum changes, returns to queued, and rethrows for retry', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();
     $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
@@ -160,11 +161,11 @@ it('job rejects checksum changes, marks failed, and rethrows', function () {
     DB::table('canonical_graph_projections')->where('id', $projection->id)->update(['checksum' => str_repeat('0', 64)]);
 
     expect(fn () => runCanonicalProjectionJob($projection->id, new FakeNeo4jClient))->toThrow(RuntimeException::class, 'artifact_changed');
-    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('queued')
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('artifact_changed');
 });
 
-it('job marks an exact missing artifact failed with a bounded code and rethrows for retry', function () {
+it('job keeps an exact missing artifact queued with a bounded code and rethrows for retry', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();
     $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
@@ -173,11 +174,11 @@ it('job marks an exact missing artifact failed with a bounded code and rethrows 
 
     expect(fn () => runCanonicalProjectionJob($projection->id, new FakeNeo4jClient))
         ->toThrow(RuntimeException::class, 'artifact_missing');
-    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('queued')
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('artifact_missing');
 });
 
-it('job marks projecting before client work then marks a bounded failure and rethrows', function () {
+it('job marks projecting before client work then queues a bounded retry and rethrows', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();
     $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
@@ -193,7 +194,7 @@ it('job marks projecting before client work then marks a bounded failure and ret
         }
     };
     expect(fn () => runCanonicalProjectionJob($projection->id, $client))->toThrow(RuntimeException::class);
-    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('queued')
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('neo4j_query_failed');
 });
 
@@ -213,7 +214,7 @@ it('job classifies transport exception chains separately from query errors', fun
     };
 
     expect(fn () => runCanonicalProjectionJob($projection->id, $client))->toThrow($failure::class);
-    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('queued')
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe($expected);
 })->with([
     'refused chain' => [new RuntimeException('projection wrapper', 0, new RuntimeException('Connection refused')), 'neo4j_unavailable'],
@@ -221,6 +222,119 @@ it('job classifies transport exception chains separately from query errors', fun
     'timeout' => [new RuntimeException('Operation timed out'), 'neo4j_unavailable'],
     'query' => [new RuntimeException('Neo.ClientError.Statement.SyntaxError'), 'neo4j_query_failed'],
 ]);
+
+it('keeps an intermediate failure queued for the original retry without reconcile dispatch', function () {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+    $projection = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->first();
+    $failure = new RuntimeException('Connection refused to private-host.example');
+    $client = new class($failure) implements Neo4jClient
+    {
+        public function __construct(private Throwable $failure) {}
+
+        public function run(string $cypher, array $parameters = []): mixed
+        {
+            throw $this->failure;
+        }
+    };
+    $job = new ProjectCanonicalGraphToNeo4j($projection->id);
+
+    expect(fn () => runCanonicalProjectionJobAttempt($job, $client))->toThrow(RuntimeException::class);
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('queued')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('neo4j_unavailable');
+
+    Bus::fake();
+    $summary = app(Neo4jRebuildService::class)->reconcile(['project_id' => $agent['project_id']]);
+    expect($summary['queued'])->toBe(0)
+        ->and($summary['skipped'])->toBe(1);
+    Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+
+    runCanonicalProjectionJobAttempt($job, new FakeNeo4jClient);
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready');
+});
+
+it('marks only final exhaustion failed and reconcile dispatches exactly one replacement', function () {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+    $projection = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->first();
+    $failure = new RuntimeException('projection wrapper', 0, new RuntimeException('Connection refused to private-host.example'));
+    $client = new class($failure) implements Neo4jClient
+    {
+        public function __construct(private Throwable $failure) {}
+
+        public function run(string $cypher, array $parameters = []): mixed
+        {
+            throw $this->failure;
+        }
+    };
+    $job = new ProjectCanonicalGraphToNeo4j($projection->id);
+
+    expect(fn () => runCanonicalProjectionJobAttempt($job, $client))->toThrow(RuntimeException::class);
+    $job->failed($failure);
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('neo4j_unavailable')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->not->toContain('private-host');
+
+    Bus::fake();
+    $first = app(Neo4jRebuildService::class)->reconcile(['project_id' => $agent['project_id']]);
+    $second = app(Neo4jRebuildService::class)->reconcile(['project_id' => $agent['project_id']]);
+    expect($first['queued'])->toBe(1)
+        ->and($second['queued'])->toBe(0)
+        ->and($second['skipped'])->toBe(1);
+    Bus::assertDispatchedTimes(ProjectCanonicalGraphToNeo4j::class, 1);
+});
+
+it('does not call Neo4j for duplicate jobs after a projection is nonclaimable', function (string $status) {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+    $projection = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->first();
+    DB::table('canonical_graph_projections')->where('id', $projection->id)->update(['status' => $status]);
+    $client = new class implements Neo4jClient
+    {
+        public int $calls = 0;
+
+        public function run(string $cypher, array $parameters = []): mixed
+        {
+            $this->calls++;
+
+            throw new RuntimeException('Neo4j must not be called.');
+        }
+    };
+
+    runCanonicalProjectionJob($projection->id, $client);
+
+    expect($client->calls)->toBe(0)
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe($status);
+})->with(['ready', 'stale', 'projecting', 'failed']);
+
+it('allows only one interleaved job to claim a queued projection', function () {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+    $projection = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->first();
+    $service = app(CanonicalGraphProjectionService::class);
+
+    $firstClaim = $service->claimForWorker($projection->id);
+    $client = new class implements Neo4jClient
+    {
+        public int $calls = 0;
+
+        public function run(string $cypher, array $parameters = []): mixed
+        {
+            $this->calls++;
+
+            return [];
+        }
+    };
+    runCanonicalProjectionJob($projection->id, $client);
+
+    expect($firstClaim)->not->toBeNull()
+        ->and($client->calls)->toBe(0)
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting');
+});
 
 function canonicalProjectionUpload(array $agent, string $bindingId): array
 {
@@ -251,7 +365,12 @@ function canonicalProjectionAgent(): array
 
 function runCanonicalProjectionJob(string $projectionId, Neo4jClient $client): void
 {
+    runCanonicalProjectionJobAttempt(new ProjectCanonicalGraphToNeo4j($projectionId), $client);
+}
+
+function runCanonicalProjectionJobAttempt(ProjectCanonicalGraphToNeo4j $job, Neo4jClient $client): void
+{
     $factory = Mockery::mock(Neo4jClientFactory::class);
     $factory->shouldReceive('client')->zeroOrMoreTimes()->andReturn($client);
-    (new ProjectCanonicalGraphToNeo4j($projectionId))->handle(app(CanonicalGraphRepository::class), app(CanonicalGraphProjectionService::class), app(Neo4jCanonicalGraphProjector::class), $factory);
+    $job->handle(app(CanonicalGraphRepository::class), app(CanonicalGraphProjectionService::class), app(Neo4jCanonicalGraphProjector::class), $factory);
 }

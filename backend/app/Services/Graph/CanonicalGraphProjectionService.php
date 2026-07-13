@@ -138,6 +138,31 @@ class CanonicalGraphProjectionService
             ->firstOrFail();
     }
 
+    /**
+     * Atomically claim one queued projection for a queue worker.
+     *
+     * A null result means the projection is missing or another worker/job
+     * already owns or completed it. Callers must treat that as a no-op.
+     */
+    public function claimForWorker(string $id): ?object
+    {
+        $now = now();
+        $claimed = DB::table('canonical_graph_projections')
+            ->where('id', $id)
+            ->where('status', 'queued')
+            ->update([
+                'status' => 'projecting',
+                'error_code' => null,
+                'updated_at' => $now,
+            ]);
+
+        if ($claimed !== 1) {
+            return null;
+        }
+
+        return DB::table('canonical_graph_projections')->where('id', $id)->first();
+    }
+
     public function markProjecting(string $id): void
     {
         DB::table('canonical_graph_projections')->where('id', $id)->update([
@@ -183,12 +208,29 @@ class CanonicalGraphProjectionService
 
     public function markFailed(string $id, string $code): void
     {
-        $boundedCode = preg_match('/\A[a-z0-9_]{1,100}\z/', $code) === 1 ? $code : 'projection_failed';
+        $boundedCode = $this->boundedFailureCode($code);
         DB::table('canonical_graph_projections')->where('id', $id)->update([
             'status' => 'failed',
             'error_code' => $boundedCode,
             'updated_at' => now(),
         ]);
+    }
+
+    /**
+     * Release an owned projection for Laravel's next attempt without making
+     * it claimable by reconciliation. Reconcile only claims final `failed`
+     * records; queued records remain owned by the already-dispatched job.
+     */
+    public function markRetryPending(string $id, string $code): void
+    {
+        DB::table('canonical_graph_projections')
+            ->where('id', $id)
+            ->where('status', 'projecting')
+            ->update([
+                'status' => 'queued',
+                'error_code' => $this->boundedFailureCode($code),
+                'updated_at' => now(),
+            ]);
     }
 
     public function readyForScope(string $projectId, string $scopeType, string $scopeId): ?object
@@ -245,5 +287,10 @@ class CanonicalGraphProjectionService
             'created_at' => $now,
             'updated_at' => $now,
         ];
+    }
+
+    private function boundedFailureCode(string $code): string
+    {
+        return preg_match('/\A[a-z0-9_]{1,100}\z/', $code) === 1 ? $code : 'projection_failed';
     }
 }
