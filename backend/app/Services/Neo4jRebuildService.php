@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Jobs\ProjectCanonicalGraphToNeo4j;
+use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\CanonicalGraphRepository;
 use App\Services\Neo4j\Neo4jClient;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -14,7 +17,131 @@ class Neo4jRebuildService
     public function __construct(
         private readonly GenesisGraphImportService $graphs,
         private readonly Neo4jClientFactory $clients,
+        private readonly CanonicalGraphRepository $canonicalGraphs,
+        private readonly CanonicalGraphProjectionService $canonicalProjections,
     ) {}
+
+    /**
+     * Reconcile persisted canonical artifacts with their rebuildable Neo4j projections.
+     *
+     * @param  array{project_id?: string|null, scope_type?: string|null, scope_id?: string|null, dry_run?: bool}  $filters
+     * @return array{scanned: int, queued: int, ready: int, failed: int, skipped: int, dry_run: bool}
+     */
+    public function reconcile(array $filters = []): array
+    {
+        $projectId = $this->optionalString($filters['project_id'] ?? null);
+        $scopeType = $this->optionalString($filters['scope_type'] ?? null);
+        $scopeId = $this->optionalString($filters['scope_id'] ?? null);
+        $dryRun = (bool) ($filters['dry_run'] ?? false);
+        $this->assertCanonicalFilters($projectId, $scopeType, $scopeId);
+
+        $summary = [
+            'scanned' => 0,
+            'queued' => 0,
+            'ready' => 0,
+            'failed' => 0,
+            'skipped' => 0,
+            'dry_run' => $dryRun,
+        ];
+
+        $projectIds = DB::table('projects')
+            ->when($projectId !== null, fn ($query) => $query->where('id', $projectId))
+            ->orderBy('id')
+            ->pluck('id');
+
+        foreach ($projectIds as $candidateProjectId) {
+            foreach ($this->canonicalGraphs->listScopes((string) $candidateProjectId) as $scope) {
+                if ($scopeType !== null
+                    && ($scope['source_scope_type'] !== $scopeType || $scope['source_scope_id'] !== $scopeId)) {
+                    continue;
+                }
+
+                $summary['scanned']++;
+                try {
+                    $graph = $this->canonicalGraphs->latestForScope(
+                        (string) $candidateProjectId,
+                        $scope['source_scope_type'],
+                        $scope['source_scope_id'],
+                    );
+                } catch (\Throwable) {
+                    $summary['failed']++;
+
+                    continue;
+                }
+
+                if ($graph === null) {
+                    $summary['skipped']++;
+
+                    continue;
+                }
+
+                $identity = $graph['identity'];
+                $projection = DB::table('canonical_graph_projections')
+                    ->where('project_id', $identity['project_id'])
+                    ->where('source_scope_type', $identity['source_scope_type'])
+                    ->where('source_scope_id', $identity['source_scope_id'])
+                    ->where('artifact_type', $identity['artifact_type'])
+                    ->where('artifact_id', $identity['artifact_id'])
+                    ->first();
+
+                $expectedGraphVersion = hash(
+                    'sha256',
+                    $identity['artifact_type'].'|'.$identity['artifact_id'].'|'.$identity['checksum'],
+                );
+                if ($projection !== null
+                    && (! hash_equals((string) $projection->checksum, (string) $identity['checksum'])
+                        || ! hash_equals((string) $projection->graph_version, $expectedGraphVersion))) {
+                    // Artifact IDs are immutable. Reusing one for different bytes is
+                    // an inconsistent source state, not a projection to overwrite.
+                    $summary['failed']++;
+
+                    continue;
+                }
+
+                if ($projection === null) {
+                    $summary['queued']++;
+                    if (! $dryRun) {
+                        $projection = $this->canonicalProjections->queue($graph);
+                        ProjectCanonicalGraphToNeo4j::dispatch($projection->id)->afterCommit();
+                    }
+
+                    continue;
+                }
+
+                if ($projection->status === 'ready') {
+                    $summary['ready']++;
+
+                    continue;
+                }
+
+                if ($projection->status === 'failed') {
+                    $summary['queued']++;
+                    if (! $dryRun) {
+                        $updated = DB::table('canonical_graph_projections')
+                            ->where('id', $projection->id)
+                            ->where('status', 'failed')
+                            ->update([
+                                'status' => 'queued',
+                                'error_code' => null,
+                                'updated_at' => now(),
+                            ]);
+                        if ($updated === 1) {
+                            ProjectCanonicalGraphToNeo4j::dispatch($projection->id)->afterCommit();
+                        } else {
+                            $summary['queued']--;
+                            $summary['skipped']++;
+                        }
+                    }
+
+                    continue;
+                }
+
+                $summary['skipped']++;
+            }
+        }
+
+        return $summary;
+    }
 
     /**
      * @param  array{project_id?: string|null, repository_id?: string|null, snapshot_id?: string|null}  $filters
@@ -128,5 +255,27 @@ class Neo4jRebuildService
                 return [];
             }
         };
+    }
+
+    private function optionalString(mixed $value): ?string
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        return trim($value);
+    }
+
+    private function assertCanonicalFilters(?string $projectId, ?string $scopeType, ?string $scopeId): void
+    {
+        if (($scopeType === null) !== ($scopeId === null)) {
+            throw new InvalidArgumentException('Both --scope-type and --scope-id are required together.');
+        }
+        if ($scopeType !== null && $projectId === null) {
+            throw new InvalidArgumentException('A scope filter requires --project.');
+        }
+        if ($scopeType !== null && ! in_array($scopeType, ['workspace_binding', 'repository'], true)) {
+            throw new InvalidArgumentException('Invalid --scope-type. Use workspace_binding or repository.');
+        }
     }
 }
