@@ -214,9 +214,9 @@ class CanonicalGraphRepository
     {
         $json = (string) $artifact->artifact;
         $payload = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
-        $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
         $language = (string) ($payload['language'] ?? ($artifact->schema === 'hades.php_graph.v1' ? 'php' : 'unknown'));
         $payload = $this->adaptLegacy($payload, 'hades-legacy-'.$language, $language);
+        $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
 
         return $this->normalizer->normalize($payload, $this->identity($projectId, 'workspace_binding', $bindingId, 'hades_agent_artifact', $artifact, $json))
             + ['private_identity_provenance' => $privateIdentityProvenance];
@@ -229,9 +229,9 @@ class CanonicalGraphRepository
         }
         $json = Storage::disk('local')->get($artifact->storage_path);
         $payload = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
-        $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
         $language = (string) ($payload['language'] ?? 'unknown');
         $payload = $this->adaptLegacy($payload, 'legacy-analyzer', $language);
+        $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
 
         return $this->normalizer->normalize($payload, $this->identity($projectId, 'repository', $repositoryId, 'legacy_artifact', $artifact, $json))
             + ['private_identity_provenance' => $privateIdentityProvenance];
@@ -289,6 +289,7 @@ class CanonicalGraphRepository
         if (isset($payload['graph_contract'])) {
             return $payload;
         }
+        $payload = $this->adaptLegacyNodeIdentities($payload);
         $filesTotal = is_array($payload['files'] ?? null) ? count($payload['files']) : (int) ($payload['files_total'] ?? 0);
         $payload['graph_contract'] = [
             'version' => 'hades.graph_artifact.v1',
@@ -298,6 +299,111 @@ class CanonicalGraphRepository
         ];
 
         return $payload;
+    }
+
+    private function adaptLegacyNodeIdentities(array $payload): array
+    {
+        $nodeKey = is_array($payload['nodes'] ?? null) ? 'nodes' : 'symbols';
+        $nodes = is_array($payload[$nodeKey] ?? null) ? array_values($payload[$nodeKey]) : [];
+        $aliases = [];
+        $nodeIds = [];
+
+        foreach ($nodes as $index => $node) {
+            if (! is_array($node)) {
+                continue;
+            }
+
+            $nodeId = $node['id'] ?? $node['symbol_id'] ?? null;
+            if (! is_string($nodeId) || trim($nodeId) === '') {
+                $identity = $this->legacyNodeIdentity($node);
+                if ($identity === null) {
+                    throw new InvalidArgumentException('Legacy graph node identity is missing.');
+                }
+                $nodeId = 'legacy-node:'.hash('sha256', json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+                $node['id'] = $nodeId;
+                $nodes[$index] = $node;
+            }
+
+            $nodeId = trim($nodeId);
+            if (isset($nodeIds[$nodeId])) {
+                throw new InvalidArgumentException('Legacy graph node identity is ambiguous.');
+            }
+            $nodeIds[$nodeId] = true;
+
+            foreach ($this->legacyNodeAliases($node, $nodeId) as $alias) {
+                $aliases[$alias][$nodeId] = true;
+            }
+        }
+
+        $payload[$nodeKey] = $nodes;
+        $edgeKey = is_array($payload['relationships'] ?? null) ? 'relationships' : 'edges';
+        if (! is_array($payload[$edgeKey] ?? null)) {
+            return $payload;
+        }
+
+        $payload[$edgeKey] = array_map(function ($edge) use ($aliases, $nodeIds) {
+            if (! is_array($edge)) {
+                return $edge;
+            }
+
+            foreach ([['source_id', 'source', 'from'], ['target_id', 'target', 'to']] as $endpointFields) {
+                $endpoint = null;
+                foreach ($endpointFields as $field) {
+                    if (is_string($edge[$field] ?? null) && trim($edge[$field]) !== '') {
+                        $endpoint = trim($edge[$field]);
+                        break;
+                    }
+                }
+                if ($endpoint === null || isset($nodeIds[$endpoint])) {
+                    continue;
+                }
+
+                $candidates = array_keys($aliases[$endpoint] ?? []);
+                if (count($candidates) > 1) {
+                    throw new InvalidArgumentException('Legacy graph edge endpoint identity is ambiguous.');
+                }
+                if ($candidates !== []) {
+                    $edge[$endpointFields[0]] = $candidates[0];
+                }
+            }
+
+            return $edge;
+        }, $payload[$edgeKey]);
+
+        return $payload;
+    }
+
+    private function legacyNodeIdentity(array $node): ?array
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        $identity = [];
+        foreach (['type', 'kind', 'name', 'signature', 'path'] as $field) {
+            $value = $node[$field] ?? $properties[$field] ?? null;
+            if (is_string($value) && trim($value) !== '') {
+                $identity[$field] = trim($value);
+            }
+        }
+
+        if (! array_intersect_key($identity, array_flip(['name', 'signature', 'path']))) {
+            return null;
+        }
+
+        return $identity;
+    }
+
+    /** @return list<string> */
+    private function legacyNodeAliases(array $node, string $nodeId): array
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        $aliases = [$nodeId];
+        foreach (['id', 'symbol_id', 'name', 'signature', 'path'] as $field) {
+            $value = $node[$field] ?? $properties[$field] ?? null;
+            if (is_string($value) && trim($value) !== '') {
+                $aliases[] = trim($value);
+            }
+        }
+
+        return array_values(array_unique($aliases));
     }
 
     private function identity(string $projectId, string $scopeType, string $scopeId, string $artifactType, object $artifact, string $json): array

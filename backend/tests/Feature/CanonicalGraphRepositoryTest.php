@@ -118,6 +118,87 @@ it('lists each linked source separately without display paths', function () {
     )->and(collect($scopes)->contains(fn (array $scope) => array_key_exists('display_path', $scope)))->toBeFalse();
 });
 
+it('derives stable order invariant identities for identifiable legacy symbols and rewrites edge aliases', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    [$bindingId, $artifactId] = canonicalRepoHades($projectId);
+    $symbols = [
+        ['kind' => 'class', 'name' => 'BookingController', 'path' => 'app/Http/Controllers/BookingController.php'],
+        ['kind' => 'method', 'name' => 'BookingController@store', 'signature' => 'store(Request $request)', 'path' => 'app/Http/Controllers/BookingController.php'],
+    ];
+    $payload = [
+        'language' => 'php',
+        'symbols' => $symbols,
+        'edges' => [['kind' => 'contains', 'from' => 'BookingController', 'to' => 'BookingController@store']],
+    ];
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode($payload, JSON_THROW_ON_ERROR),
+    ]);
+
+    $repository = app(CanonicalGraphRepository::class);
+    $first = $repository->latestForScope($projectId, 'workspace_binding', $bindingId);
+    $repeated = $repository->latestForScope($projectId, 'workspace_binding', $bindingId);
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode(array_replace($payload, ['symbols' => array_reverse($symbols)]), JSON_THROW_ON_ERROR),
+    ]);
+    $second = $repository->latestForScope($projectId, 'workspace_binding', $bindingId);
+    $idsByName = fn (array $graph): array => collect($graph['nodes'])
+        ->mapWithKeys(fn (array $node): array => [$node['properties']['name'] => $node['id']])
+        ->sortKeys()
+        ->all();
+
+    expect($repeated['nodes'])->toBe($first['nodes'])
+        ->and($repeated['relationships'])->toBe($first['relationships'])
+        ->and($idsByName($first))->toBe($idsByName($second))
+        ->and($idsByName($first)['BookingController'])->toStartWith('legacy-node:')
+        ->and($first['relationships'][0]['source_id'])->toBe($idsByName($first)['BookingController'])
+        ->and($first['relationships'][0]['target_id'])->toBe($idsByName($first)['BookingController@store'])
+        ->and($first['private_identity_provenance'][$idsByName($first)['BookingController@store']])
+        ->toContain('app/Http/Controllers/BookingController.php');
+});
+
+it('rejects ambiguous derived legacy node identities', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    [$bindingId, $artifactId] = canonicalRepoHades($projectId);
+    $symbol = ['kind' => 'method', 'name' => 'BookingController@store', 'path' => 'app/BookingController.php'];
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode(['symbols' => [$symbol, $symbol]], JSON_THROW_ON_ERROR),
+    ]);
+
+    app(CanonicalGraphRepository::class)->latestForScope($projectId, 'workspace_binding', $bindingId);
+})->throws(InvalidArgumentException::class, 'Legacy graph node identity is ambiguous.');
+
+it('rejects ambiguous legacy edge aliases instead of choosing by node order', function (array $symbols) {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    [$bindingId, $artifactId] = canonicalRepoHades($projectId);
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode([
+            'symbols' => $symbols,
+            'edges' => [['kind' => 'calls', 'from' => 'caller', 'to' => 'duplicate']],
+        ], JSON_THROW_ON_ERROR),
+    ]);
+
+    app(CanonicalGraphRepository::class)->latestForScope($projectId, 'workspace_binding', $bindingId);
+})->with([
+    'original order' => [[
+        ['name' => 'duplicate', 'path' => 'app/A.php'],
+        ['name' => 'duplicate', 'path' => 'app/B.php'],
+    ]],
+    'reversed order' => [[
+        ['name' => 'duplicate', 'path' => 'app/B.php'],
+        ['name' => 'duplicate', 'path' => 'app/A.php'],
+    ]],
+])->throws(InvalidArgumentException::class, 'Legacy graph edge endpoint identity is ambiguous.');
+
+it('keeps the canonical normalizer strict for legacy nodes without real identity fields', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    [$bindingId, $artifactId] = canonicalRepoHades($projectId);
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode(['symbols' => [['kind' => 'method']]], JSON_THROW_ON_ERROR),
+    ]);
+
+    app(CanonicalGraphRepository::class)->latestForScope($projectId, 'workspace_binding', $bindingId);
+})->throws(InvalidArgumentException::class, 'Legacy graph node identity is missing.');
+
 function canonicalRepoHades(string $projectId, string $status = 'linked'): array
 {
     $agentId = (string) Str::ulid();
