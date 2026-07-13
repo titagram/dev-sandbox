@@ -83,7 +83,7 @@ class CanonicalGraphQueryService
     /** @param array<string, mixed> $params */
     private function symbolParams(array $params, object $projection): array
     {
-        return ['external_id' => (string) ($params['symbol_id'] ?? ''), 'graph_version' => (string) $projection->graph_version, 'limit' => max(1, min(50, (int) ($params['limit'] ?? 50)))];
+        return ['external_id' => (string) ($params['symbol_id'] ?? ''), 'graph_version' => $this->activeGraphVersion($projection), 'limit' => max(1, min(50, (int) ($params['limit'] ?? 50)))];
     }
 
     /** @param array<string, mixed> $params */
@@ -91,7 +91,7 @@ class CanonicalGraphQueryService
     {
         $depth = max(1, min(10, (int) ($params['max_depth'] ?? 5)));
 
-        return $client->run('MATCH (from:CanonicalGraphNode {external_id: $from_external_id, graph_version: $graph_version}), (to:CanonicalGraphNode {external_id: $to_external_id, graph_version: $graph_version}) MATCH p = shortestPath((from)-[:CALLS*1..'.$depth.']-(to)) WHERE ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version) RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes, [r IN relationships(p) | properties(r)] AS edges LIMIT 1', ['from_external_id' => (string) ($params['from_symbol_id'] ?? ''), 'to_external_id' => (string) ($params['to_symbol_id'] ?? ''), 'graph_version' => (string) $projection->graph_version]);
+        return $client->run('MATCH (from:CanonicalGraphNode {external_id: $from_external_id, graph_version: $graph_version}), (to:CanonicalGraphNode {external_id: $to_external_id, graph_version: $graph_version}) MATCH p = shortestPath((from)-[:CALLS*1..'.$depth.']-(to)) WHERE ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version) RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes, [r IN relationships(p) | properties(r)] AS edges LIMIT 1', ['from_external_id' => (string) ($params['from_symbol_id'] ?? ''), 'to_external_id' => (string) ($params['to_symbol_id'] ?? ''), 'graph_version' => $this->activeGraphVersion($projection)]);
     }
 
     /** @param array<string, mixed> $params */
@@ -145,7 +145,7 @@ class CanonicalGraphQueryService
 
         return $client->run($cypher, [
             'start_query' => $query,
-            'graph_version' => (string) $projection->graph_version,
+            'graph_version' => $this->activeGraphVersion($projection),
             'limit' => $limit,
             'fetch_limit' => $limit + 1,
             'path_limit' => $pathLimit,
@@ -165,6 +165,11 @@ class CanonicalGraphQueryService
         }
 
         return ['found' => false, 'reason' => null, 'graph_version' => $projection?->graph_version, 'quality' => $projection?->quality, 'results' => [], 'edges' => [], 'metadata' => ['project_id' => $projectId, 'source_scope_type' => $scopeType, 'source_scope_id' => $scopeId, 'projection_id' => $projection?->id, 'graph_version' => $projection?->graph_version, 'artifact_id' => $projection?->artifact_id, 'artifact_type' => $projection?->artifact_type, 'schema' => $schema, 'head_commit' => $headCommit, 'quality' => $projection?->quality, 'node_count' => $projection?->node_count, 'relationship_count' => $projection?->relationship_count]];
+    }
+
+    private function activeGraphVersion(object $projection): string
+    {
+        return (string) (($projection->active_graph_version ?? null) ?: $projection->graph_version);
     }
 
     /** @return array{0: list<array<string,mixed>>, 1: list<array<string,mixed>>, 2: bool, 3: list<string>} */

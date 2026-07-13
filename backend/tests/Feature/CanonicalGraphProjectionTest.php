@@ -96,8 +96,8 @@ it('atomically claims an exact completed projection for a forced rebuild', funct
     $claimed = $service->claimForForcedRebuild($projection->id, $graph);
 
     expect($claimed)->toBeTrue()
-        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting')
-        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBeNull();
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe($status)
+        ->and(DB::table('canonical_graph_projection_attempts')->where('projection_id', $projection->id)->where('status', 'projecting')->count())->toBe(1);
 })->with(['ready', 'stale', 'failed']);
 
 it('allows only one forced rebuild owner and leaves active work untouched', function (string $initialStatus) {
@@ -113,7 +113,7 @@ it('allows only one forced rebuild owner and leaves active work untouched', func
     expect($first)->toBe($initialStatus === 'ready')
         ->and($second)->toBeFalse()
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))
-        ->toBe($initialStatus === 'ready' ? 'projecting' : $initialStatus);
+        ->toBe($initialStatus);
 })->with(['ready', 'queued', 'projecting']);
 
 it('refuses a forced rebuild when checksum or graph version is not exact', function (string $field) {
@@ -130,21 +130,23 @@ it('refuses a forced rebuild when checksum or graph version is not exact', funct
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready');
 })->with(['checksum', 'graph_version']);
 
-it('leaves a failed forced rebuild available to canonical reconciliation', function () {
+it('records a failed forced attempt without demoting the verified projection', function () {
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
     $service = app(CanonicalGraphProjectionService::class);
     $graph = canonicalProjectionGraph($projectId, 'artifact-force-reconcile', str_repeat('6', 64));
     $projection = $service->queue($graph);
     DB::table('canonical_graph_projections')->where('id', $projection->id)->update(['status' => 'ready']);
-    expect($service->claimForForcedRebuild($projection->id, $graph))->toBeTrue();
+    $claim = $service->acquireForForcedRebuild($graph);
+    expect($claim['claimed'])->toBeTrue();
 
-    expect($service->markForcedRebuildFailed($projection->id, 'neo4j_unavailable'))->toBeTrue()
-        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed');
+    expect($service->markForcedRebuildFailed($claim['attempt_id'], 'neo4j_unavailable'))->toBeTrue()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready')
+        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('status'))->toBe('failed');
 
-    $claim = $service->claimForReconcile([$graph])["hades_agent_artifact\0artifact-force-reconcile"];
-    expect($claim['claimed'])->toBeTrue()
-        ->and($claim['conflict'])->toBeFalse()
-        ->and($claim['projection']->status)->toBe('queued');
+    $reconcile = $service->claimForReconcile([$graph])["hades_agent_artifact\0artifact-force-reconcile"];
+    expect($reconcile['claimed'])->toBeFalse()
+        ->and($reconcile['conflict'])->toBeFalse()
+        ->and($reconcile['projection']->status)->toBe('ready');
 });
 
 it('returns the atomic claim result without a fallible post claim read', function () {

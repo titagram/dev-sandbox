@@ -89,18 +89,21 @@ aliases are presentation values, not canonical graph ids.
 ## Projection lifecycle and concurrency
 
 Projection rows move through `queued`, `projecting`, `ready`, `failed`, and
-`stale`. Each `graph_version` is derived from the canonical artifact identity
-and checksum and scopes every Neo4j node and relationship.
+`stale`. The public `graph_version` is derived from the canonical artifact
+identity and checksum. `active_graph_version` selects the verified physical
+Neo4j copy without changing that public artifact identity.
 
 Queue workers claim `queued` rows conditionally. Reconciliation inserts missing
 rows or retries final `failed` rows but does not steal `queued` or `projecting`
 work. A forced synchronous rebuild can claim only an inactive row with the same
-project, scope, artifact, checksum, and version. That claimed row can move from
-`ready` to `projecting` and then to `failed` if verification fails. Neo4j keeps
-the previously verified current marker queryable during that failure; operators
-must retry or reconcile the failed PostgreSQL lifecycle row. A successful
-replacement is marked `ready` only after projected node and relationship counts
-verify atomically; then the previous `ready` row in that scope becomes `stale`.
+project, scope, artifact, checksum, and version. It creates a persistent,
+single-owner projection attempt with a distinct candidate physical version;
+the verified projection row remains `ready` and its active version remains
+queryable throughout the attempt. A failed attempt records only its bounded
+failure code and never demotes or rewrites the verified projection. A
+successful attempt switches `active_graph_version`, verified counts, and the
+attempt state in one PostgreSQL transaction after Neo4j count verification;
+only then can another ready row in the scope become `stale`.
 Persisted failure codes are bounded and never contain raw exception text.
 
 ## Reconcile and rebuild

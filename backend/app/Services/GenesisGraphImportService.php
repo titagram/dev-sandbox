@@ -449,13 +449,15 @@ class GenesisGraphImportService
                 return;
             }
 
-            $failureCode = match ($current?->status) {
-                'queued', 'projecting' => 'projection_busy',
-                'ready' => 'projection_ready_unverified',
-                'failed' => 'projection_failed',
-                'stale' => 'projection_stale',
-                default => 'projection_missing',
-            };
+            $failureCode = $force && $current !== null && $this->canonicalProjections->forcedRebuildActive((string) $current->id)
+                ? 'projection_busy'
+                : match ($current?->status) {
+                    'queued', 'projecting' => 'projection_busy',
+                    'ready' => 'projection_ready_unverified',
+                    'failed' => 'projection_failed',
+                    'stale' => 'projection_stale',
+                    default => 'projection_missing',
+                };
 
             throw new CanonicalGraphProjectionException((string) $projection->id, $failureCode);
         }
@@ -509,7 +511,14 @@ class GenesisGraphImportService
             }
 
             $counts = $this->canonicalProjector->project($canonical, $projection, $client);
-            if (! $this->canonicalProjections->markReady((string) $projection->id, $counts['nodes'], $counts['relationships'])) {
+            if ($force) {
+                $ready = $this->canonicalProjections->publishForcedRebuild(
+                    (string) $forceClaim['attempt_id'], $counts['nodes'], $counts['relationships'],
+                );
+                if ($ready === null) {
+                    throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+                }
+            } elseif (! $this->canonicalProjections->markReady((string) $projection->id, $counts['nodes'], $counts['relationships'])) {
                 throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
             }
         } catch (Throwable $exception) {
@@ -517,7 +526,7 @@ class GenesisGraphImportService
                 ? $exception->failureCode
                 : 'neo4j_query_failed';
             if ($force) {
-                $this->canonicalProjections->markForcedRebuildFailed((string) $projection->id, $failureCode);
+                $this->canonicalProjections->markForcedRebuildFailed((string) $forceClaim['attempt_id'], $failureCode);
             } else {
                 $this->canonicalProjections->markRetryPending((string) $projection->id, $failureCode);
             }
@@ -527,7 +536,7 @@ class GenesisGraphImportService
                 : new CanonicalGraphProjectionException((string) $projection->id, $failureCode, $exception);
         }
 
-        $ready = $this->canonicalProjections->findForWorker((string) $projection->id);
+        $ready ??= $this->canonicalProjections->findForWorker((string) $projection->id);
         if ($ready === null || $ready->status !== 'ready') {
             throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
         }
