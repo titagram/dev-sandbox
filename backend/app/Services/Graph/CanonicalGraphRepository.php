@@ -5,6 +5,7 @@ namespace App\Services\Graph;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use InvalidArgumentException;
+use Throwable;
 
 class CanonicalGraphRepository
 {
@@ -57,6 +58,107 @@ class CanonicalGraphRepository
             ->map(fn ($id): array => ['source_scope_type' => 'repository', 'source_scope_id' => (string) $id]);
 
         return $bindings->concat($repositories)->values()->all();
+    }
+
+    /**
+     * Return one bounded, cursor-addressable page of scopes with their latest
+     * canonical graph. Artifact selection is batched so callers never need a
+     * latest-artifact query per scope.
+     *
+     * @return array{items: list<array{source_scope_type: string, source_scope_id: string, graph: array|null, failed: bool}>, next_cursor: string|null}
+     */
+    public function scopeBatch(
+        string $projectId,
+        string $scopeType,
+        ?string $afterId = null,
+        int $limit = 25,
+    ): array {
+        $this->assertScope($scopeType);
+        $limit = max(1, min(100, $limit));
+
+        $scopeQuery = $scopeType === 'workspace_binding'
+            ? DB::table('hades_workspace_bindings')
+                ->where('project_id', $projectId)
+                ->where('status', 'linked')
+            : DB::table('repositories')->where('project_id', $projectId);
+        $scopes = $scopeQuery
+            ->when($afterId !== null, fn ($query) => $query->where('id', '>', $afterId))
+            ->orderBy('id')
+            ->limit($limit + 1)
+            ->get(['id']);
+        $hasMore = $scopes->count() > $limit;
+        $scopes = $scopes->take($limit)->values();
+
+        if ($scopes->isEmpty()) {
+            return ['items' => [], 'next_cursor' => null];
+        }
+
+        $scopeIds = $scopes->pluck('id')->map(fn ($id): string => (string) $id);
+        if ($scopeType === 'workspace_binding') {
+            $ranked = DB::table('hades_agent_artifacts')
+                ->select('hades_agent_artifacts.*')
+                ->selectRaw('ROW_NUMBER() OVER (PARTITION BY workspace_binding_id ORDER BY created_at DESC, id DESC) AS artifact_rank')
+                ->where('project_id', $projectId)
+                ->whereIn('workspace_binding_id', $scopeIds)
+                ->whereIn('schema', ['hades.php_graph.v1', 'hades.code_graph.v1']);
+            $artifacts = DB::query()->fromSub($ranked, 'ranked_hades_artifacts')
+                ->where('artifact_rank', 1)
+                ->get()
+                ->keyBy(fn (object $artifact): string => (string) $artifact->workspace_binding_id);
+        } else {
+            $ranked = DB::table('snapshots')
+                ->join('artifacts', 'artifacts.id', '=', 'snapshots.graph_snapshot_artifact_id')
+                ->select('artifacts.*')
+                ->addSelect('snapshots.repository_id as source_scope_id')
+                ->selectRaw('ROW_NUMBER() OVER (PARTITION BY snapshots.repository_id ORDER BY snapshots.created_at DESC, snapshots.id DESC) AS artifact_rank')
+                ->where('snapshots.project_id', $projectId)
+                ->whereIn('snapshots.repository_id', $scopeIds)
+                ->whereNotNull('snapshots.graph_snapshot_artifact_id')
+                ->where('artifacts.project_id', $projectId)
+                ->whereColumn('artifacts.repository_id', 'snapshots.repository_id');
+            $artifacts = DB::query()->fromSub($ranked, 'ranked_snapshot_artifacts')
+                ->where('artifact_rank', 1)
+                ->get()
+                ->keyBy(fn (object $artifact): string => (string) $artifact->source_scope_id);
+        }
+
+        $items = $scopes->map(function (object $scope) use ($artifacts, $projectId, $scopeType): array {
+            $scopeId = (string) $scope->id;
+            $artifact = $artifacts->get($scopeId);
+            if ($artifact === null) {
+                return [
+                    'source_scope_type' => $scopeType,
+                    'source_scope_id' => $scopeId,
+                    'graph' => null,
+                    'failed' => false,
+                ];
+            }
+
+            try {
+                $graph = $scopeType === 'workspace_binding'
+                    ? $this->normalizeHades($artifact, $projectId, $scopeId)
+                    : $this->normalizeSnapshot($artifact, $projectId, $scopeId);
+            } catch (Throwable) {
+                return [
+                    'source_scope_type' => $scopeType,
+                    'source_scope_id' => $scopeId,
+                    'graph' => null,
+                    'failed' => true,
+                ];
+            }
+
+            return [
+                'source_scope_type' => $scopeType,
+                'source_scope_id' => $scopeId,
+                'graph' => $graph,
+                'failed' => false,
+            ];
+        })->all();
+
+        return [
+            'items' => $items,
+            'next_cursor' => $hasMore ? (string) $scopes->last()->id : null,
+        ];
     }
 
     /**

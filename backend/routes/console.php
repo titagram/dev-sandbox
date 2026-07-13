@@ -10,24 +10,24 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Artisan::command('devboard:neo4j-rebuild {--project=} {--scope-type=} {--scope-id=} {--dry-run} {--repository=} {--snapshot=} {--mode=}', function () {
+Artisan::command('devboard:neo4j-rebuild {--reconcile} {--project=} {--scope-type=} {--scope-id=} {--dry-run} {--repository=} {--snapshot=} {--mode=}', function () {
     $project = is_string($this->option('project')) && trim($this->option('project')) !== '' ? trim($this->option('project')) : null;
     $scopeType = is_string($this->option('scope-type')) && trim($this->option('scope-type')) !== '' ? trim($this->option('scope-type')) : null;
     $scopeId = is_string($this->option('scope-id')) && trim($this->option('scope-id')) !== '' ? trim($this->option('scope-id')) : null;
     $mode = $this->option('mode') ?: null;
     $repository = $this->option('repository') ?: null;
     $snapshot = $this->option('snapshot') ?: null;
-    $legacy = $mode !== null || $repository !== null || $snapshot !== null;
+    $reconcile = (bool) $this->option('reconcile');
+    $canonicalOptions = $scopeType !== null || $scopeId !== null || (bool) $this->option('dry-run');
 
-    if ($mode !== null && ! in_array($mode, ['fake', 'neo4j'], true)) {
-        $this->error('Invalid --mode value. Use fake or neo4j.');
+    if (! $reconcile) {
+        if ($canonicalOptions) {
+            $this->error('Canonical options require --reconcile.');
 
-        return 1;
-    }
-
-    if ($legacy) {
-        if ($scopeType !== null || $scopeId !== null || (bool) $this->option('dry-run')) {
-            $this->error('Legacy rebuild options cannot be combined with scope or dry-run options.');
+            return 1;
+        }
+        if ($mode !== null && ! in_array($mode, ['fake', 'neo4j'], true)) {
+            $this->error('Invalid --mode value. Use fake or neo4j.');
 
             return 1;
         }
@@ -52,13 +52,19 @@ Artisan::command('devboard:neo4j-rebuild {--project=} {--scope-type=} {--scope-i
         return $result['failed'] === 0 ? 0 : 1;
     }
 
-    if (($scopeType === null) !== ($scopeId === null)) {
-        $this->error('Both --scope-type and --scope-id are required together.');
+    if ($mode !== null || $repository !== null || $snapshot !== null) {
+        $this->error('Canonical reconcile cannot use legacy rebuild options.');
 
         return 1;
     }
-    if ($scopeType !== null && $project === null) {
-        $this->error('A scope filter requires --project.');
+    if ($project === null) {
+        $this->error('Canonical reconcile requires --project.');
+
+        return 1;
+    }
+
+    if (($scopeType === null) !== ($scopeId === null)) {
+        $this->error('Both --scope-type and --scope-id are required together.');
 
         return 1;
     }

@@ -14,6 +14,8 @@ use RuntimeException;
 
 class Neo4jRebuildService
 {
+    private const RECONCILE_BATCH_SIZE = 25;
+
     public function __construct(
         private readonly GenesisGraphImportService $graphs,
         private readonly Neo4jClientFactory $clients,
@@ -44,103 +46,109 @@ class Neo4jRebuildService
             'dry_run' => $dryRun,
         ];
 
-        $projectIds = DB::table('projects')
-            ->when($projectId !== null, fn ($query) => $query->where('id', $projectId))
-            ->orderBy('id')
-            ->pluck('id');
+        if ($scopeType !== null) {
+            $summary['scanned'] = 1;
+            try {
+                $graph = $this->canonicalGraphs->latestForScope($projectId, $scopeType, $scopeId);
+            } catch (\Throwable) {
+                $summary['failed'] = 1;
 
-        foreach ($projectIds as $candidateProjectId) {
-            foreach ($this->canonicalGraphs->listScopes((string) $candidateProjectId) as $scope) {
-                if ($scopeType !== null
-                    && ($scope['source_scope_type'] !== $scopeType || $scope['source_scope_id'] !== $scopeId)) {
-                    continue;
-                }
-
-                $summary['scanned']++;
-                try {
-                    $graph = $this->canonicalGraphs->latestForScope(
-                        (string) $candidateProjectId,
-                        $scope['source_scope_type'],
-                        $scope['source_scope_id'],
-                    );
-                } catch (\Throwable) {
-                    $summary['failed']++;
-
-                    continue;
-                }
-
-                if ($graph === null) {
-                    $summary['skipped']++;
-
-                    continue;
-                }
-
-                $identity = $graph['identity'];
-                $projection = DB::table('canonical_graph_projections')
-                    ->where('project_id', $identity['project_id'])
-                    ->where('source_scope_type', $identity['source_scope_type'])
-                    ->where('source_scope_id', $identity['source_scope_id'])
-                    ->where('artifact_type', $identity['artifact_type'])
-                    ->where('artifact_id', $identity['artifact_id'])
-                    ->first();
-
-                $expectedGraphVersion = hash(
-                    'sha256',
-                    $identity['artifact_type'].'|'.$identity['artifact_id'].'|'.$identity['checksum'],
-                );
-                if ($projection !== null
-                    && (! hash_equals((string) $projection->checksum, (string) $identity['checksum'])
-                        || ! hash_equals((string) $projection->graph_version, $expectedGraphVersion))) {
-                    // Artifact IDs are immutable. Reusing one for different bytes is
-                    // an inconsistent source state, not a projection to overwrite.
-                    $summary['failed']++;
-
-                    continue;
-                }
-
-                if ($projection === null) {
-                    $summary['queued']++;
-                    if (! $dryRun) {
-                        $projection = $this->canonicalProjections->queue($graph);
-                        ProjectCanonicalGraphToNeo4j::dispatch($projection->id)->afterCommit();
-                    }
-
-                    continue;
-                }
-
-                if ($projection->status === 'ready') {
-                    $summary['ready']++;
-
-                    continue;
-                }
-
-                if ($projection->status === 'failed') {
-                    $summary['queued']++;
-                    if (! $dryRun) {
-                        $updated = DB::table('canonical_graph_projections')
-                            ->where('id', $projection->id)
-                            ->where('status', 'failed')
-                            ->update([
-                                'status' => 'queued',
-                                'error_code' => null,
-                                'updated_at' => now(),
-                            ]);
-                        if ($updated === 1) {
-                            ProjectCanonicalGraphToNeo4j::dispatch($projection->id)->afterCommit();
-                        } else {
-                            $summary['queued']--;
-                            $summary['skipped']++;
-                        }
-                    }
-
-                    continue;
-                }
-
-                $summary['skipped']++;
+                return $summary;
             }
+            $this->processCanonicalItems([[
+                'graph' => $graph,
+                'failed' => false,
+            ]], $dryRun, $summary);
+
+            return $summary;
+        }
+
+        foreach (['workspace_binding', 'repository'] as $candidateScopeType) {
+            $cursor = null;
+            do {
+                $batch = $this->canonicalGraphs->scopeBatch(
+                    $projectId,
+                    $candidateScopeType,
+                    $cursor,
+                    self::RECONCILE_BATCH_SIZE,
+                );
+                $summary['scanned'] += count($batch['items']);
+                $this->processCanonicalItems($batch['items'], $dryRun, $summary);
+                $cursor = $batch['next_cursor'];
+            } while ($cursor !== null);
         }
 
         return $summary;
+    }
+
+    /**
+     * @param  list<array{graph: array|null, failed: bool}>  $items
+     * @param  array{scanned: int, queued: int, ready: int, failed: int, skipped: int, dry_run: bool}  $summary
+     */
+    private function processCanonicalItems(array $items, bool $dryRun, array &$summary): void
+    {
+        $graphs = [];
+        foreach ($items as $item) {
+            if ($item['failed']) {
+                $summary['failed']++;
+
+                continue;
+            }
+            if ($item['graph'] === null) {
+                $summary['skipped']++;
+
+                continue;
+            }
+            $graphs[] = $item['graph'];
+        }
+        if ($graphs === []) {
+            return;
+        }
+
+        if ($dryRun) {
+            $projections = $this->canonicalProjections->findForGraphs($graphs);
+            foreach ($graphs as $graph) {
+                $key = $this->canonicalProjectionKey($graph);
+                $projection = $projections[$key] ?? null;
+                if ($projection !== null && ! $this->canonicalProjections->matchesGraph($projection, $graph)) {
+                    $summary['failed']++;
+                } elseif ($projection === null || $projection->status === 'failed') {
+                    $summary['queued']++;
+                } elseif ($projection->status === 'ready') {
+                    $summary['ready']++;
+                } else {
+                    $summary['skipped']++;
+                }
+            }
+
+            return;
+        }
+
+        $claims = $this->canonicalProjections->claimForReconcile($graphs);
+        foreach ($graphs as $graph) {
+            $claim = $claims[$this->canonicalProjectionKey($graph)];
+            if ($claim['conflict']) {
+                $summary['failed']++;
+
+                continue;
+            }
+            if ($claim['claimed']) {
+                $summary['queued']++;
+                ProjectCanonicalGraphToNeo4j::dispatch($claim['projection']->id)->afterCommit();
+
+                continue;
+            }
+            if ($claim['projection']->status === 'ready') {
+                $summary['ready']++;
+            } else {
+                $summary['skipped']++;
+            }
+        }
+    }
+
+    private function canonicalProjectionKey(array $graph): string
+    {
+        return $graph['identity']['artifact_type']."\0".$graph['identity']['artifact_id'];
     }
 
     /**
@@ -271,8 +279,8 @@ class Neo4jRebuildService
         if (($scopeType === null) !== ($scopeId === null)) {
             throw new InvalidArgumentException('Both --scope-type and --scope-id are required together.');
         }
-        if ($scopeType !== null && $projectId === null) {
-            throw new InvalidArgumentException('A scope filter requires --project.');
+        if ($projectId === null) {
+            throw new InvalidArgumentException('Canonical reconcile requires --project.');
         }
         if ($scopeType !== null && ! in_array($scopeType, ['workspace_binding', 'repository'], true)) {
             throw new InvalidArgumentException('Invalid --scope-type. Use workspace_binding or repository.');

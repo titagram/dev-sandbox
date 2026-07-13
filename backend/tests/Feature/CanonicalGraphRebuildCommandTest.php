@@ -27,6 +27,7 @@ it('discovers a Hades-only graph without mutating during dry-run', function () {
     $context = canonicalRebuildHadesContext();
 
     $exitCode = Artisan::call('devboard:neo4j-rebuild', [
+        '--reconcile' => true,
         '--project' => $context['project_id'],
         '--dry-run' => true,
     ]);
@@ -49,6 +50,7 @@ it('discovers a legacy repository graph through the canonical repository', funct
     $context = canonicalRebuildLegacyContext();
 
     $exitCode = Artisan::call('devboard:neo4j-rebuild', [
+        '--reconcile' => true,
         '--project' => $context['project_id'],
         '--dry-run' => true,
     ]);
@@ -70,7 +72,7 @@ it('queues and dispatches a missing exact projection', function () {
     Bus::fake();
     $context = canonicalRebuildHadesContext();
 
-    $exitCode = Artisan::call('devboard:neo4j-rebuild', ['--project' => $context['project_id']]);
+    $exitCode = Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
     $projection = DB::table('canonical_graph_projections')->sole();
 
     expect($exitCode)->toBe(0)
@@ -94,7 +96,7 @@ it('filters by the exact project and never queues another project', function () 
     $selected = canonicalRebuildHadesContext();
     $other = canonicalRebuildHadesContext();
 
-    Artisan::call('devboard:neo4j-rebuild', ['--project' => $selected['project_id']]);
+    Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $selected['project_id']]);
 
     expect(canonicalRebuildSummary()['scanned'])->toBe(1)
         ->and(DB::table('canonical_graph_projections')->where('project_id', $selected['project_id'])->count())->toBe(1)
@@ -107,6 +109,7 @@ it('filters by one exact optional source scope', function () {
     $other = canonicalRebuildHadesContext($selected['project_id']);
 
     Artisan::call('devboard:neo4j-rebuild', [
+        '--reconcile' => true,
         '--project' => $selected['project_id'],
         '--scope-type' => 'workspace_binding',
         '--scope-id' => $selected['scope_id'],
@@ -124,7 +127,7 @@ it('retries a failed exact projection without inserting a duplicate', function (
     app(CanonicalGraphProjectionService::class)->markFailed($projection->id, 'neo4j_unavailable');
     Bus::fake();
 
-    Artisan::call('devboard:neo4j-rebuild', ['--project' => $context['project_id']]);
+    Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
 
     expect(canonicalRebuildSummary())->toBe([
         'scanned' => 1,
@@ -146,7 +149,7 @@ it('reports and skips a ready exact artifact and checksum match', function () {
     app(CanonicalGraphProjectionService::class)->markReady($projection->id, 2, 1);
     Bus::fake();
 
-    Artisan::call('devboard:neo4j-rebuild', ['--project' => $context['project_id']]);
+    Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
 
     expect(canonicalRebuildSummary())->toBe([
         'scanned' => 1,
@@ -166,7 +169,7 @@ it('skips an exact projection that is already queued or projecting', function (s
     DB::table('canonical_graph_projections')->where('id', $projection->id)->update(['status' => $status]);
     Bus::fake();
 
-    Artisan::call('devboard:neo4j-rebuild', ['--project' => $context['project_id']]);
+    Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
 
     expect(canonicalRebuildSummary())->toBe([
         'scanned' => 1,
@@ -186,7 +189,7 @@ it('fails closed without dispatch when an artifact id is reused with a different
     DB::table('hades_agent_artifacts')->where('id', $context['artifact_id'])->update(['sha256' => str_repeat('f', 64)]);
     Bus::fake();
 
-    $exitCode = Artisan::call('devboard:neo4j-rebuild', ['--project' => $context['project_id']]);
+    $exitCode = Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
 
     expect($exitCode)->toBe(1)
         ->and(canonicalRebuildSummary())->toBe([
@@ -211,10 +214,146 @@ it('fails closed when the persisted graph version does not match the exact ident
     ]);
     Bus::fake();
 
-    $exitCode = Artisan::call('devboard:neo4j-rebuild', ['--project' => $context['project_id']]);
+    $exitCode = Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
 
     expect($exitCode)->toBe(1)
         ->and(canonicalRebuildSummary()['failed'])->toBe(1);
+    Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+});
+
+it('keeps project-only invocation on the legacy rebuild path', function () {
+    config()->set('services.devboard.graph_import_mode', 'fake');
+    $context = canonicalRebuildLegacyContext();
+    Bus::fake();
+
+    $exitCode = Artisan::call('devboard:neo4j-rebuild', ['--project' => $context['project_id']]);
+
+    expect($exitCode)->toBe(0)
+        ->and(Artisan::output())->toContain('Scanned 1 graph snapshot(s).')
+        ->and(Artisan::output())->not->toStartWith('{');
+});
+
+it('requires the explicit reconcile flag for canonical-only options', function (array $options) {
+    Bus::fake();
+
+    $exitCode = Artisan::call('devboard:neo4j-rebuild', $options);
+
+    expect($exitCode)->toBe(1)
+        ->and(trim(Artisan::output()))->toBe('Canonical options require --reconcile.')
+        ->and(strlen(trim(Artisan::output())))->toBeLessThanOrEqual(120);
+    Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+})->with([
+    'dry run' => [['--project' => '01TEST', '--dry-run' => true]],
+    'scope type' => [['--project' => '01TEST', '--scope-type' => 'repository']],
+    'scope id' => [['--project' => '01TEST', '--scope-id' => '01SCOPE']],
+]);
+
+it('dispatches a missing projection only once across repeated reconciliation', function () {
+    $context = canonicalRebuildHadesContext();
+    Bus::fake();
+
+    Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
+    $first = canonicalRebuildSummary();
+    Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
+    $second = canonicalRebuildSummary();
+
+    expect($first['queued'])->toBe(1)
+        ->and($second['queued'])->toBe(0)
+        ->and($second['skipped'])->toBe(1)
+        ->and(DB::table('canonical_graph_projections')->count())->toBe(1);
+    Bus::assertDispatchedTimes(ProjectCanonicalGraphToNeo4j::class, 1);
+});
+
+it('dispatches a failed projection retry only once across repeated reconciliation', function () {
+    $context = canonicalRebuildHadesContext();
+    $graph = app(CanonicalGraphRepository::class)->latestForScope($context['project_id'], 'workspace_binding', $context['scope_id']);
+    $projection = app(CanonicalGraphProjectionService::class)->queue($graph);
+    app(CanonicalGraphProjectionService::class)->markFailed($projection->id, 'neo4j_unavailable');
+    Bus::fake();
+
+    Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
+    $first = canonicalRebuildSummary();
+    Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
+    $second = canonicalRebuildSummary();
+
+    expect($first['queued'])->toBe(1)
+        ->and($second['queued'])->toBe(0)
+        ->and($second['skipped'])->toBe(1)
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('queued');
+    Bus::assertDispatchedTimes(ProjectCanonicalGraphToNeo4j::class, 1);
+});
+
+it('does not mutate or dispatch a failed projection during dry-run', function () {
+    $context = canonicalRebuildHadesContext();
+    $graph = app(CanonicalGraphRepository::class)->latestForScope($context['project_id'], 'workspace_binding', $context['scope_id']);
+    $projection = app(CanonicalGraphProjectionService::class)->queue($graph);
+    app(CanonicalGraphProjectionService::class)->markFailed($projection->id, 'neo4j_unavailable');
+    Bus::fake();
+
+    Artisan::call('devboard:neo4j-rebuild', [
+        '--reconcile' => true,
+        '--project' => $context['project_id'],
+        '--dry-run' => true,
+    ]);
+
+    expect(canonicalRebuildSummary()['queued'])->toBe(1)
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('neo4j_unavailable');
+    Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+});
+
+it('scans more than one scope chunk with bounded database queries and zero dry-run writes', function () {
+    $first = canonicalRebuildHadesContext();
+    foreach (range(1, 50) as $_) {
+        canonicalRebuildHadesContext($first['project_id']);
+    }
+    Bus::fake();
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+
+    Artisan::call('devboard:neo4j-rebuild', [
+        '--reconcile' => true,
+        '--project' => $first['project_id'],
+        '--dry-run' => true,
+    ]);
+    $summary = canonicalRebuildSummary();
+    $queries = collect(DB::getQueryLog())
+        ->pluck('query')
+        ->filter(fn (string $sql): bool => str_contains($sql, 'hades_workspace_bindings')
+            || str_contains($sql, 'hades_agent_artifacts')
+            || str_contains($sql, 'repositories')
+            || str_contains($sql, 'canonical_graph_projections'));
+
+    expect($summary['scanned'])->toBe(51)
+        ->and($summary['queued'])->toBe(51)
+        ->and($queries->count())->toBeLessThanOrEqual(18)
+        ->and(DB::table('canonical_graph_projections')->count())->toBe(0);
+    Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+});
+
+it('resolves an exact scope directly without listing all project scopes', function () {
+    $selected = canonicalRebuildHadesContext();
+    foreach (range(1, 30) as $_) {
+        canonicalRebuildHadesContext($selected['project_id']);
+    }
+    Bus::fake();
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+
+    Artisan::call('devboard:neo4j-rebuild', [
+        '--reconcile' => true,
+        '--project' => $selected['project_id'],
+        '--scope-type' => 'workspace_binding',
+        '--scope-id' => $selected['scope_id'],
+        '--dry-run' => true,
+    ]);
+    $bindingQueries = collect(DB::getQueryLog())
+        ->pluck('query')
+        ->filter(fn (string $sql): bool => str_contains($sql, 'hades_workspace_bindings'));
+
+    expect(canonicalRebuildSummary()['scanned'])->toBe(1)
+        ->and($bindingQueries)->each->toContain('"id" = ?')
+        ->and(DB::table('canonical_graph_projections')->count())->toBe(0);
     Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
 });
 
@@ -229,10 +368,12 @@ it('rejects invalid scope option combinations with a bounded safe message', func
         ->and(DB::table('canonical_graph_projections')->count())->toBe(0);
     Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
 })->with([
-    'type only' => [['--project' => '01TEST', '--scope-type' => 'repository'], 'Both --scope-type and --scope-id are required together.'],
-    'id only' => [['--project' => '01TEST', '--scope-id' => '01SCOPE'], 'Both --scope-type and --scope-id are required together.'],
-    'scope without project' => [['--scope-type' => 'repository', '--scope-id' => '01SCOPE'], 'A scope filter requires --project.'],
-    'unsupported scope' => [['--project' => '01TEST', '--scope-type' => 'filesystem', '--scope-id' => '01SCOPE'], 'Invalid --scope-type. Use workspace_binding or repository.'],
+    'type only' => [['--reconcile' => true, '--project' => '01TEST', '--scope-type' => 'repository'], 'Both --scope-type and --scope-id are required together.'],
+    'id only' => [['--reconcile' => true, '--project' => '01TEST', '--scope-id' => '01SCOPE'], 'Both --scope-type and --scope-id are required together.'],
+    'scope without project' => [['--reconcile' => true, '--scope-type' => 'repository', '--scope-id' => '01SCOPE'], 'Canonical reconcile requires --project.'],
+    'no project' => [['--reconcile' => true], 'Canonical reconcile requires --project.'],
+    'unsupported scope' => [['--reconcile' => true, '--project' => '01TEST', '--scope-type' => 'filesystem', '--scope-id' => '01SCOPE'], 'Invalid --scope-type. Use workspace_binding or repository.'],
+    'legacy option' => [['--reconcile' => true, '--project' => '01TEST', '--snapshot' => '01SNAPSHOT'], 'Canonical reconcile cannot use legacy rebuild options.'],
 ]);
 
 function canonicalRebuildSummary(): array
