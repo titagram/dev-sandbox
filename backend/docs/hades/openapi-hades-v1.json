@@ -224,7 +224,7 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "422": {
-            "description": "Request validation failure, invalid_graph_contract, or invalid_graph_artifact. Missing or invalid request fields use Laravel's validation envelope; explicit malformed graph payloads use the bounded artifact error envelope and are rejected before deduplication or persistence.",
+            "description": "Request validation failure or an artifact-specific 422 failure. Missing or invalid request fields use Laravel's validation envelope; artifact failures use the bounded artifact error envelope and are rejected before deduplication or persistence. Size-limit failures are separate HTTP 413 responses and are not included in the 422 artifact code enum.",
             "content": {
               "application/json": {
                 "schema": {
@@ -820,6 +820,7 @@
         "required": [
           "error"
         ],
+        "additionalProperties": false,
         "properties": {
           "error": {
             "type": "object",
@@ -827,12 +828,19 @@
               "code",
               "message"
             ],
+            "additionalProperties": false,
             "properties": {
               "code": {
                 "type": "string",
                 "enum": [
                   "invalid_graph_contract",
-                  "invalid_graph_artifact"
+                  "invalid_graph_artifact",
+                  "artifact_schema_mismatch",
+                  "artifact_encoding_unsupported",
+                  "artifact_compressed_invalid",
+                  "artifact_compressed_size_mismatch",
+                  "artifact_uncompressed_size_mismatch",
+                  "artifact_uncompressed_hash_mismatch"
                 ]
               },
               "message": {

@@ -274,6 +274,69 @@ it('keeps artifact upload runtime responses aligned with the documented 422 cont
     ]);
 });
 
+it('returns the artifact error envelope for schema and compressed upload mismatches', function (string $failure, string $code, string $message) {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $headers = ['Authorization' => 'Bearer '.$agent['token']];
+
+    if ($failure === 'schema') {
+        $payload = canonicalProjectionUpload($agent, $bindingId);
+        $payload['artifact']['schema'] = 'hades.php_graph.v1';
+    } else {
+        $json = json_encode(['schema' => 'hades.code_graph.v1'], JSON_THROW_ON_ERROR);
+        $compressed = gzencode($json);
+        $payload = [
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $bindingId,
+            'schema' => 'hades.code_graph.v1',
+            'artifact_compressed' => base64_encode($compressed),
+            'artifact_encoding' => 'gzip+base64',
+            'artifact_uncompressed_sha256' => hash('sha256', $json),
+            'artifact_uncompressed_bytes' => strlen($json),
+            'artifact_compressed_bytes' => strlen($compressed) + 1,
+        ];
+    }
+
+    $this->postJson('/api/hades/v1/artifacts', $payload, $headers)
+        ->assertUnprocessable()
+        ->assertExactJson(['error' => ['code' => $code, 'message' => $message]]);
+})->with([
+    'schema mismatch' => ['schema', 'artifact_schema_mismatch', 'Artifact payload schema does not match the requested schema.'],
+    'compressed size mismatch' => ['compressed', 'artifact_compressed_size_mismatch', 'Compressed artifact byte count does not match.'],
+]);
+
+it('documents every controller artifact 422 code while keeping 413 codes separate', function () {
+    $spec = json_decode(file_get_contents(base_path('docs/hades/openapi-hades-v1.json')), true, flags: JSON_THROW_ON_ERROR);
+    $artifactError = $spec['components']['schemas']['ArtifactUploadErrorResponse'];
+    $documented = $artifactError['properties']['error']['properties']['code']['enum'];
+    sort($documented);
+
+    $source = file_get_contents(app_path('Http/Controllers/Hades/ArtifactController.php'));
+    preg_match_all(
+        "/\\\$this->error\\(\\s*'([^']+)'\\s*,\\s*'(?:\\\\\\\\.|[^'])*'\\s*,\\s*Response::HTTP_(UNPROCESSABLE_ENTITY|REQUEST_ENTITY_TOO_LARGE)\\s*\\)/s",
+        $source,
+        $matches,
+        PREG_SET_ORDER,
+    );
+    $codesByStatus = ['UNPROCESSABLE_ENTITY' => [], 'REQUEST_ENTITY_TOO_LARGE' => []];
+    foreach ($matches as $match) {
+        $codesByStatus[$match[2]][] = $match[1];
+    }
+    $unprocessable = array_values(array_unique($codesByStatus['UNPROCESSABLE_ENTITY']));
+    $tooLarge = array_values(array_unique($codesByStatus['REQUEST_ENTITY_TOO_LARGE']));
+    sort($unprocessable);
+    sort($tooLarge);
+
+    expect($documented)->toBe($unprocessable)
+        ->and($tooLarge)->toBe([
+            'artifact_compressed_too_large',
+            'artifact_too_large',
+            'artifact_uncompressed_too_large',
+        ])->and(array_intersect($documented, $tooLarge))->toBe([])
+        ->and($artifactError['additionalProperties'])->toBeFalse()
+        ->and($artifactError['properties']['error']['additionalProperties'])->toBeFalse();
+});
+
 it('rejects malformed explicit graph contracts before dedupe and every upload side effect', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();
