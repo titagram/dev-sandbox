@@ -1329,16 +1329,22 @@ it('traverses PHP graph artifacts through a bounded Hades graph endpoint', funct
     {
         public function run(string $cypher, array $params = []): mixed
         {
+            if (str_contains($cypher, 'traversal_schema_version')) {
+                return [['traversal_schema_version' => 1]];
+            }
+            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
+                return [[
+                    'node' => ['external_id' => 'route:orders.show'],
+                    'labels' => ['CanonicalGraphNode'],
+                    'match_fields' => [],
+                ]];
+            }
+
             return [[
-                'node' => ['external_id' => 'route:orders.show'],
-                'labels' => ['CanonicalGraphNode'],
-            ], [
+                'source_id' => 'route:orders.show',
                 'node' => ['external_id' => 'OrderController@show', 'name' => 'OrderController@show'],
                 'labels' => ['CanonicalGraphNode'],
-                'edges' => [['id' => 'edge-1', 'type' => 'CALLS', 'source_id' => 'route:orders.show', 'target_id' => 'OrderController@show']],
-            ], [
-                'node' => ['external_id' => 'App\\Services\\OrderPresenter', 'name' => 'App\\Services\\OrderPresenter'],
-                'labels' => ['CanonicalGraphNode'],
+                'edge' => ['id' => 'edge-1', 'type' => 'CALLS', 'source_id' => 'route:orders.show', 'target_id' => 'OrderController@show'],
             ]];
         }
     }));
@@ -1400,20 +1406,28 @@ it('resolves legacy Hades start fields partially and limits deduplicated travers
         {
             $this->commands[] = compact('cypher', 'params');
 
+            if (str_contains($cypher, 'traversal_schema_version')) {
+                return [['traversal_schema_version' => 1]];
+            }
+
+            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
+                return [[
+                    'node' => ['external_id' => 'one', 'name' => 'InvoiceController'],
+                    'labels' => ['CanonicalGraphNode'],
+                    'match_fields' => ['name'],
+                ]];
+            }
+
             return [[
-                'nodes' => [
-                    ['node' => ['external_id' => 'one', 'name' => 'InvoiceController'], 'labels' => ['CanonicalGraphNode']],
-                    ['node' => ['external_id' => 'one', 'name' => 'InvoiceController'], 'labels' => ['CanonicalGraphNode']],
-                    ['node' => ['external_id' => 'two', 'path' => 'app/InvoiceService.php'], 'labels' => ['CanonicalGraphNode']],
-                    ['node' => ['external_id' => 'three', 'label' => 'third'], 'labels' => ['CanonicalGraphNode']],
-                ],
-                'edges' => [
-                    ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
-                    ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
-                    ['id' => 'edge-2', 'source_id' => 'two', 'target_id' => 'three'],
-                ],
-                'truncated' => true,
-                'match_fields' => ['name', 'path'],
+                'source_id' => 'one',
+                'node' => ['external_id' => 'two', 'path' => 'app/InvoiceService.php'],
+                'labels' => ['CanonicalGraphNode'],
+                'edge' => ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
+            ], [
+                'source_id' => 'one',
+                'node' => ['external_id' => 'three', 'label' => 'third'],
+                'labels' => ['CanonicalGraphNode'],
+                'edge' => ['id' => 'edge-2', 'source_id' => 'one', 'target_id' => 'three'],
             ]];
         }
     };
@@ -1426,22 +1440,22 @@ it('resolves legacy Hades start fields partially and limits deduplicated travers
         'limit' => 2,
     ]), hadesM3Headers($agent['agent_token']))->assertOk()->json();
 
-    expect($client->commands)->toHaveCount(1)
-        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.external_id, \'\')) CONTAINS $start_query')
-        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.name, \'\')) CONTAINS $start_query')
-        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.label, \'\')) CONTAINS $start_query')
-        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.path, \'\')) CONTAINS $start_query')
-        ->and($client->commands[0]['params']['start_query'])->toBe('invoice')
-        ->and($client->commands[0]['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
-        ->and($client->commands[0]['cypher'])->toContain('LIMIT $path_fetch_limit')
-        ->and($client->commands[0]['cypher'])->toContain('size(matchedPaths) > $path_limit AS pathTruncated')
+    expect($client->commands)->toHaveCount(3)
+        ->and($client->commands[1]['cypher'])->toContain('toLower(coalesce(start.external_id, \'\')) CONTAINS $start_query')
+        ->and($client->commands[1]['cypher'])->toContain('toLower(coalesce(start.name, \'\')) CONTAINS $start_query')
+        ->and($client->commands[1]['cypher'])->toContain('toLower(coalesce(start.label, \'\')) CONTAINS $start_query')
+        ->and($client->commands[1]['cypher'])->toContain('toLower(coalesce(start.path, \'\')) CONTAINS $start_query')
+        ->and($client->commands[1]['params']['start_query'])->toBe('invoice')
+        ->and($client->commands[2]['params']['per_frontier_fetch_limit'])->toBe(3)
+        ->and($client->commands[2]['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
+        ->and($client->commands[2]['cypher'])->not->toContain('[*')
         ->and($response['count'])->toBe(2)
         ->and(array_column($response['nodes'], 'id'))->toBe(['one', 'two'])
         ->and($response['edge_count'])->toBe(1)
         ->and(array_column($response['edges'], 'id'))->toBe(['edge-1'])
         ->and($response['truncated'])->toBeTrue()
         ->and($response['match_fields'])->toContain('name')
-        ->and($response['match_fields'])->toContain('path');
+        ->and($response['match_fields'])->toContain('name');
 });
 
 it('quarantines raw chunk import bundle entries instead of creating memory proposals', function () {

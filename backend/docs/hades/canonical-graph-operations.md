@@ -134,6 +134,50 @@ projection rows nor dispatches jobs nor writes Neo4j. A real reconciliation
 queues the latest canonical artifact for each selected source; process the
 Laravel queue before expecting it to become `ready`.
 
+### Bounded traversal rollout
+
+Canonical traversal schema version 1 materializes two
+`CanonicalGraphAdjacency` lookup nodes for every relationship (`in` and
+`out`). Their deterministic `direction_rank` and `any_rank` values are indexed
+with graph version and source node. A traversal therefore applies its
+per-frontier rank bound in a Neo4j range index seek before loading target
+nodes; it never performs an unbounded relationship expansion.
+
+Projections published before this schema do not have adjacency lookup nodes or
+the `CanonicalGraphVersion.traversal_schema_version = 1` capability marker.
+The backend deliberately returns `graph_projection_rebuild_required` for
+traversal against those versions. It does not silently fall back to the legacy
+unbounded query. Callers, callees, and shortest-path reads retain their existing
+behavior while the traversal rebuild is pending.
+
+Roll out the feature in this order: enter the approved maintenance window,
+deploy the compatible application code, run the additive database migration,
+then force-rebuild each selected canonical scope. A forced rebuild writes a
+distinct candidate physical graph version while PostgreSQL continues pointing
+at the previously published version. Only after node, relationship, and
+adjacency counts all verify does one final Neo4j statement mark the candidate
+current and set its traversal schema marker; only after that does PostgreSQL
+publish the candidate as `active_graph_version`. A failed or partial candidate
+is never queried and leaves the previous published projection unchanged.
+
+After every scope is rebuilt, verify the marker and adjacency count with
+read-only Cypher, then smoke traversal. The adjacency count must be exactly
+twice the relationship count for the same active physical graph version:
+
+```cypher
+MATCH (v:CanonicalGraphVersion {graph_version: $active_graph_version})
+OPTIONAL MATCH ()-[r {graph_version: $active_graph_version}]->()
+WITH v, count(r) AS relationships
+OPTIONAL MATCH (a:CanonicalGraphAdjacency {graph_version: $active_graph_version})
+RETURN v.current AS current,
+       v.traversal_schema_version AS traversal_schema_version,
+       relationships,
+       count(a) AS adjacencies;
+```
+
+Expected: `current = true`, `traversal_schema_version = 1`, and
+`adjacencies = relationships * 2`. Stop the rollout if any invariant differs.
+
 The historical command without `--reconcile` remains available for legacy
 snapshot artifacts and accepts `--repository`, `--snapshot`, and `--mode`.
 This path performs a forceful rebuild rather than a read-only preview, even when

@@ -56,6 +56,35 @@ it('projects batches with project scope and graph version', function () {
     }
 });
 
+it('materializes deterministically ranked adjacency rows for bounded traversal', function () {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+    $projection = DB::table('canonical_graph_projections')->first();
+    $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
+    $client = new FakeNeo4jClient;
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+
+    $indexCommands = collect($client->commands)->filter(fn (array $command): bool => str_contains($command['cypher'], 'CREATE INDEX canonical_adjacency_'));
+    $adjacencyCommand = collect($client->commands)->first(fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $adjacencies'));
+    $rows = $adjacencyCommand['params']['adjacencies'] ?? [];
+    $properties = array_column($rows, 'properties');
+    $verificationIndex = collect($client->commands)->search(fn (array $command): bool => str_contains($command['cypher'], 'RETURN count(a) AS adjacencies'));
+    $publishIndex = collect($client->commands)->search(fn (array $command): bool => str_contains($command['cypher'], 'candidate.current = true'));
+
+    expect($indexCommands)->toHaveCount(2)
+        ->and($rows)->toHaveCount(2)
+        ->and(array_column($properties, 'direction'))->toBe(['in', 'out'])
+        ->and(array_column($properties, 'direction_rank'))->toBe([0, 0])
+        ->and(array_column($properties, 'any_rank'))->toBe([0, 0])
+        ->and(array_column($properties, 'from_external_id'))->toContain('file:a.php', 'class:A')
+        ->and(array_column($properties, 'to_external_id'))->toContain('file:a.php', 'class:A')
+        ->and($verificationIndex)->toBeInt()
+        ->and($publishIndex)->toBeInt()->toBeGreaterThan($verificationIndex)
+        ->and($client->commands[$publishIndex]['cypher'])->toContain('candidate.traversal_schema_version = 1');
+});
+
 it('sends canonical property bags as Bolt maps without changing their scalar values', function () {
     $graph = [
         'nodes' => [
@@ -91,6 +120,10 @@ it('sends canonical property bags as Bolt maps without changing their scalar val
         public function run(string $cypher, array $parameters = []): mixed
         {
             $this->commands[] = ['cypher' => $cypher, 'params' => $parameters];
+
+            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+                return [['adjacencies' => 4]];
+            }
 
             return str_contains($cypher, 'RETURN nodes')
                 ? [['nodes' => 2, 'relationships' => 2]]
@@ -173,7 +206,13 @@ it('reasserts reserved identity properties after payload properties', function (
     [$agent, $bindingId] = canonicalProjectionAgent();
     $payload = canonicalProjectionUpload($agent, $bindingId);
     $payload['artifact']['nodes'][0]['properties'] = ['graph_version' => 'evil', 'external_id' => 'evil'];
-    $payload['artifact']['relationships'][0]['properties'] = ['graph_version' => 'evil', 'external_id' => 'evil'];
+    $payload['artifact']['relationships'][0]['properties'] = [
+        'graph_version' => 'evil',
+        'external_id' => 'evil',
+        'type' => 'EVIL',
+        'source_id' => 'evil-source',
+        'target_id' => 'evil-target',
+    ];
     $response = $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
     $projection = DB::table('canonical_graph_projections')->first();
     $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
@@ -185,14 +224,27 @@ it('reasserts reserved identity properties after payload properties', function (
         {
             $this->commands[] = ['cypher' => $cypher, 'params' => $parameters];
 
+            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+                return [['adjacencies' => 2]];
+            }
+
             return str_contains($cypher, 'RETURN nodes') ? [['nodes' => 2, 'relationships' => 1]] : [];
         }
     };
     app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
     $node = collect($client->commands)->first(fn ($command) => str_contains($command['cypher'], 'UNWIND $nodes'));
     $edge = collect($client->commands)->first(fn ($command) => str_contains($command['cypher'], 'UNWIND $relationships'));
+    $adjacencies = collect($client->commands)->first(fn ($command) => str_contains($command['cypher'], 'UNWIND $adjacencies'))['params']['adjacencies'];
+    $adjacencyEdges = array_map(
+        fn (array $adjacency): array => json_decode($adjacency['properties']['edge_json'], true, flags: JSON_THROW_ON_ERROR),
+        $adjacencies,
+    );
     expect($node['cypher'])->toContain('n.graph_version = $graph_version')->toContain('n.external_id = node.id')
-        ->and($edge['cypher'])->toContain('r.graph_version = $graph_version')->toContain('r.external_id = relationship.id');
+        ->and($edge['cypher'])->toContain('r.graph_version = $graph_version')->toContain('r.external_id = relationship.id')
+        ->and(array_column($adjacencyEdges, 'external_id'))->toBe(['declares:a', 'declares:a'])
+        ->and(array_column($adjacencyEdges, 'type'))->toBe(['DECLARES', 'DECLARES'])
+        ->and(array_column($adjacencyEdges, 'source_id'))->toBe(['file:a.php', 'file:a.php'])
+        ->and(array_column($adjacencyEdges, 'target_id'))->toBe(['class:A', 'class:A']);
 });
 
 it('does not clear an existing current candidate before verification on retry', function () {

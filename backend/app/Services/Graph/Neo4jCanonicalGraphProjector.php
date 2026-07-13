@@ -19,6 +19,8 @@ class Neo4jCanonicalGraphProjector
         $scope = ['graph_version' => $projection->graph_version, 'project_id' => $projection->project_id, 'source_scope_type' => $projection->source_scope_type, 'source_scope_id' => $projection->source_scope_id];
         $client->run('CREATE INDEX canonical_node_version_external IF NOT EXISTS FOR (n:CanonicalGraphNode) ON (n.graph_version, n.external_id)');
         $client->run('CREATE INDEX canonical_version_identity IF NOT EXISTS FOR (v:CanonicalGraphVersion) ON (v.graph_version)');
+        $client->run('CREATE INDEX canonical_adjacency_direction_rank IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.direction, a.direction_rank)');
+        $client->run('CREATE INDEX canonical_adjacency_any_rank IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.any_rank)');
         $client->run('CALL db.awaitIndexes(300)');
         $client->run('MERGE (v:CanonicalGraphVersion {graph_version: $graph_version}) ON CREATE SET v.current = false SET v += $metadata, v.status = \'projecting\'', $scope + ['metadata' => $this->boltPropertyMap($scope + ['snapshot_id' => $projection->snapshot_id ?? null])]);
 
@@ -29,6 +31,10 @@ class Neo4jCanonicalGraphProjector
             foreach (array_chunk($relationships, self::BATCH_SIZE) as $batch) {
                 $client->run("UNWIND \$relationships AS relationship MATCH (source:CanonicalGraphNode {graph_version: \$graph_version, external_id: relationship.source_id}) MATCH (target:CanonicalGraphNode {graph_version: \$graph_version, external_id: relationship.target_id}) MERGE (source)-[r:{$type} {graph_version: \$graph_version, external_id: relationship.id}]->(target) SET r += relationship.properties, r.graph_version = \$graph_version, r.external_id = relationship.id, r.project_id = \$project_id, r.source_scope_type = \$source_scope_type, r.source_scope_id = \$source_scope_id", $scope + ['relationships' => $this->withBoltPropertyMaps($batch)]);
             }
+        }
+        $adjacencies = $this->adjacencyRows($graph['relationships']);
+        foreach (array_chunk($adjacencies, self::BATCH_SIZE) as $batch) {
+            $client->run('UNWIND $adjacencies AS adjacency MERGE (a:CanonicalGraphAdjacency {graph_version: $graph_version, external_id: adjacency.id}) SET a += adjacency.properties, a.graph_version = $graph_version, a.external_id = adjacency.id, a.project_id = $project_id, a.source_scope_type = $source_scope_type, a.source_scope_id = $source_scope_id', $scope + ['adjacencies' => $this->withBoltPropertyMaps($batch)]);
         }
 
         $verified = $client->run('MATCH (n:CanonicalGraphNode {graph_version: $graph_version}) WITH count(n) AS nodes OPTIONAL MATCH ()-[r {graph_version: $graph_version}]->() RETURN nodes, count(r) AS relationships', $scope + ['expected_nodes' => count($graph['nodes']), 'expected_relationships' => count($graph['relationships'])]);
@@ -48,9 +54,79 @@ class Neo4jCanonicalGraphProjector
         if (! is_numeric($actualNodes) || ! is_numeric($actualRelationships) || (int) $actualNodes !== count($graph['nodes']) || (int) $actualRelationships !== count($graph['relationships'])) {
             throw new RuntimeException('Canonical graph verification count mismatch.');
         }
-        $client->run("MATCH (candidate:CanonicalGraphVersion {graph_version: \$graph_version})\nMATCH (other:CanonicalGraphVersion {project_id: \$project_id, source_scope_type: \$source_scope_type, source_scope_id: \$source_scope_id})\nSET other.current = false, candidate.current = true, candidate.status = 'ready', candidate.projected_at = datetime()", $scope);
+        $verifiedAdjacencies = $client->run('MATCH (a:CanonicalGraphAdjacency {graph_version: $graph_version}) RETURN count(a) AS adjacencies', $scope + ['expected_adjacencies' => count($adjacencies)]);
+        $adjacencyRows = [];
+        if (is_iterable($verifiedAdjacencies)) {
+            foreach ($verifiedAdjacencies as $adjacencyRow) {
+                $adjacencyRows[] = $adjacencyRow;
+            }
+        }
+        if (count($adjacencyRows) !== 1 || ! is_numeric($this->verificationValue($adjacencyRows[0], 'adjacencies')) || (int) $this->verificationValue($adjacencyRows[0], 'adjacencies') !== count($adjacencies)) {
+            throw new RuntimeException('Canonical graph adjacency verification count mismatch.');
+        }
+        $client->run("MATCH (candidate:CanonicalGraphVersion {graph_version: \$graph_version})\nMATCH (other:CanonicalGraphVersion {project_id: \$project_id, source_scope_type: \$source_scope_type, source_scope_id: \$source_scope_id})\nSET other.current = false, candidate.current = true, candidate.status = 'ready', candidate.traversal_schema_version = 1, candidate.projected_at = datetime()", $scope);
 
         return ['nodes' => count($graph['nodes']), 'relationships' => count($graph['relationships'])];
+    }
+
+    /**
+     * Build two lookup records for every relationship. Ranks are scoped to a
+     * source node and are assigned only after a stable identity sort, so the
+     * traversal query can apply an indexed upper bound before loading targets.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function adjacencyRows(array $relationships): array
+    {
+        $rows = [];
+        foreach ($relationships as $relationship) {
+            $type = preg_replace('/[^A-Z0-9_]/', '_', strtoupper((string) $relationship['type'])) ?: 'RELATED';
+            $edgeId = (string) ($relationship['id'] ?? hash('sha256', $relationship['source_id'].'|'.$type.'|'.$relationship['target_id']));
+            $edge = array_merge($relationship['properties'] ?? [], [
+                'external_id' => $edgeId,
+                'type' => $type,
+                'source_id' => (string) $relationship['source_id'],
+                'target_id' => (string) $relationship['target_id'],
+            ]);
+            foreach ([
+                ['direction' => 'out', 'from' => (string) $relationship['source_id'], 'to' => (string) $relationship['target_id']],
+                ['direction' => 'in', 'from' => (string) $relationship['target_id'], 'to' => (string) $relationship['source_id']],
+            ] as $lookup) {
+                $rows[] = [
+                    'id' => hash('sha256', $edgeId.'|'.$lookup['direction'].'|'.$lookup['from'].'|'.$lookup['to']),
+                    'properties' => [
+                        'from_external_id' => $lookup['from'],
+                        'to_external_id' => $lookup['to'],
+                        'direction' => $lookup['direction'],
+                        'edge_external_id' => $edgeId,
+                        'edge_type' => $type,
+                        'edge_json' => json_encode($edge, JSON_THROW_ON_ERROR),
+                    ],
+                ];
+            }
+        }
+        usort($rows, fn (array $left, array $right): int => [
+            $left['properties']['from_external_id'], $left['properties']['direction'],
+            $left['properties']['to_external_id'], $left['properties']['edge_type'], $left['properties']['edge_external_id'],
+        ] <=> [
+            $right['properties']['from_external_id'], $right['properties']['direction'],
+            $right['properties']['to_external_id'], $right['properties']['edge_type'], $right['properties']['edge_external_id'],
+        ]);
+        $directionRanks = [];
+        $anyRanks = [];
+        foreach ($rows as &$row) {
+            $properties = &$row['properties'];
+            $directionKey = $properties['from_external_id'].'|'.$properties['direction'];
+            $anyKey = $properties['from_external_id'];
+            $properties['direction_rank'] = $directionRanks[$directionKey] ?? 0;
+            $properties['any_rank'] = $anyRanks[$anyKey] ?? 0;
+            $directionRanks[$directionKey] = $properties['direction_rank'] + 1;
+            $anyRanks[$anyKey] = $properties['any_rank'] + 1;
+            unset($properties);
+        }
+        unset($row);
+
+        return $rows;
     }
 
     private function relationshipsByType(array $relationships): array

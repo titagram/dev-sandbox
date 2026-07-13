@@ -379,7 +379,7 @@
             }
           },
           "404": {
-            "description": "workspace_binding_not_found, graph_scope_not_found, graph_projection_not_ready, or query_error. A not-ready projection is not an empty graph.",
+            "description": "workspace_binding_not_found, graph_scope_not_found, graph_projection_not_ready, graph_projection_rebuild_required, or query_error. A not-ready or pre-adjacency projection is not an empty graph; rebuild-required traversal never falls back to an unbounded query.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1237,7 +1237,8 @@
                   "workspace_binding_unlinked",
                   "graph_scope_not_found",
                   "query_error",
-                  "graph_projection_not_ready"
+                  "graph_projection_not_ready",
+                  "graph_projection_rebuild_required"
                 ]
               },
               "message": {

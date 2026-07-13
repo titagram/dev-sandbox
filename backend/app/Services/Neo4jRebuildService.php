@@ -251,6 +251,10 @@ class Neo4jRebuildService
                     ]];
                 }
 
+                if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+                    return [['adjacencies' => $params['expected_adjacencies']]];
+                }
+
                 return [];
             }
         };

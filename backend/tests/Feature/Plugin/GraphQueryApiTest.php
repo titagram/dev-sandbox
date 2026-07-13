@@ -463,8 +463,24 @@ it('returns canonical projection metadata and rejects a scope from another proje
     expect($isolated['found'])->toBeFalse()->and($isolated['reason'])->toBe('graph_scope_not_found');
 });
 
-it('emits relationship-type agnostic version-isolated Cypher for every traversal direction', function (string $direction, string $pattern) {
-    $fakeClient = new FakeNeo4jClient;
+it('emits one-hop relationship-type agnostic version-isolated Cypher for every traversal direction', function (string $direction, string $pattern) {
+    $fakeClient = new class implements Neo4jClient
+    {
+        public array $commands = [];
+
+        public function run(string $cypher, array $params = []): mixed
+        {
+            $this->commands[] = compact('cypher', 'params');
+
+            if (str_contains($cypher, 'traversal_schema_version')) {
+                return [['traversal_schema_version' => 1]];
+            }
+
+            return str_contains($cypher, 'RETURN properties(start) AS node')
+                ? [['node' => ['external_id' => 'start'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['external_id']]]
+                : [];
+        }
+    };
     $service = new CanonicalGraphQueryService($fakeClient);
     $projectId = graphQueryProjectId();
     $repo = DB::table('repositories')->where('project_id', $projectId)->first();
@@ -474,18 +490,18 @@ it('emits relationship-type agnostic version-isolated Cypher for every traversal
         'start' => 'Start', 'direction' => $direction, 'max_depth' => 3, 'limit' => 10,
     ]);
 
-    $cypher = $fakeClient->commands[0]['cypher'];
+    $startCypher = $fakeClient->commands[1]['cypher'];
+    $cypher = $fakeClient->commands[2]['cypher'];
     expect($cypher)->toContain($pattern)
-        ->and($cypher)->toContain('start:CanonicalGraphNode {graph_version: $graph_version}')
-        ->and($cypher)->toContain("toLower(coalesce(start.external_id, '')) CONTAINS \$start_query")
-        ->and($cypher)->toContain('node:CanonicalGraphNode {graph_version: $graph_version}')
-        ->and($cypher)->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
-        ->and($cypher)->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
-        ->and($fakeClient->commands[0]['params']['graph_version'])->toStartWith('graph-version-');
+        ->and($cypher)->toContain('target:CanonicalGraphNode {graph_version: $graph_version, external_id: adjacency.to_external_id}')
+        ->and($cypher)->toContain('LIMIT $per_frontier_fetch_limit')
+        ->and($cypher)->not->toContain('[*')
+        ->and($startCypher)->toContain("toLower(coalesce(start.external_id, '')) CONTAINS \$start_query")
+        ->and($fakeClient->commands[2]['params']['graph_version'])->toStartWith('graph-version-');
 })->with([
-    'out' => ['out', '-[*1..3]->'],
-    'in' => ['in', '<-[*1..3]-'],
-    'any' => ['any', '-[*1..3]-'],
+    'out' => ['out', 'direction: $direction}) WHERE adjacency.direction_rank < $per_frontier_fetch_limit'],
+    'in' => ['in', 'direction: $direction}) WHERE adjacency.direction_rank < $per_frontier_fetch_limit'],
+    'any' => ['any', 'WHERE adjacency.any_rank < $per_frontier_fetch_limit'],
 ]);
 
 it('returns path relationships and constrains every path node and edge to the graph version', function () {
@@ -516,12 +532,13 @@ it('includes an isolated matching traversal start without weakening graph versio
         {
             $this->commands[] = compact('cypher', 'params');
 
-            return [[
-                'nodes' => [['node' => ['external_id' => 'isolated', 'name' => 'Isolated'], 'labels' => ['CanonicalGraphNode']]],
-                'edges' => [],
-                'truncated' => false,
-                'match_fields' => ['name'],
-            ]];
+            if (str_contains($cypher, 'traversal_schema_version')) {
+                return [['traversal_schema_version' => 1]];
+            }
+
+            return str_contains($cypher, 'RETURN properties(start) AS node')
+                ? [['node' => ['external_id' => 'isolated', 'name' => 'Isolated'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['name']]]
+                : [];
         }
     };
     $service = new CanonicalGraphQueryService($fakeClient);
@@ -533,26 +550,12 @@ it('includes an isolated matching traversal start without weakening graph versio
         'start' => 'Isolated', 'direction' => 'out', 'max_depth' => 2, 'limit' => 2,
     ]);
 
-    $command = $fakeClient->commands[0];
-    expect($command['cypher'])
-        ->toContain('WITH start ORDER BY start.external_id LIMIT $fetch_limit WITH collect(start) AS fetchedStarts')
-        ->toContain('WITH fetchedStarts[0..$limit] AS starts, size(fetchedStarts) > $limit AS startTruncated UNWIND starts AS start')
-        ->toContain('OPTIONAL MATCH p=(start)-[*1..2]->(node:CanonicalGraphNode {graph_version: $graph_version})')
-        ->toContain('WITH starts, startTruncated, start, p ORDER BY start.external_id, length(p)')
-        ->not->toContain('collect(DISTINCT start)')
-        ->toContain('collect(p) AS matchedPaths')
-        ->toContain('reduce(candidatePathNodes = [], matchedPath IN paths | candidatePathNodes + nodes(matchedPath))')
-        ->toContain('reduce(candidateEdges = [], matchedPath IN paths | candidateEdges + relationships(matchedPath))')
-        ->toContain('startNode(r) IN finalNodes AND endNode(r) IN finalNodes')
-        ->toContain('r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}')
-        ->not->toContain('collect({nodes:')
-        ->not->toContain('path.nodes')
-        ->not->toContain('path.edges')
-        ->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
-        ->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
-        ->not->toMatch('/\\b(?:CREATE|MERGE|SET|DELETE|REMOVE|DROP)\\b/i')
-        ->and($command['params']['graph_version'])->toStartWith('graph-version-')
-        ->and($command['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
+    expect($fakeClient->commands)->toHaveCount(3)
+        ->and($fakeClient->commands[1]['cypher'])->toContain('LIMIT $fetch_limit')
+        ->and($fakeClient->commands[2]['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
+        ->and($fakeClient->commands[2]['cypher'])->not->toContain('[*')
+        ->and($fakeClient->commands[2]['cypher'])->not->toMatch('/\\b(?:CREATE|MERGE|SET|DELETE|REMOVE|DROP)\\b/i')
+        ->and($fakeClient->commands[2]['params']['graph_version'])->toStartWith('graph-version-')
         ->and(array_column($result['results'], 'id'))->toBe(['isolated'])
         ->and($result['edges'])->toBe([])
         ->and($result['traversal_match_fields'])->toBe(['name']);
@@ -567,19 +570,26 @@ it('retains every bounded matching start before path nodes when the traversal ca
         {
             $this->commands[] = compact('cypher', 'params');
 
+            if (str_contains($cypher, 'traversal_schema_version')) {
+                return [['traversal_schema_version' => 1]];
+            }
+
+            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
+                return [
+                    ['node' => ['external_id' => 'partial-isolated', 'name' => 'Partial Isolated'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['external_id', 'name']],
+                    ['node' => ['external_id' => 'partial-connected', 'name' => 'Partial Connected'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['external_id', 'name']],
+                ];
+            }
+
             return [[
-                'nodes' => [
-                    ['node' => ['external_id' => 'partial-isolated', 'name' => 'Partial Isolated'], 'labels' => ['CanonicalGraphNode']],
-                    ['node' => ['external_id' => 'partial-connected', 'name' => 'Partial Connected'], 'labels' => ['CanonicalGraphNode']],
-                    ['node' => ['external_id' => 'path-one', 'name' => 'Path One'], 'labels' => ['CanonicalGraphNode']],
-                ],
-                'edges' => [[
+                'source_id' => 'partial-connected',
+                'node' => ['external_id' => 'path-one', 'name' => 'Path One'],
+                'labels' => ['CanonicalGraphNode'],
+                'edge' => [
                     'external_id' => 'kept-edge',
                     'source_id' => 'partial-connected',
                     'target_id' => 'path-one',
-                ]],
-                'truncated' => true,
-                'match_fields' => ['external_id', 'name'],
+                ],
             ]];
         }
     };
@@ -592,25 +602,18 @@ it('retains every bounded matching start before path nodes when the traversal ca
         'start' => 'partial', 'direction' => 'out', 'max_depth' => 3, 'limit' => 3,
     ]);
 
-    $command = $client->commands[0];
-    expect($command['cypher'])
-        ->toContain('WITH collect(start) AS fetchedStarts')
-        ->toContain('fetchedStarts[0..$limit] AS starts')
-        ->toContain('size(fetchedStarts) > $limit AS startTruncated')
-        ->toContain('collect(DISTINCT candidate) AS uniqueStarts')
-        ->toContain('collect(DISTINCT pathNode) AS uniquePathNodes')
-        ->toContain('uniqueStarts + [n IN uniquePathNodes WHERE NOT n IN uniqueStarts] AS orderedNodes')
-        ->toContain('orderedNodes[0..$limit] AS finalNodes')
-        ->toContain('startNode(r) IN finalNodes AND endNode(r) IN finalNodes')
-        ->toContain('startTruncated OR size(orderedNodes) > $limit OR pathTruncated AS truncated')
-        ->and($command['params']['fetch_limit'])->toBe(4)
+    expect($client->commands)->toHaveCount(3)
+        ->and($client->commands[1]['params']['fetch_limit'])->toBe(4)
+        ->and($client->commands[2]['params']['frontier_ids'])->toBe(['partial-isolated', 'partial-connected'])
+        ->and($client->commands[2]['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
+        ->and($client->commands[2]['cypher'])->not->toContain('[*')
         ->and(array_column($result['results'], 'id'))->toBe([
             'partial-isolated',
             'partial-connected',
             'path-one',
         ])
         ->and(array_column($result['edges'], 'external_id'))->toBe(['kept-edge'])
-        ->and($result['truncated'])->toBeTrue();
+        ->and($result['truncated'])->toBeFalse();
 });
 
 it('normalizes iterable rows returned by the real Neo4j driver', function () {
@@ -618,23 +621,23 @@ it('normalizes iterable rows returned by the real Neo4j driver', function () {
     {
         public function run(string $cypher, array $params = []): mixed
         {
+            if (str_contains($cypher, 'traversal_schema_version')) {
+                return new ArrayIterator([new ArrayIterator(['traversal_schema_version' => 1])]);
+            }
+            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
+                return new ArrayIterator([new ArrayIterator([
+                    'node' => new ArrayIterator(['external_id' => 'driver-start', 'name' => 'DriverStart']),
+                    'labels' => new ArrayIterator(['CanonicalGraphNode']),
+                    'match_fields' => new ArrayIterator(['name']),
+                ])]);
+            }
+
             return new ArrayIterator([
                 new ArrayIterator([
-                    'nodes' => new ArrayIterator([
-                        new ArrayIterator([
-                            'node' => new ArrayIterator(['external_id' => 'driver-start', 'name' => 'DriverStart']),
-                            'labels' => new ArrayIterator(['CanonicalGraphNode']),
-                        ]),
-                        new ArrayIterator([
-                            'node' => new ArrayIterator(['external_id' => 'driver-target', 'name' => 'DriverTarget']),
-                            'labels' => new ArrayIterator(['CanonicalGraphNode']),
-                        ]),
-                    ]),
-                    'edges' => new ArrayIterator([
-                        new ArrayIterator(['external_id' => 'driver-edge', 'source_id' => 'driver-start', 'target_id' => 'driver-target']),
-                    ]),
-                    'truncated' => false,
-                    'match_fields' => new ArrayIterator(['name']),
+                    'source_id' => 'driver-start',
+                    'node' => new ArrayIterator(['external_id' => 'driver-target', 'name' => 'DriverTarget']),
+                    'labels' => new ArrayIterator(['CanonicalGraphNode']),
+                    'edge' => new ArrayIterator(['external_id' => 'driver-edge', 'source_id' => 'driver-start', 'target_id' => 'driver-target']),
                 ]),
             ]);
         }
@@ -778,4 +781,101 @@ it('rejects foreign repository and linked binding scopes before Neo4j commands',
 
     expect($bindingResponse->json('results'))->toBe([]);
     expect($fakeClient->commands)->toBe([]);
+});
+
+it('requires a rebuilt projection instead of silently using an unbounded legacy traversal', function () {
+    $projectId = graphQueryProjectId();
+    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
+    graphQueryEnsureSnapshot($projectId, $repositoryId, graphQueryUserId());
+    $client = new class implements Neo4jClient
+    {
+        public array $commands = [];
+
+        public function run(string $cypher, array $params = []): mixed
+        {
+            $this->commands[] = compact('cypher', 'params');
+
+            return str_contains($cypher, 'traversal_schema_version')
+                ? [['traversal_schema_version' => 0]]
+                : throw new RuntimeException('Legacy traversal must stop at capability preflight.');
+        }
+    };
+
+    $result = (new CanonicalGraphQueryService($client))->query(
+        $projectId, 'repository', $repositoryId, 'traverse',
+        ['start' => 'legacy', 'direction' => 'any', 'max_depth' => 3, 'limit' => 10],
+    );
+
+    expect($result['found'])->toBeFalse()
+        ->and($result['reason'])->toBe('graph_projection_rebuild_required')
+        ->and($client->commands)->toHaveCount(1)
+        ->and($client->commands[0]['cypher'])->toContain('traversal_schema_version');
+});
+
+it('bounds every dense traversal frontier before advancing to the next hop', function () {
+    $projectId = graphQueryProjectId();
+    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
+    graphQueryEnsureSnapshot($projectId, $repositoryId, graphQueryUserId());
+
+    $client = new class implements Neo4jClient
+    {
+        public array $commands = [];
+
+        public function run(string $cypher, array $params = []): mixed
+        {
+            $this->commands[] = compact('cypher', 'params');
+            if (str_contains($cypher, 'traversal_schema_version')) {
+                return [['traversal_schema_version' => 1]];
+            }
+            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
+                return [
+                    ['node' => ['external_id' => 'start-a', 'name' => 'Dense'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['name']],
+                    ['node' => ['external_id' => 'start-b', 'name' => 'Dense'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['name']],
+                ];
+            }
+            if (str_contains($cypher, 'UNWIND $frontier_ids')) {
+                $rows = [];
+                foreach ($params['frontier_ids'] as $source) {
+                    for ($i = 0; $i < 11; $i++) {
+                        $target = sprintf('node-%02d', $i);
+                        $rows[] = [
+                            'source_id' => $source,
+                            'node' => ['external_id' => $target, 'name' => $target],
+                            'labels' => ['CanonicalGraphNode'],
+                            'edge' => ['external_id' => $source.'-'.$target, 'source_id' => $source, 'target_id' => $target],
+                        ];
+                    }
+                }
+
+                return $rows;
+            }
+
+            return [];
+        }
+    };
+
+    $result = (new CanonicalGraphQueryService($client))->query(
+        $projectId, 'repository', $repositoryId, 'traverse',
+        ['start' => 'dense', 'direction' => 'any', 'max_depth' => 3, 'limit' => 10],
+    );
+
+    expect($result['found'])->toBeTrue()
+        ->and(array_column($result['results'], 'id'))->toBe([
+            'start-a', 'start-b', 'node-00', 'node-01', 'node-02',
+            'node-03', 'node-04', 'node-05', 'node-06', 'node-07',
+        ])
+        ->and($result['truncated'])->toBeTrue()
+        ->and($client->commands)->toHaveCount(3);
+    foreach ($client->commands as $command) {
+        expect($command['cypher'])->not->toContain('[*');
+    }
+    $hop = $client->commands[2];
+    expect($hop['params']['frontier_ids'])->toBe(['start-a', 'start-b'])
+        ->and($hop['params']['per_frontier_fetch_limit'])->toBe(11)
+        ->and($hop['params']['hop_fetch_limit'])->toBe(22)
+        ->and($hop['cypher'])->toContain('CanonicalGraphAdjacency')
+        ->and($hop['cypher'])->toContain('adjacency.any_rank < $per_frontier_fetch_limit')
+        ->and($hop['cypher'])->not->toContain('(source)-[edge]')
+        ->and($hop['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
+        ->and($hop['cypher'])->toContain('LIMIT $hop_fetch_limit');
 });

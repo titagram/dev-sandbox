@@ -16,6 +16,10 @@ class FakeNeo4jClient implements Neo4jClient
             return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
         }
 
+        if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+            return [['adjacencies' => $params['expected_adjacencies']]];
+        }
+
         return [];
     }
 }

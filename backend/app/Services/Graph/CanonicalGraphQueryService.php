@@ -54,6 +54,8 @@ class CanonicalGraphQueryService
                 'path' => $this->runPath($client, $params, $projection),
                 'traverse' => $this->runTraverse($client, $params, $projection),
             };
+        } catch (BoundedTraversalUnavailable) {
+            return array_merge($base, ['found' => false, 'reason' => 'graph_projection_rebuild_required']);
         } catch (\Throwable) {
             return array_merge($base, ['found' => false, 'reason' => 'query_error']);
         }
@@ -99,58 +101,132 @@ class CanonicalGraphQueryService
     {
         $depth = max(1, min(3, (int) ($params['max_depth'] ?? 2)));
         $direction = (string) ($params['direction'] ?? 'any');
-        $pattern = match ($direction) {
-            'in' => '<-[*1..'.$depth.']-',
-            'out' => '-[*1..'.$depth.']->',
-            default => '-[*1..'.$depth.']-',
-        };
-
         $limit = max(1, min(50, (int) ($params['limit'] ?? 20)));
         $query = strtolower((string) ($params['start'] ?? ''));
+        $graphVersion = $this->activeGraphVersion($projection);
+        $capabilityRows = $this->materialiseSequences($client->run(
+            'MATCH (version:CanonicalGraphVersion {graph_version: $graph_version}) RETURN coalesce(version.traversal_schema_version, 0) AS traversal_schema_version',
+            ['graph_version' => $graphVersion],
+        ));
+        if (! is_array($capabilityRows) || (int) ($capabilityRows[0]['traversal_schema_version'] ?? 0) !== 1) {
+            throw new BoundedTraversalUnavailable;
+        }
         $startMatch = implode(' OR ', [
             "toLower(coalesce(start.external_id, '')) CONTAINS \$start_query",
             "toLower(coalesce(start.name, '')) CONTAINS \$start_query",
             "toLower(coalesce(start.label, '')) CONTAINS \$start_query",
             "toLower(coalesce(start.path, '')) CONTAINS \$start_query",
         ]);
-
-        $cypher = 'MATCH (start:CanonicalGraphNode {graph_version: $graph_version}) WHERE ('.$startMatch.') '
+        $startRows = $client->run(
+            'MATCH (start:CanonicalGraphNode {graph_version: $graph_version}) WHERE ('.$startMatch.') '
             .'WITH start ORDER BY start.external_id LIMIT $fetch_limit '
-            .'WITH collect(start) AS fetchedStarts '
-            .'WITH fetchedStarts[0..$limit] AS starts, size(fetchedStarts) > $limit AS startTruncated '
-            .'UNWIND starts AS start '
-            .'OPTIONAL MATCH p=(start)'.$pattern.'(node:CanonicalGraphNode {graph_version: $graph_version}) '
-            .'WHERE p IS NULL OR (ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)) '
-            .'WITH starts, startTruncated, start, p ORDER BY start.external_id, length(p) LIMIT $path_fetch_limit '
-            .'WITH starts, startTruncated, collect(p) AS matchedPaths '
-            .'WITH matchedPaths[0..$path_limit] AS paths, starts, startTruncated, size(matchedPaths) > $path_limit AS pathTruncated '
-            .'WITH starts, startTruncated, pathTruncated, '
-            .'reduce(candidatePathNodes = [], matchedPath IN paths | candidatePathNodes + nodes(matchedPath)) AS candidatePathNodes, '
-            .'reduce(candidateEdges = [], matchedPath IN paths | candidateEdges + relationships(matchedPath)) AS candidateEdges '
-            .'UNWIND starts AS candidate '
-            .'WITH starts, startTruncated, pathTruncated, candidatePathNodes, candidateEdges, candidate ORDER BY candidate.external_id '
-            .'WITH starts, startTruncated, pathTruncated, candidatePathNodes, candidateEdges, collect(DISTINCT candidate) AS uniqueStarts '
-            .'UNWIND CASE WHEN candidatePathNodes = [] THEN [null] ELSE candidatePathNodes END AS pathNode '
-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, pathNode ORDER BY pathNode.external_id '
-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, collect(DISTINCT pathNode) AS uniquePathNodes '
-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, [n IN uniquePathNodes WHERE n IS NOT NULL] AS uniquePathNodes '
-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts + [n IN uniquePathNodes WHERE NOT n IN uniqueStarts] AS orderedNodes '
-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, orderedNodes, orderedNodes[0..$limit] AS finalNodes '
-            .'RETURN [n IN finalNodes | {node: properties(n), labels: labels(n)}] AS nodes, '
-            .'[r IN candidateEdges WHERE startNode(r) IN finalNodes AND endNode(r) IN finalNodes | r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}] AS edges, '
-            .'startTruncated OR size(orderedNodes) > $limit OR pathTruncated AS truncated, '
-            ."[field IN ['external_id', 'name', 'label', 'path'] WHERE any(s IN starts WHERE toLower(coalesce(s[field], '')) CONTAINS \$start_query)] AS match_fields";
+            .'RETURN properties(start) AS node, labels(start) AS labels, '
+            ."[field IN ['external_id', 'name', 'label', 'path'] WHERE toLower(coalesce(start[field], '')) CONTAINS \$start_query] AS match_fields",
+            [
+                'start_query' => $query,
+                'graph_version' => $graphVersion,
+                'fetch_limit' => $limit + 1,
+            ],
+        );
+        [$starts, , , $matchFields] = $this->normaliseRows($startRows);
+        $truncated = count($starts) > $limit;
+        $starts = array_slice($starts, 0, $limit);
+        $visited = [];
+        foreach ($starts as $start) {
+            $visited[$start['id']] = $start;
+        }
+        $frontier = array_keys($visited);
+        $edges = [];
+        $directionClause = in_array($direction, ['in', 'out'], true) ? ', direction: $direction' : '';
+        $rankProperty = in_array($direction, ['in', 'out'], true) ? 'direction_rank' : 'any_rank';
 
-        $pathLimit = min(200, max($limit + 1, $limit * $depth));
+        for ($hop = 0; $hop < $depth && $frontier !== []; $hop++) {
+            $perFrontierFetchLimit = $limit + 1;
+            $hopFetchLimit = count($frontier) * $perFrontierFetchLimit;
+            $hopRows = $client->run(
+                'UNWIND $frontier_ids AS frontier_id '
+                .'CALL { WITH frontier_id '
+                .'MATCH (adjacency:CanonicalGraphAdjacency {graph_version: $graph_version, from_external_id: frontier_id'.$directionClause.'}) '
+                .'WHERE adjacency.'.$rankProperty.' < $per_frontier_fetch_limit '
+                .'WITH frontier_id, adjacency ORDER BY adjacency.'.$rankProperty.' LIMIT $per_frontier_fetch_limit '
+                .'MATCH (target:CanonicalGraphNode {graph_version: $graph_version, external_id: adjacency.to_external_id}) '
+                .'RETURN frontier_id AS source_id, properties(target) AS node, labels(target) AS labels, '
+                .'adjacency {edge_json: adjacency.edge_json, external_id: adjacency.edge_external_id, type: adjacency.edge_type} AS edge } '
+                .'RETURN source_id, node, labels, edge ORDER BY source_id, node.external_id, edge.external_id LIMIT $hop_fetch_limit',
+                [
+                    'frontier_ids' => $frontier,
+                    'graph_version' => $graphVersion,
+                    'direction' => $direction,
+                    'per_frontier_fetch_limit' => $perFrontierFetchLimit,
+                    'hop_fetch_limit' => $hopFetchLimit,
+                ],
+            );
+            $materializedRows = $this->materialiseSequences($hopRows);
+            if (! is_array($materializedRows)) {
+                $materializedRows = [];
+            }
+            foreach ($materializedRows as &$materializedRow) {
+                if (! is_array($materializedRow) || ! is_array($materializedRow['edge'] ?? null) || ! is_string($materializedRow['edge']['edge_json'] ?? null)) {
+                    continue;
+                }
+                $decodedEdge = json_decode($materializedRow['edge']['edge_json'], true, flags: JSON_THROW_ON_ERROR);
+                if (! is_array($decodedEdge)) {
+                    throw new RuntimeException('Canonical graph adjacency edge payload is invalid.');
+                }
+                $materializedRow['edge'] = $decodedEdge;
+            }
+            unset($materializedRow);
+            $rowsBySource = [];
+            foreach ($materializedRows as $row) {
+                if (is_array($row)) {
+                    $rowsBySource[(string) ($row['source_id'] ?? '')] = ($rowsBySource[(string) ($row['source_id'] ?? '')] ?? 0) + 1;
+                }
+            }
+            if (collect($rowsBySource)->contains(fn (int $count): bool => $count >= $perFrontierFetchLimit)) {
+                $truncated = true;
+            }
+            [$hopNodes, $hopEdges] = $this->normaliseRows($materializedRows);
+            foreach ($hopEdges as $edge) {
+                $edges[$this->edgeIdentity($edge)] = $edge;
+            }
+            $nextFrontier = [];
+            foreach ($hopNodes as $node) {
+                if (isset($visited[$node['id']])) {
+                    continue;
+                }
+                if (count($visited) >= $limit) {
+                    $truncated = true;
 
-        return $client->run($cypher, [
-            'start_query' => $query,
-            'graph_version' => $this->activeGraphVersion($projection),
-            'limit' => $limit,
-            'fetch_limit' => $limit + 1,
-            'path_limit' => $pathLimit,
-            'path_fetch_limit' => $pathLimit + 1,
-        ]);
+                    continue;
+                }
+                $visited[$node['id']] = $node;
+                $nextFrontier[] = $node['id'];
+            }
+            $frontier = $nextFrontier;
+            if (count($visited) >= $limit) {
+                break;
+            }
+        }
+
+        $returnedIds = array_fill_keys(array_keys($visited), true);
+        $edges = array_filter($edges, fn (array $edge): bool => isset(
+            $returnedIds[(string) ($edge['source_id'] ?? '')],
+            $returnedIds[(string) ($edge['target_id'] ?? '')],
+        ));
+        ksort($edges);
+        $nodes = array_map(function (array $node): array {
+            $properties = $node['properties'];
+            $properties['external_id'] ??= $node['id'];
+
+            return ['node' => $properties, 'labels' => $node['labels']];
+        }, array_values($visited));
+
+        return [[
+            'nodes' => $nodes,
+            'edges' => array_values($edges),
+            'truncated' => $truncated,
+            'match_fields' => $matchFields,
+        ]];
     }
 
     private function envelope(string $projectId, string $scopeType, string $scopeId, ?object $projection = null): array
@@ -259,3 +335,5 @@ class CanonicalGraphQueryService
         return ['id' => (string) ($props['external_id'] ?? $props['symbol_id'] ?? $props['id'] ?? 'node-'.md5(json_encode($props))), 'labels' => array_values($row['labels'] ?? []), 'properties' => $props];
     }
 }
+
+class BoundedTraversalUnavailable extends RuntimeException {}

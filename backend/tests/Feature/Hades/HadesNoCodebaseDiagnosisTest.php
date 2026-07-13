@@ -751,6 +751,9 @@ class HadesNoCodebaseNeo4jClient implements Neo4jClient
     /** @var array<string, list<array<string, mixed>>> */
     private array $relationships = [];
 
+    /** @var array<string, int> */
+    private array $adjacencyCounts = [];
+
     public function run(string $cypher, array $params = []): mixed
     {
         $this->commands[] = compact('cypher', 'params');
@@ -783,6 +786,12 @@ class HadesNoCodebaseNeo4jClient implements Neo4jClient
             return [];
         }
 
+        if (str_contains($cypher, 'UNWIND $adjacencies AS adjacency')) {
+            $this->adjacencyCounts[$version] = count($params['adjacencies']);
+
+            return [];
+        }
+
         if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
             return [[
                 'nodes' => count($this->nodes[$version] ?? []),
@@ -790,11 +799,79 @@ class HadesNoCodebaseNeo4jClient implements Neo4jClient
             ]];
         }
 
-        if (str_contains($cypher, 'OPTIONAL MATCH p=(start)')) {
-            return [$this->traverse($cypher, $params)];
+        if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+            return [['adjacencies' => $this->adjacencyCounts[$version] ?? 0]];
+        }
+
+        if (str_contains($cypher, 'traversal_schema_version')) {
+            return [['traversal_schema_version' => 1]];
+        }
+
+        if (str_contains($cypher, 'RETURN properties(start) AS node')) {
+            return $this->discoverStarts($params);
+        }
+
+        if (str_contains($cypher, 'UNWIND $frontier_ids')) {
+            return $this->expandFrontier($cypher, $params);
         }
 
         return [];
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function discoverStarts(array $params): array
+    {
+        $version = (string) $params['graph_version'];
+        $query = strtolower((string) $params['start_query']);
+        $rows = [];
+        foreach ($this->nodes[$version] ?? [] as $node) {
+            $fields = [];
+            foreach (['external_id', 'name', 'label', 'path'] as $field) {
+                if ($query !== '' && str_contains(strtolower((string) ($node[$field] ?? '')), $query)) {
+                    $fields[] = $field;
+                }
+            }
+            if ($fields !== []) {
+                $rows[] = ['node' => $node, 'labels' => $node['labels'] ?? [], 'match_fields' => $fields];
+            }
+        }
+        usort($rows, fn (array $a, array $b): int => $a['node']['external_id'] <=> $b['node']['external_id']);
+
+        return array_slice($rows, 0, (int) $params['fetch_limit']);
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function expandFrontier(string $cypher, array $params): array
+    {
+        $version = (string) $params['graph_version'];
+        $direction = (string) ($params['direction'] ?? 'any');
+        $rows = [];
+        foreach ($params['frontier_ids'] as $sourceId) {
+            $sourceRows = [];
+            foreach ($this->relationships[$version] ?? [] as $relationship) {
+                $targetId = match ($direction) {
+                    'out' => $relationship['source_id'] === $sourceId ? $relationship['target_id'] : null,
+                    'in' => $relationship['target_id'] === $sourceId ? $relationship['source_id'] : null,
+                    default => $relationship['source_id'] === $sourceId
+                        ? $relationship['target_id']
+                        : ($relationship['target_id'] === $sourceId ? $relationship['source_id'] : null),
+                };
+                if ($targetId === null || ! isset($this->nodes[$version][$targetId])) {
+                    continue;
+                }
+                $node = $this->nodes[$version][$targetId];
+                $sourceRows[] = [
+                    'source_id' => $sourceId,
+                    'node' => $node,
+                    'labels' => $node['labels'] ?? [],
+                    'edge' => $relationship,
+                ];
+            }
+            usort($sourceRows, fn (array $a, array $b): int => [$a['node']['external_id'], $a['edge']['external_id']] <=> [$b['node']['external_id'], $b['edge']['external_id']]);
+            array_push($rows, ...array_slice($sourceRows, 0, (int) $params['per_frontier_fetch_limit']));
+        }
+
+        return array_slice($rows, 0, (int) $params['hop_fetch_limit']);
     }
 
     /** @return array<string, mixed> */

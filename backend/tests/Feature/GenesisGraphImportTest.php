@@ -200,6 +200,9 @@ it('claims the exact canonical projection before the first Neo4j call', function
             if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
                 return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
             }
+            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+                return [['adjacencies' => $params['expected_adjacencies']]];
+            }
 
             return [];
         }
@@ -277,6 +280,9 @@ it('does not publish success when projection ownership is lost before mark ready
             }
             if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
                 return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+            }
+            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+                return [['adjacencies' => $params['expected_adjacencies']]];
             }
 
             return [];
@@ -562,6 +568,9 @@ it('keeps the verified graph queryable until a forced rebuild publishes atomical
             if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
                 return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
             }
+            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+                return [['adjacencies' => $params['expected_adjacencies']]];
+            }
 
             return [];
         }
@@ -646,6 +655,9 @@ it('allows only one of two interleaved force callers to project and publish', fu
             }
             if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
                 return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+            }
+            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+                return [['adjacencies' => $params['expected_adjacencies']]];
             }
 
             return [];
