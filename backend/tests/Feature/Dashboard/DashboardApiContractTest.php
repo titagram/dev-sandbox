@@ -485,6 +485,103 @@ it('never republishes raw node external or source identities as public labels', 
     }
 });
 
+it('keeps raw identity provenance private across canonical and legacy graph boundaries', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    $privateLabels = [
+        'TopLevelExternalService',
+        'WindowsSourceService',
+        'PosixSourceFunction',
+        'UncSourceClass',
+        'FileUriModule',
+        'DuplicateExternalFunction',
+    ];
+    $nodes = [
+        [
+            'id' => 'service:external',
+            'external_id' => $privateLabels[0],
+            'labels' => ['Service'],
+            'properties' => ['kind' => 'service', 'name' => $privateLabels[0]],
+        ],
+        [
+            'id' => 'service:windows-source',
+            'source' => ['ref' => 'C:\\Users\\private\\'.$privateLabels[1]],
+            'labels' => ['Service'],
+            'properties' => ['kind' => 'service', 'name' => $privateLabels[1]],
+        ],
+        [
+            'id' => 'function:posix-source',
+            'source' => ['ref' => '/srv/private/project/'.$privateLabels[2]],
+            'labels' => ['Function'],
+            'properties' => ['kind' => 'function', 'name' => $privateLabels[2]],
+        ],
+        [
+            'id' => 'class:unc-source',
+            'source' => ['path' => '\\\\server\\private\\'.$privateLabels[3]],
+            'labels' => ['Class'],
+            'properties' => ['kind' => 'class', 'name' => $privateLabels[3]],
+        ],
+        [
+            'id' => 'module:file-uri-source',
+            'properties' => [
+                'kind' => 'module',
+                'name' => $privateLabels[4],
+                'source' => ['ref' => 'file:///home/private/'.$privateLabels[4]],
+            ],
+            'labels' => ['Module'],
+        ],
+        [
+            'id' => 'function:public-readable',
+            'external_id' => 'different-private-identity',
+            'labels' => ['Function'],
+            'properties' => ['kind' => 'function', 'name' => 'PublicReadableMethod'],
+        ],
+        [
+            'id' => 'function:duplicate-identity',
+            'external_id' => $privateLabels[5],
+            'labels' => ['Function'],
+            'properties' => ['kind' => 'function', 'name' => $privateLabels[5]],
+        ],
+        [
+            'id' => 'function:duplicate-identity',
+            'labels' => ['Function'],
+            'properties' => ['kind' => 'function', 'name' => 'IgnoredDuplicate'],
+        ],
+        [
+            'id' => 'route:orders',
+            'source' => ['ref' => '/srv/private/project/routes.php'],
+            'labels' => ['Route'],
+            'properties' => ['kind' => 'route', 'path' => '/api/orders'],
+        ],
+    ];
+    $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
+    Storage::disk('local')->put($storagePath, json_encode(['nodes' => $nodes, 'relationships' => []], JSON_THROW_ON_ERROR));
+
+    $legacy = $this->actingAs($admin)
+        ->getJson("/api/dashboard/graph?run_id={$ids['run_id']}")
+        ->assertOk()
+        ->json();
+
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+    $canonical = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+
+    foreach ([$legacy, $canonical] as $response) {
+        $labels = collect($response['nodes'])->pluck('label');
+        $json = json_encode($response, JSON_THROW_ON_ERROR);
+
+        foreach ($privateLabels as $privateLabel) {
+            expect($labels)->not->toContain($privateLabel)
+                ->and($json)->not->toContain($privateLabel);
+        }
+        expect($labels)->toContain('PublicReadableMethod')
+            ->toContain('/api/orders');
+    }
+});
+
 it('uses a closed semantic allowlist for arbitrary producer node kinds', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();

@@ -700,9 +700,15 @@ final class DashboardApiReader
         $degreeByNode = $this->graphDegrees($normalizedRelationships);
         $nodeStats = $this->graphNodeStats($validNodes);
         $previewNodes = $this->graphPreviewNodes($validNodes, $normalizedRelationships);
+        $privateIdentityTokens = $this->graphPrivateIdentityTokenMap($validNodes);
 
         $graphNodes = array_map(
-            fn (array $node): array => $this->graphNode($node, (string) ($repository->name ?? 'unknown'), $degreeByNode),
+            fn (array $node): array => $this->graphNode(
+                $node,
+                (string) ($repository->name ?? 'unknown'),
+                $degreeByNode,
+                $privateIdentityTokens[$this->graphNodeId($node)] ?? [],
+            ),
             $previewNodes,
         );
         $previewNodeIds = array_fill_keys(array_column($graphNodes, 'id'), true);
@@ -778,8 +784,17 @@ final class DashboardApiReader
         $degreeByNode = $this->graphDegrees($relationships);
         $nodeStats = $this->graphNodeStats($nodes);
         $previewNodes = $this->graphPreviewNodes($nodes, $relationships);
+        $privateIdentityTokens = $this->graphPrivateIdentityTokenMap(
+            $nodes,
+            is_array($graph['private_identity_provenance'] ?? null) ? $graph['private_identity_provenance'] : [],
+        );
         $graphNodes = array_map(
-            fn (array $node): array => $this->graphNode($node, (string) $scope['source_scope_type'], $degreeByNode),
+            fn (array $node): array => $this->graphNode(
+                $node,
+                (string) $scope['source_scope_type'],
+                $degreeByNode,
+                $privateIdentityTokens[$this->graphNodeId($node)] ?? [],
+            ),
             $previewNodes,
         );
         $previewNodeIds = array_fill_keys(array_column($graphNodes, 'id'), true);
@@ -2043,16 +2058,17 @@ final class DashboardApiReader
     /**
      * @param  array<string, mixed>  $node
      * @param  array<string, int>  $degreeByNode
+     * @param  array<string, true>  $privateIdentityTokens
      * @return array<string, mixed>
      */
-    private function graphNode(array $node, string $repository, array $degreeByNode): array
+    private function graphNode(array $node, string $repository, array $degreeByNode, array $privateIdentityTokens = []): array
     {
         $id = $this->graphNodeId($node);
         $kind = $this->graphNodeSemanticKind($node);
 
         return [
             'id' => $id,
-            'label' => $this->graphNodePublicLabel($node, $kind),
+            'label' => $this->graphNodePublicLabel($node, $kind, $privateIdentityTokens),
             'kind' => $kind,
             'repository' => $repository,
             'degree' => $degreeByNode[$id] ?? 0,
@@ -2473,8 +2489,11 @@ final class DashboardApiReader
         return (string) array_key_first($recognizedKinds);
     }
 
-    /** @param array<string, mixed> $node */
-    private function graphNodePublicLabel(array $node, string $kind): ?string
+    /**
+     * @param  array<string, mixed>  $node
+     * @param  array<string, true>  $privateIdentityTokens
+     */
+    private function graphNodePublicLabel(array $node, string $kind, array $privateIdentityTokens): ?string
     {
         $policy = self::GRAPH_PREVIEW_NODE_POLICY[$kind] ?? null;
         if ($policy === null) {
@@ -2500,53 +2519,98 @@ final class DashboardApiReader
             }
         }
 
-        return $label !== null && ! $this->graphLabelMatchesRawIdentity($label, $node, $kind)
+        return $label !== null && ! isset($privateIdentityTokens[$this->normalizeGraphIdentityToken($label)])
             ? $label
             : null;
     }
 
-    /** @param array<string, mixed> $node */
-    private function graphLabelMatchesRawIdentity(string $label, array $node, string $kind): bool
+    /**
+     * Build exact, case-folded comparison tokens from producer-controlled
+     * identity fields. Path components and stems are tokens in their own right;
+     * arbitrary substrings are not, avoiding accidental suppression of safe
+     * labels that merely contain part of an identity.
+     *
+     * @param  list<array<string, mixed>>  $nodes
+     * @param  array<string, list<string>>  $capturedProvenance
+     * @return array<string, array<string, true>>
+     */
+    private function graphPrivateIdentityTokenMap(array $nodes, array $capturedProvenance = []): array
     {
-        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
-        $identities = [
-            $node['id'] ?? null,
-            $node['external_id'] ?? null,
-            $node['symbol_id'] ?? null,
-            $properties['id'] ?? null,
-            $properties['external_id'] ?? null,
-            $properties['symbol_id'] ?? null,
-        ];
+        $tokensByNode = [];
 
-        foreach ([$node['source'] ?? null, $properties['source'] ?? null] as $source) {
-            if (is_array($source)) {
-                $identities[] = $source['ref'] ?? null;
-                $identities[] = $source['id'] ?? null;
-                $identities[] = $source['external_id'] ?? null;
+        foreach ($nodes as $node) {
+            $nodeId = $this->graphNodeId($node);
+            $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+            $identityValues = is_array($capturedProvenance[$nodeId] ?? null)
+                ? $capturedProvenance[$nodeId]
+                : [];
+
+            foreach ([$node, $properties] as $identityContainer) {
+                foreach (['id', 'external_id', 'symbol_id', 'source_ref', 'source_path'] as $field) {
+                    if (is_string($identityContainer[$field] ?? null)) {
+                        $identityValues[] = $identityContainer[$field];
+                    }
+                }
+
+                $source = $identityContainer['source'] ?? null;
+                if (! is_array($source)) {
+                    continue;
+                }
+                foreach (['ref', 'path', 'id', 'external_id', 'symbol_id'] as $field) {
+                    if (is_string($source[$field] ?? null)) {
+                        $identityValues[] = $source[$field];
+                    }
+                }
             }
+
+            $tokens = $tokensByNode[$nodeId] ?? [];
+            foreach ($identityValues as $identityValue) {
+                if (! is_string($identityValue)) {
+                    continue;
+                }
+                foreach ($this->graphIdentityComparisonTokens($identityValue) as $token) {
+                    $tokens[$token] = true;
+                }
+            }
+            $tokensByNode[$nodeId] = $tokens;
         }
 
-        $normalizedLabel = $this->normalizeGraphIdentityForLabel($label, $kind);
-        foreach ($identities as $identity) {
-            if (! is_string($identity) || trim($identity) === '') {
-                continue;
-            }
-            if ($normalizedLabel === $this->normalizeGraphIdentityForLabel($identity, $kind)) {
-                return true;
-            }
-        }
-
-        return false;
+        return $tokensByNode;
     }
 
-    private function normalizeGraphIdentityForLabel(string $identity, string $kind): string
+    /** @return list<string> */
+    private function graphIdentityComparisonTokens(string $identity): array
     {
-        $identity = trim($identity);
-        if ($kind === 'file') {
-            $identity = $this->graphFileLabel($identity) ?? $identity;
+        $normalized = $this->normalizeGraphIdentityToken($identity);
+        if ($normalized === '') {
+            return [];
+        }
+        $tokens = [$normalized => true];
+        $path = preg_replace('/\Afile:\/\//i', '', trim($identity)) ?? trim($identity);
+        $path = str_replace('\\', '/', rawurldecode($path));
+
+        if (str_contains($path, '/')) {
+            foreach (explode('/', $path) as $segment) {
+                $segment = trim($segment);
+                if ($segment === '' || $segment === '.' || $segment === '..') {
+                    continue;
+                }
+                $token = $this->normalizeGraphIdentityToken($segment);
+                $tokens[$token] = true;
+
+                $stem = pathinfo($segment, PATHINFO_FILENAME);
+                if ($stem !== '' && $stem !== $segment) {
+                    $tokens[$this->normalizeGraphIdentityToken($stem)] = true;
+                }
+            }
         }
 
-        return strtolower($identity);
+        return array_keys(array_filter($tokens, static fn (bool $present, string $token): bool => $present && $token !== '', ARRAY_FILTER_USE_BOTH));
+    }
+
+    private function normalizeGraphIdentityToken(string $identity): string
+    {
+        return strtolower(trim($identity));
     }
 
     /**

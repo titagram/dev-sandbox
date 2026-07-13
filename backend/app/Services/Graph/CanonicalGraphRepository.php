@@ -214,10 +214,12 @@ class CanonicalGraphRepository
     {
         $json = (string) $artifact->artifact;
         $payload = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+        $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
         $language = (string) ($payload['language'] ?? ($artifact->schema === 'hades.php_graph.v1' ? 'php' : 'unknown'));
         $payload = $this->adaptLegacy($payload, 'hades-legacy-'.$language, $language);
 
-        return $this->normalizer->normalize($payload, $this->identity($projectId, 'workspace_binding', $bindingId, 'hades_agent_artifact', $artifact, $json));
+        return $this->normalizer->normalize($payload, $this->identity($projectId, 'workspace_binding', $bindingId, 'hades_agent_artifact', $artifact, $json))
+            + ['private_identity_provenance' => $privateIdentityProvenance];
     }
 
     private function normalizeSnapshot(object $artifact, string $projectId, string $repositoryId): ?array
@@ -227,10 +229,59 @@ class CanonicalGraphRepository
         }
         $json = Storage::disk('local')->get($artifact->storage_path);
         $payload = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+        $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
         $language = (string) ($payload['language'] ?? 'unknown');
         $payload = $this->adaptLegacy($payload, 'legacy-analyzer', $language);
 
-        return $this->normalizer->normalize($payload, $this->identity($projectId, 'repository', $repositoryId, 'legacy_artifact', $artifact, $json));
+        return $this->normalizer->normalize($payload, $this->identity($projectId, 'repository', $repositoryId, 'legacy_artifact', $artifact, $json))
+            + ['private_identity_provenance' => $privateIdentityProvenance];
+    }
+
+    /**
+     * Preserve producer identity provenance before canonical normalization drops
+     * presentation-irrelevant fields. This remains internal input for public
+     * projection policy and is never persisted to Neo4j or returned by an API.
+     *
+     * @return array<string, list<string>>
+     */
+    private function privateNodeIdentityProvenance(array $payload): array
+    {
+        $rawNodes = is_array($payload['nodes'] ?? null) ? $payload['nodes'] : ($payload['symbols'] ?? []);
+        $provenance = [];
+
+        foreach (array_filter($rawNodes, 'is_array') as $node) {
+            $nodeId = $node['id'] ?? $node['symbol_id'] ?? null;
+            if (! is_string($nodeId) || trim($nodeId) === '') {
+                continue;
+            }
+
+            $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+            $values = [];
+            foreach ([$node, $properties] as $identityContainer) {
+                foreach (['id', 'external_id', 'symbol_id', 'source_ref', 'source_path'] as $field) {
+                    if (is_string($identityContainer[$field] ?? null) && trim($identityContainer[$field]) !== '') {
+                        $values[] = $identityContainer[$field];
+                    }
+                }
+
+                $source = $identityContainer['source'] ?? null;
+                if (! is_array($source)) {
+                    continue;
+                }
+                foreach (['ref', 'path', 'id', 'external_id', 'symbol_id'] as $field) {
+                    if (is_string($source[$field] ?? null) && trim($source[$field]) !== '') {
+                        $values[] = $source[$field];
+                    }
+                }
+            }
+
+            $provenance[$nodeId] = array_values(array_unique([
+                ...($provenance[$nodeId] ?? []),
+                ...$values,
+            ]));
+        }
+
+        return $provenance;
     }
 
     private function adaptLegacy(array $payload, string $extractor, string $language): array
