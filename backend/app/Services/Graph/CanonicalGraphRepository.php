@@ -59,6 +59,88 @@ class CanonicalGraphRepository
         return $bindings->concat($repositories)->values()->all();
     }
 
+    /**
+     * @return array{scopes: list<array{source_scope_type: string, source_scope_id: string, quality: string|null, head_commit: string|null, created_at: string|null, projection_status: string}>, truncated: bool}
+     */
+    public function listScopeMetadata(string $projectId, int $limit = 50): array
+    {
+        $limit = max(1, min(100, $limit));
+        $bindings = DB::table('hades_workspace_bindings')
+            ->where('project_id', $projectId)
+            ->where('status', 'linked')
+            ->orderBy('id')
+            ->limit($limit + 1)
+            ->get(['id', 'head_commit', 'created_at'])
+            ->map(fn (object $scope): array => [
+                'source_scope_type' => 'workspace_binding',
+                'source_scope_id' => (string) $scope->id,
+                'head_commit' => $scope->head_commit ? (string) $scope->head_commit : null,
+                'created_at' => $scope->created_at ? (string) $scope->created_at : null,
+            ]);
+        $repositories = DB::table('repositories')
+            ->where('project_id', $projectId)
+            ->orderBy('id')
+            ->limit($limit + 1)
+            ->get(['id', 'created_at'])
+            ->map(fn (object $scope): array => [
+                'source_scope_type' => 'repository',
+                'source_scope_id' => (string) $scope->id,
+                'head_commit' => null,
+                'created_at' => $scope->created_at ? (string) $scope->created_at : null,
+            ]);
+        $allScopes = $bindings->concat($repositories)->values();
+        $scopes = $allScopes->take($limit)->values();
+
+        if ($scopes->isEmpty()) {
+            return ['scopes' => [], 'truncated' => false];
+        }
+
+        $rankedProjections = DB::table('canonical_graph_projections')
+            ->select([
+                'source_scope_type',
+                'source_scope_id',
+                'quality',
+                'head_commit',
+                'status',
+                'created_at',
+            ])
+            ->selectRaw('ROW_NUMBER() OVER (PARTITION BY source_scope_type, source_scope_id ORDER BY created_at DESC, id DESC) AS scope_rank')
+            ->where('project_id', $projectId)
+            ->where(function ($query) use ($scopes): void {
+                foreach ($scopes->groupBy('source_scope_type') as $scopeType => $typedScopes) {
+                    $query->orWhere(function ($typedQuery) use ($scopeType, $typedScopes): void {
+                        $typedQuery->where('source_scope_type', $scopeType)
+                            ->whereIn('source_scope_id', $typedScopes->pluck('source_scope_id'));
+                    });
+                }
+            });
+        $projections = DB::query()
+            ->fromSub($rankedProjections, 'ranked_scope_projections')
+            ->where('scope_rank', 1)
+            ->get()
+            ->keyBy(fn (object $projection): string => $projection->source_scope_type."\0".$projection->source_scope_id);
+
+        return [
+            'scopes' => $scopes->map(function (array $scope) use ($projections): array {
+                $projection = $projections->get($scope['source_scope_type']."\0".$scope['source_scope_id']);
+
+                return [
+                    'source_scope_type' => $scope['source_scope_type'],
+                    'source_scope_id' => $scope['source_scope_id'],
+                    'quality' => $projection?->quality ? (string) $projection->quality : null,
+                    'head_commit' => $projection?->head_commit
+                        ? (string) $projection->head_commit
+                        : $scope['head_commit'],
+                    'created_at' => $projection?->created_at
+                        ? (string) $projection->created_at
+                        : $scope['created_at'],
+                    'projection_status' => $projection?->status ? (string) $projection->status : 'unavailable',
+                ];
+            })->all(),
+            'truncated' => $allScopes->count() > $limit,
+        ];
+    }
+
     private function latestHades(string $projectId, string $bindingId): ?array
     {
         if (! $this->linkedBindingExists($projectId, $bindingId)) {

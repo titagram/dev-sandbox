@@ -13,6 +13,8 @@ final class DashboardApiReader
 
     private const GRAPH_PREVIEW_EDGE_LIMIT = 300;
 
+    private const CANONICAL_SCOPE_LIMIT = 50;
+
     public function __construct(private readonly CanonicalGraphRepository $canonicalGraphs) {}
 
     /**
@@ -701,13 +703,15 @@ final class DashboardApiReader
     /** @return array<string, mixed> */
     private function canonicalGraph(string $projectId): array
     {
-        $scopes = $this->canonicalGraphs->listScopes($projectId);
+        $scopeMetadata = $this->canonicalGraphs->listScopeMetadata($projectId, self::CANONICAL_SCOPE_LIMIT);
+        $scopes = $scopeMetadata['scopes'];
 
         if (count($scopes) !== 1) {
             return $this->canonicalGraphSelection(
                 $projectId,
                 $scopes === [] ? 'unavailable' : 'scope_required',
-                array_map(fn (array $scope): array => $this->canonicalScopeMetadata($projectId, $scope), $scopes),
+                array_map(fn (array $scope): array => $this->canonicalScopeMetadata($scope), $scopes),
+                $scopeMetadata['truncated'],
             );
         }
 
@@ -720,7 +724,7 @@ final class DashboardApiReader
 
         if ($graph === null) {
             return $this->canonicalGraphSelection($projectId, 'unavailable', [
-                $this->canonicalScopeMetadata($projectId, $scope),
+                $this->canonicalScopeMetadata($scope),
             ]);
         }
 
@@ -771,7 +775,7 @@ final class DashboardApiReader
     }
 
     /** @param list<array<string, mixed>> $scopes */
-    private function canonicalGraphSelection(string $projectId, string $status, array $scopes): array
+    private function canonicalGraphSelection(string $projectId, string $status, array $scopes, bool $scopesTruncated = false): array
     {
         return [
             ...$this->emptyGraph($projectId),
@@ -780,26 +784,20 @@ final class DashboardApiReader
             'quality' => null,
             'projection_status' => $status,
             'scopes' => $scopes,
+            'scopes_truncated' => $scopesTruncated,
         ];
     }
 
-    /** @param array{source_scope_type: string, source_scope_id: string} $scope */
-    private function canonicalScopeMetadata(string $projectId, array $scope): array
+    /** @param array{source_scope_type: string, source_scope_id: string, quality: string|null, head_commit: string|null, created_at: string|null, projection_status: string} $scope */
+    private function canonicalScopeMetadata(array $scope): array
     {
-        $graph = $this->canonicalGraphs->latestForScope($projectId, $scope['source_scope_type'], $scope['source_scope_id']);
-        $identity = $graph['identity'] ?? [];
-        $projection = isset($identity['artifact_type'], $identity['artifact_id'])
-            ? DB::table('canonical_graph_projections')->where('project_id', $projectId)
-                ->where('artifact_type', $identity['artifact_type'])->where('artifact_id', $identity['artifact_id'])->first()
-            : null;
-
         return [
             'type' => $scope['source_scope_type'],
             'id' => $scope['source_scope_id'],
-            'quality' => $graph['contract']['extractor']['quality'] ?? $projection?->quality,
-            'head_commit' => $graph['contract']['source']['head_commit'] ?? $projection?->head_commit,
-            'created_at' => $identity['created_at'] ?? null,
-            'projection_status' => $projection?->status ?? 'unavailable',
+            'quality' => $scope['quality'],
+            'head_commit' => $scope['head_commit'],
+            'created_at' => $scope['created_at'],
+            'projection_status' => $scope['projection_status'],
         ];
     }
 
@@ -2009,10 +2007,11 @@ final class DashboardApiReader
         $labels = is_array($node['labels'] ?? null) ? $node['labels'] : [];
         $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
         $id = $this->graphNodeId($node);
+        $name = $properties['name'] ?? null;
 
         return [
             'id' => $id,
-            'label' => (string) ($properties['name'] ?? $properties['path'] ?? $id),
+            'label' => is_string($name) && trim($name) !== '' ? $name : $id,
             'kind' => $this->graphNodeKind($labels),
             'repository' => $repository,
             'degree' => $degreeByNode[$id] ?? 0,

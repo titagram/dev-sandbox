@@ -160,11 +160,14 @@ it('serves the generated frontend dashboard read contract', function () {
         ->assertJsonPath('url', "/runs/{$ids['run_id']}/artifacts/{$ids['artifact_id']}/download");
 });
 
-it('serves the only canonical Hades graph without leaking its display path', function () {
+it('serves the only canonical Hades graph without leaking local paths', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();
     DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
-    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    $localNodePath = '/srv/private/project/app/SecretController.php';
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id'], [
+        'path' => $localNodePath,
+    ]);
 
     $response = $this->actingAs($admin)
         ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
@@ -174,9 +177,12 @@ it('serves the only canonical Hades graph without leaking its display path', fun
         ->assertJsonPath('source_scope.id', $canonical['binding_id'])
         ->assertJsonPath('graph_version', $canonical['graph_version'])
         ->assertJsonPath('quality', 'full')
-        ->assertJsonPath('projection_status', 'ready');
+        ->assertJsonPath('projection_status', 'ready')
+        ->assertJsonPath('nodes.0.label', 'method:DashboardApiReader::graph');
 
-    expect(json_encode($response->json(), JSON_THROW_ON_ERROR))->not->toContain('/srv/private/project');
+    expect(json_encode($response->json(), JSON_THROW_ON_ERROR))
+        ->not->toContain('/srv/private/project')
+        ->not->toContain($localNodePath);
 });
 
 it('requires an explicit scope when multiple canonical graph scopes exist', function () {
@@ -195,6 +201,58 @@ it('requires an explicit scope when multiple canonical graph scopes exist', func
     expect($response->json('nodes'))->toBe([])
         ->and($response->json('edges'))->toBe([])
         ->and(json_encode($response->json(), JSON_THROW_ON_ERROR))->not->toContain('/srv/private/project');
+});
+
+it('bounds multi-scope metadata without loading graph artifact payloads', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    $now = now();
+
+    for ($index = 0; $index < 75; $index++) {
+        $bindingId = (string) Str::ulid();
+        DB::table('hades_workspace_bindings')->insert([
+            'id' => $bindingId,
+            'project_id' => $ids['project_id'],
+            'hades_agent_id' => $canonical['agent_id'],
+            'external_agent_id' => 'dashboard-'.$canonical['agent_id'],
+            'workspace_fingerprint' => hash('sha256', 'scope-'.$bindingId),
+            'display_path' => "/srv/private/project-{$index}",
+            'status' => 'linked',
+            'linked_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'scope_required')
+        ->assertJsonPath('scopes_truncated', true)
+        ->assertJsonCount(50, 'scopes');
+    $queries = DB::getQueryLog();
+    DB::disableQueryLog();
+
+    $canonicalReads = collect($queries)->filter(function (array $query): bool {
+        $sql = strtolower($query['query']);
+
+        return str_contains($sql, 'hades_workspace_bindings')
+            || str_contains($sql, 'repositories')
+            || str_contains($sql, 'hades_agent_artifacts')
+            || str_contains($sql, 'canonical_graph_projections');
+    });
+    $artifactReads = $canonicalReads->filter(
+        fn (array $query): bool => str_contains(strtolower($query['query']), 'hades_agent_artifacts'),
+    );
+
+    expect($response->json('nodes'))->toBe([])
+        ->and($response->json('edges'))->toBe([])
+        ->and($canonicalReads)->toHaveCount(3)
+        ->and($artifactReads)->toHaveCount(0);
 });
 
 it('reports canonical graphs as unavailable when the project has no source scope', function () {
@@ -567,8 +625,8 @@ function createDashboardApiContractScenario(bool $retryable = false): array
     ];
 }
 
-/** @return array{binding_id: string, graph_version: string} */
-function createDashboardCanonicalHadesGraph(string $projectId): array
+/** @return array{agent_id: string, binding_id: string, graph_version: string} */
+function createDashboardCanonicalHadesGraph(string $projectId, ?array $nodeProperties = null): array
 {
     $agentId = (string) Str::ulid();
     $bindingId = (string) Str::ulid();
@@ -585,7 +643,7 @@ function createDashboardCanonicalHadesGraph(string $projectId): array
         'nodes' => [[
             'id' => 'method:DashboardApiReader::graph',
             'labels' => ['Method'],
-            'properties' => ['name' => 'graph', 'path' => 'app/Dashboard/DashboardApiReader.php'],
+            'properties' => $nodeProperties ?? ['name' => 'graph', 'path' => 'app/Dashboard/DashboardApiReader.php'],
         ]],
         'relationships' => [],
     ];
@@ -619,5 +677,5 @@ function createDashboardCanonicalHadesGraph(string $projectId): array
         'created_at' => $now, 'updated_at' => $now,
     ]);
 
-    return ['binding_id' => $bindingId, 'graph_version' => $graphVersion];
+    return ['agent_id' => $agentId, 'binding_id' => $bindingId, 'graph_version' => $graphVersion];
 }
