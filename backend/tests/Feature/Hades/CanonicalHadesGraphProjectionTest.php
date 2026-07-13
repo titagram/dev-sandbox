@@ -203,6 +203,77 @@ it('rejects malformed explicit canonical artifacts without upload side effects',
     Bus::assertNotDispatched(GenerateSearchDocumentEmbedding::class);
 });
 
+it('keeps artifact upload runtime responses aligned with the documented 422 contracts', function () {
+    Bus::fake();
+    [$agent, $bindingId] = canonicalProjectionAgent();
+    $headers = ['Authorization' => 'Bearer '.$agent['token']];
+
+    $missingProject = canonicalProjectionUpload($agent, $bindingId);
+    unset($missingProject['project_id']);
+    $this->postJson('/api/hades/v1/artifacts', $missingProject, $headers)
+        ->assertUnprocessable()
+        ->assertExactJson([
+            'message' => 'The project id field is required.',
+            'errors' => ['project_id' => ['The project id field is required.']],
+        ]);
+
+    $malformed = canonicalProjectionUpload($agent, $bindingId);
+    $malformed['artifact']['graph_contract']['extractor']['mode'] = 'full';
+    $this->postJson('/api/hades/v1/artifacts', $malformed, $headers)
+        ->assertUnprocessable()
+        ->assertExactJson(['error' => [
+            'code' => 'invalid_graph_contract',
+            'message' => 'Graph artifact contract is invalid.',
+        ]]);
+
+    $legacy = [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $bindingId,
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => [
+            'schema' => 'hades.php_graph.v1',
+            'head_commit' => str_repeat('a', 40),
+            'routes' => [['name' => 'orders.index', 'handler' => 'OrderController@index']],
+            'symbols' => [['name' => 'OrderController@index', 'path' => 'app/Http/Controllers/OrderController.php', 'line' => 12]],
+            'edges' => [['kind' => 'handles', 'from' => 'route:orders.index', 'to' => 'OrderController@index']],
+        ],
+    ];
+    $this->postJson('/api/hades/v1/artifacts', $legacy, $headers)->assertCreated();
+    $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), $headers)->assertCreated();
+
+    $spec = json_decode(file_get_contents(base_path('docs/hades/openapi-hades-v1.json')), true, flags: JSON_THROW_ON_ERROR);
+    $upload422 = $spec['paths']['/api/hades/v1/artifacts']['post']['responses']['422']['content']['application/json'];
+
+    expect($upload422['schema']['oneOf'])->toBe([
+        ['$ref' => '#/components/schemas/ArtifactUploadErrorResponse'],
+        ['$ref' => '#/components/schemas/LaravelValidationErrorResponse'],
+    ])->and($upload422['examples']['missingRequiredField']['value'])->toBe([
+        'message' => 'The project id field is required.',
+        'errors' => ['project_id' => ['The project id field is required.']],
+    ])->and($upload422['examples']['malformedGraphContract']['value'])->toBe([
+        'error' => [
+            'code' => 'invalid_graph_contract',
+            'message' => 'Graph artifact contract is invalid.',
+        ],
+    ])->and($spec['components']['schemas']['LaravelValidationErrorResponse'])->toMatchArray([
+        'type' => 'object',
+        'required' => ['message', 'errors'],
+        'additionalProperties' => false,
+        'properties' => [
+            'message' => ['type' => 'string'],
+            'errors' => [
+                'type' => 'object',
+                'minProperties' => 1,
+                'additionalProperties' => [
+                    'type' => 'array',
+                    'minItems' => 1,
+                    'items' => ['type' => 'string'],
+                ],
+            ],
+        ],
+    ]);
+});
+
 it('rejects malformed explicit graph contracts before dedupe and every upload side effect', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();

@@ -224,16 +224,39 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "422": {
-            "description": "Request validation failure, invalid_graph_contract, or invalid_graph_artifact. Explicit malformed graph contracts are rejected before deduplication or persistence.",
+            "description": "Request validation failure, invalid_graph_contract, or invalid_graph_artifact. Missing or invalid request fields use Laravel's validation envelope; explicit malformed graph payloads use the bounded artifact error envelope and are rejected before deduplication or persistence.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArtifactUploadErrorResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ArtifactUploadErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LaravelValidationErrorResponse"
+                    }
+                  ]
                 },
-                "example": {
-                  "error": {
-                    "code": "invalid_graph_contract",
-                    "message": "Graph artifact contract is invalid."
+                "examples": {
+                  "missingRequiredField": {
+                    "summary": "A required upload field is missing",
+                    "value": {
+                      "message": "The project id field is required.",
+                      "errors": {
+                        "project_id": [
+                          "The project id field is required."
+                        ]
+                      }
+                    }
+                  },
+                  "malformedGraphContract": {
+                    "summary": "The submitted canonical graph contract is malformed",
+                    "value": {
+                      "error": {
+                        "code": "invalid_graph_contract",
+                        "message": "Graph artifact contract is invalid."
+                      }
+                    }
                   }
                 }
               }
@@ -813,6 +836,30 @@
                 ]
               },
               "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "LaravelValidationErrorResponse": {
+        "type": "object",
+        "required": [
+          "message",
+          "errors"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
                 "type": "string"
               }
             }
