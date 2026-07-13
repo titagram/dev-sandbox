@@ -138,29 +138,30 @@ class CanonicalGraphProjectionService
             ->firstOrFail();
     }
 
+    public function findForWorker(string $id): ?object
+    {
+        return DB::table('canonical_graph_projections')->where('id', $id)->first();
+    }
+
     /**
      * Atomically claim one queued projection for a queue worker.
      *
-     * A null result means the projection is missing or another worker/job
-     * already owns or completed it. Callers must treat that as a no-op.
+     * False means the projection is missing or another worker/job already
+     * owns or completed it. The result comes directly from the conditional
+     * update so a fallible read cannot make a successful claim ambiguous.
      */
-    public function claimForWorker(string $id): ?object
+    public function claimForWorker(string $id): bool
     {
         $now = now();
-        $claimed = DB::table('canonical_graph_projections')
+
+        return DB::table('canonical_graph_projections')
             ->where('id', $id)
             ->where('status', 'queued')
             ->update([
                 'status' => 'projecting',
                 'error_code' => null,
                 'updated_at' => $now,
-            ]);
-
-        if ($claimed !== 1) {
-            return null;
-        }
-
-        return DB::table('canonical_graph_projections')->where('id', $id)->first();
+            ]) === 1;
     }
 
     public function markProjecting(string $id): void
@@ -172,9 +173,9 @@ class CanonicalGraphProjectionService
         ]);
     }
 
-    public function markReady(string $id, int $nodes, int $relationships): void
+    public function markReady(string $id, int $nodes, int $relationships): bool
     {
-        DB::transaction(function () use ($id, $nodes, $relationships): void {
+        return DB::transaction(function () use ($id, $nodes, $relationships): bool {
             $projectId = DB::table('canonical_graph_projections')->where('id', $id)->value('project_id');
             if ($projectId === null) {
                 throw new RuntimeException('Canonical graph projection not found.');
@@ -185,6 +186,9 @@ class CanonicalGraphProjectionService
             $candidate = DB::table('canonical_graph_projections')->where('id', $id)->lockForUpdate()->first();
             if ($candidate === null) {
                 throw new RuntimeException('Canonical graph projection not found.');
+            }
+            if ($candidate->status !== 'projecting') {
+                return false;
             }
 
             DB::table('canonical_graph_projections')
@@ -203,6 +207,8 @@ class CanonicalGraphProjectionService
                 'projected_at' => now(),
                 'updated_at' => now(),
             ]);
+
+            return true;
         });
     }
 
@@ -214,6 +220,21 @@ class CanonicalGraphProjectionService
             'error_code' => $boundedCode,
             'updated_at' => now(),
         ]);
+    }
+
+    /**
+     * Mark final queue exhaustion only while no newer delivery owns the row.
+     */
+    public function markFailedIfQueued(string $id, string $code): bool
+    {
+        return DB::table('canonical_graph_projections')
+            ->where('id', $id)
+            ->where('status', 'queued')
+            ->update([
+                'status' => 'failed',
+                'error_code' => $this->boundedFailureCode($code),
+                'updated_at' => now(),
+            ]) === 1;
     }
 
     /**

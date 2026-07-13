@@ -146,6 +146,7 @@ it('reports and skips a ready exact artifact and checksum match', function () {
     $context = canonicalRebuildHadesContext();
     $graph = app(CanonicalGraphRepository::class)->latestForScope($context['project_id'], 'workspace_binding', $context['scope_id']);
     $projection = app(CanonicalGraphProjectionService::class)->queue($graph);
+    app(CanonicalGraphProjectionService::class)->markProjecting($projection->id);
     app(CanonicalGraphProjectionService::class)->markReady($projection->id, 2, 1);
     Bus::fake();
 

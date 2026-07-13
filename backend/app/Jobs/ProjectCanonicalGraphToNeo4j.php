@@ -21,8 +21,8 @@ class ProjectCanonicalGraphToNeo4j implements ShouldQueue
 
     public function handle(CanonicalGraphRepository $repository, CanonicalGraphProjectionService $projections, Neo4jCanonicalGraphProjector $projector, Neo4jClientFactory $clients): void
     {
-        $projection = $projections->claimForWorker($this->projectionId);
-        if ($projection === null) {
+        $projection = $projections->findForWorker($this->projectionId);
+        if ($projection === null || ! $projections->claimForWorker($this->projectionId)) {
             return;
         }
         try {
@@ -34,7 +34,9 @@ class ProjectCanonicalGraphToNeo4j implements ShouldQueue
                 throw new RuntimeException('artifact_changed');
             }
             $counts = $projector->project($graph, $projection, $clients->client());
-            $projections->markReady($projection->id, $counts['nodes'], $counts['relationships']);
+            if (! $projections->markReady($projection->id, $counts['nodes'], $counts['relationships'])) {
+                return;
+            }
         } catch (Throwable $exception) {
             $projections->markRetryPending($projection->id, $this->failureCode($exception));
             throw $exception;
@@ -46,7 +48,7 @@ class ProjectCanonicalGraphToNeo4j implements ShouldQueue
      */
     public function failed(Throwable $exception): void
     {
-        app(CanonicalGraphProjectionService::class)->markFailed(
+        app(CanonicalGraphProjectionService::class)->markFailedIfQueued(
             $this->projectionId,
             $this->failureCode($exception),
         );

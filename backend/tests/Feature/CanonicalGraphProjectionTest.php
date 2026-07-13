@@ -75,14 +75,88 @@ it('claims a queued worker projection exactly once with an atomic state transiti
     $service = app(CanonicalGraphProjectionService::class);
     $projection = $service->queue(canonicalProjectionGraph($projectId, 'artifact-claim', str_repeat('c', 64)));
 
-    $first = $service->claimForWorker($projection->id);
-    $second = $service->claimForWorker($projection->id);
+    $firstClaimed = $service->claimForWorker($projection->id);
+    $secondClaimed = $service->claimForWorker($projection->id);
 
-    expect($first)->not->toBeNull()
-        ->and($first->status)->toBe('projecting')
-        ->and($second)->toBeNull()
+    expect($firstClaimed)->toBeTrue()
+        ->and($secondClaimed)->toBeFalse()
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting');
 });
+
+it('returns the atomic claim result without a fallible post claim read', function () {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $projection = $service->queue(canonicalProjectionGraph($projectId, 'artifact-no-post-read', str_repeat('d', 64)));
+    $rejectPostClaimRead = true;
+    $failure = null;
+    $claimed = null;
+
+    DB::listen(function ($query) use (&$rejectPostClaimRead): void {
+        $sql = strtolower($query->sql);
+        if ($rejectPostClaimRead && str_starts_with($sql, 'select') && str_contains($sql, 'canonical_graph_projections')) {
+            throw new RuntimeException('simulated post-CAS read failure');
+        }
+    });
+
+    try {
+        $claimed = $service->claimForWorker($projection->id);
+    } catch (Throwable $exception) {
+        $failure = $exception;
+    } finally {
+        $rejectPostClaimRead = false;
+    }
+
+    expect($failure)->toBeNull()
+        ->and($claimed)->toBeTrue()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting');
+});
+
+it('ignores final failure unless the projection is still queued', function (string $status) {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $projection = $service->queue(canonicalProjectionGraph($projectId, 'artifact-final-'.$status, str_repeat('1', 64)));
+    DB::table('canonical_graph_projections')->where('id', $projection->id)->update([
+        'status' => $status,
+        'error_code' => null,
+    ]);
+
+    $changed = $service->markFailedIfQueued($projection->id, 'neo4j_unavailable');
+
+    expect($changed)->toBeFalse()
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe($status)
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBeNull();
+})->with(['projecting', 'ready', 'stale', 'failed']);
+
+it('refuses a stale ready transition without staling or publishing anything', function (string $candidateStatus) {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $current = $service->queue(canonicalProjectionGraph($projectId, 'artifact-current', str_repeat('e', 64)));
+    $service->markProjecting($current->id);
+    expect($service->markReady($current->id, 10, 5))->toBeTrue();
+
+    $candidate = $service->queue(canonicalProjectionGraph($projectId, 'artifact-stale-worker', str_repeat('f', 64)));
+    DB::table('canonical_graph_projections')->where('id', $candidate->id)->update([
+        'status' => $candidateStatus,
+        'node_count' => null,
+        'relationship_count' => null,
+        'projected_at' => null,
+    ]);
+    $beforeCurrent = DB::table('canonical_graph_projections')->where('id', $current->id)->first();
+    $beforeCandidate = DB::table('canonical_graph_projections')->where('id', $candidate->id)->first();
+
+    $published = $service->markReady($candidate->id, 99, 88);
+
+    $afterCurrent = DB::table('canonical_graph_projections')->where('id', $current->id)->first();
+    $afterCandidate = DB::table('canonical_graph_projections')->where('id', $candidate->id)->first();
+    expect($published)->toBeFalse()
+        ->and($afterCurrent->status)->toBe('ready')
+        ->and($afterCurrent->updated_at)->toBe($beforeCurrent->updated_at)
+        ->and($afterCandidate->status)->toBe($candidateStatus)
+        ->and($afterCandidate->node_count)->toBe($beforeCandidate->node_count)
+        ->and($afterCandidate->relationship_count)->toBe($beforeCandidate->relationship_count)
+        ->and($afterCandidate->projected_at)->toBe($beforeCandidate->projected_at)
+        ->and($afterCandidate->updated_at)->toBe($beforeCandidate->updated_at);
+})->with(['queued', 'failed', 'ready']);
 
 function canonicalProjectionGraph(string $projectId, string $artifactId, string $checksum): array
 {

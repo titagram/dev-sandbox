@@ -414,6 +414,7 @@ class GenesisGraphImportService
             $projection = $this->canonicalProjections->queue($canonical);
             $projection->snapshot_id = $snapshotId;
             $counts = $this->canonicalProjector->project($canonical, $projection, $client);
+            $this->canonicalProjections->markProjecting($projection->id);
             $this->canonicalProjections->markReady($projection->id, $counts['nodes'], $counts['relationships']);
 
             DB::table('artifacts')->where('id', $artifactId)->update(['status' => 'imported', 'updated_at' => now()]);
@@ -488,6 +489,7 @@ class GenesisGraphImportService
             $projection = $this->canonicalProjections->queue($canonical);
             $projection->snapshot_id = $snapshotId;
             $counts = $this->canonicalProjector->project($canonical, $projection, $client);
+            $this->canonicalProjections->markProjecting($projection->id);
             $this->canonicalProjections->markReady($projection->id, $counts['nodes'], $counts['relationships']);
         }
 

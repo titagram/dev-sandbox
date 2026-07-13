@@ -32,6 +32,7 @@ it('delegates a valid full graph snapshot to the canonical projector', function 
 
     expect($snapshotCommand)->not->toBeNull();
     expect($snapshotCommand['params']['project_id'])->not->toBeEmpty();
+    expect(DB::table('canonical_graph_projections')->value('status'))->toBe('ready');
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
@@ -164,6 +165,7 @@ it('routes an affected subgraph resulting version through the canonical projecto
     expect(collect($client->commands)->contains(fn (array $command) => str_contains($command['cypher'], 'clone')))->toBeFalse();
     expect(collect($client->commands)->contains(fn (array $command) => str_contains($command['cypher'], 'CanonicalGraphVersion')))->toBeTrue()
         ->and(collect($client->commands)->contains(fn (array $command) => str_contains($command['cypher'], 'UNWIND $nodes AS node MERGE (n:CanonicalGraphNode')))->toBeTrue();
+    expect(DB::table('canonical_graph_projections')->value('status'))->toBe('ready');
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
