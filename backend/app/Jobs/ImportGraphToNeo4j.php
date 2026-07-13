@@ -2,7 +2,9 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\CanonicalGraphProjectionException;
 use App\Services\GenesisGraphImportService;
+use App\Services\Graph\CanonicalGraphProjectionService;
 use App\Services\Neo4j\Neo4jClient;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -61,13 +63,7 @@ class ImportGraphToNeo4j implements ShouldQueue
     private function handleGenesis(GenesisGraphImportService $service): void
     {
         if (config('services.devboard.graph_import_mode') === 'fake') {
-            $service->importGenesis($this->importOrDeltaId, new class implements Neo4jClient
-            {
-                public function run(string $cypher, array $params = []): mixed
-                {
-                    return [];
-                }
-            }, 'fake', false);
+            $service->importGenesis($this->importOrDeltaId, $this->fakeClient(), 'fake', false);
 
             return;
         }
@@ -81,20 +77,39 @@ class ImportGraphToNeo4j implements ShouldQueue
         $client = null;
 
         if ($mode === 'fake') {
-            $client = new class implements Neo4jClient
-            {
-                public function run(string $cypher, array $params = []): mixed
-                {
-                    return [];
-                }
-            };
+            $client = $this->fakeClient();
         }
 
         $service->importDelta($this->importOrDeltaId, $client, $mode);
     }
 
+    private function fakeClient(): Neo4jClient
+    {
+        return new class implements Neo4jClient
+        {
+            public function run(string $cypher, array $params = []): mixed
+            {
+                if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                    return [[
+                        'nodes' => $params['expected_nodes'],
+                        'relationships' => $params['expected_relationships'],
+                    ]];
+                }
+
+                return [];
+            }
+        };
+    }
+
     public function failed(Throwable $exception): void
     {
+        if ($exception instanceof CanonicalGraphProjectionException) {
+            app(CanonicalGraphProjectionService::class)->markFailedIfQueued(
+                $exception->projectionId,
+                $exception->failureCode,
+            );
+        }
+
         if ($this->scope === 'genesis') {
             $this->failedGenesis($exception);
         } else {
@@ -120,13 +135,11 @@ class ImportGraphToNeo4j implements ShouldQueue
             'event_type' => 'graph.import_failed',
             'severity' => 'error',
             'message' => 'Genesis graph import failed after queue retries.',
-            'payload' => json_encode([
+            'payload' => json_encode($this->failurePayload($exception, [
                 'genesis_import_id' => $this->importOrDeltaId,
-                'exception_class' => $exception::class,
-                'exception_message' => $exception->getMessage(),
                 'tries' => $this->tries,
                 'backoff' => $this->backoff(),
-            ], JSON_THROW_ON_ERROR),
+            ]), JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
     }
@@ -149,14 +162,31 @@ class ImportGraphToNeo4j implements ShouldQueue
             'event_type' => 'graph.import_failed',
             'severity' => 'error',
             'message' => 'Delta graph import failed after queue retries.',
-            'payload' => json_encode([
+            'payload' => json_encode($this->failurePayload($exception, [
                 'delta_id' => $this->importOrDeltaId,
-                'exception_class' => $exception::class,
-                'exception_message' => $exception->getMessage(),
                 'tries' => $this->tries,
                 'backoff' => $this->backoff(),
-            ], JSON_THROW_ON_ERROR),
+            ]), JSON_THROW_ON_ERROR),
             'created_at' => now(),
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function failurePayload(Throwable $exception, array $payload): array
+    {
+        $payload['exception_class'] = $exception::class;
+        $payload['exception_message'] = $exception instanceof CanonicalGraphProjectionException
+            ? $exception->failureCode
+            : $exception->getMessage();
+
+        if ($exception instanceof CanonicalGraphProjectionException) {
+            $payload['projection_id'] = $exception->projectionId;
+            $payload['error_code'] = $exception->failureCode;
+        }
+
+        return $payload;
     }
 }

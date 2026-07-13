@@ -1,9 +1,14 @@
 <?php
 
+use App\Exceptions\CanonicalGraphProjectionException;
 use App\Jobs\ImportGenesisGraphToNeo4j;
+use App\Jobs\ImportGraphToNeo4j;
 use App\Services\GenesisGraphImportService;
+use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\CanonicalGraphRepository;
 use App\Services\Neo4j\FailingNeo4jClient;
 use App\Services\Neo4j\FakeNeo4jClient;
+use App\Services\Neo4j\Neo4jClient;
 use App\Services\Neo4jClientFactory;
 use App\Services\Neo4jRebuildService;
 use Database\Seeders\DevBoardSeeder;
@@ -18,6 +23,13 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     Storage::fake('local');
     $this->seed(DevBoardSeeder::class);
+});
+
+it('keeps canonical projection retry error codes bounded', function () {
+    $exception = new CanonicalGraphProjectionException('projection-1', 'SQLSTATE[HY000]: secret endpoint');
+
+    expect($exception->failureCode)->toBe('projection_failed')
+        ->and($exception->getMessage())->toBe('projection_failed');
 });
 
 it('delegates a valid full graph snapshot to the canonical projector', function () {
@@ -169,6 +181,244 @@ it('routes an affected subgraph resulting version through the canonical projecto
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
+it('claims the exact canonical projection before the first Neo4j call', function (bool $affectedSubgraph) {
+    $context = createGraphImportContext();
+    if ($affectedSubgraph) {
+        makeGraphImportContextAffected($context);
+    }
+    $client = new class implements Neo4jClient
+    {
+        public int $calls = 0;
+
+        public function run(string $cypher, array $params = []): mixed
+        {
+            $this->calls++;
+            expect(DB::table('canonical_graph_projections')->count())->toBe(1)
+                ->and(DB::table('canonical_graph_projections')->value('status'))->toBe('projecting');
+
+            if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+            }
+
+            return [];
+        }
+    };
+
+    app(GenesisGraphImportService::class)->importGraphArtifact(
+        $context['snapshot_id'],
+        $context['repository_id'],
+        $context['run_id'],
+        $context['artifact_id'],
+        $client,
+        'fake',
+        baseSnapshotId: $affectedSubgraph ? $context['snapshot_id'] : null,
+        deltaId: $affectedSubgraph ? 'delta-claim-order' : null,
+    );
+
+    expect($client->calls)->toBeGreaterThan(0)
+        ->and(DB::table('canonical_graph_projections')->value('status'))->toBe('ready');
+})->with([
+    'full snapshot' => false,
+    'affected subgraph' => true,
+]);
+
+it('does not project or publish while another worker owns the exact projection', function () {
+    $context = createGraphImportContext();
+    DB::table('artifacts')->where('id', $context['artifact_id'])->update(['status' => 'uploaded']);
+    $canonical = canonicalGraphForImportContext($context);
+    $projections = app(CanonicalGraphProjectionService::class);
+    $projection = $projections->queue($canonical);
+    expect($projections->claimForWorker($projection->id))->toBeTrue();
+    $client = new FakeNeo4jClient;
+    $caught = null;
+
+    try {
+        app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client, 'fake', false);
+    } catch (Throwable $exception) {
+        $caught = $exception;
+    }
+
+    expect($caught)->not->toBeNull()
+        ->and(property_exists($caught, 'projectionId'))->toBeTrue()
+        ->and($caught->projectionId)->toBe($projection->id)
+        ->and(property_exists($caught, 'failureCode'))->toBeTrue()
+        ->and($caught->failureCode)->toBe('projection_busy')
+        ->and($client->commands)->toBe([])
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeFalse()
+        ->and(DB::table('artifacts')->where('id', $context['artifact_id'])->value('status'))->toBe('uploaded');
+});
+
+it('treats an exact ready projection as idempotent success without another Neo4j write', function () {
+    $context = createGraphImportContext();
+    $canonical = canonicalGraphForImportContext($context);
+    $projections = app(CanonicalGraphProjectionService::class);
+    $projection = $projections->queue($canonical);
+    expect($projections->claimForWorker($projection->id))->toBeTrue()
+        ->and($projections->markReady($projection->id, 2, 1))->toBeTrue();
+    $client = new FakeNeo4jClient;
+
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client, 'fake', false);
+
+    expect($client->commands)->toBe([])
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('node_count'))->toBe(2)
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count())->toBe(1);
+});
+
+it('does not publish success when projection ownership is lost before mark ready', function () {
+    $context = createGraphImportContext();
+    $client = new class implements Neo4jClient
+    {
+        public function run(string $cypher, array $params = []): mixed
+        {
+            if (str_contains($cypher, "candidate.status = 'ready'")) {
+                DB::table('canonical_graph_projections')->update(['status' => 'failed']);
+            }
+            if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+            }
+
+            return [];
+        }
+    };
+    $caught = null;
+
+    try {
+        app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client, 'fake', false);
+    } catch (Throwable $exception) {
+        $caught = $exception;
+    }
+
+    expect($caught)->not->toBeNull()
+        ->and(property_exists($caught, 'failureCode'))->toBeTrue()
+        ->and($caught->failureCode)->toBe('ownership_lost')
+        ->and(DB::table('canonical_graph_projections')->value('status'))->toBe('failed')
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeFalse();
+});
+
+it('releases an owned projection for the next outer job attempt', function (bool $affectedSubgraph) {
+    $context = createGraphImportContext();
+    if ($affectedSubgraph) {
+        makeGraphImportContextAffected($context);
+    }
+    $client = new class implements Neo4jClient
+    {
+        public function run(string $cypher, array $params = []): mixed
+        {
+            if (str_contains($cypher, 'CanonicalGraphVersion')) {
+                throw new RuntimeException('simulated canonical projection failure');
+            }
+
+            return [];
+        }
+    };
+    $caught = null;
+
+    try {
+        app(GenesisGraphImportService::class)->importGraphArtifact(
+            $context['snapshot_id'],
+            $context['repository_id'],
+            $context['run_id'],
+            $context['artifact_id'],
+            $client,
+            'fake',
+            baseSnapshotId: $affectedSubgraph ? $context['snapshot_id'] : null,
+            deltaId: $affectedSubgraph ? 'delta-retry' : null,
+        );
+    } catch (Throwable $exception) {
+        $caught = $exception;
+    }
+
+    $projection = DB::table('canonical_graph_projections')->first();
+    expect($caught)->not->toBeNull()
+        ->and(property_exists($caught, 'projectionId'))->toBeTrue()
+        ->and($caught->projectionId)->toBe($projection->id)
+        ->and($caught->failureCode)->toBe('neo4j_query_failed')
+        ->and($projection->status)->toBe('queued');
+
+    app(GenesisGraphImportService::class)->importGraphArtifact(
+        $context['snapshot_id'],
+        $context['repository_id'],
+        $context['run_id'],
+        $context['artifact_id'],
+        new FakeNeo4jClient,
+        'fake',
+        baseSnapshotId: $affectedSubgraph ? $context['snapshot_id'] : null,
+        deltaId: $affectedSubgraph ? 'delta-retry' : null,
+    );
+
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready')
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count())->toBe(1);
+})->with([
+    'full snapshot' => false,
+    'affected subgraph' => true,
+]);
+
+it('marks only its queued canonical projection failed after final queue exhaustion', function () {
+    $context = createGraphImportContext();
+    $caught = canonicalProjectionFailure($context);
+    $projection = DB::table('canonical_graph_projections')->first();
+
+    (new ImportGraphToNeo4j('genesis', $context['import_id']))->failed($caught);
+
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBe('neo4j_query_failed')
+        ->and(DB::table('genesis_imports')->where('id', $context['import_id'])->value('status'))->toBe('failed');
+
+    $canonical = canonicalGraphForImportContext($context);
+    $first = app(CanonicalGraphProjectionService::class)->claimForReconcile([$canonical]);
+    $second = app(CanonicalGraphProjectionService::class)->claimForReconcile([$canonical]);
+    $claimKey = array_key_first($first);
+    expect($first[$claimKey]['claimed'])->toBeTrue()
+        ->and($second[$claimKey]['claimed'])->toBeFalse();
+});
+
+it('does not let an exhausted delivery overwrite a competing projection owner', function () {
+    $context = createGraphImportContext();
+    $caught = canonicalProjectionFailure($context);
+    $projection = DB::table('canonical_graph_projections')->first();
+    expect(app(CanonicalGraphProjectionService::class)->claimForWorker($projection->id))->toBeTrue();
+
+    (new ImportGraphToNeo4j('genesis', $context['import_id']))->failed($caught);
+
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting')
+        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBeNull();
+});
+
+it('marks the exact queued delta projection failed after final queue exhaustion', function () {
+    $context = createGraphImportContext();
+    $caught = canonicalProjectionFailure($context);
+    $projection = DB::table('canonical_graph_projections')->first();
+    $import = DB::table('genesis_imports')->where('id', $context['import_id'])->first();
+    $deltaId = (string) Str::ulid();
+    DB::table('delta_syncs')->insert([
+        'id' => $deltaId,
+        'project_id' => $import->project_id,
+        'repository_id' => $import->repository_id,
+        'local_workspace_id' => $import->local_workspace_id,
+        'run_id' => $import->run_id,
+        'status' => 'active',
+        'base_snapshot_id' => $context['snapshot_id'],
+        'new_snapshot_id' => $context['snapshot_id'],
+        'branch' => 'main',
+        'base_sha' => 'abc123',
+        'head_sha' => 'abc123',
+        'dirty_status' => 'clean',
+        'changed_file_count' => 1,
+        'risk_level' => 'low',
+        'started_at' => now(),
+        'finished_at' => null,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    (new ImportGraphToNeo4j('delta', $deltaId))->failed($caught);
+
+    expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed')
+        ->and(DB::table('delta_syncs')->where('id', $deltaId)->value('status'))->toBe('failed')
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.import_failed')->exists())->toBeTrue();
+});
+
 it('marks the import failed when Neo4j import fails', function () {
     $context = createGraphImportContext();
 
@@ -308,6 +558,62 @@ it('does not purge an existing projection when the stored graph artifact is miss
     expect($result['failures'][0]['message'])->toContain('Stored graph artifact is not readable');
     expect($client->commands)->toBe([]);
 });
+
+/**
+ * @return array<string, string>
+ */
+function canonicalGraphForImportContext(array $context): array
+{
+    $projectId = DB::table('artifacts')->where('id', $context['artifact_id'])->value('project_id');
+    $canonical = app(CanonicalGraphRepository::class)->findByIdentity(
+        $projectId,
+        'repository',
+        $context['repository_id'],
+        'legacy_artifact',
+        $context['artifact_id'],
+    );
+    expect($canonical)->not->toBeNull();
+
+    return $canonical;
+}
+
+function makeGraphImportContextAffected(array $context): void
+{
+    $artifact = DB::table('artifacts')->where('id', $context['artifact_id'])->first();
+    $payload = json_decode(Storage::disk('local')->get($artifact->storage_path), true, flags: JSON_THROW_ON_ERROR);
+    $payload['graph_mode'] = 'affected_subgraph';
+    $payload['base_snapshot_id'] = $context['snapshot_id'];
+    $payload['nodes_upserted'] = $payload['nodes'];
+    $payload['relationships_upserted'] = $payload['relationships'];
+    $payload['nodes_deleted'] = [];
+    $payload['relationships_deleted'] = [];
+    $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
+    Storage::disk('local')->put($artifact->storage_path, $encoded);
+    DB::table('artifacts')->where('id', $context['artifact_id'])->update(['sha256' => hash('sha256', $encoded)]);
+}
+
+function canonicalProjectionFailure(array $context): Throwable
+{
+    $client = new class implements Neo4jClient
+    {
+        public function run(string $cypher, array $params = []): mixed
+        {
+            if (str_contains($cypher, 'CanonicalGraphVersion')) {
+                throw new RuntimeException('simulated canonical projection failure');
+            }
+
+            return [];
+        }
+    };
+
+    try {
+        app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client, 'fake', false);
+    } catch (Throwable $exception) {
+        return $exception;
+    }
+
+    throw new RuntimeException('Expected the canonical projection to fail.');
+}
 
 /**
  * @return array<string, string>
