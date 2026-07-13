@@ -3,6 +3,8 @@
 namespace App\Services\Graph;
 
 use App\Services\Neo4j\Neo4jClient;
+use Laudis\Neo4j\ParameterHelper;
+use Laudis\Neo4j\Types\CypherMap;
 use RuntimeException;
 
 class Neo4jCanonicalGraphProjector
@@ -12,18 +14,20 @@ class Neo4jCanonicalGraphProjector
     /** @return array{nodes:int, relationships:int} */
     public function project(array $graph, object $projection, Neo4jClient $client): array
     {
+        $this->assertPropertyBagsAreMaps($graph);
+
         $scope = ['graph_version' => $projection->graph_version, 'project_id' => $projection->project_id, 'source_scope_type' => $projection->source_scope_type, 'source_scope_id' => $projection->source_scope_id];
         $client->run('CREATE INDEX canonical_node_version_external IF NOT EXISTS FOR (n:CanonicalGraphNode) ON (n.graph_version, n.external_id)');
         $client->run('CREATE INDEX canonical_version_identity IF NOT EXISTS FOR (v:CanonicalGraphVersion) ON (v.graph_version)');
         $client->run('CALL db.awaitIndexes(300)');
-        $client->run('MERGE (v:CanonicalGraphVersion {graph_version: $graph_version}) ON CREATE SET v.current = false SET v += $metadata, v.status = \'projecting\'', $scope + ['metadata' => $scope + ['snapshot_id' => $projection->snapshot_id ?? null]]);
+        $client->run('MERGE (v:CanonicalGraphVersion {graph_version: $graph_version}) ON CREATE SET v.current = false SET v += $metadata, v.status = \'projecting\'', $scope + ['metadata' => $this->boltPropertyMap($scope + ['snapshot_id' => $projection->snapshot_id ?? null])]);
 
         foreach (array_chunk($graph['nodes'], self::BATCH_SIZE) as $batch) {
-            $client->run('UNWIND $nodes AS node MERGE (n:CanonicalGraphNode {graph_version: $graph_version, external_id: node.id}) SET n += node.properties, n.graph_version = $graph_version, n.external_id = node.id, n.labels = node.labels, n.project_id = $project_id, n.source_scope_type = $source_scope_type, n.source_scope_id = $source_scope_id', $scope + ['nodes' => $batch]);
+            $client->run('UNWIND $nodes AS node MERGE (n:CanonicalGraphNode {graph_version: $graph_version, external_id: node.id}) SET n += node.properties, n.graph_version = $graph_version, n.external_id = node.id, n.labels = node.labels, n.project_id = $project_id, n.source_scope_type = $source_scope_type, n.source_scope_id = $source_scope_id', $scope + ['nodes' => $this->withBoltPropertyMaps($batch)]);
         }
         foreach ($this->relationshipsByType($graph['relationships']) as $type => $relationships) {
             foreach (array_chunk($relationships, self::BATCH_SIZE) as $batch) {
-                $client->run("UNWIND \$relationships AS relationship MATCH (source:CanonicalGraphNode {graph_version: \$graph_version, external_id: relationship.source_id}) MATCH (target:CanonicalGraphNode {graph_version: \$graph_version, external_id: relationship.target_id}) MERGE (source)-[r:{$type} {graph_version: \$graph_version, external_id: relationship.id}]->(target) SET r += relationship.properties, r.graph_version = \$graph_version, r.external_id = relationship.id, r.project_id = \$project_id, r.source_scope_type = \$source_scope_type, r.source_scope_id = \$source_scope_id", $scope + ['relationships' => $batch]);
+                $client->run("UNWIND \$relationships AS relationship MATCH (source:CanonicalGraphNode {graph_version: \$graph_version, external_id: relationship.source_id}) MATCH (target:CanonicalGraphNode {graph_version: \$graph_version, external_id: relationship.target_id}) MERGE (source)-[r:{$type} {graph_version: \$graph_version, external_id: relationship.id}]->(target) SET r += relationship.properties, r.graph_version = \$graph_version, r.external_id = relationship.id, r.project_id = \$project_id, r.source_scope_type = \$source_scope_type, r.source_scope_id = \$source_scope_id", $scope + ['relationships' => $this->withBoltPropertyMaps($batch)]);
             }
         }
 
@@ -59,6 +63,45 @@ class Neo4jCanonicalGraphProjector
         }
 
         return $groups;
+    }
+
+    private function assertPropertyBagsAreMaps(array $graph): void
+    {
+        foreach (['nodes' => 'Node', 'relationships' => 'Relationship'] as $collection => $label) {
+            foreach ($graph[$collection] ?? [] as $item) {
+                $properties = $item['properties'] ?? [];
+
+                if (! is_array($properties) || ($properties !== [] && array_is_list($properties))) {
+                    throw new RuntimeException("{$label} property bag must be a map.");
+                }
+            }
+        }
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, mixed>>
+     */
+    private function withBoltPropertyMaps(array $rows): array
+    {
+        foreach ($rows as &$row) {
+            $row['properties'] = $this->boltPropertyMap($row['properties'] ?? []);
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
+     * Empty PHP arrays are encoded as Bolt lists by Laudis. An explicit
+     * CypherMap preserves the empty map required by Cypher's SET += operator.
+     *
+     * @param  array<string, mixed>  $properties
+     * @return array<string, mixed>|CypherMap<mixed>
+     */
+    private function boltPropertyMap(array $properties): array|CypherMap
+    {
+        return $properties === [] ? ParameterHelper::asMap([]) : $properties;
     }
 
     private function verificationValue(mixed $row, string $field): mixed

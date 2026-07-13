@@ -15,6 +15,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Laudis\Neo4j\Types\CypherMap;
 
 uses(RefreshDatabase::class);
 
@@ -53,6 +54,92 @@ it('projects batches with project scope and graph version', function () {
         expect($command['params'])->toMatchArray(['project_id' => $agent['project_id'], 'source_scope_type' => 'workspace_binding', 'source_scope_id' => $bindingId, 'graph_version' => $projection->graph_version]);
     }
 });
+
+it('sends canonical property bags as Bolt maps without changing their scalar values', function () {
+    $graph = [
+        'nodes' => [
+            ['id' => 'file:empty.php', 'labels' => ['File'], 'properties' => []],
+            ['id' => 'class:Typed', 'labels' => ['Class'], 'properties' => [
+                'name' => 'Typed',
+                'line' => 17,
+                'score' => 0.75,
+                'indexed' => true,
+                'nullable' => null,
+            ]],
+        ],
+        'relationships' => [
+            ['id' => 'declares:empty', 'type' => 'DECLARES', 'source_id' => 'file:empty.php', 'target_id' => 'class:Typed', 'properties' => []],
+            ['id' => 'declares:typed', 'type' => 'DECLARES', 'source_id' => 'file:empty.php', 'target_id' => 'class:Typed', 'properties' => [
+                'line' => 17,
+                'inferred' => false,
+            ]],
+        ],
+    ];
+    $projection = (object) [
+        'graph_version' => 'graph-test',
+        'project_id' => 'project-test',
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => 'scope-test',
+        'snapshot_id' => null,
+    ];
+    $client = new class implements Neo4jClient
+    {
+        public array $commands = [];
+
+        public function run(string $cypher, array $parameters = []): mixed
+        {
+            $this->commands[] = ['cypher' => $cypher, 'params' => $parameters];
+
+            return str_contains($cypher, 'RETURN nodes')
+                ? [['nodes' => 2, 'relationships' => 2]]
+                : [];
+        }
+    };
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+
+    $nodes = collect($client->commands)->first(fn (array $command) => str_contains($command['cypher'], 'UNWIND $nodes'))['params']['nodes'];
+    $relationships = collect($client->commands)->first(fn (array $command) => str_contains($command['cypher'], 'UNWIND $relationships'))['params']['relationships'];
+
+    expect($nodes[0]['properties'])->toBeInstanceOf(CypherMap::class)
+        ->and($relationships[0]['properties'])->toBeInstanceOf(CypherMap::class)
+        ->and($nodes[1]['properties'])->toBe([
+            'name' => 'Typed',
+            'line' => 17,
+            'score' => 0.75,
+            'indexed' => true,
+            'nullable' => null,
+        ])
+        ->and($relationships[1]['properties'])->toBe(['line' => 17, 'inferred' => false]);
+});
+
+it('rejects list-shaped property bags before issuing projection commands', function (string $collection) {
+    $graph = [
+        'nodes' => [
+            ['id' => 'file:a.php', 'labels' => ['File'], 'properties' => []],
+            ['id' => 'class:A', 'labels' => ['Class'], 'properties' => []],
+        ],
+        'relationships' => [
+            ['id' => 'declares:a', 'type' => 'DECLARES', 'source_id' => 'file:a.php', 'target_id' => 'class:A', 'properties' => []],
+        ],
+    ];
+    $graph[$collection][0]['properties'] = ['not', 'a', 'map'];
+    $projection = (object) [
+        'graph_version' => 'graph-invalid',
+        'project_id' => 'project-test',
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => 'scope-test',
+        'snapshot_id' => null,
+    ];
+    $client = new FakeNeo4jClient;
+
+    expect(fn () => app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client))
+        ->toThrow(RuntimeException::class, 'property bag must be a map')
+        ->and($client->commands)->toBe([]);
+})->with([
+    'node properties' => 'nodes',
+    'relationship properties' => 'relationships',
+]);
 
 it('refuses to switch current when verification is empty or mismatched', function (array $verification) {
     Bus::fake();
