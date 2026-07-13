@@ -172,7 +172,10 @@ it('bounds compressed artifact decompression and validates declared bytes', func
         'artifact_compressed_bytes' => strlen($compressed),
     ], hadesHardeningHeaders($agent['agent_token']))
         ->assertStatus(413)
-        ->assertJsonPath('error.code', 'artifact_uncompressed_too_large');
+        ->assertExactJson(['error' => [
+            'code' => 'artifact_uncompressed_too_large',
+            'message' => 'Artifact exceeds the uncompressed byte limit.',
+        ]]);
 
     expect(DB::table('hades_agent_artifacts')->count())->toBe(0);
 });

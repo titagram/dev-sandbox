@@ -261,6 +261,22 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "Artifact payload exceeds the compressed or uncompressed upload limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactUploadTooLargeErrorResponse"
+                },
+                "example": {
+                  "error": {
+                    "code": "artifact_uncompressed_too_large",
+                    "message": "Artifact exceeds the uncompressed byte limit."
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -841,6 +857,36 @@
                   "artifact_compressed_size_mismatch",
                   "artifact_uncompressed_size_mismatch",
                   "artifact_uncompressed_hash_mismatch"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "ArtifactUploadTooLargeErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "artifact_too_large",
+                  "artifact_compressed_too_large",
+                  "artifact_uncompressed_too_large"
                 ]
               },
               "message": {

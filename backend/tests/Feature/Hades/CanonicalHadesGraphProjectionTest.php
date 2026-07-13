@@ -310,6 +310,11 @@ it('documents every controller artifact 422 code while keeping 413 codes separat
     $artifactError = $spec['components']['schemas']['ArtifactUploadErrorResponse'];
     $documented = $artifactError['properties']['error']['properties']['code']['enum'];
     sort($documented);
+    expect($spec['components']['schemas'])->toHaveKey('ArtifactUploadTooLargeErrorResponse')
+        ->and($spec['paths']['/api/hades/v1/artifacts']['post']['responses'])->toHaveKey('413');
+    $tooLargeError = $spec['components']['schemas']['ArtifactUploadTooLargeErrorResponse'];
+    $documentedTooLarge = $tooLargeError['properties']['error']['properties']['code']['enum'];
+    sort($documentedTooLarge);
 
     $source = file_get_contents(app_path('Http/Controllers/Hades/ArtifactController.php'));
     preg_match_all(
@@ -328,13 +333,19 @@ it('documents every controller artifact 422 code while keeping 413 codes separat
     sort($tooLarge);
 
     expect($documented)->toBe($unprocessable)
-        ->and($tooLarge)->toBe([
-            'artifact_compressed_too_large',
-            'artifact_too_large',
-            'artifact_uncompressed_too_large',
-        ])->and(array_intersect($documented, $tooLarge))->toBe([])
+        ->and($documentedTooLarge)->toBe($tooLarge)
+        ->and(array_intersect($documented, $documentedTooLarge))->toBe([])
         ->and($artifactError['additionalProperties'])->toBeFalse()
-        ->and($artifactError['properties']['error']['additionalProperties'])->toBeFalse();
+        ->and($artifactError['properties']['error']['additionalProperties'])->toBeFalse()
+        ->and($tooLargeError['additionalProperties'])->toBeFalse()
+        ->and($tooLargeError['properties']['error']['additionalProperties'])->toBeFalse()
+        ->and($spec['paths']['/api/hades/v1/artifacts']['post']['responses']['413']['content']['application/json']['schema']['$ref'])
+        ->toBe('#/components/schemas/ArtifactUploadTooLargeErrorResponse')
+        ->and($spec['paths']['/api/hades/v1/artifacts']['post']['responses']['413']['content']['application/json']['example'])
+        ->toBe(['error' => [
+            'code' => 'artifact_uncompressed_too_large',
+            'message' => 'Artifact exceeds the uncompressed byte limit.',
+        ]]);
 });
 
 it('rejects malformed explicit graph contracts before dedupe and every upload side effect', function () {
