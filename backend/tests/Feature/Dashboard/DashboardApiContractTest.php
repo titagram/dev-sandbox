@@ -269,7 +269,7 @@ it('describes the latest canonical artifact even when it is not projected and le
     $payload = json_encode([
         'graph_contract' => [
             'version' => 'hades.graph_artifact.v1',
-            'extractor' => ['name' => 'hades-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full'],
+            'extractor' => ['name' => 'hades-native-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full', 'fallback_reason' => null],
             'coverage' => ['languages' => ['php'], 'files_total' => 0, 'files_analyzed' => 0, 'files_failed' => 0],
             'source' => ['branch' => 'main', 'head_commit' => str_repeat('b', 40)],
         ],
@@ -1314,7 +1314,7 @@ function createDashboardCanonicalHadesGraph(
     $artifact = [
         'graph_contract' => [
             'version' => 'hades.graph_artifact.v1',
-            'extractor' => ['name' => 'hades-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full'],
+            'extractor' => ['name' => 'hades-native-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full', 'fallback_reason' => null],
             'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
             'source' => ['branch' => 'main', 'head_commit' => str_repeat('a', 40)],
         ],

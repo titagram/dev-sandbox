@@ -43,6 +43,17 @@ pre-contract rows are adapted at read time with `mode=legacy_adapter`,
 `quality=partial`, and `fallback_reason=missing_contract_metadata`; stored
 payloads are not rewritten.
 
+When `graph_contract` is present, it is explicit canonical input and the
+backend validates it before creating or running a projection. The four top
+level keys above are required. `extractor` must contain exactly `name`,
+`version`, `mode`, `quality`, and nullable `fallback_reason`; `coverage` must
+contain exactly `languages`, `files_total`, `files_analyzed`, and
+`files_failed`; `source` must contain exactly nullable `branch` and
+`head_commit`. Names, versions, and languages are non-empty strings, coverage
+counts are non-negative integers, and `mode` is one of `native`, `graphify`,
+`fallback`, or `legacy_adapter`. An explicit malformed contract is rejected;
+it is never silently downgraded to the legacy adapter.
+
 ## Source resolution and read compatibility
 
 Every canonical lookup uses `project_id` and exactly one source scope:
@@ -64,10 +75,12 @@ appropriate to the endpoint. Additive fields must not become new required
 request fields.
 
 Dashboard multi-scope responses are bounded and expose only metadata until a
-scope is selected. The preview is data-minimized: identifiers are deterministic
-pseudonyms, node-edge references remain coherent, and local paths or
-path-derived identifiers, labels, source refs, and edge endpoints are not
-returned. Preview aliases are presentation values, not canonical graph ids.
+scope is selected. The selected preview is data-minimized: raw/private
+identifiers, labels, source refs, local paths, and raw edge endpoints are never
+returned. Nodes may contain schema-approved safe presentation labels; node ids
+and returned edge endpoints are deterministic pseudonyms, so node-edge
+references remain coherent without exposing canonical identities. Preview
+aliases are presentation values, not canonical graph ids.
 
 ## Projection lifecycle and concurrency
 
@@ -78,11 +91,13 @@ and checksum and scopes every Neo4j node and relationship.
 Queue workers claim `queued` rows conditionally. Reconciliation inserts missing
 rows or retries final `failed` rows but does not steal `queued` or `projecting`
 work. A forced synchronous rebuild can claim only an inactive row with the same
-project, scope, artifact, checksum, and version. The replacement is marked
-`ready` only after projected node and relationship counts verify atomically;
-then the previous `ready` row in that scope becomes `stale`. If projection
-fails, the previous verified projection stays current. Persisted failure codes
-are bounded and never contain raw exception text.
+project, scope, artifact, checksum, and version. That claimed row can move from
+`ready` to `projecting` and then to `failed` if verification fails. Neo4j keeps
+the previously verified current marker queryable during that failure; operators
+must retry or reconcile the failed PostgreSQL lifecycle row. A successful
+replacement is marked `ready` only after projected node and relationship counts
+verify atomically; then the previous `ready` row in that scope becomes `stale`.
+Persisted failure codes are bounded and never contain raw exception text.
 
 ## Reconcile and rebuild
 
@@ -112,23 +127,29 @@ Laravel queue before expecting it to become `ready`.
 
 The historical command without `--reconcile` remains available for legacy
 snapshot artifacts and accepts `--repository`, `--snapshot`, and `--mode`.
-Those options are incompatible with canonical reconciliation. This preserves
-Genesis events and legacy behavior while canonical readers share the new
-source-scoped service.
+This path performs a forceful rebuild rather than a read-only preview, even when
+`--mode=fake`; it has no `--dry-run` and requires the same backup, verification,
+test, and explicit human gate as any non-dry canonical reconciliation. Those
+options are incompatible with canonical reconciliation. This preserves Genesis
+events and legacy behavior while canonical readers share the new source-scoped
+service.
 
 ## Migration, backup, and verification order
 
-Before any live migration or non-dry reconciliation:
+Before any live migration, non-dry canonical reconciliation, or legacy rebuild:
 
 1. Create a PostgreSQL backup outside the application host's mutable data path.
 2. Verify the archive can be listed/restored and record users, projects,
    canonical artifacts, and projection row counts.
 3. Run the SQLite test suite and Pint, then inspect `php artisan migrate:status`.
-4. Apply the additive migration with explicit human authorization.
-5. Run project-wide or scoped `--dry-run`; stop on a nonzero `failed` count.
-6. Run the matching non-dry command, drain the queue, and verify one `ready`
+4. Present the backup evidence, test results, exact command, and affected scope
+   to a human. Do not continue without explicit authorization.
+5. Apply the additive migration only when it is needed and authorized.
+6. For canonical work, run project-wide or scoped `--dry-run`; stop on a
+   nonzero `failed` count. The legacy path has no dry-run and remains gated.
+7. Run the matching authorized non-dry command, drain the queue, and verify one `ready`
    projection per selected source with nonzero expected counts.
-7. Compare Hades and plugin reads: both must report the backend-selected graph
+8. Compare Hades and plugin reads: both must report the backend-selected graph
    version for the same source. Confirm no authentication 401 regression.
 
 Do not restore the backup after a successful additive migration. Restore is an
@@ -137,6 +158,15 @@ after a restore, rerun the required development user seeder before declaring
 the environment usable. Neo4j can be dropped and reconstructed from canonical
 artifacts, but PostgreSQL artifacts and projection lifecycle state must be
 protected.
+
+Deploys must retain both `docker-compose.devboard.yaml` and
+`docker-compose.devboard.traefik.yaml` (plus an architecture override when the
+host requires it). Never recreate the app from a minimal/base-only Compose
+invocation: preserve `traefik_default`, router priorities, redirect and Basic
+Auth middleware, and the distinct frontend/API/Hades/plugin routes. Smoke the
+root both without credentials (Basic Auth challenge) and with credentials,
+then the login flow, Hades health/auth, and a plugin endpoint before declaring
+the deployment healthy.
 
 The React frontend cutover and complete removal of Inertia are a separate
 delivery tranche. They are not implemented or deployed by this runbook.

@@ -2,9 +2,32 @@
 
 use App\Services\Graph\CanonicalGraphNormalizer;
 
+function unitCanonicalGraphContract(array $overrides = []): array
+{
+    return array_replace_recursive([
+        'version' => 'hades.graph_artifact.v1',
+        'extractor' => [
+            'name' => 'hades-native-php',
+            'version' => '1',
+            'mode' => 'native',
+            'quality' => 'full',
+            'fallback_reason' => null,
+        ],
+        'coverage' => [
+            'languages' => ['php'],
+            'files_total' => 1,
+            'files_analyzed' => 1,
+            'files_failed' => 0,
+        ],
+        'source' => ['branch' => 'main', 'head_commit' => str_repeat('a', 40)],
+    ], $overrides);
+}
+
 it('normalizes legacy graph nodes and relationships while preserving graphify data', function () {
     $payload = [
-        'graph_contract' => ['version' => 'hades.graph_artifact.v1', 'producer' => 'graphify'],
+        'graph_contract' => unitCanonicalGraphContract([
+            'extractor' => ['name' => 'graphify', 'mode' => 'graphify'],
+        ]),
         'nodes' => [[
             'id' => 'function:App\\health',
             'labels' => ['Symbol', 'Function', 'PublicApi'],
@@ -43,7 +66,7 @@ it('normalizes legacy graph nodes and relationships while preserving graphify da
 
 it('normalizes Hades symbols and edges into the canonical graph shape', function () {
     $normalized = (new CanonicalGraphNormalizer)->normalize([
-        'graph_contract' => ['version' => 'hades.graph_artifact.v1'],
+        'graph_contract' => unitCanonicalGraphContract(),
         'symbols' => [[
             'symbol_id' => 'method:User::save', 'name' => 'save',
             'kind' => 'method', 'path' => 'app/User.php',
@@ -65,14 +88,14 @@ it('normalizes Hades symbols and edges into the canonical graph shape', function
 
 it('rejects nodes with blank identifiers', function () {
     (new CanonicalGraphNormalizer)->normalize([
-        'graph_contract' => ['version' => 'hades.graph_artifact.v1'],
+        'graph_contract' => unitCanonicalGraphContract(),
         'nodes' => [['id' => '   ', 'kind' => 'class']],
     ], []);
 })->throws(InvalidArgumentException::class, 'Canonical graph node id is missing.');
 
 it('rejects edges with blank endpoints', function () {
     (new CanonicalGraphNormalizer)->normalize([
-        'graph_contract' => ['version' => 'hades.graph_artifact.v1'],
+        'graph_contract' => unitCanonicalGraphContract(),
         'edges' => [['kind' => 'calls', 'source' => 'node:a', 'target' => '']],
     ], []);
 })->throws(InvalidArgumentException::class, 'Canonical graph edge endpoints are missing.');
@@ -83,3 +106,44 @@ it('rejects missing and unsupported graph contracts', function (array $payload) 
     'missing contract' => [[]],
     'unsupported contract version' => [['graph_contract' => ['version' => 'hades.graph_artifact.v2']]],
 ])->throws(InvalidArgumentException::class, 'Canonical graph contract is missing or unsupported.');
+
+it('rejects malformed explicit canonical graph contracts before graph normalization', function (string $mutation, string $field) {
+    $contract = unitCanonicalGraphContract();
+    if ($mutation === 'missing_extractor') {
+        unset($contract['extractor']);
+    } elseif ($mutation === 'missing_fallback_reason') {
+        unset($contract['extractor']['fallback_reason']);
+    } elseif ($mutation === 'invalid_mode') {
+        $contract['extractor']['mode'] = 'full';
+    } elseif ($mutation === 'invalid_quality') {
+        $contract['extractor']['quality'] = 'complete';
+    } elseif ($mutation === 'invalid_name_type') {
+        $contract['extractor']['name'] = 123;
+    } elseif ($mutation === 'invalid_count_type') {
+        $contract['coverage']['files_total'] = '1';
+    } elseif ($mutation === 'invalid_language_type') {
+        $contract['coverage']['languages'] = ['php', 123];
+    } elseif ($mutation === 'missing_head_commit') {
+        unset($contract['source']['head_commit']);
+    } elseif ($mutation === 'invalid_branch_type') {
+        $contract['source']['branch'] = ['main'];
+    } elseif ($mutation === 'unexpected_extractor_key') {
+        $contract['extractor']['producer'] = 'shadow';
+    }
+
+    expect(fn () => (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => $contract,
+        'nodes' => [['id' => 'class:ValidIdentity']],
+    ], []))->toThrow(InvalidArgumentException::class, "Canonical graph contract is malformed at {$field}.");
+})->with([
+    'missing extractor' => ['missing_extractor', 'graph_contract'],
+    'missing fallback reason' => ['missing_fallback_reason', 'extractor'],
+    'invalid extractor mode' => ['invalid_mode', 'extractor.mode'],
+    'invalid extractor quality' => ['invalid_quality', 'extractor.quality'],
+    'invalid extractor name type' => ['invalid_name_type', 'extractor.name'],
+    'invalid coverage count type' => ['invalid_count_type', 'coverage.files_total'],
+    'invalid coverage language type' => ['invalid_language_type', 'coverage.languages'],
+    'missing source head commit' => ['missing_head_commit', 'source'],
+    'invalid source branch type' => ['invalid_branch_type', 'source.branch'],
+    'unexpected extractor key' => ['unexpected_extractor_key', 'extractor'],
+]);

@@ -382,7 +382,7 @@ function canonicalProjectionUpload(array $agent, string $bindingId): array
 {
     return ['project_id' => $agent['project_id'], 'workspace_binding_id' => $bindingId, 'schema' => 'hades.code_graph.v1', 'artifact' => [
         'schema' => 'hades.code_graph.v1', 'language' => 'php',
-        'graph_contract' => ['version' => 'hades.graph_artifact.v1', 'extractor' => ['name' => 'test', 'version' => '1', 'mode' => 'full', 'quality' => 'complete'], 'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0], 'source' => ['branch' => 'main', 'head_commit' => str_repeat('a', 40)]],
+        'graph_contract' => ['version' => 'hades.graph_artifact.v1', 'extractor' => ['name' => 'hades-native-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full', 'fallback_reason' => null], 'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0], 'source' => ['branch' => 'main', 'head_commit' => str_repeat('a', 40)]],
         'nodes' => [['id' => 'file:a.php', 'kind' => 'file'], ['id' => 'class:A', 'kind' => 'class']],
         'relationships' => [['id' => 'declares:a', 'type' => 'DECLARES', 'source_id' => 'file:a.php', 'target_id' => 'class:A']],
     ]];

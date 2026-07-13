@@ -316,8 +316,28 @@
           "401": {
             "$ref": "#/components/responses/Unauthorized"
           },
+          "403": {
+            "description": "project_mismatch: the authenticated Hades agent belongs to another project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HadesStructuredErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "The exact source scope is unavailable or has no ready canonical projection. graph_projection_not_ready is not an empty graph.",
+            "description": "workspace_binding_not_found, graph_scope_not_found, graph_projection_not_ready, or query_error. A not-ready projection is not an empty graph.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HadesStructuredErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "workspace_binding_unlinked: the binding exists but is not linked.",
             "content": {
               "application/json": {
                 "schema": {
@@ -783,10 +803,12 @@
             ],
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "version": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "mode": {
                 "type": "string",
@@ -810,6 +832,7 @@
                   "string",
                   "null"
                 ],
+                "minLength": 1,
                 "description": "Bounded machine-readable reason. Graphify failures use graphify_failed:<ExceptionClass>; raw exception messages and absolute paths are forbidden."
               }
             },
@@ -827,7 +850,8 @@
               "languages": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "files_total": {
@@ -856,13 +880,15 @@
                 "type": [
                   "string",
                   "null"
-                ]
+                ],
+                "minLength": 1
               },
               "head_commit": {
                 "type": [
                   "string",
                   "null"
-                ]
+                ],
+                "minLength": 1
               }
             },
             "additionalProperties": false
@@ -876,14 +902,27 @@
           "protocol_version",
           "project_id",
           "workspace_binding_id",
+          "version",
+          "etag",
           "projection_id",
           "artifact_id",
           "schema",
           "graph_version",
+          "head_commit",
+          "start",
+          "direction",
+          "max_depth",
+          "limit",
           "quality",
+          "count",
+          "edge_count",
+          "truncated",
+          "match_fields",
+          "freshness",
           "nodes",
           "edges",
-          "provenance"
+          "provenance",
+          "server_time"
         ],
         "properties": {
           "protocol_version": {
@@ -894,6 +933,13 @@
             "type": "string"
           },
           "workspace_binding_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "Traversal result version derived from graph_version and bounded query inputs."
+          },
+          "etag": {
             "type": "string"
           },
           "projection_id": {
@@ -926,6 +972,48 @@
               "partial",
               "inventory_only"
             ]
+          },
+          "start": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "any",
+              "out",
+              "in"
+            ]
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "edge_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "match_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "freshness": {
+            "type": "object",
+            "additionalProperties": true
           },
           "nodes": {
             "type": "array",
@@ -964,6 +1052,10 @@
               }
             },
             "additionalProperties": false
+          },
+          "server_time": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "additionalProperties": true
@@ -984,6 +1076,11 @@
               "code": {
                 "type": "string",
                 "examples": [
+                  "project_mismatch",
+                  "workspace_binding_not_found",
+                  "workspace_binding_unlinked",
+                  "graph_scope_not_found",
+                  "query_error",
                   "graph_projection_not_ready"
                 ]
               },
