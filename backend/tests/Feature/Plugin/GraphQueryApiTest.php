@@ -463,7 +463,7 @@ it('returns canonical projection metadata and rejects a scope from another proje
     expect($isolated['found'])->toBeFalse()->and($isolated['reason'])->toBe('graph_scope_not_found');
 });
 
-it('emits version-isolated Cypher for every traversal direction', function (string $direction, string $pattern) {
+it('emits relationship-type agnostic version-isolated Cypher for every traversal direction', function (string $direction, string $pattern) {
     $fakeClient = new FakeNeo4jClient;
     $service = new CanonicalGraphQueryService($fakeClient);
     $projectId = graphQueryProjectId();
@@ -483,9 +483,9 @@ it('emits version-isolated Cypher for every traversal direction', function (stri
         ->and($cypher)->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
         ->and($fakeClient->commands[0]['params']['graph_version'])->toStartWith('graph-version-');
 })->with([
-    'out' => ['out', '-[:CALLS*1..3]->'],
-    'in' => ['in', '<-[:CALLS*1..3]-'],
-    'any' => ['any', '-[:CALLS*1..3]-'],
+    'out' => ['out', '-[*1..3]->'],
+    'in' => ['in', '<-[*1..3]-'],
+    'any' => ['any', '-[*1..3]-'],
 ]);
 
 it('returns path relationships and constrains every path node and edge to the graph version', function () {
@@ -535,7 +535,7 @@ it('includes an isolated matching traversal start without weakening graph versio
 
     $command = $fakeClient->commands[0];
     expect($command['cypher'])
-        ->toContain('OPTIONAL MATCH p=(start)-[:CALLS*1..2]->(node:CanonicalGraphNode {graph_version: $graph_version})')
+        ->toContain('OPTIONAL MATCH p=(start)-[*1..2]->(node:CanonicalGraphNode {graph_version: $graph_version})')
         ->toContain('WITH start, p ORDER BY start.external_id, length(p)')
         ->toContain('CASE WHEN p IS NULL THEN [start] ELSE nodes(p) END')
         ->toContain('CASE WHEN p IS NULL THEN [] ELSE [r IN relationships(p) | properties(r) + {source_id: startNode(r).external_id, target_id: endNode(r).external_id}] END')

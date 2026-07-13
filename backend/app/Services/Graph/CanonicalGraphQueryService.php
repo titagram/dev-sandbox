@@ -100,9 +100,9 @@ class CanonicalGraphQueryService
         $depth = max(1, min(3, (int) ($params['max_depth'] ?? 2)));
         $direction = (string) ($params['direction'] ?? 'any');
         $pattern = match ($direction) {
-            'in' => '<-[:CALLS*1..'.$depth.']-',
-            'out' => '-[:CALLS*1..'.$depth.']->',
-            default => '-[:CALLS*1..'.$depth.']-',
+            'in' => '<-[*1..'.$depth.']-',
+            'out' => '-[*1..'.$depth.']->',
+            default => '-[*1..'.$depth.']-',
         };
 
         $limit = max(1, min(50, (int) ($params['limit'] ?? 20)));

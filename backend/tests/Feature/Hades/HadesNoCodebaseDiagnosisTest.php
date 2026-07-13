@@ -1,13 +1,24 @@
 <?php
 
+use App\Jobs\ProjectCanonicalGraphToNeo4j;
 use App\Models\User;
+use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\CanonicalGraphQueryService;
+use App\Services\Graph\CanonicalGraphRepository;
+use App\Services\Graph\Neo4jCanonicalGraphProjector;
+use App\Services\Neo4j\Neo4jClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 
+beforeEach(fn () => Bus::fake([ProjectCanonicalGraphToNeo4j::class]));
+
 it('supports precise source-free diagnosis from current evidence graph and source slices', function () {
+    $neo4j = new HadesNoCodebaseNeo4jClient;
+    $this->app->bind(CanonicalGraphQueryService::class, fn () => new CanonicalGraphQueryService($neo4j));
     $agent = hadesNoCodebaseRegisteredAgent();
     $binding = hadesNoCodebaseWorkspaceBinding($agent);
     $headers = hadesNoCodebaseHeaders($agent['agent_token']);
@@ -25,6 +36,8 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
     ], $headers)
         ->assertCreated()
         ->json('artifact.id');
+
+    hadesNoCodebaseProjectGraph($projectId, $bindingId, $artifactId, $neo4j);
 
     $bugReportId = $this->postJson('/api/hades/v1/bug-reports', [
         'project_id' => $projectId,
@@ -152,7 +165,9 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
         ->json();
 
     expect(json_encode($graph['nodes'], JSON_THROW_ON_ERROR))->toContain('OrderController')
-        ->and(json_encode($graph['edges'], JSON_THROW_ON_ERROR))->toContain('handles');
+        ->and(json_encode($graph['edges'], JSON_THROW_ON_ERROR))->toContain('HANDLES')
+        ->and($graph['artifact_id'])->toBe($artifactId)
+        ->and(DB::table('canonical_graph_projections')->where('artifact_id', $artifactId)->value('status'))->toBe('ready');
 
     $this->getJson('/api/hades/v1/source-slices?'.http_build_query([
         'project_id' => $projectId,
@@ -251,6 +266,48 @@ it('supports precise source-free diagnosis from current evidence graph and sourc
         ->assertOk()
         ->assertJsonPath('items.0.id', $memoryId)
         ->assertJsonPath('items.0.kind', 'resolved_bug');
+});
+
+it('does not traverse an artifact-only scope or select another ready workspace projection', function () {
+    $neo4j = new HadesNoCodebaseNeo4jClient;
+    $this->app->bind(CanonicalGraphQueryService::class, fn () => new CanonicalGraphQueryService($neo4j));
+    $agent = hadesNoCodebaseRegisteredAgent();
+    $artifactOnlyBinding = hadesNoCodebaseWorkspaceBinding($agent);
+    $readyBinding = hadesNoCodebaseWorkspaceBinding($agent);
+    $headers = hadesNoCodebaseHeaders($agent['agent_token']);
+    $head = str_repeat('f', 40);
+
+    $artifactOnlyId = $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $artifactOnlyBinding['workspace_binding_id'],
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => hadesNoCodebaseGraphArtifact($head),
+        'truncated' => false,
+        'redactions' => 0,
+    ], $headers)->assertCreated()->json('artifact.id');
+
+    $readyArtifactId = $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $readyBinding['workspace_binding_id'],
+        'schema' => 'hades.php_graph.v1',
+        'artifact' => hadesNoCodebaseGraphArtifact($head),
+        'truncated' => false,
+        'redactions' => 0,
+    ], $headers)->assertCreated()->json('artifact.id');
+    hadesNoCodebaseProjectGraph($agent['project_id'], $readyBinding['workspace_binding_id'], $readyArtifactId, $neo4j);
+    $commandsBeforeRequest = count($neo4j->commands);
+
+    $this->getJson('/api/hades/v1/graph/traverse?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $artifactOnlyBinding['workspace_binding_id'],
+        'start' => 'orders.show',
+    ]), $headers)
+        ->assertStatus(404)
+        ->assertJsonPath('error.code', 'graph_projection_not_ready');
+
+    expect(DB::table('canonical_graph_projections')->where('artifact_id', $artifactOnlyId)->value('status'))->toBe('queued')
+        ->and(DB::table('canonical_graph_projections')->where('artifact_id', $readyArtifactId)->value('status'))->toBe('ready')
+        ->and($neo4j->commands)->toHaveCount($commandsBeforeRequest);
 });
 
 it('rejects precise source-free diagnosis without a replayable causal pack', function () {
@@ -617,6 +674,23 @@ function hadesNoCodebaseGraphArtifact(string $head): array
     return [
         'schema' => 'hades.php_graph.v1',
         'head_commit' => $head,
+        'graph_contract' => [
+            'version' => 'hades.graph_artifact.v1',
+            'extractor' => [
+                'name' => 'hades-native-php',
+                'version' => '1',
+                'mode' => 'native',
+                'quality' => 'full',
+                'fallback_reason' => null,
+            ],
+            'coverage' => [
+                'languages' => ['php'],
+                'files_total' => 3,
+                'files_analyzed' => 3,
+                'files_failed' => 0,
+            ],
+            'source' => ['branch' => 'main', 'head_commit' => $head],
+        ],
         'raw_source_included' => false,
         'routes' => [
             [
@@ -656,4 +730,155 @@ function hadesNoCodebaseGraphArtifact(string $head): array
             ['kind' => 'reads_table', 'from' => 'App\\Services\\OrderService::findVisible', 'to' => 'table:orders'],
         ],
     ];
+}
+
+function hadesNoCodebaseProjectGraph(string $projectId, string $bindingId, string $artifactId, HadesNoCodebaseNeo4jClient $neo4j): void
+{
+    $repository = app(CanonicalGraphRepository::class);
+    $projections = app(CanonicalGraphProjectionService::class);
+    $graph = $repository->findByIdentity($projectId, 'workspace_binding', $bindingId, 'hades_agent_artifact', $artifactId);
+    $projection = DB::table('canonical_graph_projections')
+        ->where('project_id', $projectId)
+        ->where('source_scope_type', 'workspace_binding')
+        ->where('source_scope_id', $bindingId)
+        ->where('artifact_type', 'hades_agent_artifact')
+        ->where('artifact_id', $artifactId)
+        ->firstOrFail();
+
+    expect($graph)->not->toBeNull()
+        ->and($projections->claimForWorker($projection->id))->toBeTrue();
+    $counts = app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $neo4j);
+    expect($projections->markReady($projection->id, $counts['nodes'], $counts['relationships']))->toBeTrue();
+}
+
+/**
+ * Stateful projection/query fake: the projector writes the canonical graph and
+ * traversal reads only that projected state. It deliberately interprets the
+ * relationship selector in the generated Cypher, so tests cannot return graph
+ * rows which were never projected or which the query could not reach.
+ */
+class HadesNoCodebaseNeo4jClient implements Neo4jClient
+{
+    /** @var list<array{cypher: string, params: array<string, mixed>}> */
+    public array $commands = [];
+
+    /** @var array<string, array<string, array<string, mixed>>> */
+    private array $nodes = [];
+
+    /** @var array<string, list<array<string, mixed>>> */
+    private array $relationships = [];
+
+    public function run(string $cypher, array $params = []): mixed
+    {
+        $this->commands[] = compact('cypher', 'params');
+        $version = (string) ($params['graph_version'] ?? '');
+
+        if (str_contains($cypher, 'UNWIND $nodes AS node')) {
+            foreach ($params['nodes'] as $node) {
+                $this->nodes[$version][$node['id']] = [
+                    'external_id' => $node['id'],
+                    'labels' => $node['labels'],
+                    ...$node['properties'],
+                ];
+            }
+
+            return [];
+        }
+
+        if (str_contains($cypher, 'UNWIND $relationships AS relationship')) {
+            preg_match('/MERGE \(source\)-\[r:([A-Z0-9_]+)/', $cypher, $matches);
+            foreach ($params['relationships'] as $relationship) {
+                $this->relationships[$version][] = [
+                    'external_id' => $relationship['id'],
+                    'type' => $matches[1] ?? $relationship['type'],
+                    'source_id' => $relationship['source_id'],
+                    'target_id' => $relationship['target_id'],
+                    ...$relationship['properties'],
+                ];
+            }
+
+            return [];
+        }
+
+        if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+            return [[
+                'nodes' => count($this->nodes[$version] ?? []),
+                'relationships' => count($this->relationships[$version] ?? []),
+            ]];
+        }
+
+        if (str_contains($cypher, 'OPTIONAL MATCH p=(start)')) {
+            return [$this->traverse($cypher, $params)];
+        }
+
+        return [];
+    }
+
+    /** @return array<string, mixed> */
+    private function traverse(string $cypher, array $params): array
+    {
+        $version = (string) $params['graph_version'];
+        $query = strtolower((string) $params['start_query']);
+        $nodes = $this->nodes[$version] ?? [];
+        $relationships = $this->relationships[$version] ?? [];
+        preg_match('/OPTIONAL MATCH p=\(start\)(.*?)\(node:/s', $cypher, $patternMatch);
+        $pattern = $patternMatch[1] ?? '';
+        preg_match('/\[:([A-Z0-9_|]+)\*1\.\.(\d+)\]/', $pattern, $typedMatch);
+        preg_match('/\[\*1\.\.(\d+)\]/', $pattern, $untypedMatch);
+        $allowedTypes = isset($typedMatch[1]) ? explode('|', $typedMatch[1]) : null;
+        $depth = (int) ($typedMatch[2] ?? $untypedMatch[1] ?? 1);
+        $direction = str_starts_with($pattern, '<-') ? 'in' : (str_ends_with($pattern, '->') ? 'out' : 'any');
+        $startIds = [];
+        $matchFields = [];
+
+        foreach ($nodes as $id => $node) {
+            foreach (['external_id', 'name', 'label', 'path'] as $field) {
+                if ($query !== '' && str_contains(strtolower((string) ($node[$field] ?? '')), $query)) {
+                    $startIds[] = $id;
+                    $matchFields[] = $field;
+                }
+            }
+        }
+
+        $visited = [];
+        $edgeResults = [];
+        $queue = array_map(static fn (string $id): array => [$id, 0], array_values(array_unique($startIds)));
+        while ($queue !== []) {
+            [$id, $level] = array_shift($queue);
+            if (isset($visited[$id])) {
+                continue;
+            }
+            $visited[$id] = true;
+            if ($level >= $depth) {
+                continue;
+            }
+            foreach ($relationships as $relationship) {
+                if ($allowedTypes !== null && ! in_array($relationship['type'], $allowedTypes, true)) {
+                    continue;
+                }
+                $next = match ($direction) {
+                    'out' => $relationship['source_id'] === $id ? $relationship['target_id'] : null,
+                    'in' => $relationship['target_id'] === $id ? $relationship['source_id'] : null,
+                    default => $relationship['source_id'] === $id
+                        ? $relationship['target_id']
+                        : ($relationship['target_id'] === $id ? $relationship['source_id'] : null),
+                };
+                if ($next === null || ! isset($nodes[$next])) {
+                    continue;
+                }
+                $edgeResults[$relationship['external_id']] = $relationship;
+                $queue[] = [$next, $level + 1];
+            }
+        }
+
+        return [
+            'nodes' => array_map(static fn (string $id): array => [
+                'node' => collect($nodes[$id])->except('labels')->all(),
+                'labels' => $nodes[$id]['labels'],
+            ], array_keys($visited)),
+            'edges' => array_values($edgeResults),
+            'truncated' => false,
+            'match_fields' => array_values(array_unique($matchFields)),
+        ];
+    }
 }

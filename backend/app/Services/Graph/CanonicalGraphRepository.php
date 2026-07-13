@@ -388,10 +388,10 @@ class CanonicalGraphRepository
 
     private function adaptLegacy(array $payload, string $extractor, string $language): array
     {
+        $payload = $this->adaptLegacyNodeIdentities($this->adaptLegacyRoutes($payload));
         if (isset($payload['graph_contract'])) {
             return $payload;
         }
-        $payload = $this->adaptLegacyNodeIdentities($payload);
         $filesTotal = is_array($payload['files'] ?? null) ? count($payload['files']) : (int) ($payload['files_total'] ?? 0);
         $payload['graph_contract'] = [
             'version' => 'hades.graph_artifact.v1',
@@ -399,6 +399,70 @@ class CanonicalGraphRepository
             'coverage' => ['languages' => [$language], 'files_total' => $filesTotal, 'files_analyzed' => $filesTotal, 'files_failed' => 0],
             'source' => ['branch' => $payload['branch'] ?? null, 'head_commit' => $payload['head_commit'] ?? $payload['workspace_head_commit'] ?? null],
         ];
+
+        return $payload;
+    }
+
+    /**
+     * Old Hades PHP graphs kept routes outside `symbols` while their edges
+     * addressed route ids such as `route:orders.show`. Canonical projection
+     * needs those endpoints as real nodes; otherwise Neo4j correctly drops
+     * every route-to-handler relationship because its source does not exist.
+     */
+    private function adaptLegacyRoutes(array $payload): array
+    {
+        $routes = is_array($payload['routes'] ?? null) ? $payload['routes'] : [];
+        if ($routes === []) {
+            return $payload;
+        }
+
+        $nodeKey = is_array($payload['nodes'] ?? null) ? 'nodes' : 'symbols';
+        $nodes = is_array($payload[$nodeKey] ?? null) ? array_values($payload[$nodeKey]) : [];
+        $knownIds = [];
+        foreach (array_filter($nodes, 'is_array') as $node) {
+            $nodeId = $node['id'] ?? $node['symbol_id'] ?? null;
+            if (is_string($nodeId) && trim($nodeId) !== '') {
+                $knownIds[trim($nodeId)] = true;
+            }
+        }
+
+        foreach (array_filter($routes, 'is_array') as $route) {
+            $name = is_string($route['name'] ?? null) ? trim($route['name']) : '';
+            $method = is_string($route['method'] ?? null) ? trim($route['method']) : '';
+            $uri = is_string($route['uri'] ?? null) ? trim($route['uri']) : '';
+            $handler = is_string($route['handler'] ?? null) ? trim($route['handler']) : '';
+            if ($name === '' && $method === '' && $uri === '' && $handler === '') {
+                continue;
+            }
+
+            $routeReference = $name !== '' ? $name : trim($method.' '.$uri);
+            if ($routeReference === '') {
+                continue;
+            }
+            $nodeId = 'route:'.$routeReference;
+            if (isset($knownIds[$nodeId])) {
+                continue;
+            }
+
+            $properties = array_filter([
+                'method' => $method,
+                'uri' => $uri,
+                'handler' => $handler,
+            ], static fn (string $value): bool => $value !== '');
+            $node = [
+                'id' => $nodeId,
+                'kind' => 'route',
+                'name' => $name !== '' ? $name : trim($method.' '.$uri),
+                'properties' => $properties,
+            ];
+            if (is_string($route['path'] ?? null) && trim($route['path']) !== '') {
+                $node['path'] = trim($route['path']);
+            }
+            $nodes[] = $node;
+            $knownIds[$nodeId] = true;
+        }
+
+        $payload[$nodeKey] = $nodes;
 
         return $payload;
     }
