@@ -2,7 +2,7 @@ services:
   app:
     platform: linux/amd64
 
-  node:
+  frontend:
     platform: linux/amd64
 
   worker:

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesAgentJobPolicy;
+use App\Services\Hades\HadesSourceSliceCandidateService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -12,7 +13,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AgentJobsController extends Controller
 {
-    public function __construct(private readonly HadesAgentJobPolicy $jobs) {}
+    public function __construct(
+        private readonly HadesAgentJobPolicy $jobs,
+        private readonly HadesSourceSliceCandidateService $sourceSliceCandidates,
+    ) {}
 
     public function __invoke(Request $request): JsonResponse
     {
@@ -39,6 +43,9 @@ class AgentJobsController extends Controller
             ? $effectiveCapabilities
             : array_values(array_intersect($effectiveCapabilities, $requestedCapabilities));
         $limit = (int) ($validated['limit'] ?? 25);
+        if (in_array('read_source_slice', $capabilities, true)) {
+            $this->sourceSliceCandidates->reconcilePendingForBinding($agent, $binding, $limit);
+        }
         $now = now();
         $query = DB::table('hades_agent_jobs')
             ->where('project_id', $validated['project_id'])

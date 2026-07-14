@@ -16,14 +16,14 @@ it('keeps default bootstrap capabilities aligned with the current Hephaistos cli
     );
     $allowed = json_decode($created['token']->allowed_capabilities, true, flags: JSON_THROW_ON_ERROR);
 
-    expect($allowed)->toContain(
+    expect($allowed)->toBe([
         'read_files',
         'read_source_slice',
         'project_inspection',
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',
-    );
+    ]);
 });
 
 it('enforces effective capabilities when listing and claiming jobs', function () {
@@ -172,7 +172,10 @@ it('bounds compressed artifact decompression and validates declared bytes', func
         'artifact_compressed_bytes' => strlen($compressed),
     ], hadesHardeningHeaders($agent['agent_token']))
         ->assertStatus(413)
-        ->assertJsonPath('error.code', 'artifact_uncompressed_too_large');
+        ->assertExactJson(['error' => [
+            'code' => 'artifact_uncompressed_too_large',
+            'message' => 'Artifact exceeds the uncompressed byte limit.',
+        ]]);
 
     expect(DB::table('hades_agent_artifacts')->count())->toBe(0);
 });

@@ -224,7 +224,182 @@
             "$ref": "#/components/responses/Unauthorized"
           },
           "422": {
-            "description": "Validation error"
+            "description": "Request validation failure or an artifact-specific 422 failure. Missing or invalid request fields use Laravel's validation envelope; artifact failures use the bounded artifact error envelope and are rejected before deduplication or persistence. Size-limit failures are separate HTTP 413 responses and are not included in the 422 artifact code enum.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ArtifactUploadErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LaravelValidationErrorResponse"
+                    }
+                  ]
+                },
+                "examples": {
+                  "missingRequiredField": {
+                    "summary": "A required upload field is missing",
+                    "value": {
+                      "message": "The project id field is required.",
+                      "errors": {
+                        "project_id": [
+                          "The project id field is required."
+                        ]
+                      }
+                    }
+                  },
+                  "malformedGraphContract": {
+                    "summary": "The submitted canonical graph contract is malformed",
+                    "value": {
+                      "error": {
+                        "code": "invalid_graph_contract",
+                        "message": "Graph artifact contract is invalid."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Artifact payload exceeds the compressed or uncompressed upload limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactUploadTooLargeErrorResponse"
+                },
+                "example": {
+                  "error": {
+                    "code": "artifact_uncompressed_too_large",
+                    "message": "Artifact exceeds the uncompressed byte limit."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hades/v1/graph/traverse": {
+      "get": {
+        "summary": "Traverse the backend-selected canonical graph projection for one linked workspace",
+        "description": "The workspace binding is the exact source scope. Clients cannot submit or select graph_version; the backend selects the latest verified ready projection. Response graph metadata is additive to the existing Hades traversal envelope.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "workspace_binding_id",
+            "in": "query",
+            "required": true,
+            "description": "Linked workspace binding that defines the exact workspace_binding source scope.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "any",
+                "out",
+                "in"
+              ],
+              "default": "any"
+            }
+          },
+          {
+            "name": "max_depth",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3,
+              "default": 2
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded traversal of the current verified projection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanonicalGraphTraverseResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "project_mismatch: the authenticated Hades agent belongs to another project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HadesStructuredErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "workspace_binding_not_found, graph_scope_not_found, graph_projection_not_ready, graph_projection_rebuild_required, or query_error. A not-ready or pre-adjacency projection is not an empty graph; rebuild-required traversal never falls back to an unbounded query.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HadesStructuredErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "workspace_binding_unlinked: the binding exists but is not linked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HadesStructuredErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/ValidationError"
           }
         }
       }
@@ -635,7 +810,14 @@
             ]
           },
           "artifact": {
-            "type": "object"
+            "type": "object",
+            "description": "For hades.php_graph.v1 and hades.code_graph.v1, graph_contract is additive and the legacy schema name remains valid.",
+            "properties": {
+              "graph_contract": {
+                "$ref": "#/components/schemas/CanonicalGraphArtifactContract"
+              }
+            },
+            "additionalProperties": true
           },
           "sha256": {
             "type": "string"
@@ -648,6 +830,426 @@
             "minimum": 0
           }
         }
+      },
+      "ArtifactUploadErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "invalid_graph_contract",
+                  "invalid_graph_artifact",
+                  "artifact_schema_mismatch",
+                  "artifact_encoding_unsupported",
+                  "artifact_compressed_invalid",
+                  "artifact_compressed_size_mismatch",
+                  "artifact_uncompressed_size_mismatch",
+                  "artifact_uncompressed_hash_mismatch"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "ArtifactUploadTooLargeErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "artifact_too_large",
+                  "artifact_compressed_too_large",
+                  "artifact_uncompressed_too_large"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "LaravelValidationErrorResponse": {
+        "type": "object",
+        "required": [
+          "message",
+          "errors"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "CanonicalGraphArtifactContract": {
+        "type": "object",
+        "required": [
+          "version",
+          "extractor",
+          "coverage",
+          "source"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "const": "hades.graph_artifact.v1"
+          },
+          "extractor": {
+            "type": "object",
+            "required": [
+              "name",
+              "version",
+              "mode",
+              "quality",
+              "fallback_reason"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z0-9][a-z0-9._-]*$"
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "native",
+                  "graphify",
+                  "fallback",
+                  "legacy_adapter"
+                ]
+              },
+              "quality": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "partial",
+                  "inventory_only"
+                ]
+              },
+              "fallback_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^(no_relationships_extracted|bounded_or_omitted_input|canonicalization_omissions|graphify_unavailable|missing_contract_metadata|graphify_failed:[A-Za-z_][A-Za-z0-9_]{0,63})$",
+                "description": "Bounded machine-readable reason. Graphify failures use graphify_failed:<ExceptionClass>; raw exception messages and absolute paths are forbidden."
+              }
+            },
+            "additionalProperties": false
+          },
+          "coverage": {
+            "type": "object",
+            "required": [
+              "languages",
+              "files_total",
+              "files_analyzed",
+              "files_failed"
+            ],
+            "properties": {
+              "languages": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "pattern": "^[a-z0-9][a-z0-9+#._-]*$"
+                }
+              },
+              "files_total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "files_analyzed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "files_failed": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "source": {
+            "type": "object",
+            "required": [
+              "branch",
+              "head_commit"
+            ],
+            "properties": {
+              "branch": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 255,
+                "description": "Git branch name accepted by the canonical graph contract. Dot-prefixed or .lock components, consecutive dots or slashes, trailing slash or dot, reflog selectors, backslashes, and control characters are rejected.",
+                "pattern": "^(?!.*(?:^|/)\\.)(?!.*\\.\\.)(?!.*//)(?!.*@\\{)(?!.*(?:^|/)[^/]*\\.lock(?:/|$))(?!.*[/.]$)[A-Za-z0-9][A-Za-z0-9._/-]*$"
+              },
+              "head_commit": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 4,
+                "maxLength": 80,
+                "pattern": "^[0-9a-fA-F]{4,80}$"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "CanonicalGraphTraverseResponse": {
+        "type": "object",
+        "required": [
+          "protocol_version",
+          "project_id",
+          "workspace_binding_id",
+          "version",
+          "etag",
+          "projection_id",
+          "artifact_id",
+          "schema",
+          "graph_version",
+          "head_commit",
+          "start",
+          "direction",
+          "max_depth",
+          "limit",
+          "quality",
+          "count",
+          "edge_count",
+          "truncated",
+          "match_fields",
+          "freshness",
+          "nodes",
+          "edges",
+          "provenance",
+          "server_time"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "string",
+            "const": "v1"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "workspace_binding_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "Traversal result version derived from graph_version and bounded query inputs."
+          },
+          "etag": {
+            "type": "string"
+          },
+          "projection_id": {
+            "type": "string"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "string",
+            "enum": [
+              "hades.php_graph.v1",
+              "hades.code_graph.v1"
+            ]
+          },
+          "graph_version": {
+            "type": "string",
+            "description": "Backend-selected verified projection version; this is response-only."
+          },
+          "head_commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "inventory_only"
+            ]
+          },
+          "start": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "any",
+              "out",
+              "in"
+            ]
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "edge_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "match_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "freshness": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "required": [
+              "projection_id",
+              "artifact_id",
+              "graph_version",
+              "schema"
+            ],
+            "properties": {
+              "projection_id": {
+                "type": "string"
+              },
+              "artifact_id": {
+                "type": "string"
+              },
+              "graph_version": {
+                "type": "string"
+              },
+              "schema": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "server_time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": true
+      },
+      "HadesStructuredErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "examples": [
+                  "project_mismatch",
+                  "workspace_binding_not_found",
+                  "workspace_binding_unlinked",
+                  "graph_scope_not_found",
+                  "query_error",
+                  "graph_projection_not_ready",
+                  "graph_projection_rebuild_required"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
       },
       "DoctorReportRequest": {
         "type": "object",

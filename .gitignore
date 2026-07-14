@@ -25,3 +25,4 @@ backend/.env.*
 /backend/playwright-report/
 .env
 backend/vendor/pestphp/pest/.temp/test-results
+/.superpowers/

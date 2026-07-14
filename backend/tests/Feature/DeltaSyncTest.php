@@ -237,6 +237,27 @@ it('finalizes a valid delta bundle and creates a new snapshot', function () {
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
+it('completes the actual fake ImportGraphToNeo4j path after adjacency verification', function (): void {
+    Queue::fake();
+    $context = createDeltaContext();
+    $artifacts = [
+        deltaArtifact('diff_summary', 'diff-summary.json', '{"changed_file_count":0}'),
+        deltaArtifact('graph_snapshot', 'graph-snapshot.json', '{"nodes":[],"relationships":[]}'),
+        deltaArtifact('security_report', 'security-report.json', '{"blocked":[]}'),
+    ];
+    $deltaId = deltaStart($context, deltaManifest($artifacts))->json('delta_id');
+
+    foreach ($artifacts as $artifact) {
+        deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+    }
+
+    deltaFinalize($context, $deltaId)->assertOk();
+    (new ImportGraphToNeo4j('delta', $deltaId))->handle(app(GenesisGraphImportService::class));
+
+    expect(DB::table('canonical_graph_projections')->where('status', 'ready')->exists())->toBeTrue()
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
+});
+
 it('returns the existing Delta result on sequential finalize without duplicate side effects', function () {
     config(['queue.default' => 'database']);
     Queue::fake();
@@ -296,6 +317,43 @@ it('inserts the database queue job atomically on first finalize and not on retry
 it('imports an affected subgraph by cloning the base snapshot and applying tombstone lists', function () {
     Queue::fake();
     $context = createDeltaContext();
+    $baseArtifactId = (string) Str::ulid();
+    $baseStoragePath = "devboard/artifacts/delta-base/{$baseArtifactId}/artifact";
+    $baseGraph = json_encode([
+        'nodes' => [
+            ['id' => 'function:kept', 'labels' => ['Function'], 'properties' => ['name' => 'kept']],
+            ['id' => 'function:removed', 'labels' => ['Function'], 'properties' => ['name' => 'removed']],
+            ['id' => 'file:deleted.py', 'labels' => ['File'], 'properties' => ['path' => 'deleted.py']],
+        ],
+        'relationships' => [[
+            'id' => 'rel:removed',
+            'type' => 'CALLS',
+            'source_id' => 'function:removed',
+            'target_id' => 'function:kept',
+            'properties' => [],
+        ]],
+    ], JSON_THROW_ON_ERROR);
+    Storage::disk('local')->put($baseStoragePath, $baseGraph);
+    DB::table('artifacts')->insert([
+        'id' => $baseArtifactId,
+        'project_id' => $context['project_id'],
+        'repository_id' => $context['repository_id'],
+        'run_id' => $context['run_id'],
+        'artifact_type' => 'graph_snapshot',
+        'storage_path' => $baseStoragePath,
+        'sha256' => hash('sha256', $baseGraph),
+        'size_bytes' => strlen($baseGraph),
+        'mime_type' => 'application/json',
+        'schema_version' => 'v1',
+        'status' => 'imported',
+        'producer' => 'devboard-python-plugin',
+        'metadata' => '{}',
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+    DB::table('snapshots')->where('id', $context['base_snapshot_id'])->update([
+        'graph_snapshot_artifact_id' => $baseArtifactId,
+    ]);
     $graph = json_encode([
         'graph_mode' => 'affected_subgraph',
         'base_snapshot_id' => $context['base_snapshot_id'],

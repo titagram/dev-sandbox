@@ -5,23 +5,32 @@ namespace App\Http\Controllers\Dashboard\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Services\AuditLogger;
+use App\Services\Hades\HadesAgentJobPolicy;
+use App\Services\Hades\HadesCapabilityPolicy;
 use App\Services\Hades\HadesSearchDocumentIndexer;
 use App\Services\Hades\HadesTokenService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\Response;
 
 final class DashboardHadesController extends Controller
 {
     use ChecksDashboardRoles;
 
-    public function __construct(private readonly HadesSearchDocumentIndexer $searchIndexer) {}
+    public function __construct(
+        private readonly HadesSearchDocumentIndexer $searchIndexer,
+        private readonly HadesCapabilityPolicy $capabilities,
+        private readonly HadesAgentJobPolicy $jobPolicy,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
         $this->abortUnlessAdmin($request);
+
+        $supportedCapabilities = $this->capabilities->supportedNames();
 
         return response()->json([
             'projects' => DB::table('projects')
@@ -30,6 +39,7 @@ final class DashboardHadesController extends Controller
                 ->orderBy('name')
                 ->limit(100)
                 ->get(),
+            'supported_capabilities' => $supportedCapabilities,
             'bootstrapTokens' => DB::table('hades_bootstrap_tokens')
                 ->join('projects', 'projects.id', '=', 'hades_bootstrap_tokens.project_id')
                 ->select([
@@ -42,10 +52,14 @@ final class DashboardHadesController extends Controller
                     'hades_bootstrap_tokens.revoked_at',
                     'hades_bootstrap_tokens.last_used_at',
                     'hades_bootstrap_tokens.created_at',
+                    'hades_bootstrap_tokens.allowed_capabilities',
+                    'hades_bootstrap_tokens.scopes',
                 ])
                 ->orderByDesc('hades_bootstrap_tokens.created_at')
                 ->limit(100)
-                ->get(),
+                ->get()
+                ->map(fn (object $token): array => $this->bootstrapTokenPayload($token))
+                ->values(),
             'workspaces' => DB::table('hades_workspace_bindings')
                 ->join('projects', 'projects.id', '=', 'hades_workspace_bindings.project_id')
                 ->join('hades_agents', 'hades_agents.id', '=', 'hades_workspace_bindings.hades_agent_id')
@@ -57,10 +71,14 @@ final class DashboardHadesController extends Controller
                     'hades_workspace_bindings.status',
                     'hades_workspace_bindings.updated_at',
                     'hades_agents.label as agent_label',
+                    'hades_agents.declared_capabilities',
+                    'hades_agents.effective_capabilities',
                 ])
                 ->orderByDesc('hades_workspace_bindings.updated_at')
                 ->limit(100)
-                ->get(),
+                ->get()
+                ->map(fn (object $workspace): array => $this->workspacePayload($workspace))
+                ->values(),
             'jobs' => DB::table('hades_agent_jobs')
                 ->select(['id', 'project_id', 'workspace_binding_id', 'capability', 'status', 'policy', 'requires_confirmation', 'created_at', 'completed_at', 'failed_at', 'cancelled_at'])
                 ->orderByDesc('created_at')
@@ -83,7 +101,7 @@ final class DashboardHadesController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'expires_in_days' => ['nullable', 'integer', 'min:1', 'max:365'],
             'allowed_capabilities' => ['nullable', 'array'],
-            'allowed_capabilities.*' => ['string', 'in:read_files,read_source_slice,sync_git_tree,populate_backend_ast,populate_project_wiki'],
+            'allowed_capabilities.*' => ['string', Rule::in($this->capabilities->supportedNames())],
             'base_url' => ['nullable', 'url'],
             'project_name' => ['nullable', 'string', 'max:255'],
         ]);
@@ -135,7 +153,7 @@ final class DashboardHadesController extends Controller
             'workspace_binding_id' => ['required', 'string', 'exists:hades_workspace_bindings,id'],
             'hades_agent_id' => ['nullable', 'string', 'exists:hades_agents,id'],
             'idempotency_key' => ['nullable', 'string', 'max:191'],
-            'capability' => ['required', 'string', 'in:read_files,read_source_slice,sync_git_tree,populate_backend_ast,populate_project_wiki'],
+            'capability' => ['required', 'string', Rule::in($this->capabilities->supportedNames())],
             'policy' => ['nullable', 'string', 'max:191'],
             'priority' => ['nullable', 'string', 'max:191'],
             'payload' => ['required', 'array'],
@@ -152,6 +170,34 @@ final class DashboardHadesController extends Controller
 
         abort_unless($binding, 404);
 
+        $agent = DB::table('hades_agents')
+            ->where('id', $binding->hades_agent_id)
+            ->where('project_id', $validated['project_id'])
+            ->first();
+
+        if (! $agent || $agent->status !== 'active') {
+            return response()->json([
+                'error' => [
+                    'code' => 'agent_not_available',
+                    'message' => 'The workspace binding agent must be active before creating a job.',
+                ],
+            ], Response::HTTP_CONFLICT);
+        }
+
+        $requestedAgentId = $validated['hades_agent_id'] ?? null;
+        if ($requestedAgentId !== null && $requestedAgentId !== $agent->id) {
+            return response()->json([
+                'error' => [
+                    'code' => 'agent_binding_mismatch',
+                    'message' => 'The requested agent must match the workspace binding agent.',
+                ],
+            ], Response::HTTP_CONFLICT);
+        }
+
+        if (! $this->jobPolicy->allowsCapability($agent, $validated['capability'])) {
+            return $this->capabilityError($validated['capability']);
+        }
+
         $id = (string) Str::ulid();
         $now = now();
         $policy = $validated['policy'] ?? 'manual_review';
@@ -161,7 +207,7 @@ final class DashboardHadesController extends Controller
         DB::table('hades_agent_jobs')->insert([
             'id' => $id,
             'project_id' => $validated['project_id'],
-            'hades_agent_id' => $validated['hades_agent_id'] ?? $binding->hades_agent_id,
+            'hades_agent_id' => $agent->id,
             'workspace_binding_id' => $binding->id,
             'idempotency_key' => $validated['idempotency_key'] ?? null,
             'capability' => $validated['capability'],
@@ -373,14 +419,56 @@ final class DashboardHadesController extends Controller
         return [
             'id' => $token->id,
             'project_id' => $token->project_id,
+            'project_name' => property_exists($token, 'project_name') ? $token->project_name : null,
             'token_prefix' => $token->token_prefix,
             'name' => $token->name,
             'scopes' => json_decode($token->scopes, true, 512, JSON_THROW_ON_ERROR),
-            'allowed_capabilities' => $token->allowed_capabilities ? json_decode($token->allowed_capabilities, true, 512, JSON_THROW_ON_ERROR) : null,
+            'allowed_capabilities' => $token->allowed_capabilities === null
+                ? null
+                : json_decode($token->allowed_capabilities, true, 512, JSON_THROW_ON_ERROR),
             'expires_at' => $token->expires_at,
             'revoked_at' => $token->revoked_at,
             'last_used_at' => $token->last_used_at,
+            'created_at' => property_exists($token, 'created_at') ? $token->created_at : null,
         ];
+    }
+
+    private function capabilityError(string $capability): JsonResponse
+    {
+        return response()->json([
+            'error' => [
+                'code' => 'agent_capability_not_enabled',
+                'message' => 'Enable '.$capability.' for the bound active agent before creating this job.',
+                'details' => ['capability' => $capability],
+            ],
+        ], Response::HTTP_CONFLICT);
+    }
+
+    private function workspacePayload(object $workspace): array
+    {
+        return [
+            'id' => $workspace->id,
+            'project_id' => $workspace->project_id,
+            'project_name' => $workspace->project_name,
+            'display_path' => $workspace->display_path,
+            'status' => $workspace->status,
+            'updated_at' => $workspace->updated_at,
+            'agent_label' => $workspace->agent_label,
+            'declared_capabilities' => $this->decodeCapabilities($workspace->declared_capabilities),
+            'effective_capabilities' => $this->decodeCapabilities($workspace->effective_capabilities),
+        ];
+    }
+
+    /** @return list<string> */
+    private function decodeCapabilities(mixed $value): array
+    {
+        if (is_string($value)) {
+            $value = json_decode($value, true, 512, JSON_THROW_ON_ERROR);
+        }
+
+        return is_array($value)
+            ? array_values(array_filter($value, 'is_string'))
+            : [];
     }
 
     private function installCommands(string $baseUrl, string $projectId, string $token, ?string $projectName): array

@@ -3,10 +3,23 @@
 namespace App\Http\Controllers\Dashboard\Concerns;
 
 use App\Models\User;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\HttpFoundation\Response;
 
 trait ChecksDashboardRoles
 {
+    protected function abortUnlessDashboardReader(Request $request): void
+    {
+        $user = $request->user();
+        abort_unless($user !== null && (
+            $this->userHasRole($user, 'PM')
+            || $this->userHasRole($user, 'Developer')
+            || $this->userHasRole($user, 'Sysadmin')
+            || $this->userHasRole($user, 'Admin')
+        ), Response::HTTP_FORBIDDEN);
+    }
+
     protected function userHasRole(User $user, string $role): bool
     {
         return DB::table('role_user')

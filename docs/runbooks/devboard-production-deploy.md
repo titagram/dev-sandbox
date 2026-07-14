@@ -1,37 +1,80 @@
-# DevBoard Production Deploy Runbook
+# Hades Agent Backend Production Deploy Runbook
 
-This runbook uses `docker-compose.devboard.prod.yaml`. The Laravel/Inertia frontend is built from `backend/` into the backend image and served by the same nginx process; production has no dependency on an adjacent repository.
+The repository target architecture for Hades Agent has `frontend/` as its only tracked, repository-owned browser source. Its multi-stage image builds the standalone React 19 application, and nginx serves the compiled SPA plus the exact `/install.sh` and `/install.ps1` application installers. Laravel serves APIs and backend-owned storage paths; it does not build or serve the target browser UI.
 
-## Required Environment
+The live environment completed every Task 5 gate in `docs/superpowers/plans/2026-07-14-react-frontend-repository-cutover.md` on 2026-07-14. The repository-owned React image is deployed, authenticated browser and API smoke passed, and the former adjacent frontend checkout was retired only after the rollback inputs and post-removal smoke were verified.
 
-Load these values from the deployment secret manager, not from a committed `.env` file:
+Existing `devboard*` Compose filenames, environment names, image names, volume names, router names, and container identifiers are temporary internal compatibility identifiers. They do not indicate frontend ownership and must not be used as a reason to restore the former adjacent frontend checkout or Laravel Vite/Inertia deployment path. The repository Compose definitions have no Node/Vite/Inertia frontend service.
+
+## Required Environment And Fail-Closed Preflight
+
+Load runtime values from the deployment secret manager or protected deployment environment. Never commit them to Git, paste them into runbooks, or print them in command output. The host/domain values are deployment configuration; passwords, application keys, and the BasicAuth hash are secrets.
+
+The production application requires:
+
+- `DEVBOARD_PUBLIC_BASE_URL`
+- `DEVBOARD_APP_KEY`
+- `DEVBOARD_DB_PASSWORD`
+- `DEVBOARD_NEO4J_PASSWORD`
+- `DEVBOARD_SESSION_DOMAIN`
+- `DEVBOARD_STATEFUL_DOMAINS`
+- `DEVBOARD_DASHBOARD_ORIGINS`
+
+The Traefik overlay additionally requires:
+
+- `DEVBOARD_TRAEFIK_HOST`
+- `DEVBOARD_TRAEFIK_BASIC_AUTH_USERS`
+
+`DEVBOARD_TRAEFIK_NETWORK`, entrypoint names, and certificate resolver may use their documented deployment defaults or explicit environment values. The repository `.env` is currently insufficient by itself because it does not provide every required production and Traefik value. A deployment must fail closed before Compose interpolation when any required value is absent:
 
 ```bash
-export DEVBOARD_PUBLIC_BASE_URL='https://devboard.example.com'
-export DEVBOARD_APP_KEY='base64:replace-with-a-generated-laravel-key'
-export DEVBOARD_DB_PASSWORD=  # set to a long random password from the deployment secret manager
-export DEVBOARD_NEO4J_PASSWORD=  # set to a long random password from the deployment secret manager
-export DEVBOARD_SESSION_DOMAIN='devboard.example.com'
-export DEVBOARD_STATEFUL_DOMAINS='devboard.example.com'
-export DEVBOARD_DASHBOARD_ORIGINS='https://devboard.example.com'
+required=(
+  DEVBOARD_PUBLIC_BASE_URL DEVBOARD_APP_KEY DEVBOARD_DB_PASSWORD
+  DEVBOARD_NEO4J_PASSWORD DEVBOARD_SESSION_DOMAIN
+  DEVBOARD_STATEFUL_DOMAINS DEVBOARD_DASHBOARD_ORIGINS
+)
+for name in "${required[@]}"; do
+  test -n "${!name:-}" || { printf 'required deployment value is unset: %s\n' "$name" >&2; exit 1; }
+done
 ```
 
-The default application bind is `127.0.0.1:18000`. PostgreSQL and Neo4j have no host ports.
-
-`docker compose config` intentionally renders without these variables so CI and local validation can parse the production file. Do not deploy with empty values; the variables above are required production inputs even though Compose interpolation no longer prints their names as errors.
-
-## Build And Validate
+Before any Traefik validation or deployment, also run:
 
 ```bash
+required_proxy=(DEVBOARD_TRAEFIK_HOST DEVBOARD_TRAEFIK_BASIC_AUTH_USERS)
+for name in "${required_proxy[@]}"; do
+  test -n "${!name:-}" || { printf 'required proxy value is unset: %s\n' "$name" >&2; exit 1; }
+done
+```
+
+These checks print only a missing variable name, never its value. The default application bind is `127.0.0.1:18000`; PostgreSQL and Neo4j have no production host ports.
+
+## Build And Read-Only Compose Validation
+
+Run the fail-closed preflight first. Validate the relevant base and architecture combinations without creating containers:
+
+```bash
+docker compose -f docker-compose.devboard.yaml config --quiet
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config --quiet
 docker compose -f docker-compose.devboard.prod.yaml config --quiet
-docker compose -f docker-compose.devboard.prod.yaml build app worker scheduler
+docker compose -f docker-compose.devboard.prod.yaml -f docker-compose.devboard.amd64.yaml config --quiet
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml config --quiet
+docker compose -f docker-compose.devboard.prod.yaml -f docker-compose.devboard.traefik.yaml config --quiet
 ```
+
+Use the amd64 overlay in the Traefik commands as well when that is the deployment architecture. Build every deployed production image, including the standalone frontend:
+
+```bash
+docker compose -f docker-compose.devboard.prod.yaml build app worker scheduler frontend
+```
+
+The frontend Docker build uses the committed Yarn lockfile with `yarn install --frozen-lockfile`; `.env*` files are excluded from its build context. The resulting nginx image must contain `index.html`, `favicon.svg`, `install.sh`, and `install.ps1`.
 
 ## Database Upgrade
 
 The production PostgreSQL service uses the digest-pinned PostgreSQL 16 pgvector image `pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb`. Run migrations against a database created from that image so the `vector` extension and Hades search schema are available before deploying vector-enabled search features.
 
-Run migrations before exposing the new application version:
+Run migrations before exposing a backend version that requires them:
 
 ```bash
 docker compose -f docker-compose.devboard.prod.yaml run --rm app su-exec www-data php artisan migrate --force
@@ -55,7 +98,7 @@ where sequence is null or chain_version is null or row_hash is null;
 
 The backfill locks the global audit chain, orders legacy rows by `created_at` then `id`, assigns sequence numbers from `1`, initializes `audit_chain_heads.global`, and verifies the chain before returning success. Backups preserve canonical audit chain fields exactly, and restore dry-runs independently validate exported audit chains.
 
-`DevBoardSeeder` is now the structural production seeder for roles, permissions, and the agent registry. It does not create users or demo projects. Never run `DemoDevBoardSeeder` in production; avoid `DatabaseSeeder` so a future environment/configuration error cannot opt into demo data.
+`DevBoardSeeder` is the structural production seeder for roles, permissions, and the agent registry. It does not create users or demo projects. Never run `DemoDevBoardSeeder` in production; avoid `DatabaseSeeder` so a future environment/configuration error cannot opt into demo data.
 
 Create the first administrator through the one-shot command. The password is read only from hidden interactive prompts and is never accepted as an argument:
 
@@ -68,22 +111,17 @@ The command refuses to replace an existing administrator. Do not substitute `db:
 ## Start
 
 ```bash
-docker compose -f docker-compose.devboard.prod.yaml up -d app worker scheduler postgres neo4j
+docker compose -f docker-compose.devboard.prod.yaml up -d app frontend worker scheduler postgres neo4j
 docker compose -f docker-compose.devboard.prod.yaml ps
 ```
 
-`worker` handles the database queue. `scheduler` runs Laravel `schedule:work`, including retention and search reindex schedules. Both services have process liveness healthchecks and depend on healthy PostgreSQL and Neo4j.
+`frontend` serves the React build through nginx. `worker` handles the database queue. `scheduler` runs Laravel `schedule:work`, including retention and search reindex schedules. The backend processes depend on healthy PostgreSQL and Neo4j.
 
-## Traefik Overlay
+## Traefik Overlay And Route Ownership
 
-The Traefik file is an override for production only. It expects an existing external network and routes the Laravel API and Inertia frontend to `app:8000`.
+The Traefik file is a deployment overlay and expects an existing external network. Run the proxy fail-closed preflight before using it:
 
 ```bash
-export DEVBOARD_TRAEFIK_HOST='devboard.example.com'
-export DEVBOARD_TRAEFIK_NETWORK='traefik_default'
-export DEVBOARD_TRAEFIK_CERT_RESOLVER='le'
-export DEVBOARD_TRAEFIK_BASIC_AUTH_USERS='operator:<htpasswd-hash-from-secret-manager>'
-
 docker compose \
   -f docker-compose.devboard.prod.yaml \
   -f docker-compose.devboard.traefik.yaml \
@@ -92,12 +130,23 @@ docker compose \
 docker compose \
   -f docker-compose.devboard.prod.yaml \
   -f docker-compose.devboard.traefik.yaml \
-  up -d app worker scheduler postgres neo4j
+  up -d app frontend worker scheduler postgres neo4j
 ```
 
-The plugin and Hades API routers bypass proxy basic auth because they use application token authentication. All other HTTPS paths use the configured basic-auth middleware. Do not combine the Traefik override with `docker-compose.devboard.yaml`.
+Route precedence is intentional:
+
+| Priority | Owner | Paths | Proxy BasicAuth |
+| ---: | --- | --- | --- |
+| `130` | frontend nginx | exact `/install.sh` and `/install.ps1` | no |
+| `120` | Laravel | `/api/plugin/v1` and `/api/hades/v1` | no; application token authentication applies |
+| `100` | Laravel | `/api`, `/sanctum`, and `/storage` | yes |
+| `1` | frontend nginx | React catch-all, including `/login`, favicon, and nested browser routes | yes |
+
+The installer exception exposes only the two versioned application installation files served by nginx. It is not a general static-file or directory bypass. Laravel API responses must remain JSON/application responses; React routes must remain nginx SPA responses.
 
 ## Smoke Checks
+
+Private checks do not place proxy credentials in process arguments:
 
 ```bash
 curl -fsS http://127.0.0.1:18000/up
@@ -107,13 +156,91 @@ docker compose -f docker-compose.devboard.prod.yaml exec -T app su-exec www-data
 docker compose -f docker-compose.devboard.prod.yaml ps
 ```
 
-The Traefik web router protects `/up` with the configured basic-auth middleware. This runbook intentionally checks health through the loopback bind so proxy credentials never appear in `curl` arguments or process listings. Do not use an unauthenticated public `/up` request as a deployment check; validate public TLS and login through the normal authenticated access path.
+Public acceptance uses the protected browser/session or another approved credential mechanism and verifies:
+
+- HTTP redirects to HTTPS and TLS is valid;
+- `/login`, `/favicon.svg`, and a hard refresh of a nested project route return the React application/static asset, not a Laravel Inertia page or 404;
+- login succeeds and a representative project page renders;
+- `/api/dashboard/me` reaches Laravel and returns the expected JSON success or application-authentication response, never nginx HTML or 405;
+- `/api/hades/v1/health` reaches the Hades Laravel route with its expected token/authentication contract, never the React shell;
+- `/install.sh` and `/install.ps1` are retrievable without proxy BasicAuth, have application installer content only, and do not expose directory listings;
+- no browser request targets a loopback API origin.
+
+The protected `/up` route is checked through loopback so proxy credentials never appear in `curl` arguments or process listings.
+
+## Completed Frontend-Only Cutover Record
+
+The repository-owned frontend cutover completed on 2026-07-14 without a migration, seeder, database operation, or backend/data-service restart. Only the `frontend` Compose service was rebuilt and recreated. App, PostgreSQL, and Neo4j container IDs remained exact. Worker and scheduler were already absent before the cutover and were deliberately left absent; that is a separate operational gap rather than a cutover side effect.
+
+The normal rollback preparation is to tag the running immutable image after verifying that Docker still has its image object. During this cutover, the running legacy container referenced an image object that Docker had already garbage-collected. Direct tagging failed, and direct `docker commit` also failed because a required content layer was gone. The approved recovery path therefore captured the mounted runtime files and rebuilt a recovery image on a pinned nginx base.
+
+The private pre-cutover inputs remain outside Git:
+
+- `/home/ubuntu/backups/devboard/frontend-runtime-pre-cutover-20260714` contains the captured nginx HTML tree and `default.conf`, mode `0700`;
+- `/home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.tar.gz` contains the retired external source, mode `0600`;
+- `hades-agent-frontend:pre-cutover-20260714` is the verified recovery image.
+
+For a future cutover, first attempt the simpler exact-image tag and fail closed when the image object is unavailable:
+
+```bash
+current_frontend_image="$(docker inspect --format '{{.Image}}' devboard-frontend-1)"
+test -n "$current_frontend_image"
+docker image inspect "$current_frontend_image" >/dev/null
+docker image tag "$current_frontend_image" hades-agent-frontend:pre-cutover
+test "$(docker image inspect --format '{{.Id}}' hades-agent-frontend:pre-cutover)" = "$current_frontend_image"
+```
+
+When an image object or layer has already been garbage-collected, capture the still-mounted runtime before recreating its container. Use a new dated directory; never overwrite an already verified recovery snapshot:
+
+```bash
+umask 077
+runtime_backup=/home/ubuntu/backups/devboard/frontend-runtime-pre-cutover-YYYYMMDD
+install -d -m 700 "$runtime_backup/html" "$runtime_backup/nginx"
+docker cp devboard-frontend-1:/usr/share/nginx/html/. "$runtime_backup/html/"
+docker cp devboard-frontend-1:/etc/nginx/conf.d/default.conf \
+  "$runtime_backup/nginx/default.conf"
+test -s "$runtime_backup/html/index.html"
+test -s "$runtime_backup/nginx/default.conf"
+```
+
+Build and verify a recovery image from that snapshot without starting or exposing the seed container. The command contains no application or proxy secret:
+
+```bash
+base='nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10'
+seed="hades-frontend-rollback-seed-$$"
+trap 'docker rm -f "$seed" >/dev/null 2>&1 || true' EXIT
+docker pull "$base"
+docker create --name "$seed" "$base"
+docker cp "$runtime_backup/html/." "$seed":/usr/share/nginx/html/
+docker cp "$runtime_backup/nginx/default.conf" "$seed":/etc/nginx/conf.d/default.conf
+docker commit "$seed" hades-agent-frontend:pre-cutover
+docker rm "$seed"
+trap - EXIT
+docker run --rm --entrypoint nginx hades-agent-frontend:pre-cutover -t
+```
+
+The 2026-07-14 cutover additionally archived and validated the external source before deployment, recreated only `frontend` with `--no-deps`, passed server and authenticated desktop/mobile browser QA, removed the external checkout, and repeated server/public smoke after removal.
 
 ## Operations And Rollback
 
+Normal backend operations remain:
+
 ```bash
-docker compose -f docker-compose.devboard.prod.yaml logs --tail=120 app worker scheduler
+docker compose -f docker-compose.devboard.prod.yaml logs --tail=120 app worker scheduler frontend
 docker compose -f docker-compose.devboard.prod.yaml up -d --force-recreate worker scheduler
 ```
 
-Set `DEVBOARD_BACKEND_IMAGE` to an immutable release tag in real deployments. Roll back by restoring the previous image tag, running only backward-compatible migration procedures, and recreating `app`, `worker`, and `scheduler`.
+Every frontend release smoke failure triggers a frontend-only rollback. First verify that the saved image exists; if it does not, reconstruct it from the verified private runtime snapshot using the pinned seed procedure above. Restore only the saved frontend image and recreate only that service:
+
+```bash
+docker image inspect hades-agent-frontend:pre-cutover-20260714 >/dev/null
+docker image tag hades-agent-frontend:pre-cutover-20260714 devboard-frontend
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml \
+  up -d --no-deps --no-build --force-recreate frontend
+```
+
+Do not run migrations, seeders, database restores, or recreate backend/data services for a frontend rollback. For a full backend release, set `DEVBOARD_BACKEND_IMAGE` to an immutable release tag and use only the separately approved backward-compatible database rollback procedure.
+
+## `ai-sandbox` Scope
+
+`ai-sandbox/` is repository-local bootstrap support: operating rules, environment/project metadata, local logbooks, and derived local inspection aids. It is not the product runtime and must not become a second operational source of truth. The Hades backend is the shared source of truth for project memory, wiki content, and project state. Keep shared facts there; keep this runbook authoritative for deployment operations; avoid copying mutable backend state into sandbox wiki or config files.

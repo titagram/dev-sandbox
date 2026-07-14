@@ -66,6 +66,38 @@ def test_code_graph_uses_graphify_when_available(monkeypatch, tmp_path):
     assert graph["parser"] == "tree-sitter"
     assert graph["graph_extraction_mode"] == "graphify"
     assert graph["nodes"][0]["properties"]["extractor"] == "graphify"
+    assert graph["graph_contract"]["version"] == "hades.graph_artifact.v1"
+    assert graph["graph_contract"]["extractor"]["name"] == "graphify"
+    assert graph["graph_contract"]["extractor"]["fallback_reason"] is None
+
+
+def test_graphify_unavailable_is_explicit(monkeypatch, tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("def run():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "devboard_analyzer.code_graph._load_graphify_extract",
+        lambda: (None, "graphify_unavailable"),
+    )
+
+    graph = build_code_graph(tmp_path, [source])
+
+    assert graph["graph_contract"]["extractor"]["mode"] == "fallback"
+    assert graph["graph_contract"]["extractor"]["fallback_reason"] == "graphify_unavailable"
+
+
+def test_graphify_failure_does_not_leak_message(monkeypatch, tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("def run():\n    return 1\n", encoding="utf-8")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("private path")
+
+    monkeypatch.setattr("devboard_analyzer.code_graph._load_graphify_extract", lambda: (broken, None))
+
+    graph = build_code_graph(tmp_path, [source])
+
+    assert graph["graph_contract"]["extractor"]["fallback_reason"] == "graphify_failed:RuntimeError"
+    assert "private path" not in str(graph)
 
 
 def test_code_graph_uses_lightweight_fallback_for_javascript_symbols(tmp_path):
@@ -199,6 +231,7 @@ def test_ambiguous_simple_name_remains_external(tmp_path):
         n for n in graph["nodes"] if n["properties"].get("name") == "start" and n["properties"].get("kind") == "function"
     )
 
+    assert service_a_run is not None
     calls_rels = [r for r in graph["relationships"] if r["type"] == "CALLS" and r["source_id"] == start_node["id"]]
 
     for rel in calls_rels:

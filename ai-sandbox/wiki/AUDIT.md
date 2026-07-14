@@ -1,5 +1,16 @@
 # Audit
 
+## 2026-07-14 Hades Compose and shared Traefik boundary
+
+Status: `verified_from_code`.
+
+- The server Hades lifecycle contains `app`, standalone React `frontend`, `worker`, `scheduler`, PostgreSQL, and Neo4j; it contains no Traefik service.
+- The ignored server `.env` selects the base Compose plus `docker-compose.devboard.traefik.yaml`, so `docker compose up -d --build --wait` is the canonical application deployment command.
+- Traefik remains a standalone shared host container on the external `traefik_default` network. Hades owns only its router/middleware labels and network attachment.
+- Backend and frontend healthchecks gate startup. Only `app` runs Composer into a shared named vendor volume; worker and scheduler wait for the healthy backend and neither write dependencies concurrently nor dirty the Git checkout.
+- Host recovery details live outside the repository at `/home/ubuntu/traefik-readme.md`; repository integration rules live in `docs/runbooks/traefik-integration.md` and `AGENTS.md`.
+- Live verification preserved the exact PostgreSQL table-count hash, key table counts, Neo4j node/relationship counts, and named data volumes across deployment.
+
 ## 2026-07-09 Security And Readiness Remediation
 
 Status: `verified_from_code`.

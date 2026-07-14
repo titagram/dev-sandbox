@@ -27,9 +27,14 @@ class HadesAgentJobPolicy
         )));
     }
 
+    public function allowsCapability(object $agent, string $capability): bool
+    {
+        return in_array($capability, $this->effectiveCapabilities($agent), true);
+    }
+
     public function assertCapability(object $agent, object $job): void
     {
-        if (! in_array((string) $job->capability, $this->effectiveCapabilities($agent), true)) {
+        if (! $this->allowsCapability($agent, (string) $job->capability)) {
             throw new HadesJobException(
                 'job_capability_not_allowed',
                 'The job capability is not enabled for this Hades agent.',

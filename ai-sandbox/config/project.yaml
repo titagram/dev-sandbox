@@ -1,12 +1,14 @@
 project:
   initialized: true
-  name: "DevBoard"
+  name: "Hades Agent"
+  compatibility_names:
+    - "DevBoard (temporary internal Compose, environment, and container identifiers)"
   type: "existing"
   root: "."
   stack:
-    - "Laravel 13"
-    - "Inertia React"
-    - "Python CLI/MCP plugin"
+    - "Laravel 13 backend and APIs"
+    - "Standalone React 19 frontend"
+    - "Python CLI/MCP plugin and analyzer"
     - "PostgreSQL"
     - "Neo4j"
     - "Docker Compose"
@@ -17,27 +19,31 @@ project:
     - "docs/ai-devboard/05_GENESIS_IMPORT.md"
     - "docs/ai-devboard/06_DELTA_SYNC.md"
     - "docs/ai-devboard/07_SECURITY_MODEL.md"
-    - "docs/ai-devboard/08_IMPLEMENTATION_STEPS.md"
-    - "docs/ai-devboard/09_DASHBOARD_WIREFRAMES.md"
     - "docs/ai-devboard/10_RUNTIME_SEQUENCES.md"
-    - "docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md"
+    - "docs/superpowers/plans/2026-07-14-react-frontend-repository-cutover.md"
+    - "docs/runbooks/devboard-production-deploy.md"
+    - "docs/runbooks/traefik-integration.md"
   start_commands:
-    - "docker compose -f docker-compose.devboard.yaml up app node postgres neo4j"
+    - "docker compose up -d --build --wait (server .env selects base plus Traefik integration; Traefik itself remains external)"
   test_commands:
     - "cd backend && php artisan test"
     - "cd plugin && python -m pytest -q"
     - "cd analyzer && python -m pytest -q"
+    - "cd frontend && CI=true corepack yarn test --watchAll=false"
   build_commands:
-    - "cd backend && npm run build"
+    - "cd frontend && corepack yarn install --frozen-lockfile && corepack yarn build"
 
 docker:
   required: true
   compose_files:
     - "docker-compose.devboard.yaml"
     - "docker-compose.devboard.amd64.yaml"
+    - "docker-compose.devboard.traefik.yaml (routing overlay; does not define the shared Traefik service)"
   services:
     - "app"
-    - "node"
+    - "frontend"
+    - "worker"
+    - "scheduler"
     - "postgres"
     - "neo4j"
 

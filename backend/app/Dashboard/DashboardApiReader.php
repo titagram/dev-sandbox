@@ -2,6 +2,12 @@
 
 namespace App\Dashboard;
 
+use App\Services\Graph\CanonicalGraphRepository;
+use App\Services\Graph\DashboardGraphPublicKind;
+use App\Services\Graph\DashboardGraphPublicHandle;
+use App\Services\Neo4j\Neo4jClient;
+use App\Services\Neo4j\Neo4jResultMaterializer;
+use App\Services\Neo4jClientFactory;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -11,6 +17,66 @@ final class DashboardApiReader
     private const GRAPH_PREVIEW_NODE_LIMIT = 200;
 
     private const GRAPH_PREVIEW_EDGE_LIMIT = 300;
+
+    private const CANONICAL_SCOPE_LIMIT = 50;
+
+    /**
+     * Dashboard graph previews are a data-minimized public projection, not a
+     * serialization of analyzer nodes. Only these canonical semantic types may
+     * contribute a human label, and only through the fields listed here.
+     * Unknown producer types remain non-renderable and cannot contribute labels.
+     *
+     * @var array<string, array{types: list<string>, label_fields: list<string>}>
+     */
+    private const GRAPH_PREVIEW_NODE_POLICY = [
+        'method' => [
+            'types' => ['method'],
+            'label_fields' => ['name'],
+        ],
+        'class' => [
+            'types' => ['class'],
+            'label_fields' => ['name'],
+        ],
+        'method_reference' => [
+            'types' => ['method_reference'],
+            'label_fields' => ['name'],
+        ],
+        'external_class' => [
+            'types' => ['external_class'],
+            'label_fields' => ['name'],
+        ],
+        'table' => [
+            'types' => ['table'],
+            'label_fields' => ['name'],
+        ],
+        'route' => [
+            'types' => ['route'],
+            'label_fields' => ['name', 'label', 'path', 'uri', 'route', 'url'],
+        ],
+        'trait' => [
+            'types' => ['trait'],
+            'label_fields' => ['name'],
+        ],
+        'external_symbol' => [
+            'types' => ['external_symbol'],
+            'label_fields' => ['name'],
+        ],
+        'interface' => [
+            'types' => ['interface'],
+            'label_fields' => ['name'],
+        ],
+        'file' => [
+            'types' => ['file'],
+            'label_fields' => ['name'],
+        ],
+    ];
+
+    public function __construct(
+        private readonly CanonicalGraphRepository $canonicalGraphs,
+        private readonly ?DashboardGraphPublicHandle $publicHandles = null,
+        private readonly ?Neo4jClient $neo4j = null,
+        private readonly ?DashboardGraphPublicKind $publicKinds = null,
+    ) {}
 
     /**
      * @return list<array<string, mixed>>
@@ -621,6 +687,12 @@ final class DashboardApiReader
     {
         $this->abortUnlessProjectExists($projectId);
 
+        if ($projectId !== null && $snapshotId === null && $runId === null) {
+            $this->abortUnlessProjectReadable($projectId);
+
+            return $this->canonicalGraph($projectId);
+        }
+
         $snapshot = DB::table('snapshots')
             ->when($projectId !== null, fn ($query) => $query->where('project_id', $projectId))
             ->when($snapshotId, fn ($query, string $id) => $query->where('id', $id))
@@ -648,11 +720,23 @@ final class DashboardApiReader
         $validNodes = array_values(array_filter($nodes, 'is_array'));
         $normalizedRelationships = $this->graphRelationships($relationships);
         $degreeByNode = $this->graphDegrees($normalizedRelationships);
-        $nodeStats = $this->graphNodeStats($validNodes);
+        $nodeStats = $this->graphNodeStats($validNodes, [], true);
         $previewNodes = $this->graphPreviewNodes($validNodes, $normalizedRelationships);
+        $privateIdentityTokens = $this->graphPrivateIdentityTokenMap($validNodes);
 
         $graphNodes = array_map(
-            fn (array $node): array => $this->graphNode($node, (string) ($repository->name ?? 'unknown'), $degreeByNode),
+            fn (array $node): array => $this->graphNode(
+                $node,
+                (string) ($repository->name ?? 'unknown'),
+                $degreeByNode,
+                $privateIdentityTokens[$this->graphNodeId($node)] ?? [],
+                null,
+                null,
+                null,
+                null,
+                'local_analyzer',
+                true,
+            ),
             $previewNodes,
         );
         $previewNodeIds = array_fill_keys(array_column($graphNodes, 'id'), true);
@@ -663,15 +747,15 @@ final class DashboardApiReader
         $previewEdges = array_slice($previewEdges, 0, self::GRAPH_PREVIEW_EDGE_LIMIT);
 
         $graphEdges = array_map(
-            fn (array $edge, int $index): array => [
-                'id' => (string) ($edge['id'] ?? 'edge-'.$index),
+            fn (array $edge): array => [
+                'id' => $edge['id'],
                 'from' => $edge['from'],
                 'to' => $edge['to'],
                 'kind' => $this->graphEdgeKind((string) ($edge['type'] ?? 'uses')),
             ],
             $previewEdges,
-            array_keys($previewEdges),
         );
+        $preview = $this->sanitizeGraphPreview($graphNodes, $graphEdges);
 
         return [
             'snapshot_id' => (string) $snapshot->id,
@@ -684,8 +768,283 @@ final class DashboardApiReader
                 'modules' => $nodeStats['modules'],
                 'routes' => $nodeStats['routes'],
             ],
-            'nodes' => array_values($graphNodes),
-            'edges' => array_values($graphEdges),
+            'nodes' => $preview['nodes'],
+            'edges' => $preview['edges'],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function canonicalGraph(string $projectId): array
+    {
+        $scopeMetadata = $this->canonicalGraphs->listScopeMetadata($projectId, self::CANONICAL_SCOPE_LIMIT);
+        $scopes = $scopeMetadata['scopes'];
+
+        if (count($scopes) !== 1) {
+            return $this->canonicalGraphSelection(
+                $projectId,
+                $scopes === [] ? 'unavailable' : 'scope_required',
+                array_map(fn (array $scope): array => $this->canonicalScopeMetadata($scope), $scopes),
+                $scopeMetadata['truncated'],
+            );
+        }
+
+        $scope = $scopes[0];
+        $scopeType = (string) $scope['source_scope_type'];
+        $scopeId = (string) $scope['source_scope_id'];
+        $projection = $this->canonicalGraphProjectionWinner($projectId, $scopeType, $scopeId);
+        if ($projection === null) {
+            $latestProjection = $this->canonicalGraphProjectionState($projectId, $scopeType, $scopeId);
+            if ($latestProjection === null
+                || in_array((string) $latestProjection->status, ['queued', 'projecting'], true)) {
+                return $this->canonicalGraphSelection($projectId, 'unavailable', [
+                    $this->canonicalScopeMetadata($scope),
+                ]);
+            }
+
+            return $this->canonicalGraphRebuildRequired(
+                $projectId,
+                [
+                    'artifact_id' => (string) $latestProjection->artifact_id,
+                    'created_at' => (string) ($latestProjection->created_at ?? $latestProjection->projected_at ?? now()),
+                ],
+                $scope,
+                $latestProjection,
+            );
+        }
+
+        $graph = $this->canonicalGraphs->findByIdentity(
+            $projectId,
+            $scopeType,
+            $scopeId,
+            (string) $projection->artifact_type,
+            (string) $projection->artifact_id,
+        );
+        if ($graph === null) {
+            return $this->canonicalGraphSelection($projectId, 'unavailable', [
+                $this->canonicalScopeMetadata($scope),
+            ]);
+        }
+
+        $identity = $graph['identity'];
+        $activeGraphVersion = trim((string) ($projection?->active_graph_version ?? ''));
+        if ($projection !== null
+            && ($activeGraphVersion === '' || ! $this->canonicalProjectionKeyIsCurrent(
+                $projectId,
+                (string) $scope['source_scope_type'],
+                (string) $scope['source_scope_id'],
+                $activeGraphVersion,
+            ))) {
+            return $this->canonicalGraphRebuildRequired($projectId, $identity, $scope, $projection);
+        }
+        $nodes = array_values(array_filter($graph['nodes'] ?? [], 'is_array'));
+        $relationships = $this->graphRelationships($graph['relationships'] ?? []);
+        $degreeByNode = $this->graphDegrees($relationships);
+        $trustedProducerRouteProvenance = is_array($graph['private_route_provenance'] ?? null)
+            ? $graph['private_route_provenance']
+            : [];
+        $privateIdentityTokens = $this->graphPrivateIdentityTokenMap(
+            $nodes,
+            is_array($graph['private_identity_provenance'] ?? null) ? $graph['private_identity_provenance'] : [],
+        );
+        $nodeStats = $this->graphNodeStats($nodes, $privateIdentityTokens, false, $trustedProducerRouteProvenance);
+        $previewNodes = $this->graphPreviewNodes($nodes, $relationships, null);
+        $graphNodes = array_map(
+            fn (array $node): array => $this->graphNode(
+                $node,
+                (string) $scope['source_scope_type'],
+                $degreeByNode,
+                $privateIdentityTokens[$this->graphNodeId($node)] ?? [],
+                $projectId,
+                (string) $scope['source_scope_type'],
+                (string) $scope['source_scope_id'],
+                $activeGraphVersion,
+                'canonical_graph',
+                isset($trustedProducerRouteProvenance[$this->graphNodeId($node)]),
+            ),
+            $previewNodes,
+        );
+        $graphNodes = array_values(array_filter(
+            $graphNodes,
+            fn (array $node): bool => $this->isGraphPreviewCanvasNode($node),
+        ));
+        $graphNodes = array_slice($graphNodes, 0, self::GRAPH_PREVIEW_NODE_LIMIT);
+        $previewNodeIds = array_fill_keys(array_column($graphNodes, 'id'), true);
+        $previewEdges = array_slice(array_values(array_filter(
+            $relationships,
+            static fn (array $edge): bool => isset($previewNodeIds[$edge['from']], $previewNodeIds[$edge['to']]),
+        )), 0, self::GRAPH_PREVIEW_EDGE_LIMIT);
+        $preview = $this->sanitizeGraphPreview(
+            $graphNodes,
+            array_map(fn (array $edge): array => [
+                'id' => $edge['id'],
+                'from' => $edge['from'], 'to' => $edge['to'],
+                'kind' => $this->graphEdgeKind((string) ($edge['type'] ?? 'uses')),
+            ], $previewEdges),
+            allowFallbackLabel: false,
+        );
+
+        return [
+            'snapshot_id' => null,
+            'run_id' => null,
+            'generated_at' => (string) $identity['created_at'],
+            'source' => $this->sourceMeta(type: 'canonical_graph'),
+            'source_scope' => [
+                'type' => (string) $scope['source_scope_type'],
+                'id' => (string) $scope['source_scope_id'],
+            ],
+            'graph_version' => $projection?->graph_version ? (string) $projection->graph_version : null,
+            'active_graph_version' => $activeGraphVersion !== '' ? $activeGraphVersion : null,
+            'quality' => (string) ($graph['contract']['extractor']['quality'] ?? $projection?->quality ?? 'unknown'),
+            'projection_status' => $projection?->status ? (string) $projection->status : 'unavailable',
+            'stats' => [
+                'nodes' => count($nodes), 'edges' => count($relationships),
+                ...$nodeStats,
+            ],
+            'nodes' => $preview['nodes'],
+            'edges' => $preview['edges'],
+        ];
+    }
+
+    private function canonicalGraphProjectionWinner(string $projectId, string $scopeType, string $scopeId): ?object
+    {
+        return DB::table('canonical_graph_projections')
+            ->where('project_id', $projectId)
+            ->where('source_scope_type', $scopeType)
+            ->where('source_scope_id', $scopeId)
+            ->where('status', 'ready')
+            ->whereNotNull('active_graph_version')
+            ->where('active_graph_version', '!=', '')
+            ->orderByDesc('projected_at')
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    private function canonicalGraphProjectionState(string $projectId, string $scopeType, string $scopeId): ?object
+    {
+        return DB::table('canonical_graph_projections')
+            ->where('project_id', $projectId)
+            ->where('source_scope_type', $scopeType)
+            ->where('source_scope_id', $scopeId)
+            ->orderByRaw("CASE status WHEN 'failed' THEN 3 WHEN 'stale' THEN 3 WHEN 'ready' THEN 2 WHEN 'projecting' THEN 1 WHEN 'queued' THEN 1 ELSE 0 END DESC")
+            ->orderByDesc('projected_at')
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    /** @param list<array<string, mixed>> $scopes */
+    private function canonicalGraphSelection(string $projectId, string $status, array $scopes, bool $scopesTruncated = false): array
+    {
+        return [
+            ...$this->emptyGraph($projectId),
+            'source_scope' => null,
+            'graph_version' => null,
+            'quality' => null,
+            'projection_status' => $status,
+            'scopes' => $scopes,
+            'scopes_truncated' => $scopesTruncated,
+        ];
+    }
+
+    /** @param array{artifact_id: string, created_at: string} $identity */
+    private function canonicalGraphRebuildRequired(
+        string $projectId,
+        array $identity,
+        array $scope,
+        object $projection,
+    ): array {
+        $activeGraphVersion = trim((string) ($projection->active_graph_version ?? ''));
+
+        return [
+            'snapshot_id' => null,
+            'run_id' => null,
+            'generated_at' => (string) $identity['created_at'],
+            'source' => $this->sourceMeta(type: 'canonical_graph'),
+            'source_scope' => [
+                'type' => (string) $scope['source_scope_type'],
+                'id' => (string) $scope['source_scope_id'],
+            ],
+            'graph_version' => $projection->graph_version ? (string) $projection->graph_version : null,
+            'active_graph_version' => $activeGraphVersion !== '' ? $activeGraphVersion : null,
+            'quality' => (string) ($projection->quality ?? 'unknown'),
+            'projection_status' => 'graph_projection_rebuild_required',
+            'stats' => [
+                'nodes' => 0,
+                'edges' => 0,
+                'modules' => 0,
+                'routes' => 0,
+                'unknown_kind_count' => 0,
+                'missing_label_count' => 0,
+                'excluded_node_count' => 0,
+            ],
+            'nodes' => [],
+            'edges' => [],
+        ];
+    }
+
+    private function canonicalProjectionKeyIsCurrent(
+        string $projectId,
+        string $scopeType,
+        string $scopeId,
+        string $activeGraphVersion,
+    ): bool {
+        $handles = $this->publicHandles ?? new DashboardGraphPublicHandle;
+        try {
+            $client = $this->neo4j ?? app(Neo4jClientFactory::class)->client();
+            $rows = $client->run(
+                'MATCH (version:CanonicalGraphVersion {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version}) '
+                .'WHERE version.public_handle_key_version = $public_handle_key_version '
+                .'AND version.public_handle_key_fingerprint = $public_handle_key_fingerprint '
+                .'RETURN version.public_handle_key_version AS public_handle_key_version, '
+                .'version.public_handle_key_fingerprint AS public_handle_key_fingerprint LIMIT 1',
+                [
+                    'project_id' => $projectId,
+                    'source_scope_type' => $scopeType,
+                    'source_scope_id' => $scopeId,
+                    'active_graph_version' => $activeGraphVersion,
+                    'public_handle_key_version' => $handles->keyVersion(),
+                    'public_handle_key_fingerprint' => $handles->keyFingerprint(),
+                ],
+            );
+        } catch (\Throwable) {
+            return false;
+        }
+        foreach (Neo4jResultMaterializer::materializeRows($rows) as $row) {
+            return $this->neo4jRowValue($row, 'public_handle_key_version') === $handles->keyVersion()
+                && $this->neo4jRowValue($row, 'public_handle_key_fingerprint') === $handles->keyFingerprint();
+        }
+
+        return false;
+    }
+
+    private function neo4jRowValue(mixed $row, string $key): mixed
+    {
+        if (is_array($row)) {
+            return $row[$key] ?? null;
+        }
+
+        if ($row instanceof \ArrayAccess && $row->offsetExists($key)) {
+            return $row[$key];
+        }
+
+        if (is_object($row) && method_exists($row, 'toArray')) {
+            $values = $row->toArray();
+
+            return is_array($values) ? ($values[$key] ?? null) : null;
+        }
+
+        return is_object($row) && property_exists($row, $key) ? $row->{$key} : null;
+    }
+
+    /** @param array{source_scope_type: string, source_scope_id: string, quality: string|null, head_commit: string|null, created_at: string|null, projection_status: string} $scope */
+    private function canonicalScopeMetadata(array $scope): array
+    {
+        return [
+            'type' => $scope['source_scope_type'],
+            'id' => $scope['source_scope_id'],
+            'quality' => $scope['quality'],
+            'head_commit' => $scope['head_commit'],
+            'created_at' => $scope['created_at'],
+            'projection_status' => $scope['projection_status'],
         ];
     }
 
@@ -709,6 +1068,9 @@ final class DashboardApiReader
                 'edges' => 0,
                 'modules' => 0,
                 'routes' => 0,
+                'unknown_kind_count' => 0,
+                'missing_label_count' => 0,
+                'excluded_node_count' => 0,
             ],
             'nodes' => [],
             'edges' => [],
@@ -1888,23 +2250,276 @@ final class DashboardApiReader
     /**
      * @param  array<string, mixed>  $node
      * @param  array<string, int>  $degreeByNode
+     * @param  array<string, true>  $privateIdentityTokens
      * @return array<string, mixed>
      */
-    private function graphNode(array $node, string $repository, array $degreeByNode): array
+    private function graphNode(
+        array $node,
+        string $repository,
+        array $degreeByNode,
+        array $privateIdentityTokens = [],
+        ?string $projectId = null,
+        ?string $scopeType = null,
+        ?string $scopeId = null,
+        ?string $activeGraphVersion = null,
+        string $sourceType = 'local_analyzer',
+        bool $trustedProducerRoute = false,
+    ): array
     {
-        $labels = is_array($node['labels'] ?? null) ? $node['labels'] : [];
-        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
         $id = $this->graphNodeId($node);
+        $kind = $this->graphNodeSemanticKind($node);
+        $handle = null;
+        if ($projectId !== null && $scopeType !== null && $scopeId !== null && $activeGraphVersion !== null) {
+            try {
+                $handle = ($this->publicHandles ?? new DashboardGraphPublicHandle)->forNode(
+                    $projectId,
+                    $scopeType,
+                    $scopeId,
+                    $activeGraphVersion,
+                    $id,
+                );
+            } catch (\InvalidArgumentException) {
+                $handle = null;
+            }
+        }
 
-        return [
+        $result = [
             'id' => $id,
-            'label' => (string) ($properties['name'] ?? $properties['path'] ?? $id),
-            'kind' => $this->graphNodeKind($labels),
+            'label' => $this->graphNodePublicLabel($node, $kind, $privateIdentityTokens, $trustedProducerRoute),
+            'kind' => ($this->publicKinds ?? new DashboardGraphPublicKind)->map($kind),
             'repository' => $repository,
             'degree' => $degreeByNode[$id] ?? 0,
             'risk' => 'medium',
-            'source' => $this->sourceMeta(type: 'local_analyzer', ref: $id),
+            'source' => $this->sourceMeta(type: $sourceType, ref: $id),
         ];
+        if ($handle !== null) {
+            $result['handle'] = $handle;
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $nodes
+     * @param  list<array<string, mixed>>  $edges
+     * @return array{nodes: list<array<string, mixed>>, edges: list<array<string, mixed>>}
+     */
+    private function sanitizeGraphPreview(array $nodes, array $edges, bool $allowFallbackLabel = true): array
+    {
+        $rawNodeIds = array_map(
+            static fn (array $node): string => (string) ($node['id'] ?? 'node'),
+            $nodes,
+        );
+        $idMap = $this->graphPublicIdentifierMap($rawNodeIds, 'node');
+        $sanitizedNodes = [];
+        $seenRawNodeIds = [];
+
+        foreach ($nodes as $node) {
+            $rawId = (string) ($node['id'] ?? 'node');
+            if (isset($seenRawNodeIds[$rawId])) {
+                continue;
+            }
+            $seenRawNodeIds[$rawId] = true;
+
+            $publicId = $idMap[$rawId];
+            $node['id'] = $publicId;
+            $publicLabel = is_string($node['label'] ?? null) && trim($node['label']) !== ''
+                ? $node['label']
+                : ($allowFallbackLabel ? (string) ($node['kind'] ?? 'service').' '.$publicId : null);
+            if (is_array($node['source'] ?? null)) {
+                $node['source']['ref'] = $publicId;
+            }
+            $node = $this->sanitizeGraphPreviewValue($node);
+            if ($publicLabel !== null
+                && (($node['kind'] ?? null) !== 'route'
+                    || $this->isGraphRoutePath($publicLabel)
+                    || $this->isGraphHttpRouteLabel($publicLabel))) {
+                $node['label'] = $publicLabel;
+            } else {
+                unset($node['label']);
+            }
+            $sanitizedNodes[] = $node;
+        }
+
+        $eligibleEdges = [];
+        $signatureOccurrences = [];
+        foreach ($edges as $edge) {
+            $rawFrom = (string) ($edge['from'] ?? '');
+            $rawTo = (string) ($edge['to'] ?? '');
+            if (! isset($idMap[$rawFrom], $idMap[$rawTo])) {
+                continue;
+            }
+
+            $publicFrom = $idMap[$rawFrom];
+            $publicTo = $idMap[$rawTo];
+            $kind = (string) ($edge['kind'] ?? 'uses');
+            $signature = json_encode([
+                $kind,
+                $publicFrom,
+                $publicTo,
+            ], JSON_THROW_ON_ERROR);
+            $occurrence = $signatureOccurrences[$signature] ?? 0;
+            $signatureOccurrences[$signature] = $occurrence + 1;
+            $identity = $signature."\0".$occurrence;
+            $eligibleEdges[] = [
+                'edge' => $edge,
+                'raw_from' => $rawFrom,
+                'raw_to' => $rawTo,
+                'identity' => $identity,
+            ];
+        }
+
+        $edgeCandidates = [];
+        foreach ($eligibleEdges as $record) {
+            $edgeCandidates[$record['identity']] = $this->graphPublicIdPrefix('edge')
+                .hash('sha256', "edge\0".$record['identity']);
+        }
+        $edgeIdMap = $this->resolveGraphPublicIdCandidates($edgeCandidates, 'edge');
+
+        $sanitizedEdges = [];
+        foreach ($eligibleEdges as $record) {
+            $edge = $record['edge'];
+            $edge['id'] = $edgeIdMap[$record['identity']];
+            $rawFrom = $record['raw_from'];
+            $rawTo = $record['raw_to'];
+            $edge['from'] = $idMap[$rawFrom];
+            $edge['to'] = $idMap[$rawTo];
+            $sanitizedEdges[] = $this->sanitizeGraphPreviewValue($edge);
+        }
+
+        return ['nodes' => $sanitizedNodes, 'edges' => $sanitizedEdges];
+    }
+
+    /**
+     * @param  list<string>  $identifiers
+     * @return array<string, string>
+     */
+    private function graphPublicIdentifierMap(array $identifiers, string $kind): array
+    {
+        $prefix = $this->graphPublicIdPrefix($kind);
+        $identifiers = array_values(array_unique($identifiers));
+        sort($identifiers, SORT_STRING);
+        $candidates = [];
+
+        foreach ($identifiers as $identifier) {
+            $candidates[$identifier] = $prefix.hash('sha256', $kind."\0".$identifier);
+        }
+
+        return $this->resolveGraphPublicIdCandidates($candidates, $kind);
+    }
+
+    /**
+     * Resolve against the complete candidate set, in sorted semantic-identity order.
+     * This makes collision expansion independent of artifact ordering.
+     *
+     * @param  array<string, string>  $candidates
+     * @return array<string, string>
+     */
+    private function resolveGraphPublicIdCandidates(array $candidates, string $kind): array
+    {
+        ksort($candidates, SORT_STRING);
+        $prefix = $this->graphPublicIdPrefix($kind);
+        $resolved = [];
+        $used = [];
+
+        foreach ($candidates as $identity => $candidate) {
+            $attempt = 0;
+            while (isset($used[$candidate])) {
+                $attempt++;
+                $candidate = $prefix.hash('sha256', $identity."\0collision\0".$attempt);
+            }
+            $resolved[$identity] = $candidate;
+            $used[$candidate] = true;
+        }
+
+        return $resolved;
+    }
+
+    private function graphPublicIdPrefix(string $kind): string
+    {
+        return "hades-public-v1-{$kind}-";
+    }
+
+    private function sanitizeGraphPreviewValue(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return $this->looksLikeLocalPath($value) ? '[redacted]' : $value;
+        }
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        foreach ($value as $key => $child) {
+            $value[$key] = $this->sanitizeGraphPreviewValue($child);
+        }
+
+        return $value;
+    }
+
+    private function looksLikeLocalPath(string $value): bool
+    {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return false;
+        }
+        if ($this->isGraphHttpRouteLabel($trimmed) || $this->isGraphRoutePath($trimmed)) {
+            return false;
+        }
+        if ($this->isGraphFilesystemIdentity($trimmed)) {
+            return true;
+        }
+
+        // Prefixes are intentionally not enumerated. A path payload may follow any
+        // semantic wrapper (for example `symbol:`) or ordinary token delimiter.
+        $payloadBoundary = "(?:^|[\\s'\"()\\[\\]{}<>=,;|:])";
+
+        if (preg_match("~{$payloadBoundary}file:(?:/{1,3}|[a-z]:[\\\\/]|\\\\\\\\)~i", $trimmed) === 1) {
+            return true;
+        }
+
+        if (preg_match("~{$payloadBoundary}[a-z]:[\\\\/]~i", $trimmed) === 1) {
+            return true;
+        }
+
+        if (preg_match("~{$payloadBoundary}\\\\\\\\[^\\\\/\\s]+[\\\\/]~", $trimmed) === 1) {
+            return true;
+        }
+
+        preg_match_all(
+            "~{$payloadBoundary}/(?!/)([a-z0-9._-]+)(?=[\\\\/]|$|[\\s'\"()\\[\\]{}<>=,;|?#])~i",
+            $trimmed,
+            $matches,
+        );
+
+        foreach ($matches[1] ?? [] as $root) {
+            if ($this->isGraphWebRouteRoot($root)) {
+                continue;
+            }
+
+            if ($this->isSensitiveFilesystemRoot($root)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isGraphFilesystemIdentity(string $value): bool
+    {
+        $boundary = "(?:\A|[\s'\"()\\[\\]{}<>=,;|:])";
+        if (preg_match('~'.$boundary.'file://~i', $value) === 1
+            || preg_match('~'.$boundary.'[a-z]:[\\\\/]~i', $value) === 1
+            || preg_match('~'.$boundary.'[a-z]:[a-z0-9_.-]*[\\\\/]~i', $value) === 1
+            || preg_match('~'.$boundary.'(?:\\\\\\\\|//)~', $value) === 1
+            || preg_match('~'.$boundary.'\.\.?[\\\\/]~', $value) === 1
+            || preg_match('~'.$boundary.'/~', $value) === 1) {
+            return true;
+        }
+        if (str_contains($value, chr(92)) && ! $this->isValidGraphFqcn($value)) {
+            return true;
+        }
+
+        return preg_match('~'.$boundary.'(?:[A-Za-z0-9_.-]+)[\\\\/][^\s]+~', $value) === 1;
     }
 
     /**
@@ -1912,7 +2527,7 @@ final class DashboardApiReader
      * @param  list<array{from: string, to: string}>  $relationships
      * @return list<array<string, mixed>>
      */
-    private function graphPreviewNodes(array $nodes, array $relationships): array
+    private function graphPreviewNodes(array $nodes, array $relationships, ?int $limit = self::GRAPH_PREVIEW_NODE_LIMIT): array
     {
         $nodeById = [];
         foreach ($nodes as $node) {
@@ -1925,7 +2540,7 @@ final class DashboardApiReader
         $previewNodeIds = [];
         foreach ($relationships as $relationship) {
             foreach ([$relationship['from'], $relationship['to']] as $id) {
-                if (count($previewNodeIds) >= self::GRAPH_PREVIEW_NODE_LIMIT) {
+                if ($limit !== null && count($previewNodeIds) >= $limit) {
                     break 2;
                 }
 
@@ -1936,7 +2551,7 @@ final class DashboardApiReader
         }
 
         foreach ($nodes as $node) {
-            if (count($previewNodeIds) >= self::GRAPH_PREVIEW_NODE_LIMIT) {
+            if ($limit !== null && count($previewNodeIds) >= $limit) {
                 break;
             }
 
@@ -2015,9 +2630,15 @@ final class DashboardApiReader
      * @param  list<mixed>  $nodes
      * @return array{modules: int, routes: int}
      */
-    private function graphNodeStats(array $nodes): array
+    private function graphNodeStats(array $nodes, array $privateIdentityTokens = [], bool $trustedProducerRoutes = false, array $trustedProducerRouteProvenance = []): array
     {
-        $stats = ['modules' => 0, 'routes' => 0];
+        $stats = [
+            'modules' => 0,
+            'routes' => 0,
+            'unknown_kind_count' => 0,
+            'missing_label_count' => 0,
+            'excluded_node_count' => 0,
+        ];
 
         foreach ($nodes as $node) {
             if (! is_array($node)) {
@@ -2032,9 +2653,36 @@ final class DashboardApiReader
             if ($kind === 'route') {
                 $stats['routes']++;
             }
+
+            $semanticKind = $this->graphNodeSemanticKind($node);
+            if ($semanticKind === 'unknown') {
+                $stats['unknown_kind_count']++;
+            }
+
+            $label = $this->graphNodePublicLabel(
+                $node,
+                $semanticKind,
+                $privateIdentityTokens[$this->graphNodeId($node)] ?? [],
+                $trustedProducerRoutes || isset($trustedProducerRouteProvenance[$this->graphNodeId($node)]),
+            );
+            if ($label === null) {
+                $stats['missing_label_count']++;
+            }
+
+            if ($semanticKind === 'unknown' || $label === null) {
+                $stats['excluded_node_count']++;
+            }
         }
 
         return $stats;
+    }
+
+    /** @param array<string, mixed> $node */
+    private function isGraphPreviewCanvasNode(array $node): bool
+    {
+        return ($node['kind'] ?? 'unknown') !== 'unknown'
+            && is_string($node['label'] ?? null)
+            && trim($node['label']) !== '';
     }
 
     /**
@@ -2065,6 +2713,326 @@ final class DashboardApiReader
         }
 
         return 'service';
+    }
+
+    /** @param array<string, mixed> $node */
+    private function graphNodeSemanticKind(array $node): string
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        $types = [];
+        if (is_string($properties['kind'] ?? null)) {
+            $types[] = strtolower(trim($properties['kind']));
+        }
+        foreach (is_array($node['labels'] ?? null) ? $node['labels'] : [] as $label) {
+            $types[] = strtolower(trim((string) $label));
+        }
+
+        $recognizedKinds = [];
+        $hasUnknownType = false;
+        foreach (array_values(array_unique($types)) as $type) {
+            if ($type === '' || $type === 'symbol') {
+                continue;
+            }
+
+            $recognizedKind = null;
+            foreach (self::GRAPH_PREVIEW_NODE_POLICY as $publicKind => $policy) {
+                if (in_array($type, $policy['types'], true)) {
+                    $recognizedKind = $publicKind;
+                    break;
+                }
+            }
+
+            if ($recognizedKind === null) {
+                $hasUnknownType = true;
+
+                continue;
+            }
+
+            $recognizedKinds[$recognizedKind] = true;
+        }
+
+        if ($hasUnknownType || count($recognizedKinds) !== 1) {
+            return 'unknown';
+        }
+
+        return (string) array_key_first($recognizedKinds);
+    }
+
+    /**
+     * @param  array<string, mixed>  $node
+     * @param  array<string, true>  $privateIdentityTokens
+     */
+    private function graphNodePublicLabel(array $node, string $kind, array $privateIdentityTokens, bool $trustedProducerRoute = false): ?string
+    {
+        $policy = self::GRAPH_PREVIEW_NODE_POLICY[$kind] ?? null;
+        if ($policy === null) {
+            return null;
+        }
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+
+        $label = null;
+        if ($kind === 'route') {
+            $label = $this->graphRouteLabel($properties, $policy['label_fields'], $trustedProducerRoute);
+        } else {
+            foreach ($policy['label_fields'] as $field) {
+                $value = $properties[$field] ?? null;
+                if (! is_string($value)) {
+                    continue;
+                }
+                $label = $kind === 'file'
+                    ? $this->graphFileLabel($value)
+                    : $this->graphSymbolLabel($value);
+                if ($label !== null) {
+                    break;
+                }
+            }
+        }
+
+        if ($label === null) {
+            return null;
+        }
+
+        foreach ($this->graphPublicLabelComparisonTokens($label) as $token) {
+            if (isset($privateIdentityTokens[$token])) {
+                return null;
+            }
+        }
+
+        return $label;
+    }
+
+    /**
+     * Build exact, case-folded comparison tokens from producer-controlled
+     * identity fields. Path components and stems are tokens in their own right;
+     * arbitrary substrings are not, avoiding accidental suppression of safe
+     * labels that merely contain part of an identity.
+     *
+     * @param  list<array<string, mixed>>  $nodes
+     * @param  array<string, list<string>>  $capturedProvenance
+     * @return array<string, array<string, true>>
+     */
+    private function graphPrivateIdentityTokenMap(array $nodes, array $capturedProvenance = []): array
+    {
+        $tokensByNode = [];
+
+        foreach ($nodes as $node) {
+            $nodeId = $this->graphNodeId($node);
+            $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+            $publicRoutePaths = $this->graphPublicRoutePathValues($node, $properties);
+            $identityValues = is_array($capturedProvenance[$nodeId] ?? null)
+                ? $capturedProvenance[$nodeId]
+                : [];
+            if ($publicRoutePaths !== []) {
+                $identityValues = array_values(array_filter(
+                    $identityValues,
+                    static fn (mixed $value): bool => ! is_string($value) || ! in_array($value, $publicRoutePaths, true),
+                ));
+            }
+
+            foreach ([$node, $properties] as $identityContainer) {
+                foreach (['id', 'external_id', 'symbol_id', 'source_ref', 'source_path', 'path'] as $field) {
+                    $value = $identityContainer[$field] ?? null;
+                    if (is_string($value)
+                        && ($field !== 'path' || ! in_array($value, $publicRoutePaths, true))) {
+                        $identityValues[] = $value;
+                    }
+                }
+
+                $source = $identityContainer['source'] ?? null;
+                if (! is_array($source)) {
+                    continue;
+                }
+                foreach (['ref', 'path', 'id', 'external_id', 'symbol_id'] as $field) {
+                    if (is_string($source[$field] ?? null)) {
+                        $identityValues[] = $source[$field];
+                    }
+                }
+            }
+
+            $tokens = $tokensByNode[$nodeId] ?? [];
+            foreach ($identityValues as $identityValue) {
+                if (! is_string($identityValue)) {
+                    continue;
+                }
+                foreach ($this->graphIdentityComparisonTokens($identityValue) as $token) {
+                    $tokens[$token] = true;
+                }
+            }
+            $tokensByNode[$nodeId] = $tokens;
+        }
+
+        return $tokensByNode;
+    }
+
+    /**
+     * A route's direct `path` is approved presentation data, not filesystem
+     * provenance. Nested `source.path` remains private and is never exempted.
+     *
+     * @param  array<string, mixed>  $node
+     * @param  array<string, mixed>  $properties
+     * @return list<string>
+     */
+    private function graphPublicRoutePathValues(array $node, array $properties): array
+    {
+        if ($this->graphNodeSemanticKind($node) !== 'route') {
+            return [];
+        }
+
+        $paths = [];
+        foreach ([$node['path'] ?? null, $properties['path'] ?? null] as $path) {
+            if (is_string($path) && $this->isGraphRoutePath(trim($path))) {
+                $paths[] = $path;
+            }
+        }
+
+        return array_values(array_unique($paths));
+    }
+
+    /** @return list<string> */
+    private function graphIdentityComparisonTokens(string $identity): array
+    {
+        $normalized = $this->normalizeGraphIdentityToken($identity);
+        if ($normalized === '') {
+            return [];
+        }
+        $tokens = [$normalized => true];
+        $namespaceToken = $this->graphCodeNamespaceComparisonToken($identity, true);
+        if ($namespaceToken !== null) {
+            $tokens[$namespaceToken] = true;
+        }
+        $path = preg_replace('/\Afile:\/\//i', '', trim($identity)) ?? trim($identity);
+        $path = str_replace('\\', '/', rawurldecode($path));
+
+        foreach (explode('/', $path) as $segment) {
+            $segment = trim($segment);
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                continue;
+            }
+            $token = $this->normalizeGraphIdentityToken($segment);
+            $tokens[$token] = true;
+
+            $stem = pathinfo($segment, PATHINFO_FILENAME);
+            if ($stem !== '' && $stem !== $segment) {
+                $tokens[$this->normalizeGraphIdentityToken($stem)] = true;
+            }
+        }
+
+        return array_keys(array_filter($tokens, static fn (bool $present, string $token): bool => $present && $token !== '', ARRAY_FILTER_USE_BOTH));
+    }
+
+    private function normalizeGraphIdentityToken(string $identity): string
+    {
+        return strtolower(trim($identity));
+    }
+
+    /** @return list<string> */
+    private function graphPublicLabelComparisonTokens(string $label): array
+    {
+        $tokens = [$this->normalizeGraphIdentityToken($label)];
+        $namespaceToken = $this->graphCodeNamespaceComparisonToken($label, false);
+        if ($namespaceToken !== null) {
+            $tokens[] = $namespaceToken;
+        }
+
+        return array_values(array_unique(array_filter($tokens, static fn (string $token): bool => $token !== '')));
+    }
+
+    private function graphCodeNamespaceComparisonToken(string $identity, bool $requireCodeEvidence): ?string
+    {
+        $identity = trim($identity);
+        if (preg_match('/\A[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\\\\|::|\.)[A-Za-z_$][A-Za-z0-9_$]*)+\z/', $identity) !== 1) {
+            return null;
+        }
+        if ($requireCodeEvidence
+            && ! str_contains($identity, '\\')
+            && ! str_contains($identity, '::')
+            && preg_match('/[A-Z_$]/', $identity) !== 1) {
+            return null;
+        }
+
+        $canonical = preg_replace('/(?:\\\\|::|\.)/', '::', $identity) ?? $identity;
+
+        return 'namespace:'.strtolower($canonical);
+    }
+
+    /**
+     * @param  array<string, mixed>  $properties
+     * @param  list<string>  $labelFields
+     */
+    private function graphRouteLabel(array $properties, array $labelFields, bool $trustedProducerRoute = false): ?string
+    {
+        if (! $trustedProducerRoute) {
+            return null;
+        }
+        foreach ($labelFields as $field) {
+            if (! is_string($properties[$field] ?? null)) {
+                continue;
+            }
+            $candidate = trim($properties[$field]);
+            if ($this->isGraphHttpRouteLabel($candidate) || $this->isGraphRoutePath($candidate)) {
+                return $candidate;
+            }
+        }
+
+        $method = $properties['http_method'] ?? $properties['method'] ?? $properties['verb'] ?? null;
+        $path = $properties['path'] ?? $properties['uri'] ?? $properties['route'] ?? $properties['url'] ?? null;
+        if (is_string($method) && is_string($path)) {
+            $method = strtoupper(trim($method));
+            $path = trim($path);
+            if (preg_match('/\A(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\z/', $method) === 1
+                && $this->isGraphRoutePath($path)) {
+                return $method.' '.$path;
+            }
+        }
+
+        return null;
+    }
+
+    private function isGraphHttpRouteLabel(string $value): bool
+    {
+        if (preg_match('/\A(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\s+(?<path>\/.*)\z/', $value, $matches) !== 1) {
+            return false;
+        }
+
+        return $this->isGraphRoutePath((string) $matches['path']);
+    }
+
+    private function isGraphRoutePath(string $value): bool
+    {
+        return strlen($value) <= 512
+            && preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) === 1
+            && preg_match('/(?:\A|\/)[^\/{}?*]+\.(?:php|phar|inc|phtml|ts|tsx|js|jsx|mjs|cjs|py|rb|go|java|kt|kts|rs|c|cc|cpp|h|hpp|swift|dart|vue|svelte|sql|yaml|yml|json|xml|toml|ini|env)(?:\/|\z)/i', $value) !== 1
+            && ! str_contains($value, '\\')
+            && stripos($value, 'file://') === false;
+    }
+
+    private function isValidGraphFqcn(string $value): bool
+    {
+        return preg_match('/\A\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)+\z/D', $value) === 1;
+    }
+
+    private function graphFileLabel(string $value): ?string
+    {
+        $basename = basename(str_replace('\\', '/', trim($value)));
+
+        return $basename !== ''
+            && $basename !== '.'
+            && $basename !== '..'
+            && strlen($basename) <= 200
+            && preg_match('/\A[A-Za-z0-9_@.-]+\z/', $basename) === 1
+                ? $basename
+                : null;
+    }
+
+    private function graphSymbolLabel(string $value): ?string
+    {
+        $value = trim($value);
+
+        return strlen($value) <= 200
+            && ($this->isValidGraphFqcn($value)
+                || preg_match('/\A[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\\\\|::|\.)[A-Za-z_$][A-Za-z0-9_$]*)*\z/', $value) === 1)
+                ? $value
+                : null;
     }
 
     private function graphEdgeKind(string $kind): string

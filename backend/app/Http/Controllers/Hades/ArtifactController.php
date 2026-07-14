@@ -3,12 +3,16 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ProjectCanonicalGraphToNeo4j;
+use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\CanonicalGraphRepository;
 use App\Services\Hades\HadesSearchDocumentIndexer;
 use App\Services\Hades\HadesSourceSliceCandidateService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\Response;
 
 class ArtifactController extends Controller
@@ -22,6 +26,8 @@ class ArtifactController extends Controller
     public function __construct(
         private readonly HadesSearchDocumentIndexer $searchIndexer,
         private readonly HadesSourceSliceCandidateService $sourceSliceCandidates,
+        private readonly CanonicalGraphRepository $graphs,
+        private readonly CanonicalGraphProjectionService $projections,
     ) {}
 
     public function lookup(Request $request): JsonResponse
@@ -108,6 +114,18 @@ class ArtifactController extends Controller
             return $this->error('artifact_schema_mismatch', 'Artifact payload schema does not match the requested schema.', Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
+        if (in_array($validated['schema'], ['hades.php_graph.v1', 'hades.code_graph.v1'], true)) {
+            try {
+                $this->graphs->prepareHadesUpload($artifactPayload);
+            } catch (InvalidArgumentException $exception) {
+                if (str_starts_with($exception->getMessage(), 'Canonical graph contract')) {
+                    return $this->error('invalid_graph_contract', 'Graph artifact contract is invalid.', Response::HTTP_UNPROCESSABLE_ENTITY);
+                }
+
+                return $this->error('invalid_graph_artifact', 'Graph artifact payload is invalid.', Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+        }
+
         $artifactJson = json_encode($artifactPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         if (strlen($artifactJson) > self::MAX_UNCOMPRESSED_BYTES) {
             return $this->error('artifact_too_large', 'Artifact exceeds the uncompressed byte limit.', Response::HTTP_REQUEST_ENTITY_TOO_LARGE);
@@ -154,6 +172,14 @@ class ArtifactController extends Controller
             $artifactPayload,
             $artifactPayload['head_commit'] ?? $artifactPayload['workspace_head_commit'] ?? null,
         );
+
+        if (in_array($validated['schema'], ['hades.php_graph.v1', 'hades.code_graph.v1'], true)) {
+            $graph = $this->graphs->findByIdentity($validated['project_id'], 'workspace_binding', (string) $binding->id, 'hades_agent_artifact', $id);
+            if ($graph !== null) {
+                $projection = $this->projections->queue($graph);
+                DB::afterCommit(fn () => ProjectCanonicalGraphToNeo4j::dispatch($projection->id)->afterCommit());
+            }
+        }
 
         return response()->json([
             'protocol_version' => 'v1',

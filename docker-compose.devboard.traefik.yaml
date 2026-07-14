@@ -28,6 +28,26 @@ services:
       - default
       - traefik
 
+  frontend:
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: ${DEVBOARD_TRAEFIK_NETWORK:-traefik_default}
+      traefik.http.routers.devboard-frontend.entrypoints: ${DEVBOARD_TRAEFIK_HTTPS_ENTRYPOINT:-websecure}
+      traefik.http.routers.devboard-frontend.rule: Host(`${DEVBOARD_TRAEFIK_HOST:?Set DEVBOARD_TRAEFIK_HOST}`)
+      traefik.http.routers.devboard-frontend.priority: "1"
+      traefik.http.routers.devboard-frontend.middlewares: devboard-basic-auth
+      traefik.http.routers.devboard-frontend.tls.certresolver: ${DEVBOARD_TRAEFIK_CERT_RESOLVER:-le}
+      traefik.http.routers.devboard-frontend.service: devboard-frontend
+      traefik.http.routers.devboard-install.entrypoints: ${DEVBOARD_TRAEFIK_HTTPS_ENTRYPOINT:-websecure}
+      traefik.http.routers.devboard-install.rule: Host(`${DEVBOARD_TRAEFIK_HOST:?Set DEVBOARD_TRAEFIK_HOST}`) && (Path(`/install.sh`) || Path(`/install.ps1`))
+      traefik.http.routers.devboard-install.priority: "130"
+      traefik.http.routers.devboard-install.tls.certresolver: ${DEVBOARD_TRAEFIK_CERT_RESOLVER:-le}
+      traefik.http.routers.devboard-install.service: devboard-frontend
+      traefik.http.services.devboard-frontend.loadbalancer.server.port: "80"
+    networks:
+      - default
+      - traefik
+
 networks:
   traefik:
     external: true

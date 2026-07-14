@@ -2,15 +2,29 @@
 
 namespace App\Services;
 
+use App\Exceptions\CanonicalGraphProjectionException;
+use App\Services\Graph\CanonicalGraphNormalizer;
+use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\CanonicalGraphRepository;
+use App\Services\Graph\Neo4jCanonicalGraphProjector;
 use App\Services\Neo4j\Neo4jClient;
+use Closure;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Throwable;
 
 class GenesisGraphImportService
 {
     private const BATCH_SIZE = 500;
+
+    public function __construct(
+        private readonly CanonicalGraphRepository $canonicalGraphs,
+        private readonly CanonicalGraphNormalizer $canonicalNormalizer,
+        private readonly CanonicalGraphProjectionService $canonicalProjections,
+        private readonly Neo4jCanonicalGraphProjector $canonicalProjector,
+    ) {}
 
     /**
      * @return list<array{cypher: string, params: array<string, mixed>}>
@@ -320,7 +334,7 @@ class GenesisGraphImportService
                 'Genesis graph import validated in fake mode.',
                 'Genesis graph imported into Neo4j.',
             );
-        } catch (\Throwable $exception) {
+        } catch (Throwable $exception) {
             if ($markFailedOnException) {
                 DB::table('genesis_imports')->where('id', $importId)->update([
                     'status' => 'failed',
@@ -385,8 +399,6 @@ class GenesisGraphImportService
         }
 
         $graph = json_decode(Storage::disk('local')->get($artifact->storage_path), true, 512, JSON_THROW_ON_ERROR);
-
-        $this->ensureIndexes($client);
         $graphMode = (string) ($graph['graph_mode'] ?? 'full_snapshot');
         $nodes = is_array($graph['nodes_upserted'] ?? null)
             ? $graph['nodes_upserted']
@@ -402,63 +414,223 @@ class GenesisGraphImportService
             if (isset($graph['base_snapshot_id']) && (string) $graph['base_snapshot_id'] !== $baseSnapshotId) {
                 throw new RuntimeException('Affected subgraph base snapshot does not match the Delta sync.');
             }
-
-            $this->runCommand($client, self::devBoardDeltaSnapshotCommand(
-                $snapshotId,
-                $baseSnapshotId,
-                $repositoryId,
-                $runId,
-                $deltaId,
-            ));
-            foreach (self::cloneBaseSnapshotCommands($baseSnapshotId, $snapshotId, $repositoryId, $runId) as $command) {
-                $this->runCommand($client, $command);
-            }
-
-            $nodeIds = $this->tombstoneIds($graph['nodes_deleted'] ?? [], 'nodes_deleted');
-            $relationshipIds = $this->tombstoneIds($graph['relationships_deleted'] ?? [], 'relationships_deleted');
-            foreach ($relationships as $relationship) {
-                if (is_array($relationship) && isset($relationship['id']) && is_string($relationship['id'])) {
-                    $relationshipIds[] = $relationship['id'];
-                }
-            }
-            $relationshipIds = array_values(array_unique($relationshipIds));
-            foreach (self::deltaDeletionCommands($snapshotId, $nodeIds, $relationshipIds) as $command) {
-                $this->runCommand($client, $command);
-            }
-        } else {
-            $this->runCommand($client, self::devBoardSnapshotCommand($snapshotId, $repositoryId, $runId));
         }
 
-        foreach (array_chunk($nodes, self::BATCH_SIZE) as $nodeBatch) {
-            if ($nodeBatch !== []) {
-                foreach (self::nodeBatchCommands($nodeBatch, $snapshotId, $runId, $repositoryId) as $cmd) {
-                    $this->runCommand($client, $cmd);
-                }
-            }
+        $canonical = $this->canonicalGraphs->findByIdentity((string) $artifact->project_id, 'repository', $repositoryId, 'legacy_artifact', $artifactId);
+        if ($canonical === null) {
+            throw new RuntimeException($graphMode === 'affected_subgraph'
+                ? 'Legacy delta graph artifact could not be normalized.'
+                : 'Legacy graph artifact could not be normalized.');
+        }
+        if ($graphMode === 'affected_subgraph') {
+            $payload = $graph;
+            $payload['graph_contract'] = $canonical['contract'];
+            [$payload['nodes'], $payload['relationships']] = $this->materializeDeltaVersion($graph, $baseSnapshotId, $nodes, $relationships);
+            $canonical = $this->canonicalNormalizer->normalize($payload, $canonical['identity']);
         }
 
-        foreach (array_chunk($relationships, self::BATCH_SIZE) as $relationshipBatch) {
-            if ($relationshipBatch !== []) {
-                foreach (self::relationshipBatchCommands($relationshipBatch, $snapshotId, $runId, $repositoryId) as $cmd) {
-                    $this->runCommand($client, $cmd);
+        $prepareLegacyGraph = function () use (
+            $client,
+            $force,
+            $snapshotId,
+            $graphMode,
+            $baseSnapshotId,
+            $repositoryId,
+            $runId,
+            $deltaId,
+            $graph,
+            $nodes,
+            $relationships,
+        ): void {
+            if ($force) {
+                $this->purgeLegacySnapshot($client, $snapshotId);
+            }
+            $this->ensureIndexes($client);
+
+            if ($graphMode === 'affected_subgraph') {
+                $this->runCommand($client, self::devBoardDeltaSnapshotCommand(
+                    $snapshotId,
+                    $baseSnapshotId,
+                    $repositoryId,
+                    $runId,
+                    $deltaId,
+                ));
+                foreach (self::cloneBaseSnapshotCommands($baseSnapshotId, $snapshotId, $repositoryId, $runId) as $command) {
+                    $this->runCommand($client, $command);
+                }
+
+                $nodeIds = $this->tombstoneIds($graph['nodes_deleted'] ?? [], 'nodes_deleted');
+                $relationshipIds = $this->tombstoneIds($graph['relationships_deleted'] ?? [], 'relationships_deleted');
+                foreach ($relationships as $relationship) {
+                    if (is_array($relationship) && isset($relationship['id']) && is_string($relationship['id'])) {
+                        $relationshipIds[] = $relationship['id'];
+                    }
+                }
+                $relationshipIds = array_values(array_unique($relationshipIds));
+                foreach (self::deltaDeletionCommands($snapshotId, $nodeIds, $relationshipIds) as $command) {
+                    $this->runCommand($client, $command);
+                }
+
+                foreach (array_chunk($nodes, self::BATCH_SIZE) as $nodeBatch) {
+                    if ($nodeBatch !== []) {
+                        foreach (self::nodeBatchCommands($nodeBatch, $snapshotId, $runId, $repositoryId) as $cmd) {
+                            $this->runCommand($client, $cmd);
+                        }
+                    }
+                }
+
+                foreach (array_chunk($relationships, self::BATCH_SIZE) as $relationshipBatch) {
+                    if ($relationshipBatch !== []) {
+                        foreach (self::relationshipBatchCommands($relationshipBatch, $snapshotId, $runId, $repositoryId) as $cmd) {
+                            $this->runCommand($client, $cmd);
+                        }
+                    }
                 }
             }
+        };
+        $ready = $this->publishCanonicalGraphProjection(
+            $canonical, $client, $force, $prepareLegacyGraph, $snapshotId,
+        );
+        $this->publishImportSuccess($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $ready, $force);
+    }
+
+    /**
+     * Force-project one persisted canonical graph through the durable
+     * acquire/project/publish state machine. The existing ready projection
+     * remains authoritative until publishPublicationAttempt() succeeds.
+     */
+    public function forceCanonicalGraphProjection(array $canonical, ?Neo4jClient $client = null): object
+    {
+        $client ??= app(Neo4jClientFactory::class)->client();
+
+        return $this->publishCanonicalGraphProjection($canonical, $client, true);
+    }
+
+    private function publishCanonicalGraphProjection(
+        array $canonical,
+        Neo4jClient $client,
+        bool $force,
+        ?Closure $beforeProject = null,
+        ?string $snapshotId = null,
+    ): object {
+        $this->canonicalProjections->recoverStalePublications($canonical, $client, $this->canonicalProjector);
+        $claim = $force
+            ? $this->canonicalProjections->acquireForForcedRebuild($canonical)
+            : $this->canonicalProjections->acquireForWorkerPublication(
+                (string) $this->canonicalProjections->queue($canonical)->id,
+                $canonical,
+            );
+        $projection = $claim['projection'];
+
+        if ($claim['conflict'] || ! $this->canonicalProjections->matchesGraph($projection, $canonical)) {
+            throw new CanonicalGraphProjectionException((string) $projection->id, 'projection_conflict');
+        }
+        if (! $claim['claimed']) {
+            $current = $this->canonicalProjections->findForWorker((string) $projection->id);
+            if (! $force
+                && $current !== null
+                && $this->canonicalProjections->matchesGraph($current, $canonical)
+                && $current->status === 'ready'
+                && is_numeric($current->node_count)
+                && is_numeric($current->relationship_count)) {
+                return $current;
+            }
+
+            $failureCode = $force && $current !== null && $this->canonicalProjections->forcedRebuildActive((string) $current->id)
+                ? 'projection_busy'
+                : match ($current?->status) {
+                    'queued', 'projecting' => 'projection_busy',
+                    'ready' => 'projection_ready_unverified',
+                    'failed' => 'projection_failed',
+                    'stale' => 'projection_stale',
+                    default => 'projection_missing',
+                };
+
+            throw new CanonicalGraphProjectionException((string) $projection->id, $failureCode);
         }
 
-        DB::table('artifacts')->where('id', $artifactId)->update([
-            'status' => 'imported',
-            'updated_at' => now(),
-        ]);
+        if ($snapshotId !== null) {
+            $projection->snapshot_id = $snapshotId;
+        }
+        try {
+            if ($beforeProject !== null) {
+                $beforeProject();
+            }
+            $heartbeat = function () use ($claim, $projection): bool {
+                if (! $this->canonicalProjections->heartbeatPublicationAttempt(
+                    (string) $claim['attempt_id'], (string) $claim['owner_token'],
+                )) {
+                    throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+                }
 
-        DB::table('run_events')->insert([
-            'id' => (string) Str::ulid(),
-            'run_id' => $runId,
-            'event_type' => 'graph.imported',
-            'severity' => 'info',
-            'message' => $mode === 'fake' ? $fakeMessage : $neo4jMessage,
-            'payload' => json_encode(['snapshot_id' => $snapshotId, 'mode' => $mode], JSON_THROW_ON_ERROR),
-            'created_at' => now(),
-        ]);
+                return true;
+            };
+            $counts = $this->canonicalProjector->project($canonical, $projection, $client, $heartbeat);
+            $ready = $this->canonicalProjections->publishPublicationAttempt(
+                (string) $claim['attempt_id'],
+                (string) $claim['owner_token'],
+                $counts['nodes'],
+                $counts['relationships'],
+                fn () => $this->canonicalProjector->publishCurrent($projection, $client),
+            );
+            if ($ready === null) {
+                throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+            }
+
+            return $ready;
+        } catch (Throwable $exception) {
+            $failureCode = $exception instanceof CanonicalGraphProjectionException
+                ? $exception->failureCode
+                : 'neo4j_query_failed';
+            $this->canonicalProjections->markPublicationAttemptFailed(
+                (string) $claim['attempt_id'], (string) $claim['owner_token'], $failureCode,
+            );
+            try {
+                $this->canonicalProjections->cleanupPublicationAttempt(
+                    (string) $claim['attempt_id'],
+                    (string) $claim['owner_token'],
+                    $client,
+                    $this->canonicalProjector,
+                );
+            } catch (Throwable $cleanupException) {
+                report($cleanupException);
+            }
+
+            throw $exception instanceof CanonicalGraphProjectionException
+                ? $exception
+                : new CanonicalGraphProjectionException((string) $projection->id, $failureCode, $exception);
+        }
+    }
+
+    private function publishImportSuccess(string $artifactId, string $runId, string $snapshotId, string $mode, string $fakeMessage, string $neo4jMessage, object $projection, bool $allowExistingEvent): void
+    {
+        DB::transaction(function () use ($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $projection, $allowExistingEvent): void {
+            DB::table('runs')->where('id', $runId)->lockForUpdate()->firstOrFail();
+            if (! $allowExistingEvent && $this->alreadyImported($snapshotId, $runId)) {
+                return;
+            }
+
+            DB::table('artifacts')->where('id', $artifactId)->update([
+                'status' => 'imported',
+                'updated_at' => now(),
+            ]);
+            DB::table('run_events')->insert([
+                'id' => (string) Str::ulid(),
+                'run_id' => $runId,
+                'event_type' => 'graph.imported',
+                'severity' => 'info',
+                'message' => $mode === 'fake' ? $fakeMessage : $neo4jMessage,
+                'payload' => json_encode([
+                    'snapshot_id' => $snapshotId,
+                    'mode' => $mode,
+                    'projection_id' => $projection->id,
+                    'node_count' => (int) $projection->node_count,
+                    'relationship_count' => (int) $projection->relationship_count,
+                    'forced_rebuild' => $allowExistingEvent,
+                ], JSON_THROW_ON_ERROR),
+                'created_at' => now(),
+            ]);
+        });
     }
 
     /**
@@ -467,6 +639,13 @@ class GenesisGraphImportService
     private function runCommand(Neo4jClient $client, array $command): void
     {
         $client->run($command['cypher'], $command['params']);
+    }
+
+    private function purgeLegacySnapshot(Neo4jClient $client, string $snapshotId): void
+    {
+        $params = ['snapshot_id' => $snapshotId];
+        $client->run('MATCH (n:CodeNode {snapshot_id: $snapshot_id}) DETACH DELETE n', $params);
+        $client->run('MATCH (s:DevBoardSnapshot {snapshot_id: $snapshot_id}) DETACH DELETE s', $params);
     }
 
     private function ensureIndexes(Neo4jClient $client): void
@@ -500,6 +679,40 @@ class GenesisGraphImportService
         }
 
         return false;
+    }
+
+    /** @return array{0:list<array<string,mixed>>,1:list<array<string,mixed>>} */
+    private function materializeDeltaVersion(array $delta, ?string $baseSnapshotId, array $nodeUpserts, array $relationshipUpserts): array
+    {
+        $base = DB::table('snapshots')->where('id', $baseSnapshotId)->first();
+        if ($base === null || $base->graph_snapshot_artifact_id === null) {
+            throw new RuntimeException('Affected subgraph base snapshot graph artifact was not found.');
+        }
+        $artifact = DB::table('artifacts')->where('id', $base->graph_snapshot_artifact_id)->first();
+        if ($artifact === null || ! Storage::disk('local')->exists($artifact->storage_path)) {
+            throw new RuntimeException('Affected subgraph base graph artifact is not readable.');
+        }
+        $payload = json_decode(Storage::disk('local')->get($artifact->storage_path), true, flags: JSON_THROW_ON_ERROR);
+        $nodes = collect($payload['nodes'] ?? [])->keyBy('id');
+        $relationships = collect($payload['relationships'] ?? [])->keyBy('id');
+        foreach ($this->tombstoneIds($delta['nodes_deleted'] ?? [], 'nodes_deleted') as $id) {
+            $nodes->forget($id);
+        }
+        foreach ($this->tombstoneIds($delta['relationships_deleted'] ?? [], 'relationships_deleted') as $id) {
+            $relationships->forget($id);
+        }
+        foreach ($nodeUpserts as $node) {
+            if (is_array($node) && isset($node['id'])) {
+                $nodes->put($node['id'], $node);
+            }
+        }
+        foreach ($relationshipUpserts as $relationship) {
+            if (is_array($relationship) && isset($relationship['id'])) {
+                $relationships->put($relationship['id'], $relationship);
+            }
+        }
+
+        return [$nodes->values()->all(), $relationships->values()->all()];
     }
 
     /**
