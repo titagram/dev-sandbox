@@ -267,16 +267,24 @@ corepack yarn build
 
 Expected: all tests pass and build exits 0.
 
-- [ ] **Step 2: Preserve a rollback archive outside Git**
+- [ ] **Step 2: Preserve and verify rollback inputs outside Git**
 
 ```bash
+install -d -m 700 /home/ubuntu/backups/devboard
+current_frontend_image="$(docker inspect --format '{{.Image}}' devboard-frontend-1)"
+test -n "$current_frontend_image"
+docker image inspect "$current_frontend_image" >/dev/null
+docker image tag "$current_frontend_image" hades-agent-frontend:pre-cutover-20260714
+test "$(docker image inspect --format '{{.Id}}' hades-agent-frontend:pre-cutover-20260714)" = "$current_frontend_image"
+
 tar --exclude='.git' --exclude='node_modules' --exclude='build' -C /home/ubuntu \
   -czf /home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.tar.gz \
   emergent_devboard_frontend/frontend
-tar -tzf /home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.tar.gz | grep 'frontend/src/App.tsx'
+tar -tzf /home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.tar.gz \
+  | grep -q 'frontend/src/App.tsx'
 ```
 
-Expected: archive validation succeeds.
+Expected: the running frontend image ID exists; the rollback tag resolves to that exact image ID; the private backup directory exists; and archive validation succeeds before any new image build.
 
 - [ ] **Step 3: Recreate only frontend after branch integration**
 
@@ -290,6 +298,8 @@ Expected: backend, worker, scheduler, PostgreSQL, and Neo4j are not recreated.
 - [ ] **Step 4: Execute public smoke checks**
 
 Verify HTTPS redirect, `/login`, `/favicon.svg`, `/api/dashboard/me`, `/api/hades/v1/health`, `/install.sh`, browser login, a project page, and hard refresh of a nested React route. Expected: no 404/405, no Inertia HTML, favicon 200, API JSON remains Laravel-served.
+
+If any smoke fails, immediately execute the frontend-only rollback from `docs/runbooks/devboard-production-deploy.md`, verify the restored frontend, and preserve `/home/ubuntu/emergent_devboard_frontend`. A failed smoke gate forbids Step 5.
 
 - [ ] **Step 5: Remove the external checkout only after smoke passes**
 

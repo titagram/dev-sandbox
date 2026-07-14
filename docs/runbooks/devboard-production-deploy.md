@@ -1,8 +1,10 @@
 # Hades Agent Backend Production Deploy Runbook
 
-Hades Agent is deployed from this repository. `frontend/` is the only tracked and deployed browser source: its multi-stage image builds the standalone React 19 application, and nginx serves the compiled SPA plus the exact `/install.sh` and `/install.ps1` application installers. Laravel serves APIs and backend-owned storage paths; it does not build or serve the active browser UI.
+The repository target architecture for Hades Agent has `frontend/` as its only tracked, repository-owned browser source. Its multi-stage image builds the standalone React 19 application, and nginx serves the compiled SPA plus the exact `/install.sh` and `/install.ps1` application installers. Laravel serves APIs and backend-owned storage paths; it does not build or serve the target browser UI.
 
-Existing `devboard*` Compose filenames, environment names, image names, volume names, router names, and container identifiers are temporary internal compatibility identifiers. They do not indicate frontend ownership and must not be used as a reason to restore the former adjacent frontend checkout or Laravel Vite/Inertia deployment path. The active Compose stack has no Node/Vite/Inertia frontend service.
+A live environment is compliant with that target only after every Task 5 gate in `docs/superpowers/plans/2026-07-14-react-frontend-repository-cutover.md` has passed. Until the Task 5 deployment, browser/API smoke, and external-checkout retirement are recorded complete in the plan and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`, do not infer live cutover state from the repository layout or this runbook.
+
+Existing `devboard*` Compose filenames, environment names, image names, volume names, router names, and container identifiers are temporary internal compatibility identifiers. They do not indicate frontend ownership and must not be used as a reason to restore the former adjacent frontend checkout or Laravel Vite/Inertia deployment path. The repository Compose definitions have no Node/Vite/Inertia frontend service.
 
 ## Required Environment And Fail-Closed Preflight
 
@@ -175,7 +177,9 @@ This procedure replaces only the currently orphaned legacy frontend container af
    ```bash
    current_frontend_image="$(docker inspect --format '{{.Image}}' devboard-frontend-1)"
    test -n "$current_frontend_image"
+   docker image inspect "$current_frontend_image" >/dev/null
    docker image tag "$current_frontend_image" hades-agent-frontend:pre-cutover-20260714
+   test "$(docker image inspect --format '{{.Id}}' hades-agent-frontend:pre-cutover-20260714)" = "$current_frontend_image"
    ```
 
 2. Archive the external source outside Git and verify the archive before changing the container:
@@ -201,7 +205,7 @@ This procedure replaces only the currently orphaned legacy frontend container af
 
 5. Remove `/home/ubuntu/emergent_devboard_frontend` only after all gates pass and the rollback tag/archive have been verified. Repeat public smoke after removal.
 
-If any gate fails, stop the cutover and retain the external checkout.
+If any smoke gate fails after the new frontend is recreated, immediately execute the frontend-only rollback below, verify the restored frontend, and retain the external checkout. Do not proceed to external-checkout removal after a failed gate.
 
 ## Operations And Rollback
 
@@ -212,7 +216,7 @@ docker compose -f docker-compose.devboard.prod.yaml logs --tail=120 app worker s
 docker compose -f docker-compose.devboard.prod.yaml up -d --force-recreate worker scheduler
 ```
 
-For a frontend-only cutover failure, restore only the saved frontend image and recreate only that service:
+Every Task 5 smoke failure triggers this frontend-only rollback. Restore only the saved frontend image and recreate only that service:
 
 ```bash
 docker image tag hades-agent-frontend:pre-cutover-20260714 devboard-frontend
