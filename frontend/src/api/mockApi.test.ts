@@ -4,7 +4,6 @@ declare const expect: any;
 declare const it: any;
 
 jest.mock("@/api/devboardApi", () => ({}), { virtual: true });
-jest.mock("@/api/mockData", () => require("./mockData"), { virtual: true });
 
 import { mockApi } from "./mockApi";
 import { DashboardGraphResponse } from "@/types/devboard";

@@ -15,7 +15,6 @@ jest.mock("@/api/devboardApi", () => ({ api: {
   getGraph: require("jest-mock").fn(),
   queryProjectGraph: require("jest-mock").fn(),
 } }), { virtual: true });
-jest.mock("@/hooks/useApi", () => require("../hooks/useApi"), { virtual: true });
 jest.mock("react-router-dom", () => {
   const state = {
     params: { projectId: "project-old" },
