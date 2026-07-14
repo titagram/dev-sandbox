@@ -90,7 +90,7 @@ function ProjectGraphPage({ projectId }: { projectId: string }) {
       </div>
       <DataState state={scopes}>{(response) => response.query_type === "scopes" ? <GraphExplorer
         projectId={projectId} scopes={response.items} queryGraph={queryGraph}
-        projectionUnavailable={overview.projection_status === "unavailable" || response.reason === "graph_projection_not_ready" || response.reason === "graph_scope_not_found"}
+        projectionUnavailable={overview.projection_status === "unavailable" || overview.projection_status === "graph_projection_rebuild_required" || response.reason === "graph_projection_not_ready" || response.reason === "graph_projection_rebuild_required" || response.reason === "graph_scope_not_found"}
         initialScopeType={initialScopeType} initialScopeId={initialScopeId} initialSymbol={initialSymbol} onQueryParamsChange={updateQuery}
         onRetry={() => { graph.reload(); scopes.reload(); }}
       /> : <div role="status">Graph projection unavailable</div>}</DataState>

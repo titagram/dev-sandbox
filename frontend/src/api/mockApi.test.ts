@@ -292,6 +292,27 @@ describe("mockApi approved Hades Agent contracts", () => {
       missing_label_count: 0,
       excluded_node_count: 0,
     });
+
+    const overview = await mockApi.queryProjectGraph("proj-docs", { type: "overview" });
+    expect(overview).toEqual(expect.objectContaining({
+      query_type: "overview",
+      found: false,
+      reason: "graph_projection_not_ready",
+      scope: null,
+      returned: 0,
+      limit: 100,
+    }));
+  });
+
+  it("selects the only project scope when a data query omits scope fields", async () => {
+    const response = await mockApi.queryProjectGraph("proj-pay", { type: "overview" });
+
+    expect(response).toEqual(expect.objectContaining({
+      query_type: "overview",
+      found: true,
+      reason: null,
+      scope: { type: "repository", id: "repo-billing" },
+    }));
   });
 
   it("applies the path limit before deriving returned nodes and visible edges", async () => {

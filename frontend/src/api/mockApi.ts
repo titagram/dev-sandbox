@@ -1700,10 +1700,29 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
     });
   }
 
+  const queryType = request.type as DashboardGraphDataQueryType;
+  if (!request.scope_type || !request.scope_id) {
+    const fixtures = graphFixturesForProject(projectId);
+    if (fixtures.length === 0) {
+      return dashboardGraphEnvelope(
+        projectId,
+        { ...request, limit: 100 },
+        queryType,
+        unavailableGraphProjection(),
+        { found: false, reason: "graph_projection_not_ready" },
+      );
+    }
+    if (fixtures.length > 1) graphError("scope_required", "422");
+    request = {
+      ...request,
+      scope_type: fixtures[0].scopeType,
+      scope_id: fixtures[0].scopeId,
+    };
+  }
+
   const fixture = graphScopeFixture(projectId, request);
   const scopeNodes = graphNodes(fixture);
   const scopeEdges = graphEdges(fixture);
-  const queryType = request.type;
 
   if (request.type === "overview") {
     return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, { found: true });

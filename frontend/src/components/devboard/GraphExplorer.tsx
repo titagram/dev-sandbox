@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Panel } from "@/components/devboard/Layout";
 import {
   DashboardGraphDataResponse,
+  DashboardGraphNode,
   DashboardGraphQueryRequest,
   DashboardGraphResponse,
   DashboardGraphScopeItem,
@@ -30,9 +31,33 @@ interface DetailBundle {
   impact: DashboardGraphDataResponse;
 }
 
+const UNAVAILABLE_GRAPH_REASONS = new Set([
+  "graph_projection_not_ready",
+  "graph_projection_rebuild_required",
+  "graph_scope_not_found",
+  "scope_not_found",
+]);
+
+class GraphEnvelopeError extends Error {
+  constructor(readonly reason: string | null) {
+    super(UNAVAILABLE_GRAPH_REASONS.has(reason ?? "")
+      ? "Graph projection unavailable"
+      : "Graph query failed");
+  }
+}
+
 function dataResponse(response: DashboardGraphResponse): DashboardGraphDataResponse {
   if (response.query_type === "scopes") throw new Error("Unexpected scope response");
+  if (!response.found) throw new GraphEnvelopeError(response.reason);
   return response;
+}
+
+function graphErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof GraphEnvelopeError ? error.message : fallback;
+}
+
+function nodeDisplayLabel(node: Pick<DashboardGraphNode, "label"> | null | undefined): string {
+  return node?.label?.trim() || "Unresolved symbol";
 }
 
 function scopeKey(scope: Pick<DashboardGraphScopeItem, "source_scope_type" | "source_scope_id">): string {
@@ -58,7 +83,7 @@ function NodeList({ title, response }: { title: string; response: DashboardGraph
         <ul className="space-y-2 text-sm">
           {response.items.map((item) => (
             <li key={item.handle} className="rounded border border-border/60 p-2">
-              <span className="font-mono">{item.label ?? item.handle}</span>
+              <span className="font-mono">{nodeDisplayLabel(item)}</span>
               {item.why && <p className="text-xs text-muted-foreground">{item.why}</p>}
               {(item.family || item.edge_types?.length || item.distance !== undefined) && (
                 <p className="text-[11px] text-muted-foreground">
@@ -109,7 +134,7 @@ function CompactGraph({ response, selectedHandle }: { response: DashboardGraphDa
         return (
           <g key={node.handle} transform={`translate(${position.x},${position.y})`}>
             <circle r={node.handle === selectedHandle ? 13 : 9} fill={node.handle === selectedHandle ? "#7c5cff" : "#0ea5a3"} />
-            <text y="22" textAnchor="middle" fontSize="9" className="fill-current">{(node.label ?? node.handle).slice(0, 24)}</text>
+            <text y="22" textAnchor="middle" fontSize="9" className="fill-current">{nodeDisplayLabel(node).slice(0, 24)}</text>
           </g>
         );
       })}
@@ -117,7 +142,7 @@ function CompactGraph({ response, selectedHandle }: { response: DashboardGraphDa
   );
 }
 
-export default function GraphExplorer({
+function GraphExplorerSession({
   projectId,
   scopes,
   queryGraph,
@@ -146,6 +171,7 @@ export default function GraphExplorer({
   const [searchError, setSearchError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [pathError, setPathError] = useState<string | null>(null);
+  const [searchRetryVersion, setSearchRetryVersion] = useState(0);
   const searchGeneration = useRef(0);
   const detailGeneration = useRef(0);
   const pathGeneration = useRef(0);
@@ -230,8 +256,11 @@ export default function GraphExplorer({
         .then((response) => {
           if (alive.current && searchGeneration.current === scheduledGeneration) setSearch(dataResponse(response));
         })
-        .catch(() => {
-          if (alive.current && searchGeneration.current === scheduledGeneration) setSearchError("Unable to search graph");
+        .catch((error: unknown) => {
+          if (alive.current && searchGeneration.current === scheduledGeneration) {
+            setSearch(null);
+            setSearchError(graphErrorMessage(error, "Unable to search graph"));
+          }
         })
         .finally(() => {
           if (alive.current && searchGeneration.current === scheduledGeneration) setSearchLoading(false);
@@ -241,7 +270,7 @@ export default function GraphExplorer({
       window.clearTimeout(timer);
       if (searchGeneration.current === scheduledGeneration) searchGeneration.current += 1;
     };
-  }, [projectId, query, queryGraph, scopedRequest, selectedScope]);
+  }, [projectId, query, queryGraph, scopedRequest, searchRetryVersion, selectedScope]);
 
   const loadDetails = useCallback(async (handle: string) => {
     if (!selectedScope) return;
@@ -276,8 +305,10 @@ export default function GraphExplorer({
         outgoing: dataResponse(outgoingResponse),
         impact: dataResponse(impactResponse),
       });
-    } catch {
-      if (alive.current && detailGeneration.current === generation) setDetailError("Unable to load graph details");
+    } catch (error: unknown) {
+      if (alive.current && detailGeneration.current === generation) {
+        setDetailError(graphErrorMessage(error, "Unable to load graph details"));
+      }
     } finally {
       if (alive.current && detailGeneration.current === generation) setDetailLoading(false);
     }
@@ -336,8 +367,10 @@ export default function GraphExplorer({
         type: "path", from_handle: selectedHandle, to_handle: pathTarget, max_depth: 3, limit: 50,
       })));
       if (alive.current && pathGeneration.current === generation) setPath(response);
-    } catch {
-      if (alive.current && pathGeneration.current === generation) setPathError("Unable to find a path");
+    } catch (error: unknown) {
+      if (alive.current && pathGeneration.current === generation) {
+        setPathError(graphErrorMessage(error, "Unable to find a path"));
+      }
     } finally {
       if (alive.current && pathGeneration.current === generation) setPathLoading(false);
     }
@@ -353,6 +386,13 @@ export default function GraphExplorer({
 
   const loading = searchLoading || detailLoading || pathLoading;
   const error = detailError ?? pathError ?? searchError;
+  const retry = detailError && selectedHandle
+    ? () => void loadDetails(selectedHandle)
+    : pathError && selectedHandle && pathTarget
+      ? () => void runPath()
+      : searchError
+        ? () => setSearchRetryVersion((version) => version + 1)
+        : null;
 
   if (projectionUnavailable) {
     return <div role="status" aria-live="polite" className="rounded border border-border p-4">
@@ -377,14 +417,14 @@ export default function GraphExplorer({
 
       <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
         {loading ? "Loading graph…" : error ?? ""}
-        {detailError && selectedHandle && <Button className="ml-2" size="sm" variant="outline" onClick={() => void loadDetails(selectedHandle)}>Retry</Button>}
+        {error && retry && <Button className="ml-2" size="sm" variant="outline" onClick={retry}>Retry</Button>}
       </div>
 
       {search && (
         <Panel title="Search results">
           {search.items.length === 0 ? <p>No matching symbols</p> : (
             <div className="flex flex-wrap gap-2">
-              {search.items.map((item) => <Button key={item.handle} variant="outline" onClick={() => void loadDetails(item.handle)}>{item.label ?? item.handle}</Button>)}
+              {search.items.map((item) => <Button key={item.handle} variant="outline" onClick={() => void loadDetails(item.handle)}>{nodeDisplayLabel(item)}</Button>)}
             </div>
           )}
           {responseStatus(search)}
@@ -398,7 +438,7 @@ export default function GraphExplorer({
             {details.detail.projection.quality && ` · ${details.detail.projection.quality}`}
           </div>
           <Panel title="Symbol">
-            <p className="font-mono font-semibold">{details.detail.node?.label ?? selectedHandle}</p>
+            <p className="font-mono font-semibold">{nodeDisplayLabel(details.detail.node)}</p>
             <p className="text-xs text-muted-foreground">opaque handle: {selectedHandle}</p>
             <CompactGraph
               selectedHandle={selectedHandle}
@@ -422,7 +462,7 @@ export default function GraphExplorer({
             <div className="flex flex-wrap gap-2">
               <select aria-label="Path target" value={pathTarget} onChange={(event) => selectPathTarget(event.target.value)} className="rounded border border-input bg-background px-3 py-2">
                 <option value="">Choose target</option>
-                {(search?.items ?? []).filter((item) => item.handle !== selectedHandle).map((item) => <option key={item.handle} value={item.handle} label={item.label ?? item.handle} />)}
+                {(search?.items ?? []).filter((item) => item.handle !== selectedHandle).map((item) => <option key={item.handle} value={item.handle} label={nodeDisplayLabel(item)} />)}
               </select>
               <Button disabled={!pathTarget} onClick={() => void runPath()}>Find path</Button>
             </div>
@@ -433,4 +473,8 @@ export default function GraphExplorer({
       )}
     </div>
   );
+}
+
+export default function GraphExplorer(props: GraphExplorerProps) {
+  return <GraphExplorerSession key={props.projectId} {...props} />;
 }

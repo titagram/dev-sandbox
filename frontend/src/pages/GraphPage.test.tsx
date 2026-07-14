@@ -152,4 +152,30 @@ describe("GraphPage global project selection", () => {
     expect(second.queryGraph).toBe(first.queryGraph);
     expect(second.onQueryParamsChange).toBe(first.onQueryParamsChange);
   });
+
+  it("treats rebuild-required scope envelopes as unavailable", async () => {
+    mockRouterState.params = { projectId: "project-1" };
+    mockQueryProjectGraph.mockResolvedValue({
+      ...scopeResponse,
+      found: false,
+      reason: "graph_projection_rebuild_required",
+      items: [],
+      returned: 0,
+    });
+    await act(async () => { root.render(<GraphPage />); });
+    await settle(); await settle();
+
+    const props = mockGraphExplorerSeen[mockGraphExplorerSeen.length - 1];
+    expect(props.projectionUnavailable).toBe(true);
+  });
+
+  it("treats a rebuild-required overview projection as unavailable", async () => {
+    mockRouterState.params = { projectId: "project-1" };
+    mockGetGraph.mockResolvedValue({ ...graph, projection_status: "graph_projection_rebuild_required" });
+    await act(async () => { root.render(<GraphPage />); });
+    await settle(); await settle();
+
+    const props = mockGraphExplorerSeen[mockGraphExplorerSeen.length - 1];
+    expect(props.projectionUnavailable).toBe(true);
+  });
 });

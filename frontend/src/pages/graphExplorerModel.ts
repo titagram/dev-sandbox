@@ -16,6 +16,10 @@ export interface GraphViewModel {
 const EMPTY_EDGES = Object.freeze([]) as readonly DashboardGraphEdge[];
 const EMPTY_NODES = Object.freeze([]) as readonly DashboardGraphNode[];
 
+function isRenderableNode(node: DashboardGraphNode): boolean {
+  return node.kind !== "unknown" && Boolean(node.label?.trim());
+}
+
 export function buildGraphViewModel(
   response: DashboardGraphResponse,
   selectedHandle: string | null,
@@ -67,8 +71,16 @@ export function buildGraphViewModel(
   const outgoingByHandle = new Map<string, readonly DashboardGraphNode[]>();
   outgoingBuckets.forEach((nodes, handle) => outgoingByHandle.set(handle, Object.freeze([...nodes])));
 
-  const selectedNode = selectedHandle ? nodesByHandle.get(selectedHandle) : undefined;
-  const selectedEdges = selectedNode ? (edgesByHandle.get(selectedNode.handle) ?? EMPTY_EDGES) : EMPTY_EDGES;
+  const renderableHandles = new Set(
+    Array.from(nodesByHandle.values()).filter(isRenderableNode).map((node) => node.handle),
+  );
+  const selectedNode = selectedHandle && renderableHandles.has(selectedHandle)
+    ? nodesByHandle.get(selectedHandle)
+    : undefined;
+  const selectedEdges = selectedNode
+    ? Object.freeze((edgesByHandle.get(selectedNode.handle) ?? EMPTY_EDGES)
+      .filter((edge) => renderableHandles.has(edge.from_handle) && renderableHandles.has(edge.to_handle)))
+    : EMPTY_EDGES;
   const visibleNodes = selectedNode
     ? Object.freeze([
       selectedNode,

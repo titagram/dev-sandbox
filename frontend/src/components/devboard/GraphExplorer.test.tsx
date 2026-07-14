@@ -360,6 +360,94 @@ describe("GraphExplorer", () => {
     expect(container.textContent).toContain("impact-partial");
   });
 
+  it("classifies HTTP-200 unavailable envelopes before storing detail data and exposes Retry", async () => {
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => {
+      if (request.type === "search") return Promise.resolve(envelope("search", {
+        items: [node(handles.invoice, "InvoiceService")], returned: 1,
+      }));
+      if (request.type === "detail") return Promise.resolve(envelope("detail", {
+        found: false, reason: "graph_projection_rebuild_required",
+        projection: { ...projection, status: "rebuild_required" },
+      }));
+      return successfulQuery(request);
+    });
+    await mount(queryGraph);
+    const select = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { select.value = "workspace_binding:binding-2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "InvoiceService"); });
+    await settle(300);
+    await act(async () => { button("InvoiceService").click(); });
+    await settle();
+
+    expect(container.textContent).toContain("Graph projection unavailable");
+    expect(container.textContent).not.toContain("opaque handle:");
+    expect(button("Retry")).toBeTruthy();
+  });
+
+  it("classifies HTTP-200 query errors as retryable errors", async () => {
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => request.type === "search"
+      ? Promise.resolve(envelope("search", { found: false, reason: "query_error" }))
+      : successfulQuery(request));
+    await mount(queryGraph);
+    const select = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { select.value = "workspace_binding:binding-2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "InvoiceService"); });
+    await settle(300);
+
+    expect(container.textContent).toContain("Graph query failed");
+    expect(button("Retry")).toBeTruthy();
+  });
+
+  it("uses safe placeholders instead of opaque handles for unresolved human labels", async () => {
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => request.type === "search"
+      ? Promise.resolve(envelope("search", {
+        items: [
+          { handle: "opaque-unlabeled", kind: "class", label: null },
+          { handle: "opaque-unknown", kind: "unknown", label: null },
+        ],
+        returned: 2,
+      }))
+      : successfulQuery(request));
+    await mount(queryGraph);
+    const select = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { select.value = "workspace_binding:binding-2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "Missing labels"); });
+    await settle(300);
+
+    expect(container.textContent).toContain("Unresolved symbol");
+    expect(container.textContent).not.toContain("opaque-unlabeled");
+    expect(container.textContent).not.toContain("opaque-unknown");
+  });
+
+  it("remounts project state before a new query can reuse an old selectable scope", async () => {
+    const oldDetail = deferred<DashboardGraphResponse>();
+    const oldQuery = jest.fn((request: DashboardGraphQueryRequest) => request.type === "detail"
+      ? oldDetail.promise
+      : Promise.resolve(envelope(request.type)));
+    const oldScopes = [
+      { ...scopes[0], source_scope_id: "shared-repo" },
+      { ...scopes[0], source_scope_id: "old-repo" },
+    ];
+    await act(async () => { root.render(<GraphExplorer projectId="project-old" scopes={oldScopes}
+      initialScopeType="repository" initialScopeId="shared-repo" initialSymbol="opaque-old"
+      queryGraph={oldQuery} />); });
+    await settle();
+
+    const newQuery = jest.fn((request: DashboardGraphQueryRequest) => Promise.resolve(envelope(request.type)));
+    const newScopes = [
+      { ...scopes[0], source_scope_id: "shared-repo" },
+      { ...scopes[0], source_scope_id: "new-repo" },
+    ];
+    await act(async () => { root.render(<GraphExplorer projectId="project-new" scopes={newScopes}
+      initialSymbol="opaque-new" queryGraph={newQuery} />); });
+    await settle();
+
+    expect((container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement).value).toBe("");
+    expect(newQuery).not.toHaveBeenCalled();
+    await act(async () => { oldDetail.resolve(detailEnvelope("opaque-old", "Old project symbol")); await Promise.resolve(); });
+    expect(container.textContent).not.toContain("Old project symbol");
+  });
+
   it("renders empty, unavailable and retryable error states while preserving the selected handle", async () => {
     const emptyQuery = jest.fn((request: DashboardGraphQueryRequest) => request.type === "search"
       ? Promise.resolve(envelope("search"))

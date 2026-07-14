@@ -67,6 +67,23 @@ describe("buildGraphViewModel", () => {
     expect(JSON.stringify(payload)).toBe(before);
   });
 
+  it("excludes unknown or unlabeled nodes and their edges from the default canvas", () => {
+    const root = node("opaque-root");
+    const visible = node("opaque-visible");
+    const unknown = { ...node("opaque-unknown"), kind: "unknown" as const, label: "Legacy unknown" };
+    const unlabeled = { ...node("opaque-unlabeled"), label: null };
+    const model = buildGraphViewModel(response([root, visible, unknown, unlabeled], [
+      { from_handle: root.handle, to_handle: visible.handle, edge_type: "CALLS_METHOD", family: "call" },
+      { from_handle: root.handle, to_handle: unknown.handle, edge_type: "USES_DEPENDENCY", family: "dependency" },
+      { from_handle: unlabeled.handle, to_handle: root.handle, edge_type: "CALLS_METHOD", family: "call" },
+    ]), root.handle);
+
+    expect(model.visibleNodes.map((value) => value.handle)).toEqual([root.handle, visible.handle]);
+    expect(model.selectedEdges).toEqual([
+      expect.objectContaining({ from_handle: root.handle, to_handle: visible.handle }),
+    ]);
+  });
+
   it("indexes a 5,000-node and 12,000-edge response into maps", () => {
     const items = Array.from({ length: 5000 }, (_, index) => node(`opaque-${index}`));
     const edges = Array.from({ length: 12000 }, (_, index) => ({
