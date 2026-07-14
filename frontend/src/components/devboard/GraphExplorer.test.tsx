@@ -360,6 +360,40 @@ describe("GraphExplorer", () => {
     expect(container.textContent).toContain("impact-partial");
   });
 
+  it("renders multi-family impact rows with the same handle without duplicate-key warnings", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => {
+        if (request.type === "search") return Promise.resolve(envelope("search", {
+          items: [node(handles.invoice, "InvoiceService")], returned: 1,
+        }));
+        if (request.type === "detail") return Promise.resolve(detailEnvelope(handles.invoice, "InvoiceService"));
+        if (request.type === "impact") return Promise.resolve(envelope("impact", {
+          items: [
+            node(handles.dependency, "InvoiceRepository", { family: "call", distance: 1, edge_types: ["CALLS_METHOD"], why: "call impact" }),
+            node(handles.dependency, "InvoiceRepository", { family: "dependency", distance: 1, edge_types: ["USES_DEPENDENCY"], why: "dependency impact" }),
+          ],
+          returned: 2,
+        }));
+        return Promise.resolve(envelope("neighborhood"));
+      });
+      await mount(queryGraph);
+      const select = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+      await act(async () => { select.value = "workspace_binding:binding-2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+      await act(async () => { changeInput(input("Search symbols"), "InvoiceService"); });
+      await settle(300);
+      await act(async () => { button("InvoiceService").click(); });
+      await settle();
+
+      expect(container.textContent).toContain("call impact");
+      expect(container.textContent).toContain("dependency impact");
+      const keyWarnings = consoleError.mock.calls.filter((call: unknown[]) => call.join(" ").includes("same key"));
+      expect(keyWarnings).toEqual([]);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("classifies HTTP-200 unavailable envelopes before storing detail data and exposes Retry", async () => {
     const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => {
       if (request.type === "search") return Promise.resolve(envelope("search", {

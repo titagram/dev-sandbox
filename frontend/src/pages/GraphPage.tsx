@@ -100,5 +100,5 @@ function ProjectGraphPage({ projectId }: { projectId: string }) {
 
 export default function GraphPage() {
   const { projectId } = useParams();
-  return projectId ? <ProjectGraphPage projectId={projectId} /> : <GlobalGraphPage />;
+  return projectId ? <ProjectGraphPage key={projectId} projectId={projectId} /> : <GlobalGraphPage />;
 }

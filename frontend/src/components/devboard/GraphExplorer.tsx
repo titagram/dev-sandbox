@@ -76,13 +76,28 @@ function responseStatus(response: DashboardGraphDataResponse | null): React.Reac
   );
 }
 
+function keyedGraphItems(items: readonly DashboardGraphNode[]) {
+  const occurrences = new Map<string, number>();
+  return items.map((item) => {
+    const signature = JSON.stringify([
+      item.handle,
+      item.family ?? null,
+      item.distance ?? null,
+      [...(item.edge_types ?? [])].sort(),
+    ]);
+    const occurrence = (occurrences.get(signature) ?? 0) + 1;
+    occurrences.set(signature, occurrence);
+    return { item, key: `${signature}#${occurrence}` };
+  });
+}
+
 function NodeList({ title, response }: { title: string; response: DashboardGraphDataResponse | null }) {
   return (
     <Panel title={title}>
       {response && response.items.length > 0 ? (
         <ul className="space-y-2 text-sm">
-          {response.items.map((item) => (
-            <li key={item.handle} className="rounded border border-border/60 p-2">
+          {keyedGraphItems(response.items).map(({ item, key }) => (
+            <li key={key} className="rounded border border-border/60 p-2">
               <span className="font-mono">{nodeDisplayLabel(item)}</span>
               {item.why && <p className="text-xs text-muted-foreground">{item.why}</p>}
               {(item.family || item.edge_types?.length || item.distance !== undefined) && (
