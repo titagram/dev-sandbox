@@ -209,6 +209,91 @@ describe("mockApi approved Hades Agent contracts", () => {
     })).rejects.toEqual(expect.objectContaining({ message: "scope_not_found", code: "404" }));
   });
 
+  it("returns projection metadata for the selected project scope without leaking fixture internals", async () => {
+    const coreRepository = await mockApi.queryProjectGraph("proj-core", {
+      type: "overview",
+      scope_type: "repository",
+      scope_id: "repo-api",
+    });
+    const coreWorkspace = await mockApi.queryProjectGraph("proj-core", {
+      type: "overview",
+      scope_type: "workspace_binding",
+      scope_id: "binding-core-api",
+    });
+    const payRepository = await mockApi.queryProjectGraph("proj-pay", {
+      type: "overview",
+      scope_type: "repository",
+      scope_id: "repo-billing",
+    });
+
+    expect(coreRepository.projection).toEqual({
+      status: "ready",
+      quality: "complete",
+      generated_at: expect.any(String),
+      active_graph_version: "canonical-proj-core-v7",
+      node_count: 6,
+      relationship_count: 5,
+      unknown_kind_count: 0,
+      missing_label_count: 0,
+      excluded_node_count: 0,
+    });
+    expect(coreWorkspace.projection).toEqual({
+      status: "ready",
+      quality: "partial",
+      generated_at: expect.any(String),
+      active_graph_version: "canonical-binding-core-api-v3",
+      node_count: 4,
+      relationship_count: 3,
+      unknown_kind_count: 0,
+      missing_label_count: 0,
+      excluded_node_count: 0,
+    });
+    expect(payRepository.projection).toEqual({
+      status: "ready",
+      quality: "complete",
+      generated_at: expect.any(String),
+      active_graph_version: "canonical-proj-pay-v2",
+      node_count: 2,
+      relationship_count: 1,
+      unknown_kind_count: 0,
+      missing_label_count: 0,
+      excluded_node_count: 0,
+    });
+    expect(payRepository.projection.active_graph_version).not.toContain("core");
+  });
+
+  it("returns the controller-compatible unavailable envelope when a project has no graph scopes", async () => {
+    const response = await mockApi.queryProjectGraph("proj-docs", { type: "scopes" });
+
+    expect(response).toEqual(expect.objectContaining({
+      protocol_version: "v1",
+      project_id: "proj-docs",
+      query_type: "scopes",
+      found: false,
+      reason: "graph_scope_not_found",
+      scope: null,
+      node: null,
+      items: [],
+      edges: [],
+      returned: 0,
+      limit: 50,
+      next_cursor: null,
+      has_more: false,
+      truncated: false,
+    }));
+    expect(response.projection).toEqual({
+      status: "unavailable",
+      quality: null,
+      generated_at: null,
+      active_graph_version: null,
+      node_count: 0,
+      relationship_count: 0,
+      unknown_kind_count: 0,
+      missing_label_count: 0,
+      excluded_node_count: 0,
+    });
+  });
+
   it("applies the path limit before deriving returned nodes and visible edges", async () => {
     const response = await mockApi.queryProjectGraph("proj-core", {
       type: "path",

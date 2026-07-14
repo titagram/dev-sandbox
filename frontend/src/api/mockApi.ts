@@ -1,7 +1,7 @@
 import { DevboardApi } from "@/api/devboardApi";
 import {
   ARTIFACTS, AUTH_MATRIX, BACKUP_READINESS, buildBoard, buildGate, buildKickstart, buildReports,
-  DASHBOARD_GRAPH_EDGES, DASHBOARD_GRAPH_NODES, DASHBOARD_GRAPH_PROJECTION, DASHBOARD_GRAPH_SCOPES, DASHBOARD_GRAPH_SOURCE,
+  DASHBOARD_GRAPH_EDGES, DASHBOARD_GRAPH_NODES, DASHBOARD_GRAPH_SOURCE,
   GRAPH, PLUGIN_DEVICES,
   PLUGIN_TOKENS, PROJECT_DETAILS, PROJECTS, QUALITY_CURRENT_STATE, QUALITY_OVERVIEW,
   agentWorkItems, memoryEntries, ROADMAP, ROUTE_INVENTORY, ROUTE_SMOKE, runSummaries, RUNS, SECURITY_CHECKS, SYSTEM_STATUS,
@@ -11,7 +11,7 @@ import {
   AgentChatThread, AgentChatThreadSummary, AgentKey, AgentWorkDetailResponse, AgentWorkItem,
   AiAgentProfile, AiAgentProfileInput, AiAgentsSnapshot, AiModelProfile, AiModelProfileCreateInput, AiModelProfileInput, AiModelProvider, AiModelProviderInput, AiModelProviderValidationResult,
   AssistantRun, AssistantSuggestion, AssistantSuggestionResponse, BacklogTriagePayload,
-  DashboardGraphDataQueryType, DashboardGraphDataResponse, DashboardGraphDirection, DashboardGraphEdge, DashboardGraphFamily, DashboardGraphNode, DashboardGraphQueryRequest, DashboardGraphQueryType, DashboardGraphResponse, DashboardGraphScopeType, DashboardGraphScopesResponse, DashboardOverview, IntakeNormalizationType, LoginPayload, Project, ProjectDetail, ProjectLifecycleInput,
+  DashboardGraphDataQueryType, DashboardGraphDataResponse, DashboardGraphDirection, DashboardGraphEdge, DashboardGraphFamily, DashboardGraphNode, DashboardGraphProjection, DashboardGraphQueryRequest, DashboardGraphQueryType, DashboardGraphResponse, DashboardGraphScopeItem, DashboardGraphScopeType, DashboardGraphScopesResponse, DashboardOverview, IntakeNormalizationType, LoginPayload, Project, ProjectDetail, ProjectLifecycleInput,
   HadesCapability, ProjectMemoryDomain, ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryImportItem, ProjectMemoryQuery, ProjectStatusFilter, ProjectWorkspaceBinding, RepositoryDeclarationInput, Role, SourceStatus, TaskAttachment, TaskClarificationPayload, TaskColumn, TaskDetail, User, WikiEvidence, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
 } from "@/types/devboard";
 
@@ -1314,6 +1314,7 @@ function dashboardGraphEnvelope(
   projectId: string,
   request: DashboardGraphQueryRequest,
   queryType: DashboardGraphDataQueryType,
+  projection: DashboardGraphProjection,
   values: Partial<DashboardGraphDataResponse> = {},
 ): DashboardGraphDataResponse {
   const limit = request.limit ?? 50;
@@ -1327,7 +1328,7 @@ function dashboardGraphEnvelope(
     scope: request.scope_type && request.scope_id
       ? { type: request.scope_type, id: request.scope_id }
       : null,
-    projection: clone(DASHBOARD_GRAPH_PROJECTION),
+    projection: clone(projection),
     node: null,
     items: [],
     edges: [],
@@ -1344,6 +1345,7 @@ function dashboardGraphEnvelope(
 function dashboardGraphScopesEnvelope(
   projectId: string,
   request: DashboardGraphQueryRequest,
+  projection: DashboardGraphProjection,
   values: Partial<DashboardGraphScopesResponse> = {},
 ): DashboardGraphScopesResponse {
   return {
@@ -1353,7 +1355,7 @@ function dashboardGraphScopesEnvelope(
     found: false,
     reason: null,
     scope: null,
-    projection: clone(DASHBOARD_GRAPH_PROJECTION),
+    projection: clone(projection),
     node: null,
     items: [],
     edges: [],
@@ -1522,23 +1524,70 @@ interface MockGraphScopeFixture {
   scopeType: DashboardGraphScopeType;
   scopeId: string;
   nodeHandles: readonly string[];
+  projection: DashboardGraphProjection;
 }
 
 const mockGraphHandle = (character: string) => `gh1_${character.repeat(43)}`;
+const unavailableGraphProjection = (): DashboardGraphProjection => ({
+  status: "unavailable",
+  quality: null,
+  generated_at: null,
+  active_graph_version: null,
+  node_count: 0,
+  relationship_count: 0,
+  unknown_kind_count: 0,
+  missing_label_count: 0,
+  excluded_node_count: 0,
+});
+const readyGraphProjection = (
+  activeGraphVersion: string,
+  quality: string,
+  nodeCount: number,
+  relationshipCount: number,
+): DashboardGraphProjection => ({
+  status: "ready",
+  quality,
+  generated_at: new Date(Date.now() - 12 * 60_000).toISOString(),
+  active_graph_version: activeGraphVersion,
+  node_count: nodeCount,
+  relationship_count: relationshipCount,
+  unknown_kind_count: 0,
+  missing_label_count: 0,
+  excluded_node_count: 0,
+});
 const MOCK_GRAPH_SCOPE_FIXTURES: readonly MockGraphScopeFixture[] = [
   {
     projectId: "proj-core", scopeType: "repository", scopeId: "repo-api",
     nodeHandles: ["a", "b", "c", "d", "e", "f"].map(mockGraphHandle),
+    projection: readyGraphProjection("canonical-proj-core-v7", "complete", 6, 5),
   },
   {
     projectId: "proj-core", scopeType: "workspace_binding", scopeId: "binding-core-api",
     nodeHandles: ["g", "h"].map(mockGraphHandle),
+    projection: readyGraphProjection("canonical-binding-core-api-v3", "partial", 4, 3),
   },
   {
     projectId: "proj-pay", scopeType: "repository", scopeId: "repo-billing",
     nodeHandles: ["i", "j"].map(mockGraphHandle),
+    projection: readyGraphProjection("canonical-proj-pay-v2", "complete", 2, 1),
   },
 ];
+
+function graphScopeItem(fixture: MockGraphScopeFixture): DashboardGraphScopeItem {
+  const projection = fixture.projection;
+
+  return {
+    source_scope_type: fixture.scopeType,
+    source_scope_id: fixture.scopeId,
+    ...(projection.active_graph_version === null ? {} : {
+      active_graph_version: projection.active_graph_version,
+    }),
+    status: projection.status,
+    ...(projection.quality === null ? {} : { quality: projection.quality }),
+    node_count: projection.node_count,
+    relationship_count: projection.relationship_count,
+  };
+}
 
 function graphFixturesForProject(projectId: string): readonly MockGraphScopeFixture[] {
   return MOCK_GRAPH_SCOPE_FIXTURES.filter((fixture) => fixture.projectId === projectId);
@@ -1629,12 +1678,17 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
     const offset = cursorOffset(request.cursor, cursorContext);
     const limit = request.limit ?? 50;
     const fixtures = graphFixturesForProject(projectId);
-    const projectScopes = DASHBOARD_GRAPH_SCOPES.filter((scope) => fixtures.some((fixture) =>
-      fixture.scopeType === scope.source_scope_type && fixture.scopeId === scope.source_scope_id,
-    ));
+    const projection = unavailableGraphProjection();
+    if (fixtures.length === 0) {
+      return dashboardGraphScopesEnvelope(projectId, request, projection, {
+        found: false,
+        reason: "graph_scope_not_found",
+      });
+    }
+    const projectScopes = fixtures.map(graphScopeItem);
     const page = projectScopes.slice(offset, offset + limit);
     const hasMore = offset + page.length < projectScopes.length;
-    return dashboardGraphScopesEnvelope(projectId, request, {
+    return dashboardGraphScopesEnvelope(projectId, request, projection, {
       found: true,
       items: clone(page),
       returned: page.length,
@@ -1652,7 +1706,7 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
   const queryType = request.type;
 
   if (request.type === "overview") {
-    return dashboardGraphEnvelope(projectId, request, queryType, { found: true });
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, { found: true });
   }
 
   if (request.type === "search") {
@@ -1673,7 +1727,7 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
     const limit = request.limit ?? 50;
     const items = matches.slice(offset, offset + limit);
     const hasMore = offset + items.length < matches.length;
-    return dashboardGraphEnvelope(projectId, request, queryType, {
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
       found: true,
       items: clone(items),
       returned: items.length,
@@ -1688,7 +1742,7 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
   if (request.type === "detail") {
     const selected = graphNode(fixture, request.node_handle);
     if (!selected) graphError("node_not_found", "404");
-    return dashboardGraphEnvelope(projectId, request, queryType, {
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
       found: true,
       node: clone(selected),
     });
@@ -1715,7 +1769,7 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
     const visible = new Set([selected.handle, ...items.map((node) => node.handle)]);
     const edges = matchingEdges.filter((edge) => visible.has(edge.from_handle) && visible.has(edge.to_handle));
     const truncated = items.length < allItems.length;
-    return dashboardGraphEnvelope(projectId, request, queryType, {
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
       found: true, node: clone(selected), items: clone(items), edges: clone(edges), returned: items.length,
       truncated,
     });
@@ -1737,7 +1791,7 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
     const edges = [edge].filter((candidate) =>
       visibleHandles.has(candidate.from_handle) && visibleHandles.has(candidate.to_handle),
     );
-    return dashboardGraphEnvelope(projectId, request, queryType, {
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
       found: true,
       items: clone(items),
       edges: clone(edges),
@@ -1763,7 +1817,7 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
   const limit = request.limit ?? 50;
   const items = impactItems.slice(0, limit);
   const truncated = items.length < impactItems.length;
-  return dashboardGraphEnvelope(projectId, request, queryType, {
+  return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
     found: true,
     items: clone(items),
     returned: items.length,

@@ -5,7 +5,6 @@ import {
   BackupReadiness,
   DashboardGraphEdge,
   DashboardGraphNode,
-  DashboardGraphScopeItem,
   GraphView,
   KanbanBoard,
   LocalWorkspace,
@@ -743,36 +742,6 @@ export const GRAPH: GraphView = {
   ],
 };
 
-export const DASHBOARD_GRAPH_SCOPES: DashboardGraphScopeItem[] = [
-  {
-    source_scope_type: "repository" as const,
-    source_scope_id: "repo-api",
-    active_graph_version: "canonical-proj-core-v7",
-    status: "ready",
-    quality: "complete",
-    node_count: 6,
-    relationship_count: 5,
-  },
-  {
-    source_scope_type: "workspace_binding" as const,
-    source_scope_id: "binding-core-api",
-    active_graph_version: "canonical-binding-core-api-v3",
-    status: "ready",
-    quality: "partial",
-    node_count: 2,
-    relationship_count: 1,
-  },
-  {
-    source_scope_type: "repository" as const,
-    source_scope_id: "repo-billing",
-    active_graph_version: "canonical-proj-pay-v2",
-    status: "ready",
-    quality: "complete",
-    node_count: 2,
-    relationship_count: 1,
-  },
-];
-
 const graphHandle = (character: string) => `gh1_${character.repeat(43)}`;
 
 export const DASHBOARD_GRAPH_NODES: DashboardGraphNode[] = [
@@ -831,18 +800,6 @@ export const DASHBOARD_GRAPH_EDGES: DashboardGraphEdge[] = [
     from_handle: graphHandle("i"), to_handle: graphHandle("j"), edge_type: "USES_DEPENDENCY", family: "dependency",
   },
 ];
-
-export const DASHBOARD_GRAPH_PROJECTION = {
-  status: "ready",
-  quality: "complete",
-  generated_at: iso(12),
-  active_graph_version: "canonical-proj-core-v7",
-  node_count: DASHBOARD_GRAPH_NODES.length,
-  relationship_count: DASHBOARD_GRAPH_EDGES.length,
-  unknown_kind_count: 0,
-  missing_label_count: 0,
-  excluded_node_count: 0,
-};
 
 export const DASHBOARD_GRAPH_SOURCE = {
   type: "canonical_graph" as const,
