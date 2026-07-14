@@ -4,7 +4,7 @@
 
 **Goal:** Make `frontend/` in the Hades Agent repository the only tracked and deployed React frontend source while preserving the current live service until the replacement is verified.
 
-**Status:** Tasks 1-4 are complete and verified on the implementation branch. Task 5 remains pending and is the only phase authorized to change the live frontend runtime or remove the external checkout.
+**Status:** Complete. Tasks 1-5 were verified and the live repository-owned frontend cutover, authenticated browser QA, and external-checkout retirement completed on 2026-07-14.
 
 **Architecture:** Copy the external Create React App source as a clean snapshot, excluding nested Git state, secrets, dependencies, and build artifacts. Build it through a repository-owned Docker service, route browser pages to nginx and backend paths to Laravel through explicit Traefik rules, then retire the external checkout only after local and public acceptance succeeds.
 
@@ -257,7 +257,7 @@ Expected: historical records may remain; active config and runbooks contain no s
 - Consumes: green image and Compose validation from Tasks 1-4.
 - Produces: live repository-owned frontend and removal of the external checkout after acceptance.
 
-- [ ] **Step 1: Run frontend acceptance**
+- [x] **Step 1: Run frontend acceptance**
 
 ```bash
 cd frontend
@@ -267,15 +267,25 @@ corepack yarn build
 
 Expected: all tests pass and build exits 0.
 
-- [ ] **Step 2: Preserve and verify rollback inputs outside Git**
+- [x] **Step 2: Preserve and verify rollback inputs outside Git**
 
 ```bash
 install -d -m 700 /home/ubuntu/backups/devboard
-current_frontend_image="$(docker inspect --format '{{.Image}}' devboard-frontend-1)"
-test -n "$current_frontend_image"
-docker image inspect "$current_frontend_image" >/dev/null
-docker image tag "$current_frontend_image" hades-agent-frontend:pre-cutover-20260714
-test "$(docker image inspect --format '{{.Id}}' hades-agent-frontend:pre-cutover-20260714)" = "$current_frontend_image"
+runtime_backup=/home/ubuntu/backups/devboard/frontend-runtime-pre-cutover-20260714
+install -d -m 700 "$runtime_backup/html" "$runtime_backup/nginx"
+docker cp devboard-frontend-1:/usr/share/nginx/html/. "$runtime_backup/html/"
+docker cp devboard-frontend-1:/etc/nginx/conf.d/default.conf \
+  "$runtime_backup/nginx/default.conf"
+
+base='nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10'
+seed="hades-frontend-rollback-seed-$$"
+docker pull "$base"
+docker create --name "$seed" "$base"
+docker cp "$runtime_backup/html/." "$seed":/usr/share/nginx/html/
+docker cp "$runtime_backup/nginx/default.conf" "$seed":/etc/nginx/conf.d/default.conf
+docker commit "$seed" hades-agent-frontend:pre-cutover-20260714
+docker rm "$seed"
+docker run --rm --entrypoint nginx hades-agent-frontend:pre-cutover-20260714 -t
 
 tar --exclude='.git' --exclude='node_modules' --exclude='build' -C /home/ubuntu \
   -czf /home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.tar.gz \
@@ -284,9 +294,9 @@ tar -tzf /home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.ta
   | grep -q 'frontend/src/App.tsx'
 ```
 
-Expected: the running frontend image ID exists; the rollback tag resolves to that exact image ID; the private backup directory exists; and archive validation succeeds before any new image build.
+Observed: Docker had already garbage-collected the running container's image object and a required layer, so direct image tagging and direct `docker commit` of the live container both failed. The approved fallback copied the live HTML tree and nginx configuration into a private mode-`0700` runtime snapshot, created a non-started container from the pinned nginx base above, copied the snapshot into it, and committed the verified recovery image `hades-agent-frontend:pre-cutover-20260714`. The external source archive was mode `0600` and passed the `App.tsx` validation before deployment.
 
-- [ ] **Step 3: Recreate only frontend after branch integration**
+- [x] **Step 3: Recreate only frontend after branch integration**
 
 ```bash
 docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml \
@@ -295,13 +305,13 @@ docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefi
 
 Expected: backend, worker, scheduler, PostgreSQL, and Neo4j are not recreated.
 
-- [ ] **Step 4: Execute public smoke checks**
+- [x] **Step 4: Execute public smoke checks**
 
-Verify HTTPS redirect, `/login`, `/favicon.svg`, `/api/dashboard/me`, `/api/hades/v1/health`, `/install.sh`, browser login, a project page, and hard refresh of a nested React route. Expected: no 404/405, no Inertia HTML, favicon 200, API JSON remains Laravel-served.
+Verify HTTPS redirect, `/login`, `/favicon.svg`, `/api/dashboard/me`, `/api/hades/v1/health`, `/install.sh`, browser login, a project page, and hard refresh of a nested React route. The authenticated browser gate passed on desktop and mobile viewports through the secure loopback QA proxy/tunnel: Hades branding, real login, project list, project `01KX8G47N6HK2AC4NSVS912ECJ`, nested hard refresh, role interaction, and a clean browser console were verified. Unauthenticated protected routes correctly returned proxy HTTP 401; installers returned HTTP 200 `text/plain`; Hades health returned HTTP 200 JSON; Laravel dashboard auth returned JSON through backend loopback; no API returned nginx HTML or HTTP 405.
 
 If any smoke fails, immediately execute the frontend-only rollback from `docs/runbooks/devboard-production-deploy.md`, verify the restored frontend, and preserve `/home/ubuntu/emergent_devboard_frontend`. A failed smoke gate forbids Step 5.
 
-- [ ] **Step 5: Remove the external checkout only after smoke passes**
+- [x] **Step 5: Remove the external checkout only after smoke passes**
 
 ```bash
 rm -rf /home/ubuntu/emergent_devboard_frontend
@@ -310,7 +320,7 @@ test ! -e /home/ubuntu/emergent_devboard_frontend
 
 Expected: old checkout absent; public smoke remains healthy.
 
-- [ ] **Step 6: Final verification**
+- [x] **Step 6: Final verification**
 
 ```bash
 git diff --check
@@ -318,4 +328,4 @@ git status --short
 docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml ps
 ```
 
-Expected: only planned files changed; runtime services healthy.
+Observed: only the planned documentation remained for the final commit plus the preserved pre-existing generated Pest result. The frontend, app, PostgreSQL, and Neo4j runtime checks passed; app/PostgreSQL/Neo4j container IDs remained exact. Worker and scheduler were absent before the frontend cutover and remained absent without being started or restarted; that pre-existing operational gap is tracked separately.

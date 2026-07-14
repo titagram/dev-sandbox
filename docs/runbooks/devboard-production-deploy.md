@@ -2,7 +2,7 @@
 
 The repository target architecture for Hades Agent has `frontend/` as its only tracked, repository-owned browser source. Its multi-stage image builds the standalone React 19 application, and nginx serves the compiled SPA plus the exact `/install.sh` and `/install.ps1` application installers. Laravel serves APIs and backend-owned storage paths; it does not build or serve the target browser UI.
 
-A live environment is compliant with that target only after every Task 5 gate in `docs/superpowers/plans/2026-07-14-react-frontend-repository-cutover.md` has passed. Until the Task 5 deployment, browser/API smoke, and external-checkout retirement are recorded complete in the plan and `ai-sandbox/logbooks/LOGBOOK_PROJECT.md`, do not infer live cutover state from the repository layout or this runbook.
+The live environment completed every Task 5 gate in `docs/superpowers/plans/2026-07-14-react-frontend-repository-cutover.md` on 2026-07-14. The repository-owned React image is deployed, authenticated browser and API smoke passed, and the former adjacent frontend checkout was retired only after the rollback inputs and post-removal smoke were verified.
 
 Existing `devboard*` Compose filenames, environment names, image names, volume names, router names, and container identifiers are temporary internal compatibility identifiers. They do not indicate frontend ownership and must not be used as a reason to restore the former adjacent frontend checkout or Laravel Vite/Inertia deployment path. The repository Compose definitions have no Node/Vite/Inertia frontend service.
 
@@ -168,44 +168,58 @@ Public acceptance uses the protected browser/session or another approved credent
 
 The protected `/up` route is checked through loopback so proxy credentials never appear in `curl` arguments or process listings.
 
-## Frontend-Only Cutover From The Current Legacy Development Compose Stack
+## Completed Frontend-Only Cutover Record
 
-This procedure replaces only the currently orphaned legacy frontend container after the repository-owned image has passed build validation. It must not run migrations, seeders, or backend/container restarts.
+The repository-owned frontend cutover completed on 2026-07-14 without a migration, seeder, database operation, or backend/data-service restart. Only the `frontend` Compose service was rebuilt and recreated. App, PostgreSQL, and Neo4j container IDs remained exact. Worker and scheduler were already absent before the cutover and were deliberately left absent; that is a separate operational gap rather than a cutover side effect.
 
-1. Tag the running frontend image outside the release tag so it can be restored without rebuilding:
+The normal rollback preparation is to tag the running immutable image after verifying that Docker still has its image object. During this cutover, the running legacy container referenced an image object that Docker had already garbage-collected. Direct tagging failed, and direct `docker commit` also failed because a required content layer was gone. The approved recovery path therefore captured the mounted runtime files and rebuilt a recovery image on a pinned nginx base.
 
-   ```bash
-   current_frontend_image="$(docker inspect --format '{{.Image}}' devboard-frontend-1)"
-   test -n "$current_frontend_image"
-   docker image inspect "$current_frontend_image" >/dev/null
-   docker image tag "$current_frontend_image" hades-agent-frontend:pre-cutover-20260714
-   test "$(docker image inspect --format '{{.Id}}' hades-agent-frontend:pre-cutover-20260714)" = "$current_frontend_image"
-   ```
+The private pre-cutover inputs remain outside Git:
 
-2. Archive the external source outside Git and verify the archive before changing the container:
+- `/home/ubuntu/backups/devboard/frontend-runtime-pre-cutover-20260714` contains the captured nginx HTML tree and `default.conf`, mode `0700`;
+- `/home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.tar.gz` contains the retired external source, mode `0600`;
+- `hades-agent-frontend:pre-cutover-20260714` is the verified recovery image.
 
-   ```bash
-   install -d -m 700 /home/ubuntu/backups/devboard
-   tar --exclude='.git' --exclude='node_modules' --exclude='build' \
-     -C /home/ubuntu -czf /home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.tar.gz \
-     emergent_devboard_frontend/frontend
-   tar -tzf /home/ubuntu/backups/devboard/emergent-frontend-pre-cutover-20260714.tar.gz \
-     | grep -q 'frontend/src/App.tsx'
-   ```
+For a future cutover, first attempt the simpler exact-image tag and fail closed when the image object is unavailable:
 
-3. Build and recreate only `frontend` with the current development and Traefik files:
+```bash
+current_frontend_image="$(docker inspect --format '{{.Image}}' devboard-frontend-1)"
+test -n "$current_frontend_image"
+docker image inspect "$current_frontend_image" >/dev/null
+docker image tag "$current_frontend_image" hades-agent-frontend:pre-cutover
+test "$(docker image inspect --format '{{.Id}}' hades-agent-frontend:pre-cutover)" = "$current_frontend_image"
+```
 
-   ```bash
-   docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml build frontend
-   docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml \
-     up -d --no-deps frontend
-   ```
+When an image object or layer has already been garbage-collected, capture the still-mounted runtime before recreating its container. Use a new dated directory; never overwrite an already verified recovery snapshot:
 
-4. Require every private and public smoke gate above, including favicon, login, a nested route hard refresh, API routing, and both installers. Confirm `app`, `worker`, `scheduler`, `postgres`, and `neo4j` container IDs did not change.
+```bash
+umask 077
+runtime_backup=/home/ubuntu/backups/devboard/frontend-runtime-pre-cutover-YYYYMMDD
+install -d -m 700 "$runtime_backup/html" "$runtime_backup/nginx"
+docker cp devboard-frontend-1:/usr/share/nginx/html/. "$runtime_backup/html/"
+docker cp devboard-frontend-1:/etc/nginx/conf.d/default.conf \
+  "$runtime_backup/nginx/default.conf"
+test -s "$runtime_backup/html/index.html"
+test -s "$runtime_backup/nginx/default.conf"
+```
 
-5. Remove `/home/ubuntu/emergent_devboard_frontend` only after all gates pass and the rollback tag/archive have been verified. Repeat public smoke after removal.
+Build and verify a recovery image from that snapshot without starting or exposing the seed container. The command contains no application or proxy secret:
 
-If any smoke gate fails after the new frontend is recreated, immediately execute the frontend-only rollback below, verify the restored frontend, and retain the external checkout. Do not proceed to external-checkout removal after a failed gate.
+```bash
+base='nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10'
+seed="hades-frontend-rollback-seed-$$"
+trap 'docker rm -f "$seed" >/dev/null 2>&1 || true' EXIT
+docker pull "$base"
+docker create --name "$seed" "$base"
+docker cp "$runtime_backup/html/." "$seed":/usr/share/nginx/html/
+docker cp "$runtime_backup/nginx/default.conf" "$seed":/etc/nginx/conf.d/default.conf
+docker commit "$seed" hades-agent-frontend:pre-cutover
+docker rm "$seed"
+trap - EXIT
+docker run --rm --entrypoint nginx hades-agent-frontend:pre-cutover -t
+```
+
+The 2026-07-14 cutover additionally archived and validated the external source before deployment, recreated only `frontend` with `--no-deps`, passed server and authenticated desktop/mobile browser QA, removed the external checkout, and repeated server/public smoke after removal.
 
 ## Operations And Rollback
 
@@ -216,9 +230,10 @@ docker compose -f docker-compose.devboard.prod.yaml logs --tail=120 app worker s
 docker compose -f docker-compose.devboard.prod.yaml up -d --force-recreate worker scheduler
 ```
 
-Every Task 5 smoke failure triggers this frontend-only rollback. Restore only the saved frontend image and recreate only that service:
+Every frontend release smoke failure triggers a frontend-only rollback. First verify that the saved image exists; if it does not, reconstruct it from the verified private runtime snapshot using the pinned seed procedure above. Restore only the saved frontend image and recreate only that service:
 
 ```bash
+docker image inspect hades-agent-frontend:pre-cutover-20260714 >/dev/null
 docker image tag hades-agent-frontend:pre-cutover-20260714 devboard-frontend
 docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.traefik.yaml \
   up -d --no-deps --no-build --force-recreate frontend
