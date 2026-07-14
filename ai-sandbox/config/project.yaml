@@ -1,12 +1,14 @@
 project:
   initialized: true
-  name: "DevBoard"
+  name: "Hades Agent"
+  compatibility_names:
+    - "DevBoard (temporary internal Compose, environment, and container identifiers)"
   type: "existing"
   root: "."
   stack:
-    - "Laravel 13"
-    - "Inertia React"
-    - "Python CLI/MCP plugin"
+    - "Laravel 13 backend and APIs"
+    - "Standalone React 19 frontend"
+    - "Python CLI/MCP plugin and analyzer"
     - "PostgreSQL"
     - "Neo4j"
     - "Docker Compose"
@@ -22,13 +24,14 @@ project:
     - "docs/ai-devboard/10_RUNTIME_SEQUENCES.md"
     - "docs/superpowers/plans/2026-06-16-devboard-onboarding-genesis.md"
   start_commands:
-    - "docker compose -f docker-compose.devboard.yaml up app node postgres neo4j"
+    - "docker compose -f docker-compose.devboard.yaml up app frontend worker scheduler postgres neo4j"
   test_commands:
     - "cd backend && php artisan test"
     - "cd plugin && python -m pytest -q"
     - "cd analyzer && python -m pytest -q"
+    - "cd frontend && CI=true corepack yarn test --watchAll=false"
   build_commands:
-    - "cd backend && npm run build"
+    - "cd frontend && corepack yarn install --frozen-lockfile && corepack yarn build"
 
 docker:
   required: true
@@ -37,7 +40,9 @@ docker:
     - "docker-compose.devboard.amd64.yaml"
   services:
     - "app"
-    - "node"
+    - "frontend"
+    - "worker"
+    - "scheduler"
     - "postgres"
     - "neo4j"
 
