@@ -1,6 +1,5 @@
 export interface ApiBaseEnv {
   REACT_APP_API_BASE_URL?: string;
-  VITE_API_BASE_URL?: string;
 }
 
 export function resolveApiBaseUrl(
@@ -9,7 +8,6 @@ export function resolveApiBaseUrl(
 ): string {
   return (
     env.REACT_APP_API_BASE_URL ||
-    env.VITE_API_BASE_URL ||
     browserOrigin ||
     "http://127.0.0.1:8000"
   );
@@ -21,7 +19,6 @@ const browserOrigin =
 export const API_BASE_URL = resolveApiBaseUrl(
   {
     REACT_APP_API_BASE_URL: process.env.REACT_APP_API_BASE_URL,
-    VITE_API_BASE_URL: process.env.VITE_API_BASE_URL,
   },
   browserOrigin,
 );
