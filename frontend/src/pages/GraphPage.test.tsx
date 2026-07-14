@@ -93,19 +93,22 @@ describe("GraphPage global project selection", () => {
   afterEach(() => { act(() => root.unmount()); container.remove(); });
 
   it("does not issue graph POSTs or undefined project URLs before a real project is chosen", async () => {
+    mockRouterState.search = new URLSearchParams("run_id=run-7&snapshot_id=snapshot-9");
     await act(async () => {
       root.render(<GraphPage />);
     });
     await settle();
     expect(container.textContent).toContain("Choose a project");
+    expect(container.textContent).toContain("Nodes 4");
+    expect(container.textContent).toContain("Source");
     expect(mockQueryProjectGraph).not.toHaveBeenCalled();
-    expect(mockGetGraph).not.toHaveBeenCalled();
+    expect(mockGetGraph).toHaveBeenCalledWith(undefined, { runId: "run-7", snapshotId: "snapshot-9" });
 
     const select = container.querySelector("select[aria-label='Project']") as HTMLSelectElement;
     await act(async () => { select.value = "project-1"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await settle();
     await settle();
-    expect(mockNavigate).toHaveBeenCalledWith("/projects/project-1/graph");
+    expect(mockNavigate).toHaveBeenCalledWith("/projects/project-1/graph?run_id=run-7&snapshot_id=snapshot-9");
     expect(mockNavigate.mock.calls.flat().join(" ")).not.toContain("undefined");
   });
 

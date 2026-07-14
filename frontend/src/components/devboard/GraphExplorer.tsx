@@ -41,11 +41,12 @@ function scopeKey(scope: Pick<DashboardGraphScopeItem, "source_scope_type" | "so
 
 function responseStatus(response: DashboardGraphDataResponse | null): React.ReactNode {
   if (!response) return null;
+  const searchablePage = response.query_type === "search";
   return (
     <p className="text-[11px] text-muted-foreground">
       returned {response.returned}
       {response.truncated ? " · truncated" : ""}
-      {response.has_more ? ` · more available${response.next_cursor ? ` · cursor ${response.next_cursor}` : ""}` : ""}
+      {searchablePage && response.has_more ? ` · more available${response.next_cursor ? ` · cursor ${response.next_cursor}` : ""}` : ""}
     </p>
   );
 }
@@ -69,6 +70,11 @@ function NodeList({ title, response }: { title: string; response: DashboardGraph
         </ul>
       ) : <p className="text-sm text-muted-foreground">No related symbols</p>}
       {responseStatus(response)}
+      {response && <p className="mt-2 text-[11px] text-muted-foreground">
+        {response.source.type} · {response.source.status} · {response.source.origin}
+        {` · projection ${response.projection.status}`}
+        {response.projection.quality && ` · ${response.projection.quality}`}
+      </p>}
     </Panel>
   );
 }
@@ -134,8 +140,57 @@ export default function GraphExplorer({
   const [details, setDetails] = useState<DetailBundle | null>(null);
   const [path, setPath] = useState<DashboardGraphDataResponse | null>(null);
   const [pathTarget, setPathTarget] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [pathLoading, setPathLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [pathError, setPathError] = useState<string | null>(null);
+  const searchGeneration = useRef(0);
+  const detailGeneration = useRef(0);
+  const pathGeneration = useRef(0);
+  const alive = useRef(true);
+  const initialLoadKey = useRef<string | null>(null);
+
+  const invalidateRequests = useCallback(() => {
+    searchGeneration.current += 1;
+    detailGeneration.current += 1;
+    pathGeneration.current += 1;
+  }, []);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      invalidateRequests();
+    };
+  }, [invalidateRequests]);
+
+  const desiredScopeKey = initialScope
+    ? scopeKey(initialScope)
+    : scopes.length === 1 ? scopeKey(scopes[0]) : "";
+  const contextKey = `${projectId}\u0000${scopes.map(scopeKey).join("\u0000")}`;
+  const previousContextKey = useRef(contextKey);
+
+  useEffect(() => {
+    if (previousContextKey.current === contextKey) return;
+    previousContextKey.current = contextKey;
+    invalidateRequests();
+    initialLoadKey.current = null;
+    setSelectedScopeKey(desiredScopeKey);
+    setQuery("");
+    setSearch(null);
+    setSelectedHandle(null);
+    setDetails(null);
+    setPath(null);
+    setPathTarget("");
+    setSearchLoading(false);
+    setDetailLoading(false);
+    setPathLoading(false);
+    setSearchError(null);
+    setDetailError(null);
+    setPathError(null);
+  }, [contextKey, desiredScopeKey, invalidateRequests]);
 
   const selectedScope = useMemo(
     () => scopes.find((scope) => scopeKey(scope) === selectedScopeKey),
@@ -155,24 +210,47 @@ export default function GraphExplorer({
 
   useEffect(() => {
     if (!selectedScope || query.trim() === "") {
+      searchGeneration.current += 1;
       setSearch(null);
+      setSearchLoading(false);
+      setSearchError(null);
       return;
     }
+    searchGeneration.current += 1;
+    const scheduledGeneration = searchGeneration.current;
+    setSearchLoading(false);
+    setSearchError(null);
     const timer = window.setTimeout(() => {
-      setLoading(true);
-      setError(null);
+      if (!alive.current || searchGeneration.current !== scheduledGeneration) return;
+      setSearchLoading(true);
       queryGraph(scopedRequest({ type: "search", query: query.trim(), limit: 50 }))
-        .then((response) => setSearch(dataResponse(response)))
-        .catch(() => setError("Unable to search graph"))
-        .finally(() => setLoading(false));
+        .then((response) => {
+          if (alive.current && searchGeneration.current === scheduledGeneration) setSearch(dataResponse(response));
+        })
+        .catch(() => {
+          if (alive.current && searchGeneration.current === scheduledGeneration) setSearchError("Unable to search graph");
+        })
+        .finally(() => {
+          if (alive.current && searchGeneration.current === scheduledGeneration) setSearchLoading(false);
+        });
     }, 250);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (searchGeneration.current === scheduledGeneration) searchGeneration.current += 1;
+    };
   }, [projectId, query, queryGraph, scopedRequest, selectedScope]);
 
   const loadDetails = useCallback(async (handle: string) => {
+    if (!selectedScope) return;
+    const generation = ++detailGeneration.current;
+    pathGeneration.current += 1;
+    const key = `${scopeKey(selectedScope)}:${handle}`;
+    initialLoadKey.current = key;
     setSelectedHandle(handle);
-    setLoading(true);
-    setError(null);
+    setDetailLoading(true);
+    setPathLoading(false);
+    setDetailError(null);
+    setPathError(null);
     setDetails(null);
     setPath(null);
     onQueryParamsChange?.({
@@ -188,6 +266,7 @@ export default function GraphExplorer({
         queryGraph(scopedRequest({ type: "neighborhood", node_handle: handle, direction: "out", families: [...families], limit: 50 })),
         queryGraph(scopedRequest({ type: "impact", node_handle: handle, max_depth: 2, limit: 50 })),
       ]);
+      if (!alive.current || detailGeneration.current !== generation) return;
       setDetails({
         detail: dataResponse(detailResponse),
         incoming: dataResponse(incomingResponse),
@@ -195,44 +274,74 @@ export default function GraphExplorer({
         impact: dataResponse(impactResponse),
       });
     } catch {
-      setError("Unable to load graph details");
+      if (alive.current && detailGeneration.current === generation) setDetailError("Unable to load graph details");
     } finally {
-      setLoading(false);
+      if (alive.current && detailGeneration.current === generation) setDetailLoading(false);
     }
   }, [onQueryParamsChange, queryGraph, scopedRequest, selectedScope]);
 
-  const initialLoadKey = useRef<string | null>(null);
   useEffect(() => {
-    if (!initialSymbol || !selectedScope) return;
+    if (!initialSymbol) {
+      detailGeneration.current += 1;
+      pathGeneration.current += 1;
+      initialLoadKey.current = null;
+      setSelectedHandle(null);
+      setDetails(null);
+      setPath(null);
+      setPathTarget("");
+      setDetailLoading(false);
+      setPathLoading(false);
+      setDetailError(null);
+      setPathError(null);
+      return;
+    }
+    if (!selectedScope) return;
+    if (initialScopeType && initialScopeId
+      && (selectedScope.source_scope_type !== initialScopeType || selectedScope.source_scope_id !== initialScopeId)) return;
     const key = `${scopeKey(selectedScope)}:${initialSymbol}`;
     if (initialLoadKey.current === key) return;
-    initialLoadKey.current = key;
     void loadDetails(initialSymbol);
-  }, [initialSymbol, loadDetails, selectedScope]);
+  }, [initialScopeId, initialScopeType, initialSymbol, loadDetails, selectedScope]);
 
   const selectScope = (key: string) => {
+    invalidateRequests();
+    initialLoadKey.current = null;
     setSelectedScopeKey(key);
+    setQuery("");
     setSearch(null);
     setDetails(null);
     setSelectedHandle(null);
+    setPath(null);
+    setPathTarget("");
+    setSearchLoading(false);
+    setDetailLoading(false);
+    setPathLoading(false);
+    setSearchError(null);
+    setDetailError(null);
+    setPathError(null);
     const scope = scopes.find((candidate) => scopeKey(candidate) === key);
     onQueryParamsChange?.({ scope_type: scope?.source_scope_type, scope_id: scope?.source_scope_id, symbol: undefined });
   };
 
   const runPath = async () => {
     if (!selectedHandle || !pathTarget) return;
-    setLoading(true);
-    setError(null);
+    const generation = ++pathGeneration.current;
+    setPathLoading(true);
+    setPathError(null);
     try {
-      setPath(dataResponse(await queryGraph(scopedRequest({
+      const response = dataResponse(await queryGraph(scopedRequest({
         type: "path", from_handle: selectedHandle, to_handle: pathTarget, max_depth: 3, limit: 50,
-      }))));
+      })));
+      if (alive.current && pathGeneration.current === generation) setPath(response);
     } catch {
-      setError("Unable to find a path");
+      if (alive.current && pathGeneration.current === generation) setPathError("Unable to find a path");
     } finally {
-      setLoading(false);
+      if (alive.current && pathGeneration.current === generation) setPathLoading(false);
     }
   };
+
+  const loading = searchLoading || detailLoading || pathLoading;
+  const error = detailError ?? pathError ?? searchError;
 
   if (projectionUnavailable) {
     return <div role="status" aria-live="polite" className="rounded border border-border p-4">
@@ -257,7 +366,7 @@ export default function GraphExplorer({
 
       <div role="status" aria-live="polite" className="text-sm text-muted-foreground">
         {loading ? "Loading graph…" : error ?? ""}
-        {error && selectedHandle && <Button className="ml-2" size="sm" variant="outline" onClick={() => void loadDetails(selectedHandle)}>Retry</Button>}
+        {detailError && selectedHandle && <Button className="ml-2" size="sm" variant="outline" onClick={() => void loadDetails(selectedHandle)}>Retry</Button>}
       </div>
 
       {search && (

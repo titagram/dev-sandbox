@@ -12,13 +12,33 @@ import { DashboardGraphScopeType } from "@/types/devboard";
 
 function GlobalGraphPage() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const runId = params.get("run_id") || undefined;
+  const snapshotId = params.get("snapshot_id") || undefined;
+  const graph = useApi(() => api.getGraph(undefined, { runId, snapshotId }), [runId, snapshotId]);
   const projects = useApi(() => api.getProjects("active"), []);
   return <div className="space-y-5" data-testid="graph-page">
     <PageHeader title="Graph" subtitle="Choose a project before querying its canonical code graph." />
+    <DataState state={graph}>{(overview) => <>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <MetricCard label="Nodes" value={overview.stats.nodes} /><MetricCard label="Edges" value={overview.stats.edges} />
+        <MetricCard label="Modules" value={overview.stats.modules} /><MetricCard label="Routes" value={overview.stats.routes} />
+      </div>
+      <div className="rounded-md border border-border bg-card/40 px-4 py-2">
+        <SourceMetaInline source={overview.source} /><span className="ml-2 text-[11px] text-muted-foreground">· generated {relativeTime(overview.generated_at)}</span>
+        {overview.quality && <span className="ml-2 text-[11px] text-muted-foreground">· quality {overview.quality}</span>}
+      </div>
+    </>}</DataState>
     <DataState state={projects}>{(items) => <Panel title="Choose a project">
       <label className="text-sm">Project
         <select aria-label="Project" defaultValue="" onChange={(event) => {
-          if (event.target.value) navigate(`/projects/${encodeURIComponent(event.target.value)}/graph`);
+          if (event.target.value) {
+            const preserved = new URLSearchParams();
+            if (runId) preserved.set("run_id", runId);
+            if (snapshotId) preserved.set("snapshot_id", snapshotId);
+            const suffix = preserved.toString();
+            navigate(`/projects/${encodeURIComponent(event.target.value)}/graph${suffix ? `?${suffix}` : ""}`);
+          }
         }} className="mt-1 block w-full max-w-xl rounded border border-input bg-background px-3 py-2">
           <option value="">Select a project</option>
           {items.map((project) => <option key={project.id} value={project.id} label={project.name} />)}
