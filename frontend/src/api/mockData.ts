@@ -759,8 +759,17 @@ export const DASHBOARD_GRAPH_SCOPES: DashboardGraphScopeItem[] = [
     active_graph_version: "canonical-binding-core-api-v3",
     status: "ready",
     quality: "partial",
-    node_count: 4,
-    relationship_count: 3,
+    node_count: 2,
+    relationship_count: 1,
+  },
+  {
+    source_scope_type: "repository" as const,
+    source_scope_id: "repo-billing",
+    active_graph_version: "canonical-proj-pay-v2",
+    status: "ready",
+    quality: "complete",
+    node_count: 2,
+    relationship_count: 1,
   },
 ];
 
@@ -785,6 +794,18 @@ export const DASHBOARD_GRAPH_NODES: DashboardGraphNode[] = [
   {
     handle: graphHandle("f"), label: "artifacts", kind: "table",
   },
+  {
+    handle: graphHandle("g"), label: "WorkspaceImportAdapter", kind: "class",
+  },
+  {
+    handle: graphHandle("h"), label: "WorkspaceSnapshot", kind: "class",
+  },
+  {
+    handle: graphHandle("i"), label: "PaymentService", kind: "class",
+  },
+  {
+    handle: graphHandle("j"), label: "InvoiceRepository", kind: "class",
+  },
 ];
 
 export const DASHBOARD_GRAPH_EDGES: DashboardGraphEdge[] = [
@@ -802,6 +823,12 @@ export const DASHBOARD_GRAPH_EDGES: DashboardGraphEdge[] = [
   },
   {
     from_handle: graphHandle("a"), to_handle: graphHandle("f"), edge_type: "QUERY_TABLE", family: "table",
+  },
+  {
+    from_handle: graphHandle("g"), to_handle: graphHandle("h"), edge_type: "USES_DEPENDENCY", family: "dependency",
+  },
+  {
+    from_handle: graphHandle("i"), to_handle: graphHandle("j"), edge_type: "USES_DEPENDENCY", family: "dependency",
   },
 ];
 
