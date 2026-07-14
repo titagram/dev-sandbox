@@ -310,6 +310,8 @@ export const httpApi: DevboardApi = {
       : `${D}/graph`;
     return req("GET", `${base}${qs ? `?${qs}` : ""}`);
   },
+  queryProjectGraph: (projectId, request) =>
+    req("POST", `${D}/projects/${encodeURIComponent(projectId)}/graph/query`, request),
 
   getArtifacts: (projectId) => req("GET", projectResource(projectId, "artifacts")),
   downloadArtifact: (runId, artifactId) =>

@@ -1036,6 +1036,98 @@ export interface GraphView {
   edges: GraphEdge[];
 }
 
+export type DashboardGraphQueryType =
+  | "scopes"
+  | "overview"
+  | "search"
+  | "detail"
+  | "neighborhood"
+  | "path"
+  | "impact";
+export type DashboardGraphScopeType = "repository" | "workspace_binding";
+export type DashboardGraphDirection = "in" | "out" | "any";
+export type DashboardGraphFamily = "call" | "dependency" | "route" | "test" | "table";
+
+export interface DashboardGraphQueryRequest {
+  type: DashboardGraphQueryType;
+  scope_type?: DashboardGraphScopeType;
+  scope_id?: string;
+  query?: string;
+  node_handle?: string;
+  from_handle?: string;
+  to_handle?: string;
+  direction?: DashboardGraphDirection;
+  families?: DashboardGraphFamily[];
+  max_depth?: 1 | 2 | 3;
+  limit?: number;
+  cursor?: string | null;
+}
+
+export type DashboardGraphNodeKind =
+  | "method"
+  | "class"
+  | "method_reference"
+  | "external_class"
+  | "table"
+  | "route"
+  | "trait"
+  | "external_symbol"
+  | "interface"
+  | "file"
+  | "unknown";
+
+export interface DashboardGraphNode {
+  handle: string;
+  id: string;
+  label: string | null;
+  kind: DashboardGraphNodeKind;
+  repository: string;
+  degree: number;
+  risk: RiskLevel;
+  source: SourceMeta;
+  semantic_family?: DashboardGraphFamily | "other";
+  why?: string;
+  distance?: number;
+  edge_types?: string[];
+}
+
+export interface DashboardGraphEdge {
+  id: string;
+  from_handle: string;
+  to_handle: string;
+  edge_type: string;
+  family: DashboardGraphFamily | "other";
+  why?: string;
+}
+
+export interface DashboardGraphResponse {
+  protocol_version: "v1";
+  project_id: string;
+  query_type: DashboardGraphQueryType;
+  found: boolean;
+  reason: string | null;
+  scope: GraphSourceScope | null;
+  projection: {
+    status: string;
+    quality: string | null;
+    generated_at: string | null;
+    active_graph_version: string | null;
+    node_count: number;
+    relationship_count: number;
+    unknown_kind_count: number;
+    missing_label_count: number;
+    excluded_node_count: number;
+  };
+  items: DashboardGraphNode[];
+  edges: DashboardGraphEdge[];
+  returned: number;
+  limit: number;
+  next_cursor: string | null;
+  has_more: boolean;
+  truncated: boolean;
+  source: SourceMeta;
+}
+
 // ---------- Artifacts ----------
 
 export type ArtifactKind = "genesis_import" | "delta_sync" | "analysis" | "report";

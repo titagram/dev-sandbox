@@ -3,6 +3,8 @@ import {
   AgentWorkItem,
   AuthMatrixRow,
   BackupReadiness,
+  DashboardGraphEdge,
+  DashboardGraphNode,
   GraphView,
   KanbanBoard,
   LocalWorkspace,
@@ -739,6 +741,101 @@ export const GRAPH: GraphView = {
     { id: "g14", from: "n-ctrl-run", to: "n-route-runs", kind: "routes_to" },
   ],
 };
+
+export const DASHBOARD_GRAPH_SCOPES = [
+  {
+    source_scope_type: "repository" as const,
+    source_scope_id: "repo-api",
+    active_graph_version: "canonical-proj-core-v7",
+    status: "ready",
+    quality: "complete",
+    node_count: 6,
+    relationship_count: 5,
+  },
+  {
+    source_scope_type: "workspace_binding" as const,
+    source_scope_id: "binding-core-api",
+    active_graph_version: "canonical-binding-core-api-v3",
+    status: "ready",
+    quality: "partial",
+    node_count: 4,
+    relationship_count: 3,
+  },
+];
+
+const canonicalGraphSource = src(
+  "canonical_graph",
+  "verified_from_code",
+  "canonical projection",
+  12,
+  "canonical-proj-core-v7",
+);
+
+const graphHandle = (character: string) => `gh1_${character.repeat(43)}`;
+
+export const DASHBOARD_GRAPH_NODES: DashboardGraphNode[] = [
+  {
+    handle: graphHandle("a"), id: "symbol-import-service", label: "ImportService", kind: "class",
+    repository: "devboard-api", degree: 5, risk: "high", source: canonicalGraphSource,
+  },
+  {
+    handle: graphHandle("b"), id: "symbol-run-controller", label: "RunController::retryImport", kind: "method",
+    repository: "devboard-api", degree: 4, risk: "medium", source: canonicalGraphSource,
+  },
+  {
+    handle: graphHandle("c"), id: "symbol-artifact-store", label: "ArtifactStore", kind: "class",
+    repository: "devboard-api", degree: 3, risk: "medium", source: canonicalGraphSource,
+  },
+  {
+    handle: graphHandle("d"), id: "route-retry-import", label: "POST /runs/{id}/retry-import", kind: "route",
+    repository: "devboard-api", degree: 2, risk: "high", source: canonicalGraphSource,
+  },
+  {
+    handle: graphHandle("e"), id: "test-import-service", label: "ImportServiceTest", kind: "class",
+    repository: "devboard-api", degree: 1, risk: "low", source: canonicalGraphSource,
+  },
+  {
+    handle: graphHandle("f"), id: "table-artifacts", label: "artifacts", kind: "table",
+    repository: "devboard-api", degree: 1, risk: "medium", source: canonicalGraphSource,
+  },
+];
+
+export const DASHBOARD_GRAPH_EDGES: DashboardGraphEdge[] = [
+  {
+    id: "canonical-edge-call", from_handle: graphHandle("b"), to_handle: graphHandle("a"),
+    edge_type: "CALLS_METHOD", family: "call", why: "RunController invokes the import service.",
+  },
+  {
+    id: "canonical-edge-dependency", from_handle: graphHandle("a"), to_handle: graphHandle("c"),
+    edge_type: "USES_DEPENDENCY", family: "dependency", why: "ImportService persists validated artifacts.",
+  },
+  {
+    id: "canonical-edge-route", from_handle: graphHandle("d"), to_handle: graphHandle("b"),
+    edge_type: "ROUTE_HANDLER", family: "route", why: "The retry route resolves to this controller method.",
+  },
+  {
+    id: "canonical-edge-test", from_handle: graphHandle("e"), to_handle: graphHandle("a"),
+    edge_type: "TEST_COVERS_SYMBOL", family: "test", why: "The service behavior is covered by this test.",
+  },
+  {
+    id: "canonical-edge-table", from_handle: graphHandle("a"), to_handle: graphHandle("f"),
+    edge_type: "QUERY_TABLE", family: "table", why: "ImportService queries the artifacts table.",
+  },
+];
+
+export const DASHBOARD_GRAPH_PROJECTION = {
+  status: "ready",
+  quality: "complete",
+  generated_at: canonicalGraphSource.generated_at,
+  active_graph_version: "canonical-proj-core-v7",
+  node_count: DASHBOARD_GRAPH_NODES.length,
+  relationship_count: DASHBOARD_GRAPH_EDGES.length,
+  unknown_kind_count: 0,
+  missing_label_count: 0,
+  excluded_node_count: 0,
+};
+
+export const DASHBOARD_GRAPH_SOURCE = canonicalGraphSource;
 
 // ---------------- Artifacts ----------------
 

@@ -1,6 +1,8 @@
 import { DevboardApi } from "@/api/devboardApi";
 import {
-  ARTIFACTS, AUTH_MATRIX, BACKUP_READINESS, buildBoard, buildGate, buildKickstart, buildReports, GRAPH, PLUGIN_DEVICES,
+  ARTIFACTS, AUTH_MATRIX, BACKUP_READINESS, buildBoard, buildGate, buildKickstart, buildReports,
+  DASHBOARD_GRAPH_EDGES, DASHBOARD_GRAPH_NODES, DASHBOARD_GRAPH_PROJECTION, DASHBOARD_GRAPH_SCOPES, DASHBOARD_GRAPH_SOURCE,
+  GRAPH, PLUGIN_DEVICES,
   PLUGIN_TOKENS, PROJECT_DETAILS, PROJECTS, QUALITY_CURRENT_STATE, QUALITY_OVERVIEW,
   agentWorkItems, memoryEntries, ROADMAP, ROUTE_INVENTORY, ROUTE_SMOKE, runSummaries, RUNS, SECURITY_CHECKS, SYSTEM_STATUS,
   TASKS, TRUTH_REGISTRY, USERS, WIKI, wikiSummaries,
@@ -9,7 +11,7 @@ import {
   AgentChatThread, AgentChatThreadSummary, AgentKey, AgentWorkDetailResponse, AgentWorkItem,
   AiAgentProfile, AiAgentProfileInput, AiAgentsSnapshot, AiModelProfile, AiModelProfileCreateInput, AiModelProfileInput, AiModelProvider, AiModelProviderInput, AiModelProviderValidationResult,
   AssistantRun, AssistantSuggestion, AssistantSuggestionResponse, BacklogTriagePayload,
-  DashboardOverview, IntakeNormalizationType, LoginPayload, Project, ProjectDetail, ProjectLifecycleInput,
+  DashboardGraphEdge, DashboardGraphNode, DashboardGraphQueryRequest, DashboardGraphResponse, DashboardOverview, IntakeNormalizationType, LoginPayload, Project, ProjectDetail, ProjectLifecycleInput,
   HadesCapability, ProjectMemoryDomain, ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryImportItem, ProjectMemoryQuery, ProjectStatusFilter, ProjectWorkspaceBinding, RepositoryDeclarationInput, Role, SourceStatus, TaskAttachment, TaskClarificationPayload, TaskColumn, TaskDetail, User, WikiEvidence, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
 } from "@/types/devboard";
 
@@ -1308,6 +1310,196 @@ function appendAgentChatTurn(thread: AgentChatThread, content: string, metadata:
   return refreshThreadDerivedFields(thread, completedAt);
 }
 
+function dashboardGraphEnvelope(
+  projectId: string,
+  request: DashboardGraphQueryRequest,
+  values: Partial<DashboardGraphResponse> = {},
+): DashboardGraphResponse {
+  const maxLimit = request.type === "scopes" || request.type === "search" ? 100 : 50;
+  const limit = Math.max(1, Math.min(request.limit ?? 50, maxLimit));
+
+  return {
+    protocol_version: "v1",
+    project_id: projectId,
+    query_type: request.type,
+    found: false,
+    reason: null,
+    scope: request.scope_type && request.scope_id
+      ? { type: request.scope_type, id: request.scope_id }
+      : null,
+    projection: clone(DASHBOARD_GRAPH_PROJECTION),
+    items: [],
+    edges: [],
+    returned: 0,
+    limit,
+    next_cursor: null,
+    has_more: false,
+    truncated: false,
+    source: clone(DASHBOARD_GRAPH_SOURCE),
+    ...values,
+  };
+}
+
+function graphScopeError(projectId: string, request: DashboardGraphQueryRequest): DashboardGraphResponse | null {
+  if (!request.scope_type || !request.scope_id) {
+    return dashboardGraphEnvelope(projectId, request, { found: false, reason: "scope_required" });
+  }
+  const exists = DASHBOARD_GRAPH_SCOPES.some((scope) =>
+    scope.source_scope_type === request.scope_type && scope.source_scope_id === request.scope_id,
+  );
+  return exists
+    ? null
+    : dashboardGraphEnvelope(projectId, request, { found: false, reason: "scope_not_found" });
+}
+
+function cursorOffset(cursor: string | null | undefined, prefix: string): number {
+  if (!cursor?.startsWith(`${prefix}:`)) return 0;
+  const offset = Number(cursor.slice(prefix.length + 1));
+  return Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
+}
+
+function graphNode(handle: string | undefined): DashboardGraphNode | undefined {
+  return DASHBOARD_GRAPH_NODES.find((node) => node.handle === handle);
+}
+
+function graphEdgeTouches(edge: DashboardGraphEdge, handle: string): boolean {
+  return edge.from_handle === handle || edge.to_handle === handle;
+}
+
+function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQueryRequest): DashboardGraphResponse {
+  if (request.type === "scopes") {
+    const base = dashboardGraphEnvelope(projectId, request);
+    const offset = cursorOffset(request.cursor, "scopes");
+    const page = DASHBOARD_GRAPH_SCOPES.slice(offset, offset + base.limit);
+    const hasMore = offset + page.length < DASHBOARD_GRAPH_SCOPES.length;
+    return dashboardGraphEnvelope(projectId, request, {
+      found: true,
+      items: clone(page) as unknown as DashboardGraphNode[],
+      returned: page.length,
+      next_cursor: hasMore ? `scopes:${offset + page.length}` : null,
+      has_more: hasMore,
+      truncated: hasMore,
+    });
+  }
+
+  const scopeError = graphScopeError(projectId, request);
+  if (scopeError) return scopeError;
+
+  if (request.type === "overview") {
+    const base = dashboardGraphEnvelope(projectId, request);
+    const items = DASHBOARD_GRAPH_NODES.slice(0, base.limit);
+    const handles = new Set(items.map((node) => node.handle));
+    const edges = DASHBOARD_GRAPH_EDGES.filter((edge) =>
+      handles.has(edge.from_handle) && handles.has(edge.to_handle),
+    );
+    const truncated = items.length < DASHBOARD_GRAPH_NODES.length;
+    return dashboardGraphEnvelope(projectId, request, {
+      found: true,
+      items: clone(items),
+      edges: clone(edges),
+      returned: items.length,
+      has_more: truncated,
+      truncated,
+    });
+  }
+
+  if (request.type === "search") {
+    const base = dashboardGraphEnvelope(projectId, request);
+    const query = (request.query ?? "").trim().toLocaleLowerCase();
+    const matches = query
+      ? DASHBOARD_GRAPH_NODES.filter((node) => node.label?.toLocaleLowerCase().includes(query))
+      : [];
+    const offset = cursorOffset(request.cursor, "search");
+    const items = matches.slice(offset, offset + base.limit);
+    const hasMore = offset + items.length < matches.length;
+    return dashboardGraphEnvelope(projectId, request, {
+      found: true,
+      items: clone(items),
+      returned: items.length,
+      next_cursor: hasMore ? `search:${offset + items.length}` : null,
+      has_more: hasMore,
+      truncated: hasMore,
+    });
+  }
+
+  if (request.type === "detail") {
+    const selected = graphNode(request.node_handle);
+    return dashboardGraphEnvelope(projectId, request, selected
+      ? { found: true, items: [clone(selected)], returned: 1 }
+      : { found: false, reason: "node_not_found" });
+  }
+
+  if (request.type === "neighborhood") {
+    const selected = graphNode(request.node_handle);
+    if (!selected) return dashboardGraphEnvelope(projectId, request, { found: false, reason: "node_not_found" });
+    const direction = request.direction ?? "any";
+    const families = new Set(request.families ?? []);
+    const matchingEdges = DASHBOARD_GRAPH_EDGES.filter((edge) => {
+      const directed = direction === "in"
+        ? edge.to_handle === selected.handle
+        : direction === "out"
+          ? edge.from_handle === selected.handle
+          : graphEdgeTouches(edge, selected.handle);
+      return directed && (families.size === 0 || (edge.family !== "other" && families.has(edge.family)));
+    });
+    const base = dashboardGraphEnvelope(projectId, request);
+    const relatedHandles = new Set(matchingEdges.flatMap((edge) => [edge.from_handle, edge.to_handle]));
+    const allItems = DASHBOARD_GRAPH_NODES.filter((node) => relatedHandles.has(node.handle));
+    const items = allItems.slice(0, base.limit);
+    const visible = new Set(items.map((node) => node.handle));
+    const edges = matchingEdges.filter((edge) => visible.has(edge.from_handle) && visible.has(edge.to_handle));
+    const truncated = items.length < allItems.length;
+    return dashboardGraphEnvelope(projectId, request, {
+      found: true, items: clone(items), edges: clone(edges), returned: items.length,
+      has_more: truncated, truncated,
+    });
+  }
+
+  if (request.type === "path") {
+    const from = graphNode(request.from_handle);
+    const to = graphNode(request.to_handle);
+    if (!from || !to) return dashboardGraphEnvelope(projectId, request, { found: false, reason: "node_not_found" });
+    const edge = DASHBOARD_GRAPH_EDGES.find((candidate) =>
+      (candidate.from_handle === from.handle && candidate.to_handle === to.handle)
+      || (candidate.from_handle === to.handle && candidate.to_handle === from.handle),
+    );
+    return edge
+      ? dashboardGraphEnvelope(projectId, request, {
+          found: true, items: [clone(from), clone(to)], edges: [clone(edge)], returned: 2,
+        })
+      : dashboardGraphEnvelope(projectId, request, { found: false, reason: "path_not_found" });
+  }
+
+  const selected = graphNode(request.node_handle);
+  if (!selected) return dashboardGraphEnvelope(projectId, request, { found: false, reason: "node_not_found" });
+  const base = dashboardGraphEnvelope(projectId, request);
+  const relatedEdges = DASHBOARD_GRAPH_EDGES.filter((edge) => graphEdgeTouches(edge, selected.handle));
+  const impactItems = relatedEdges.map((edge) => {
+    const relatedHandle = edge.from_handle === selected.handle ? edge.to_handle : edge.from_handle;
+    const node = graphNode(relatedHandle)!;
+    return {
+      ...node,
+      semantic_family: edge.family,
+      why: edge.why,
+      distance: 1,
+      edge_types: [edge.edge_type],
+    } as DashboardGraphNode;
+  });
+  const items = impactItems.slice(0, base.limit);
+  const visible = new Set([selected.handle, ...items.map((item) => item.handle)]);
+  const edges = relatedEdges.filter((edge) => visible.has(edge.from_handle) && visible.has(edge.to_handle));
+  const truncated = items.length < impactItems.length;
+  return dashboardGraphEnvelope(projectId, request, {
+    found: true,
+    items: clone(items),
+    edges: clone(edges),
+    returned: items.length,
+    next_cursor: truncated ? `impact:${items.length}` : null,
+    has_more: truncated,
+    truncated,
+  });
+}
+
 export const mockApi: DevboardApi = {
   async login(payload: LoginPayload) {
     await delay();
@@ -2104,6 +2296,11 @@ export const mockApi: DevboardApi = {
     if (params?.runId) g.run_id = params.runId;
     if (params?.snapshotId) g.snapshot_id = params.snapshotId;
     return g;
+  },
+  async queryProjectGraph(projectId, request) {
+    await delay();
+    requireProject(projectId);
+    return clone(mockDashboardGraphQuery(projectId, request));
   },
 
   async getArtifacts(projectId) {
