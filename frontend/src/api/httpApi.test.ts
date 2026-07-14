@@ -101,6 +101,11 @@ describe("httpApi multiproject dashboard endpoints", () => {
         missing_label_count: 0,
         excluded_node_count: 0,
       },
+      node: {
+        handle: `gh1_${"a".repeat(43)}`,
+        kind: "class",
+        label: "ImportService",
+      },
       items: [],
       edges: [],
       returned: 0,
@@ -121,9 +126,14 @@ describe("httpApi multiproject dashboard endpoints", () => {
       limit: 25,
     };
 
-    await httpApi.queryProjectGraph("proj/core", request);
+    const response = await httpApi.queryProjectGraph("proj/core", request);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.node).toEqual({
+      handle: `gh1_${"a".repeat(43)}`,
+      kind: "class",
+      label: "ImportService",
+    });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/dashboard/projects/proj%2Fcore/graph/query",
       expect.objectContaining({ method: "POST", body: JSON.stringify(request) }),
