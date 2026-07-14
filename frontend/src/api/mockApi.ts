@@ -1564,7 +1564,7 @@ const MOCK_GRAPH_SCOPE_FIXTURES: readonly MockGraphScopeFixture[] = [
   {
     projectId: "proj-core", scopeType: "workspace_binding", scopeId: "binding-core-api",
     nodeHandles: ["g", "h"].map(mockGraphHandle),
-    projection: readyGraphProjection("canonical-binding-core-api-v3", "partial", 4, 3),
+    projection: readyGraphProjection("canonical-binding-core-api-v3", "partial", 2, 1),
   },
   {
     projectId: "proj-pay", scopeType: "repository", scopeId: "repo-billing",
