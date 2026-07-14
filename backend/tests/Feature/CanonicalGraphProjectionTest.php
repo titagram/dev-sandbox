@@ -139,7 +139,9 @@ it('records a failed forced attempt without demoting the verified projection', f
     $claim = $service->acquireForForcedRebuild($graph);
     expect($claim['claimed'])->toBeTrue();
 
-    expect($service->markForcedRebuildFailed($claim['attempt_id'], 'neo4j_unavailable'))->toBeTrue()
+    expect($service->markForcedRebuildFailed(
+        $claim['attempt_id'], $claim['owner_token'], 'neo4j_unavailable',
+    ))->toBeTrue()
         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready')
         ->and(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('status'))->toBe('failed');
 

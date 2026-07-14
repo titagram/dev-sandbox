@@ -64,7 +64,9 @@ it('materializes deterministically ranked adjacency rows for bounded traversal',
     $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
     $client = new FakeNeo4jClient;
 
-    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+    $projector = app(Neo4jCanonicalGraphProjector::class);
+    $projector->project($graph, $projection, $client);
+    $projector->publishCurrent($projection, $client);
 
     $indexCommands = collect($client->commands)->filter(fn (array $command): bool => str_contains($command['cypher'], 'CREATE INDEX canonical_adjacency_'));
     $adjacencyCommand = collect($client->commands)->first(fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $adjacencies'));

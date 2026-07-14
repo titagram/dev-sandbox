@@ -428,6 +428,9 @@ class GenesisGraphImportService
             $canonical = $this->canonicalNormalizer->normalize($payload, $canonical['identity']);
         }
 
+        if ($force) {
+            $this->canonicalProjections->recoverStaleForcedRebuilds($canonical, $client, $this->canonicalProjector);
+        }
         $forceClaim = $force ? $this->canonicalProjections->acquireForForcedRebuild($canonical) : null;
         $projection = $forceClaim['projection'] ?? $this->canonicalProjections->queue($canonical);
         if (($forceClaim['conflict'] ?? false) || ! $this->canonicalProjections->matchesGraph($projection, $canonical)) {
@@ -510,15 +513,29 @@ class GenesisGraphImportService
                 }
             }
 
-            $counts = $this->canonicalProjector->project($canonical, $projection, $client);
+            $heartbeat = $force ? function () use ($forceClaim, $projection): bool {
+                if (! $this->canonicalProjections->heartbeatForcedRebuild(
+                    (string) $forceClaim['attempt_id'], (string) $forceClaim['owner_token'],
+                )) {
+                    throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+                }
+
+                return true;
+            } : null;
+            $counts = $this->canonicalProjector->project($canonical, $projection, $client, $heartbeat);
             if ($force) {
                 $ready = $this->canonicalProjections->publishForcedRebuild(
-                    (string) $forceClaim['attempt_id'], $counts['nodes'], $counts['relationships'],
+                    (string) $forceClaim['attempt_id'], (string) $forceClaim['owner_token'],
+                    $counts['nodes'], $counts['relationships'],
+                    fn () => $this->canonicalProjector->publishCurrent($projection, $client),
                 );
                 if ($ready === null) {
                     throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
                 }
-            } elseif (! $this->canonicalProjections->markReady((string) $projection->id, $counts['nodes'], $counts['relationships'])) {
+            } elseif (! $this->canonicalProjections->publishProjection(
+                (string) $projection->id, $counts['nodes'], $counts['relationships'],
+                fn () => $this->canonicalProjector->publishCurrent($projection, $client),
+            )) {
                 throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
             }
         } catch (Throwable $exception) {
@@ -526,7 +543,17 @@ class GenesisGraphImportService
                 ? $exception->failureCode
                 : 'neo4j_query_failed';
             if ($force) {
-                $this->canonicalProjections->markForcedRebuildFailed((string) $forceClaim['attempt_id'], $failureCode);
+                $this->canonicalProjections->markForcedRebuildFailed(
+                    (string) $forceClaim['attempt_id'], (string) $forceClaim['owner_token'], $failureCode,
+                );
+                try {
+                    $this->canonicalProjections->cleanupForcedRebuild(
+                        (string) $forceClaim['attempt_id'], (string) $forceClaim['owner_token'],
+                        $client, $this->canonicalProjector,
+                    );
+                } catch (Throwable $cleanupException) {
+                    report($cleanupException);
+                }
             } else {
                 $this->canonicalProjections->markRetryPending((string) $projection->id, $failureCode);
             }

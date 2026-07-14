@@ -87,7 +87,7 @@ class CanonicalGraphNormalizer
         }
         $this->assertExactKeys($source, ['branch', 'head_commit'], 'source');
         if ($source['branch'] !== null) {
-            $this->assertPattern($source['branch'], 'source.branch', 255, '/\A[A-Za-z0-9][A-Za-z0-9._\/-]*\z/D');
+            $this->assertGitBranch($source['branch']);
         }
         if ($source['head_commit'] !== null) {
             $this->assertPattern($source['head_commit'], 'source.head_commit', 80, '/\A[0-9a-fA-F]{4,80}\z/D');
@@ -115,6 +115,23 @@ class CanonicalGraphNormalizer
     {
         if (! is_string($value) || strlen($value) > $maxLength || preg_match($pattern, $value) !== 1) {
             $this->malformed($field);
+        }
+    }
+
+    private function assertGitBranch(mixed $value): void
+    {
+        $this->assertPattern($value, 'source.branch', 255, '/\A[A-Za-z0-9][A-Za-z0-9._\/-]*\z/D');
+
+        $invalid = str_contains($value, '..')
+            || str_contains($value, '//')
+            || str_contains($value, '@{')
+            || str_ends_with($value, '/')
+            || str_ends_with($value, '.')
+            || preg_match('/(?:\A|\/)\./', $value) === 1
+            || preg_match('/(?:\A|\/)[^\/]*\.lock(?:\/|\z)/D', $value) === 1;
+
+        if ($invalid) {
+            throw new InvalidArgumentException('Canonical graph contract is malformed at source.branch.');
         }
     }
 

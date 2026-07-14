@@ -1035,7 +1035,8 @@
                 ],
                 "minLength": 1,
                 "maxLength": 255,
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+                "description": "Git branch name accepted by the canonical graph contract. Dot-prefixed or .lock components, consecutive dots or slashes, trailing slash or dot, reflog selectors, backslashes, and control characters are rejected.",
+                "pattern": "^(?!.*(?:^|/)\\.)(?!.*\\.\\.)(?!.*//)(?!.*@\\{)(?!.*(?:^|/)[^/]*\\.lock(?:/|$))(?!.*[/.]$)[A-Za-z0-9][A-Za-z0-9._/-]*$"
               },
               "head_commit": {
                 "type": [

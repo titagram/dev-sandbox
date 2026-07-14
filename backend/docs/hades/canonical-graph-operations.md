@@ -151,8 +151,9 @@ unbounded query. Callers, callees, and shortest-path reads retain their existing
 behavior while the traversal rebuild is pending.
 
 Roll out the feature in this order: enter the approved maintenance window,
-deploy the compatible application code, run the additive database migration,
-then force-rebuild each selected canonical scope. A forced rebuild writes a
+drain and stop queue producers/consumers, verify a backup, apply the additive
+database migration, deploy the schema-dependent application code, then
+force-rebuild each selected canonical scope. A forced rebuild writes a
 distinct candidate physical graph version while PostgreSQL continues pointing
 at the previously published version. Only after node, relationship, and
 adjacency counts all verify does one final Neo4j statement mark the candidate
@@ -189,11 +190,31 @@ service.
 
 ## Migration, backup, and verification order
 
-The order below is mandatory. No migration, deployment, non-dry canonical
-reconciliation, or legacy rebuild command may be copied or run before steps
-1-4 are complete.
+The order below is mandatory. PostgreSQL is the source of truth for the active
+physical graph pointer; Neo4j is reconciled to it after an interrupted
+publication. Do not start schema-dependent application code before the
+additive migration succeeds. Do not resume queue or scheduler services before
+all marker/count and HTTP smoke checks pass.
 
-1. **Create and verify the PostgreSQL backup.** Store it outside the mutable
+1. **Enter maintenance and drain every queue producer.** Put the application
+   in maintenance first, stop the scheduler, allow the existing worker to
+   finish the jobs already in `jobs`, and only then stop the worker. If the
+   queue does not reach zero, stop and investigate; do not kill a healthy
+   projection while it owns a lease.
+
+   ```bash
+   docker compose -f docker-compose.devboard.yaml \
+     -f docker-compose.devboard.traefik.yaml exec -T app php artisan down
+   docker compose -f docker-compose.devboard.yaml \
+     -f docker-compose.devboard.traefik.yaml stop scheduler
+   docker compose -f docker-compose.devboard.yaml exec -T postgres \
+     psql -U devboard -d devboard -Atc 'SELECT count(*) FROM jobs;'
+   # Repeat the read-only count until it is 0.
+   docker compose -f docker-compose.devboard.yaml \
+     -f docker-compose.devboard.traefik.yaml stop worker
+   ```
+
+2. **Create and verify the PostgreSQL backup.** Store it outside the mutable
    application data path. Listing the archive with `pg_restore -l` is required;
    file existence alone is not verification.
 
@@ -211,7 +232,7 @@ reconciliation, or legacy rebuild command may be copied or run before steps
    Record users, projects, canonical artifacts, and projection row counts with
    read-only SQL before continuing.
 
-2. **Pass the test and formatting gates.** Run the selected SQLite suites, the
+3. **Pass the test and formatting gates.** Run the selected SQLite suites, the
    canonical graph tests, Pint, and the read-only migration status command.
 
    ```bash
@@ -223,7 +244,7 @@ reconciliation, or legacy rebuild command may be copied or run before steps
      php artisan migrate:status
    ```
 
-3. **Run the read-only canonical preview.** Select the exact project and,
+4. **Run the read-only canonical preview.** Select the exact project and,
    optionally, the exact scope. Stop on any nonzero `failed` count.
 
    ```bash
@@ -232,20 +253,35 @@ reconciliation, or legacy rebuild command may be copied or run before steps
        --project=<project_uuid> --dry-run
    ```
 
-4. **Obtain explicit human authorization.** Present the backup path, successful
+5. **Obtain explicit human authorization.** Present the maintenance/drain
+   evidence, backup path, successful
    `pg_restore -l` result, recorded counts, test/Pint results, migration status,
    dry-run JSON, exact mutating commands, and affected project/scope. Stop here
    until a human explicitly authorizes those commands.
 
-5. **Only after authorization, apply the required additive migration.** Skip
-   this command if `migrate:status` showed nothing pending.
+6. **Apply the required additive migration before schema-dependent code is
+   started.** Skip this command only if `migrate:status` proves it was already
+   applied. Keep maintenance active and worker/scheduler stopped.
 
    ```bash
    docker compose -f docker-compose.devboard.yaml exec -T app \
      php artisan migrate --force
    ```
 
-6. **Run exactly one authorized graph mutation.** Use canonical reconciliation
+7. **Deploy with Traefik, but keep background services stopped.** Rebuild and
+   start only the request-serving services needed for validation. Never use the
+   base Compose file alone for an app recreation, and do not start `worker` or
+   `scheduler` yet.
+
+   ```bash
+   docker compose -f docker-compose.devboard.yaml \
+     -f docker-compose.devboard.traefik.yaml up -d --build app frontend
+   ```
+
+   Preserve `traefik_default`, router priorities, redirect and Basic Auth
+   middleware, and the distinct frontend/API/Hades/plugin routes.
+
+8. **Run exactly one authorized graph mutation.** Use canonical reconciliation
    for canonical sources:
 
    ```bash
@@ -265,23 +301,48 @@ reconciliation, or legacy rebuild command may be copied or run before steps
        --repository=<repository_uuid> --snapshot=<snapshot_uuid> --mode=fake
    ```
 
-7. **Drain the queue and verify.** Confirm one `ready` projection per selected
-   source with expected nonzero counts. Compare Hades and plugin reads: both
-   must report the backend-selected graph version for the same source. Confirm
-   there is no authentication 401 regression.
+9. **Verify PostgreSQL, Neo4j, and the routed application before resuming.**
+   Confirm exactly one `ready` projection per selected source and that its
+   `active_graph_version` equals the Neo4j node marked `current=true`. Run the
+   read-only Cypher marker/adjacency query above; require
+   `traversal_schema_version=1` and exactly two adjacency rows per relationship.
+   Compare Hades and plugin reads: both must report the backend-selected graph
+   version for the same source. Smoke the root without credentials (Basic Auth
+   challenge) and with credentials, the login flow, Hades health/auth, and a
+   plugin endpoint. Confirm there is no authentication 401 regression.
 
-8. **Deploy only if separately authorized, preserving Traefik.** Never use the
-   base Compose file alone for an app recreation.
+10. **Resume only after every check passes.** Start worker and scheduler, leave
+    maintenance, and verify both background services become healthy.
 
-   ```bash
-   docker compose -f docker-compose.devboard.yaml \
-     -f docker-compose.devboard.traefik.yaml up -d --build
-   ```
+    ```bash
+    docker compose -f docker-compose.devboard.yaml \
+      -f docker-compose.devboard.traefik.yaml up -d worker scheduler
+    docker compose -f docker-compose.devboard.yaml \
+      -f docker-compose.devboard.traefik.yaml exec -T app php artisan up
+    docker compose -f docker-compose.devboard.yaml \
+      -f docker-compose.devboard.traefik.yaml ps
+    ```
 
-   Preserve `traefik_default`, router priorities, redirect and Basic Auth
-   middleware, and the distinct frontend/API/Hades/plugin routes. Smoke the
-   root without credentials (Basic Auth challenge) and with credentials, then
-   the login flow, Hades health/auth, and a plugin endpoint.
+### Interrupted publication and rollback
+
+If a process dies in `projecting`, its bounded lease eventually expires. The
+next forced rebuild for that scope takes the project lock, restores Neo4j's
+`current` marker from PostgreSQL `active_graph_version`, marks the dead attempt
+`abandoned`, and idempotently removes its non-current candidate. A healthy
+attempt renews its lease between projection batches and is never reclaimed.
+
+If a process dies after changing the Neo4j marker but before committing the
+PostgreSQL pointer, the persisted `publishing/marker_pending` stage makes the
+same reclaimer restore the PostgreSQL winner before removing the candidate.
+Never manually delete a PostgreSQL-active or Neo4j-current version; reconcile
+the marker first under the project lock.
+
+For application rollback after migration, keep maintenance active and
+worker/scheduler stopped, restore the previous code, and leave the additive
+columns/table in place unless an explicitly tested rollback requires otherwise.
+For data loss or a destructive/reset operation, restore the verified dump,
+then rebuild Neo4j from canonical artifacts. After any database restore, rerun
+the required development user seeder before declaring the environment usable.
 
 Do not restore the backup after a successful additive migration. Restore is an
 authorized rollback only if a destructive/reset operation or data loss occurs;

@@ -7,6 +7,7 @@ use App\Services\GenesisGraphImportService;
 use App\Services\Graph\CanonicalGraphProjectionService;
 use App\Services\Graph\CanonicalGraphQueryService;
 use App\Services\Graph\CanonicalGraphRepository;
+use App\Services\Graph\Neo4jCanonicalGraphProjector;
 use App\Services\Neo4j\FailingNeo4jClient;
 use App\Services\Neo4j\FakeNeo4jClient;
 use App\Services\Neo4j\Neo4jClient;
@@ -693,6 +694,124 @@ it('allows only one of two interleaved force callers to project and publish', fu
         ->and($secondFailure->failureCode)->toBe('projection_busy')
         ->and(collect($client->commands)->filter(fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes')))->toHaveCount(1)
         ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count())->toBe(2);
+});
+
+it('binds forced rebuild ownership to a renewable bounded lease', function () {
+    $context = createGraphImportContext();
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FakeNeo4jClient);
+    $graph = canonicalGraphForImportContext($context);
+    $service = app(CanonicalGraphProjectionService::class);
+
+    $claim = $service->acquireForForcedRebuild($graph);
+    $attempt = DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->firstOrFail();
+
+    expect($claim['owner_token'])->toBeString()->not->toBeEmpty()
+        ->and($attempt->owner_token)->toBe($claim['owner_token'])
+        ->and($attempt->expected_ready_projection_id)->toBe($claim['projection']->id)
+        ->and($attempt->expected_active_graph_version)->toBe($claim['projection']->logical_graph_version)
+        ->and($attempt->lease_expires_at)->not->toBeNull()
+        ->and($service->heartbeatForcedRebuild($claim['attempt_id'], 'wrong-owner'))->toBeFalse()
+        ->and($service->heartbeatForcedRebuild($claim['attempt_id'], $claim['owner_token']))->toBeTrue();
+});
+
+it('does not let a superseded forced attempt overwrite a newer publication', function () {
+    $context = createGraphImportContext();
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FakeNeo4jClient);
+    $graph = canonicalGraphForImportContext($context);
+    $service = app(CanonicalGraphProjectionService::class);
+    $claim = $service->acquireForForcedRebuild($graph);
+    $markerCalled = false;
+    $newerGraph = $graph;
+    $newerGraph['identity']['artifact_id'] = (string) Str::ulid();
+    $newerGraph['identity']['checksum'] = str_repeat('f', 64);
+    $newer = $service->queue($newerGraph);
+    expect($service->claimForWorker($newer->id))->toBeTrue()
+        ->and($service->markReady($newer->id, 3, 2))->toBeTrue();
+
+    $published = $service->publishForcedRebuild(
+        $claim['attempt_id'], $claim['owner_token'], 2, 1,
+        function () use (&$markerCalled): void {
+            $markerCalled = true;
+        },
+    );
+
+    expect($published)->toBeNull()
+        ->and($markerCalled)->toBeFalse()
+        ->and(DB::table('canonical_graph_projections')->where('id', $newer->id)->value('status'))->toBe('ready')
+        ->and(DB::table('canonical_graph_projections')->where('id', $newer->id)->value('active_graph_version'))->toBe($newer->graph_version)
+        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('status'))->toBe('superseded');
+});
+
+it('persists publication intent and recovers a stale marker-before-pointer crash', function () {
+    $context = createGraphImportContext();
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FakeNeo4jClient);
+    $graph = canonicalGraphForImportContext($context);
+    $service = app(CanonicalGraphProjectionService::class);
+    $claim = $service->acquireForForcedRebuild($graph);
+    $activeBefore = DB::table('canonical_graph_projections')->where('id', $claim['projection']->id)->value('active_graph_version');
+
+    expect(fn () => $service->publishForcedRebuild(
+        $claim['attempt_id'], $claim['owner_token'], 2, 1,
+        fn () => throw new RuntimeException('simulated crash after marker'),
+    ))->toThrow(RuntimeException::class, 'simulated crash after marker');
+
+    expect(DB::table('canonical_graph_projections')->where('id', $claim['projection']->id)->value('active_graph_version'))->toBe($activeBefore)
+        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('status'))->toBe('publishing')
+        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('publication_stage'))->toBe('marker_pending');
+
+    DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])
+        ->update(['lease_expires_at' => now()->subMinute()]);
+    $client = new FakeNeo4jClient;
+    $service->recoverStaleForcedRebuilds($graph, $client, app(Neo4jCanonicalGraphProjector::class));
+
+    expect(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('status'))->toBe('abandoned')
+        ->and(collect($client->commands)->pluck('cypher')->contains(fn (string $query): bool => str_contains($query, 'recovery source of truth')))->toBeTrue()
+        ->and(collect($client->commands)->pluck('cypher')->contains(fn (string $query): bool => str_contains($query, 'cleanup non-current candidate')))->toBeTrue();
+});
+
+it('reclaims a hard-killed projecting attempt but never a healthy leased owner', function () {
+    $context = createGraphImportContext();
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FakeNeo4jClient);
+    $graph = canonicalGraphForImportContext($context);
+    $service = app(CanonicalGraphProjectionService::class);
+    $healthy = $service->acquireForForcedRebuild($graph);
+    $client = new FakeNeo4jClient;
+
+    expect($service->heartbeatForcedRebuild($healthy['attempt_id'], $healthy['owner_token']))->toBeTrue()
+        ->and($service->recoverStaleForcedRebuilds($graph, $client, app(Neo4jCanonicalGraphProjector::class)))->toBe(0)
+        ->and($client->commands)->toBe([]);
+
+    DB::table('canonical_graph_projection_attempts')->where('id', $healthy['attempt_id'])
+        ->update(['lease_expires_at' => now()->subMinute()]);
+    expect($service->recoverStaleForcedRebuilds($graph, $client, app(Neo4jCanonicalGraphProjector::class)))->toBe(1)
+        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $healthy['attempt_id'])->value('status'))->toBe('abandoned')
+        ->and($service->acquireForForcedRebuild($graph)['claimed'])->toBeTrue();
+});
+
+it('aborts failure and cleanup operations after forced rebuild owner loss', function () {
+    $context = createGraphImportContext();
+    app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FakeNeo4jClient);
+    $graph = canonicalGraphForImportContext($context);
+    $service = app(CanonicalGraphProjectionService::class);
+    $claim = $service->acquireForForcedRebuild($graph);
+    $client = new FakeNeo4jClient;
+
+    expect($service->markForcedRebuildFailed($claim['attempt_id'], 'wrong-owner', 'neo4j_query_failed'))->toBeFalse()
+        ->and($service->cleanupForcedRebuild(
+            $claim['attempt_id'], 'wrong-owner', $client, app(Neo4jCanonicalGraphProjector::class),
+        ))->toBeFalse()
+        ->and($client->commands)->toBe([])
+        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('status'))->toBe('projecting');
+
+    DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])
+        ->update(['lease_expires_at' => now()->subMinute()]);
+    expect($service->markForcedRebuildFailed(
+        $claim['attempt_id'], $claim['owner_token'], 'neo4j_query_failed',
+    ))->toBeFalse()
+        ->and($service->cleanupForcedRebuild(
+            $claim['attempt_id'], $claim['owner_token'], $client, app(Neo4jCanonicalGraphProjector::class),
+        ))->toBeFalse()
+        ->and($client->commands)->toBe([]);
 });
 
 it('does no Neo4j IO or event publishing when a forced rebuild is already active', function (string $status) {
