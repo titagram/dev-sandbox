@@ -10,6 +10,7 @@ use App\Http\Controllers\Dashboard\Api\DashboardAgentWorkController;
 use App\Http\Controllers\Dashboard\Api\DashboardAiAgentController;
 use App\Http\Controllers\Dashboard\Api\DashboardBackupController;
 use App\Http\Controllers\Dashboard\Api\DashboardHadesController;
+use App\Http\Controllers\Dashboard\Api\DashboardGraphExplorerController;
 use App\Http\Controllers\Dashboard\Api\DashboardMemoryController;
 use App\Http\Controllers\Dashboard\Api\DashboardMemoryImportController;
 use App\Http\Controllers\Dashboard\Api\DashboardProjectLifecycleController;
@@ -105,6 +106,7 @@ Route::middleware(['auth', 'active'])->group(function () {
         Route::get('/projects/{project}/wiki/refresh-requests', [DashboardWikiRefreshController::class, 'index']);
         Route::post('/projects/{project}/wiki/refresh-requests', [DashboardWikiRefreshController::class, 'store']);
         Route::get('/projects/{project}/graph', [DashboardResourceController::class, 'projectGraph']);
+        Route::post('/projects/{project}/graph/query', [DashboardGraphExplorerController::class, 'query']);
         Route::get('/projects/{project}/artifacts', [DashboardResourceController::class, 'projectArtifacts']);
         Route::get('/runs', [DashboardResourceController::class, 'runs']);
         Route::get('/runs/{run}', [DashboardResourceController::class, 'run']);

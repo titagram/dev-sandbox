@@ -19,15 +19,18 @@ final class DashboardGraphExplorerService
 
     private readonly DashboardGraphPublicHandle $publicHandles;
     private readonly DashboardGraphExplorerCursor $cursors;
+    private readonly DashboardGraphPublicKind $publicKinds;
 
     public function __construct(
         private readonly CanonicalGraphQueryService $canonicalQueries,
         private readonly ?Neo4jClient $client = null,
         ?DashboardGraphPublicHandle $publicHandles = null,
         ?DashboardGraphExplorerCursor $cursors = null,
+        ?DashboardGraphPublicKind $publicKinds = null,
     ) {
         $this->publicHandles = $publicHandles ?? new DashboardGraphPublicHandle;
         $this->cursors = $cursors ?? new DashboardGraphExplorerCursor;
+        $this->publicKinds = $publicKinds ?? new DashboardGraphPublicKind;
     }
 
     /** @return array<string,mixed> */
@@ -44,22 +47,11 @@ final class DashboardGraphExplorerService
             throw new \InvalidArgumentException('invalid_query');
         }
 
-        $projection = DB::table('canonical_graph_projections')
-            ->where('project_id', $projectId)
-            ->where('source_scope_type', $scopeType)
-            ->where('source_scope_id', $scopeId)
-            ->where('status', 'ready')
-            ->orderByDesc('projected_at')
-            ->orderByDesc('id')
-            ->first();
-        if ($projection === null) {
-            return ['found' => false, 'reason' => 'graph_projection_not_ready'];
+        [$projection, $projectionReason] = $this->projectionForRead($projectId, $scopeType, $scopeId);
+        if ($projectionReason !== null) {
+            return ['found' => false, 'reason' => $projectionReason];
         }
-
-        $activeGraphVersion = (string) ($projection->active_graph_version ?? '');
-        if ($activeGraphVersion === '') {
-            return ['found' => false, 'reason' => 'graph_projection_rebuild_required'];
-        }
+        $activeGraphVersion = (string) $projection->active_graph_version;
         $boundedLimit = max(1, min(100, $limit));
 
         $cursorScore = null;
@@ -105,14 +97,19 @@ final class DashboardGraphExplorerService
                 : ' AND (score < $cursor_score OR (score = $cursor_score AND node.public_handle > $cursor_handle))';
             $rows = $this->client()->run(
                 'MATCH (version:CanonicalGraphVersion {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version}) '
-                .'WHERE version.public_handle_key_version = $public_handle_key_version '
-                .'AND version.public_handle_key_fingerprint = $public_handle_key_fingerprint '
+                .'CALL { '
+                .'WITH version '
                 ."CALL db.index.fulltext.queryNodes('canonical_node_search', \$lucene_query) YIELD node, score "
                 .'WHERE node.graph_version = $active_graph_version AND node.project_id = $project_id '
                 .'AND node.source_scope_type = $source_scope_type AND node.source_scope_id = $source_scope_id '
                 .$cursorPredicate.' '
                 .'WITH node, score ORDER BY score DESC, node.public_handle ASC LIMIT $fetch_limit '
-                .'RETURN properties(node) AS node, labels(node) AS labels, score',
+                .'RETURN collect({node: properties(node), labels: labels(node), score: score}) AS hits '
+                .'} '
+                .'UNWIND CASE WHEN size(hits) = 0 THEN [null] ELSE hits END AS hit '
+                .'RETURN version.public_handle_key_version AS version_project_key, '
+                .'version.public_handle_key_fingerprint AS version_source_fingerprint, '
+                .'hit.node AS node, hit.labels AS labels, hit.score AS score',
                 [
                     'project_id' => $projectId,
                     'source_scope_type' => $scopeType,
@@ -120,8 +117,6 @@ final class DashboardGraphExplorerService
                     'active_graph_version' => $activeGraphVersion,
                     'lucene_query' => $fullTextQuery,
                     'fetch_limit' => $fetchLimit,
-                    'public_handle_key_version' => $this->publicHandles->keyVersion(),
-                    'public_handle_key_fingerprint' => $this->publicHandles->keyFingerprint(),
                     ...($scanScore === null ? [] : [
                         'cursor_score' => $scanScore,
                         'cursor_handle' => $scanHandle,
@@ -129,6 +124,13 @@ final class DashboardGraphExplorerService
                 ],
             );
             $rows = Neo4jResultMaterializer::materializeRows($rows);
+            $versionRow = $rows[0] ?? null;
+            if (! is_array($versionRow)
+                || $this->neo4jRowValue($versionRow, 'version_project_key') !== $this->publicHandles->keyVersion()
+                || $this->neo4jRowValue($versionRow, 'version_source_fingerprint') !== $this->publicHandles->keyFingerprint()) {
+                return ['found' => false, 'reason' => 'graph_projection_rebuild_required'];
+            }
+            $rows = array_values(array_filter($rows, static fn (mixed $row): bool => is_array($row) && is_array($row['node'] ?? null)));
             if ($scanScore !== null && $scanHandle !== null) {
                 $rows = array_values(array_filter($rows, function (array $row) use ($scanScore, $scanHandle): bool {
                     $score = (float) ($row['score'] ?? 0);
@@ -230,15 +232,11 @@ final class DashboardGraphExplorerService
     /** @return array<string,mixed> */
     public function overview(string $projectId, string $scopeType, string $scopeId): array
     {
-        $projection = $this->readyProjection($projectId, $scopeType, $scopeId);
-        if ($projection === null) {
-            return ['found' => false, 'reason' => 'graph_projection_not_ready'];
+        [$projection, $projectionReason] = $this->projectionForRead($projectId, $scopeType, $scopeId);
+        if ($projectionReason !== null) {
+            return ['found' => false, 'reason' => $projectionReason];
         }
-
-        $activeGraphVersion = (string) ($projection->active_graph_version ?? '');
-        if ($activeGraphVersion === '') {
-            return ['found' => false, 'reason' => 'graph_projection_rebuild_required'];
-        }
+        $activeGraphVersion = (string) $projection->active_graph_version;
         if (! $this->projectionKeyIsCurrent($projectId, $scopeType, $scopeId, $activeGraphVersion)) {
             return ['found' => false, 'reason' => 'graph_projection_rebuild_required'];
         }
@@ -302,7 +300,16 @@ final class DashboardGraphExplorerService
         }
         $projections = $query->get()->all();
         if ($projections === []) {
-            return ['found' => false, 'reason' => 'graph_scope_not_found'];
+            return [
+                'found' => false,
+                'reason' => 'graph_scope_not_found',
+                'items' => [],
+                'edges' => [],
+                'returned' => 0,
+                'limit' => $boundedLimit,
+                'next_cursor' => null,
+                'has_more' => false,
+            ];
         }
 
         $hasMore = count($projections) > $boundedLimit;
@@ -359,9 +366,12 @@ final class DashboardGraphExplorerService
         }
         $this->assertFamilies($families);
 
-        $resolved = $this->resolveNode($projectId, $scopeType, $scopeId, $handle);
-        if ($resolved === null) {
+        if (! $this->publicHandles->isWellFormed($handle)) {
             return ['found' => false, 'reason' => 'node_not_found'];
+        }
+        $resolved = $this->resolveNode($projectId, $scopeType, $scopeId, $handle);
+        if ($resolved === null || isset($resolved['reason'])) {
+            return ['found' => false, 'reason' => $resolved['reason'] ?? 'node_not_found'];
         }
         $boundedLimit = max(1, min(50, $limit));
 
@@ -428,10 +438,17 @@ final class DashboardGraphExplorerService
         int $maxDepth,
         int $limit,
     ): array {
-        $from = $this->resolveNode($projectId, $scopeType, $scopeId, $fromHandle);
-        $to = $this->resolveNode($projectId, $scopeType, $scopeId, $toHandle);
-        if ($from === null || $to === null) {
+        if (! $this->publicHandles->isWellFormed($fromHandle)
+            || ! $this->publicHandles->isWellFormed($toHandle)) {
             return ['found' => false, 'reason' => 'node_not_found'];
+        }
+        $from = $this->resolveNode($projectId, $scopeType, $scopeId, $fromHandle);
+        if ($from === null || isset($from['reason'])) {
+            return ['found' => false, 'reason' => $from['reason'] ?? 'node_not_found'];
+        }
+        $to = $this->resolveNode($projectId, $scopeType, $scopeId, $toHandle);
+        if ($to === null || isset($to['reason'])) {
+            return ['found' => false, 'reason' => $to['reason'] ?? 'node_not_found'];
         }
 
         $result = $this->canonicalQueries->query(
@@ -481,9 +498,12 @@ final class DashboardGraphExplorerService
     /** @return array<string,mixed> */
     public function impact(string $projectId, string $scopeType, string $scopeId, string $handle, int $limit = 50): array
     {
-        $resolved = $this->resolveNode($projectId, $scopeType, $scopeId, $handle);
-        if ($resolved === null) {
+        if (! $this->publicHandles->isWellFormed($handle)) {
             return ['found' => false, 'reason' => 'node_not_found'];
+        }
+        $resolved = $this->resolveNode($projectId, $scopeType, $scopeId, $handle);
+        if ($resolved === null || isset($resolved['reason'])) {
+            return ['found' => false, 'reason' => $resolved['reason'] ?? 'node_not_found'];
         }
         $projection = $resolved['projection'];
         $activeGraphVersion = (string) ($projection->active_graph_version ?? '');
@@ -589,48 +609,22 @@ final class DashboardGraphExplorerService
     /** @return array<string,mixed> */
     public function detail(string $projectId, string $scopeType, string $scopeId, string $handle, int $limit = 50): array
     {
-        $projection = DB::table('canonical_graph_projections')
-            ->where('project_id', $projectId)
-            ->where('source_scope_type', $scopeType)
-            ->where('source_scope_id', $scopeId)
-            ->where('status', 'ready')
-            ->orderByDesc('projected_at')
-            ->orderByDesc('id')
-            ->first();
-
-        if ($projection === null) {
-            return ['found' => false, 'reason' => 'graph_projection_not_ready'];
-        }
-
-        $activeGraphVersion = (string) ($projection->active_graph_version ?? '');
-        if ($activeGraphVersion === '') {
-            return ['found' => false, 'reason' => 'graph_projection_rebuild_required'];
-        }
         if (! $this->publicHandles->isWellFormed($handle)) {
             return ['found' => false, 'reason' => 'node_not_found'];
         }
-
-        $rows = $this->client()->run(
-            'MATCH (version:CanonicalGraphVersion {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version}) '
-            .'MATCH (node:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version, public_handle: $public_handle}) '
-            .'WHERE version.public_handle_key_version = $public_handle_key_version '
-            .'AND version.public_handle_key_fingerprint = $public_handle_key_fingerprint '
-            .'RETURN properties(node) AS node, labels(node) AS labels LIMIT 1',
-            $this->nodeLookupParameters($projectId, $scopeType, $scopeId, $activeGraphVersion, $handle),
-        );
-        $row = Neo4jResultMaterializer::materializeRows($rows)[0] ?? null;
-        if (! is_array($row) || ! is_array($row['node'] ?? null)) {
-            return ['found' => false, 'reason' => 'node_not_found'];
+        $resolved = $this->resolveNode($projectId, $scopeType, $scopeId, $handle);
+        if ($resolved === null || isset($resolved['reason'])) {
+            return ['found' => false, 'reason' => $resolved['reason'] ?? 'node_not_found'];
         }
 
-        $node = $row['node'];
+        $node = $resolved['node'];
 
         return [
             'found' => true,
             'reason' => null,
             'node' => [
                 'handle' => (string) ($node['public_handle'] ?? $handle),
-                'kind' => $this->publicKind($node['kind'] ?? null),
+                'kind' => $this->publicKinds->map($node['kind'] ?? null),
                 'label' => is_string($node['public_search_label'] ?? null)
                     ? $this->safePublicSearchValue($node['public_search_label'])
                     : null,
@@ -717,30 +711,36 @@ final class DashboardGraphExplorerService
         ];
     }
 
-    /** @return array{projection:object,node:array<string,mixed>}|null */
+    /** @return array{projection:object,node:array<string,mixed>}|array{reason:string} */
     private function resolveNode(string $projectId, string $scopeType, string $scopeId, string $handle): ?array
     {
-        $projection = $this->readyProjection($projectId, $scopeType, $scopeId);
-        if ($projection === null || ! $this->publicHandles->isWellFormed($handle)) {
-            return null;
+        if (! $this->publicHandles->isWellFormed($handle)) {
+            return ['reason' => 'node_not_found'];
         }
-        $activeGraphVersion = (string) ($projection->active_graph_version ?? '');
-        if ($activeGraphVersion === '') {
-            return null;
+        [$projection, $projectionReason] = $this->projectionForRead($projectId, $scopeType, $scopeId);
+        if ($projectionReason !== null) {
+            return ['reason' => $projectionReason];
         }
+        $activeGraphVersion = (string) $projection->active_graph_version;
         $rows = $this->client()->run(
             'MATCH (version:CanonicalGraphVersion {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version}) '
-            .'MATCH (node:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version, public_handle: $public_handle}) '
-            .'WHERE version.public_handle_key_version = $public_handle_key_version '
-            .'AND version.public_handle_key_fingerprint = $public_handle_key_fingerprint '
-            .'RETURN properties(node) AS node, labels(node) AS labels LIMIT 1',
+            .'OPTIONAL MATCH (node:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version, public_handle: $public_handle}) '
+            .'RETURN version.public_handle_key_version AS version_project_key, '
+            .'version.public_handle_key_fingerprint AS version_source_fingerprint, '
+            .'properties(node) AS node, labels(node) AS labels LIMIT 1',
             $this->nodeLookupParameters($projectId, $scopeType, $scopeId, $activeGraphVersion, $handle),
         );
         $row = Neo4jResultMaterializer::materializeRows($rows)[0] ?? null;
+        if (! is_array($row)
+            || $this->neo4jRowValue($row, 'version_project_key') !== $this->publicHandles->keyVersion()
+            || $this->neo4jRowValue($row, 'version_source_fingerprint') !== $this->publicHandles->keyFingerprint()) {
+            return ['reason' => 'graph_projection_rebuild_required'];
+        }
+        if (! is_array($row['node'] ?? null)) {
+            return ['reason' => 'node_not_found'];
+        }
 
-        return is_array($row) && is_array($row['node'] ?? null)
-            ? ['projection' => $projection, 'node' => $row['node']]
-            : null;
+        return ['projection' => $projection, 'node' => $row['node']];
     }
 
     /** @param array<string,mixed> $node */
@@ -754,7 +754,7 @@ final class DashboardGraphExplorerService
 
         return [
             'handle' => $handle,
-            'kind' => $this->publicKind($node['kind'] ?? null),
+            'kind' => $this->publicKinds->map($node['kind'] ?? null),
             'label' => is_string($properties['public_search_label'] ?? null)
                 ? $this->safePublicSearchValue($properties['public_search_label'])
                 : null,
@@ -799,16 +799,47 @@ final class DashboardGraphExplorerService
         return 'other';
     }
 
-    private function readyProjection(string $projectId, string $scopeType, string $scopeId): ?object
+    /** @return array{0:object|null,1:string|null} */
+    private function projectionForRead(string $projectId, string $scopeType, string $scopeId): array
     {
-        return DB::table('canonical_graph_projections')
+        $base = DB::table('canonical_graph_projections')
             ->where('project_id', $projectId)
             ->where('source_scope_type', $scopeType)
-            ->where('source_scope_id', $scopeId)
+            ->where('source_scope_id', $scopeId);
+
+        $winner = (clone $base)
             ->where('status', 'ready')
+            ->whereNotNull('active_graph_version')
+            ->where('active_graph_version', '!=', '')
             ->orderByDesc('projected_at')
             ->orderByDesc('id')
             ->first();
+
+        if ($winner !== null) {
+            return [$winner, null];
+        }
+
+        $projection = $base
+            ->orderByRaw("CASE status WHEN 'failed' THEN 3 WHEN 'stale' THEN 3 WHEN 'ready' THEN 2 WHEN 'projecting' THEN 1 WHEN 'queued' THEN 1 ELSE 0 END DESC")
+            ->orderByDesc('projected_at')
+            ->orderByDesc('id')
+            ->first();
+
+        if ($projection === null) {
+            return [null, 'graph_projection_not_ready'];
+        }
+        if (in_array((string) $projection->status, ['queued', 'projecting'], true)) {
+            return [$projection, 'graph_projection_not_ready'];
+        }
+        if ((string) $projection->status !== 'ready') {
+            return [$projection, 'graph_projection_rebuild_required'];
+        }
+
+        if ((string) ($projection->active_graph_version ?? '') === '') {
+            return [$projection, 'graph_projection_rebuild_required'];
+        }
+
+        return [$projection, null];
     }
 
     private function latestReadyScopeQuery(string $projectId): \Illuminate\Database\Query\Builder
@@ -828,6 +859,26 @@ final class DashboardGraphExplorerService
             ])
             ->where('project_id', $projectId)
             ->where('status', 'ready');
+        $ranked->where(function ($query): void {
+            $query->where(function ($query): void {
+                $query->where('source_scope_type', 'repository')
+                    ->whereExists(function ($query): void {
+                        $query->selectRaw('1')
+                            ->from('repositories')
+                            ->whereColumn('repositories.id', 'canonical_graph_projections.source_scope_id')
+                            ->whereColumn('repositories.project_id', 'canonical_graph_projections.project_id');
+                    });
+            })->orWhere(function ($query): void {
+                $query->where('source_scope_type', 'workspace_binding')
+                    ->whereExists(function ($query): void {
+                        $query->selectRaw('1')
+                            ->from('hades_workspace_bindings')
+                            ->whereColumn('hades_workspace_bindings.id', 'canonical_graph_projections.source_scope_id')
+                            ->whereColumn('hades_workspace_bindings.project_id', 'canonical_graph_projections.project_id')
+                            ->where('hades_workspace_bindings.status', 'linked');
+                    });
+            });
+        });
 
         return DB::query()
             ->fromSub($ranked, 'latest_ready_scopes')
@@ -898,7 +949,7 @@ final class DashboardGraphExplorerService
 
         $item = [
             'handle' => $handle,
-            'kind' => $this->publicKind($node['kind'] ?? null),
+            'kind' => $this->publicKinds->map($node['kind'] ?? null),
             'label' => $label,
         ];
         if (is_numeric($score)) {
@@ -906,25 +957,6 @@ final class DashboardGraphExplorerService
         }
 
         return $item;
-    }
-
-    private function publicKind(mixed $value): string
-    {
-        if (! is_string($value)) {
-            return 'unknown';
-        }
-
-        return match (strtolower(trim($value))) {
-            'route', 'http_endpoint', 'httpendpoint', 'endpoint' => 'route',
-            'file' => 'file',
-            'module', 'namespace', 'package' => 'module',
-            'class', 'interface', 'trait', 'enum' => 'class',
-            'function' => 'function',
-            'method' => 'method',
-            'model' => 'model',
-            'service' => 'service',
-            default => 'unknown',
-        };
     }
 
     private function safePublicSearchValue(string $value): ?string

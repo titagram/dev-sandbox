@@ -3,6 +3,7 @@
 namespace App\Dashboard;
 
 use App\Services\Graph\CanonicalGraphRepository;
+use App\Services\Graph\DashboardGraphPublicKind;
 use App\Services\Graph\DashboardGraphPublicHandle;
 use App\Services\Neo4j\Neo4jClient;
 use App\Services\Neo4j\Neo4jResultMaterializer;
@@ -23,37 +24,49 @@ final class DashboardApiReader
      * Dashboard graph previews are a data-minimized public projection, not a
      * serialization of analyzer nodes. Only these canonical semantic types may
      * contribute a human label, and only through the fields listed here.
-     * Unknown producer types fall back to their public pseudonym.
+     * Unknown producer types remain non-renderable and cannot contribute labels.
      *
      * @var array<string, array{types: list<string>, label_fields: list<string>}>
      */
     private const GRAPH_PREVIEW_NODE_POLICY = [
-        'route' => [
-            'types' => ['route', 'http_endpoint', 'httpendpoint', 'endpoint'],
-            'label_fields' => ['name', 'label', 'path', 'uri', 'route', 'url'],
-        ],
-        'file' => [
-            'types' => ['file'],
-            'label_fields' => ['name'],
-        ],
-        'module' => [
-            'types' => ['module', 'namespace', 'package'],
+        'method' => [
+            'types' => ['method'],
             'label_fields' => ['name'],
         ],
         'class' => [
-            'types' => ['class', 'interface', 'trait', 'enum'],
+            'types' => ['class'],
             'label_fields' => ['name'],
         ],
-        'function' => [
-            'types' => ['function', 'method'],
+        'method_reference' => [
+            'types' => ['method_reference'],
             'label_fields' => ['name'],
         ],
-        'model' => [
-            'types' => ['model'],
+        'external_class' => [
+            'types' => ['external_class'],
             'label_fields' => ['name'],
         ],
-        'service' => [
-            'types' => ['service'],
+        'table' => [
+            'types' => ['table'],
+            'label_fields' => ['name'],
+        ],
+        'route' => [
+            'types' => ['route'],
+            'label_fields' => ['name', 'label', 'path', 'uri', 'route', 'url'],
+        ],
+        'trait' => [
+            'types' => ['trait'],
+            'label_fields' => ['name'],
+        ],
+        'external_symbol' => [
+            'types' => ['external_symbol'],
+            'label_fields' => ['name'],
+        ],
+        'interface' => [
+            'types' => ['interface'],
+            'label_fields' => ['name'],
+        ],
+        'file' => [
+            'types' => ['file'],
             'label_fields' => ['name'],
         ],
     ];
@@ -62,6 +75,7 @@ final class DashboardApiReader
         private readonly CanonicalGraphRepository $canonicalGraphs,
         private readonly ?DashboardGraphPublicHandle $publicHandles = null,
         private readonly ?Neo4jClient $neo4j = null,
+        private readonly ?DashboardGraphPublicKind $publicKinds = null,
     ) {}
 
     /**
@@ -775,12 +789,36 @@ final class DashboardApiReader
         }
 
         $scope = $scopes[0];
-        $graph = $this->canonicalGraphs->latestForScope(
-            $projectId,
-            (string) $scope['source_scope_type'],
-            (string) $scope['source_scope_id'],
-        );
+        $scopeType = (string) $scope['source_scope_type'];
+        $scopeId = (string) $scope['source_scope_id'];
+        $projection = $this->canonicalGraphProjectionWinner($projectId, $scopeType, $scopeId);
+        if ($projection === null) {
+            $latestProjection = $this->canonicalGraphProjectionState($projectId, $scopeType, $scopeId);
+            if ($latestProjection === null
+                || in_array((string) $latestProjection->status, ['queued', 'projecting'], true)) {
+                return $this->canonicalGraphSelection($projectId, 'unavailable', [
+                    $this->canonicalScopeMetadata($scope),
+                ]);
+            }
 
+            return $this->canonicalGraphRebuildRequired(
+                $projectId,
+                [
+                    'artifact_id' => (string) $latestProjection->artifact_id,
+                    'created_at' => (string) ($latestProjection->created_at ?? $latestProjection->projected_at ?? now()),
+                ],
+                $scope,
+                $latestProjection,
+            );
+        }
+
+        $graph = $this->canonicalGraphs->findByIdentity(
+            $projectId,
+            $scopeType,
+            $scopeId,
+            (string) $projection->artifact_type,
+            (string) $projection->artifact_id,
+        );
         if ($graph === null) {
             return $this->canonicalGraphSelection($projectId, 'unavailable', [
                 $this->canonicalScopeMetadata($scope),
@@ -788,11 +826,6 @@ final class DashboardApiReader
         }
 
         $identity = $graph['identity'];
-        $projection = DB::table('canonical_graph_projections')
-            ->where('project_id', $projectId)
-            ->where('artifact_type', $identity['artifact_type'])
-            ->where('artifact_id', $identity['artifact_id'])
-            ->first();
         $activeGraphVersion = trim((string) ($projection?->active_graph_version ?? ''));
         if ($projection !== null
             && ($activeGraphVersion === '' || ! $this->canonicalProjectionKeyIsCurrent(
@@ -854,7 +887,7 @@ final class DashboardApiReader
             'snapshot_id' => null,
             'run_id' => null,
             'generated_at' => (string) $identity['created_at'],
-            'source' => $this->sourceMeta(type: 'canonical_graph', ref: (string) $identity['artifact_id']),
+            'source' => $this->sourceMeta(type: 'canonical_graph'),
             'source_scope' => [
                 'type' => (string) $scope['source_scope_type'],
                 'id' => (string) $scope['source_scope_id'],
@@ -870,6 +903,32 @@ final class DashboardApiReader
             'nodes' => $preview['nodes'],
             'edges' => $preview['edges'],
         ];
+    }
+
+    private function canonicalGraphProjectionWinner(string $projectId, string $scopeType, string $scopeId): ?object
+    {
+        return DB::table('canonical_graph_projections')
+            ->where('project_id', $projectId)
+            ->where('source_scope_type', $scopeType)
+            ->where('source_scope_id', $scopeId)
+            ->where('status', 'ready')
+            ->whereNotNull('active_graph_version')
+            ->where('active_graph_version', '!=', '')
+            ->orderByDesc('projected_at')
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    private function canonicalGraphProjectionState(string $projectId, string $scopeType, string $scopeId): ?object
+    {
+        return DB::table('canonical_graph_projections')
+            ->where('project_id', $projectId)
+            ->where('source_scope_type', $scopeType)
+            ->where('source_scope_id', $scopeId)
+            ->orderByRaw("CASE status WHEN 'failed' THEN 3 WHEN 'stale' THEN 3 WHEN 'ready' THEN 2 WHEN 'projecting' THEN 1 WHEN 'queued' THEN 1 ELSE 0 END DESC")
+            ->orderByDesc('projected_at')
+            ->orderByDesc('id')
+            ->first();
     }
 
     /** @param list<array<string, mixed>> $scopes */
@@ -899,7 +958,7 @@ final class DashboardApiReader
             'snapshot_id' => null,
             'run_id' => null,
             'generated_at' => (string) $identity['created_at'],
-            'source' => $this->sourceMeta(type: 'canonical_graph', ref: (string) $identity['artifact_id']),
+            'source' => $this->sourceMeta(type: 'canonical_graph'),
             'source_scope' => [
                 'type' => (string) $scope['source_scope_type'],
                 'id' => (string) $scope['source_scope_id'],
@@ -2227,7 +2286,7 @@ final class DashboardApiReader
         $result = [
             'id' => $id,
             'label' => $this->graphNodePublicLabel($node, $kind, $privateIdentityTokens, $trustedProducerRoute),
-            'kind' => $kind,
+            'kind' => ($this->publicKinds ?? new DashboardGraphPublicKind)->map($kind),
             'repository' => $repository,
             'degree' => $degreeByNode[$id] ?? 0,
             'risk' => 'medium',

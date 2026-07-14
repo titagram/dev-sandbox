@@ -70,7 +70,7 @@ final class DashboardGraphPublicHandle
             throw new InvalidArgumentException('invalid_handle');
         }
 
-        return hash('sha256', $key);
+        return hash_hmac('sha256', 'hades.graph.handle.v1', $key);
     }
 
     private static function base64UrlEncode(string $value): string

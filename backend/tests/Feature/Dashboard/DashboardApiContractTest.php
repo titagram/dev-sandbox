@@ -24,7 +24,7 @@ beforeEach(function () {
                 {
                     return [[
                         'public_handle_key_version' => 'gh1',
-                        'public_handle_key_fingerprint' => hash('sha256', (string) config('app.key')),
+                        'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', (string) config('app.key')),
                     ]];
                 }
             };
@@ -205,6 +205,87 @@ it('serves the only canonical Hades graph without leaking local paths', function
         ->not->toContain('method:DashboardApiReader::graph');
 });
 
+it('serves the ready winner when a newer queued artifact candidate exists', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    $readyProjection = DB::table('canonical_graph_projections')
+        ->where('project_id', $ids['project_id'])
+        ->where('source_scope_id', $canonical['binding_id'])
+        ->firstOrFail();
+    $readyArtifact = DB::table('hades_agent_artifacts')->where('workspace_binding_id', $canonical['binding_id'])->firstOrFail();
+    $candidateArtifactId = (string) Str::ulid();
+    $candidateProjectionId = (string) Str::ulid();
+    $candidateTime = now()->addMinute();
+
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $candidateArtifactId,
+        'project_id' => $readyArtifact->project_id,
+        'hades_agent_id' => $readyArtifact->hades_agent_id,
+        'workspace_binding_id' => $readyArtifact->workspace_binding_id,
+        'schema' => $readyArtifact->schema,
+        'artifact' => $readyArtifact->artifact,
+        'sha256' => $readyArtifact->sha256,
+        'truncated' => $readyArtifact->truncated,
+        'redactions' => $readyArtifact->redactions,
+        'created_at' => $candidateTime,
+        'updated_at' => $candidateTime,
+    ]);
+    DB::table('canonical_graph_projections')->insert([
+        'id' => $candidateProjectionId,
+        'project_id' => $ids['project_id'],
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => $canonical['binding_id'],
+        'artifact_type' => 'hades_agent_artifact_candidate',
+        'artifact_id' => $candidateArtifactId,
+        'graph_version' => 'queued-candidate-v2',
+        'active_graph_version' => null,
+        'checksum' => hash('sha256', 'queued-candidate'),
+        'head_commit' => str_repeat('b', 40),
+        'quality' => 'partial',
+        'status' => 'queued',
+        'node_count' => 0,
+        'relationship_count' => 0,
+        'projected_at' => $candidateTime,
+        'created_at' => $candidateTime,
+        'updated_at' => $candidateTime,
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+
+    expect($response['projection_status'])->toBe('ready')
+        ->and($response['graph_version'])->toBe($readyProjection->graph_version)
+        ->and($response['active_graph_version'])->toBe($readyProjection->active_graph_version)
+        ->and($response['generated_at'])->toBe($readyArtifact->created_at)
+        ->and($response['source'])->not->toHaveKey('ref');
+});
+
+it('withholds canonical preview nodes for a stale projection even when its key is current', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    DB::table('canonical_graph_projections')
+        ->where('project_id', $ids['project_id'])
+        ->where('source_scope_id', $canonical['binding_id'])
+        ->update(['status' => 'stale']);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+
+    expect($response['projection_status'])->toBe('graph_projection_rebuild_required')
+        ->and($response['nodes'])->toBe([])
+        ->and($response['edges'])->toBe([])
+        ->and($response['source'])->not->toHaveKey('ref')
+        ->and(json_encode($response, JSON_THROW_ON_ERROR))->not->toContain('gh1_');
+});
+
 it('fails closed when a ready canonical projection has no active graph version', function (): void {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();
@@ -221,7 +302,8 @@ it('fails closed when a ready canonical projection has no active graph version',
         ->assertJsonPath('projection_status', 'graph_projection_rebuild_required')
         ->assertJsonPath('active_graph_version', null)
         ->assertJsonCount(0, 'nodes')
-        ->assertJsonCount(0, 'edges');
+        ->assertJsonCount(0, 'edges')
+        ->assertJsonMissingPath('source.ref');
 });
 
 it('withholds canonical preview handles when the stored projection key is rotated', function (): void {
@@ -237,7 +319,7 @@ it('withholds canonical preview handles when the stored projection key is rotate
             if (str_contains($cypher, 'CanonicalGraphVersion')) {
                 return [[
                     'public_handle_key_version' => 'gh1',
-                    'public_handle_key_fingerprint' => hash('sha256', 'previous-app-key'),
+            'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'previous-app-key'),
                 ]];
             }
 
@@ -273,7 +355,7 @@ it('uses the Neo4j factory fallback and fails closed when the stored key is rota
             return new CypherList([
                 new CypherMap([
                     'public_handle_key_version' => 'gh1',
-                    'public_handle_key_fingerprint' => hash('sha256', 'previous-app-key'),
+            'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'previous-app-key'),
                 ]),
             ]);
         }
@@ -713,7 +795,7 @@ it('fails closed for conflicting graph node semantics independent of producer la
         ['id' => 'conflict:file-route-b', 'labels' => ['Route', 'File'], 'properties' => ['kind' => 'route', 'name' => $privatePath]],
         ['id' => 'conflict:function-route', 'labels' => ['Function', 'Route'], 'properties' => ['kind' => 'route', 'name' => $privateVerbPath]],
         ['id' => 'conflict:unknown-route', 'labels' => ['UnexpectedProducer', 'Route'], 'properties' => ['kind' => 'route', 'name' => $privatePath]],
-        ['id' => 'route:safe', 'labels' => ['Symbol', 'Route'], 'properties' => ['kind' => 'http_endpoint', 'path' => '/api/orders']],
+        ['id' => 'route:safe', 'labels' => ['Symbol', 'Route'], 'properties' => ['kind' => 'route', 'path' => '/api/orders']],
     ];
     createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
 
@@ -748,7 +830,7 @@ it('never republishes raw node external or source identities as public labels', 
         ['id' => 'function:source', 'labels' => ['Function'], 'properties' => ['kind' => 'function', 'source' => ['ref' => $rawIdentities[3]], 'name' => $rawIdentities[3]]],
         ['id' => $rawIdentities[4], 'labels' => ['File'], 'properties' => ['kind' => 'file', 'name' => '/repo/private/'.$rawIdentities[4]]],
         ['id' => $rawIdentities[5], 'labels' => ['Function'], 'properties' => ['kind' => 'function', 'name' => strtolower($rawIdentities[5])]],
-        ['id' => 'function:public', 'labels' => ['Symbol', 'Function'], 'properties' => ['kind' => 'method', 'name' => 'PublicReadableMethod']],
+        ['id' => 'function:public', 'labels' => ['Symbol', 'Method'], 'properties' => ['kind' => 'method', 'name' => 'PublicReadableMethod']],
     ];
     $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
     Storage::disk('local')->put($storagePath, json_encode(['nodes' => $nodes, 'relationships' => []], JSON_THROW_ON_ERROR));
@@ -822,8 +904,8 @@ it('keeps raw identity provenance private across canonical and legacy graph boun
         [
             'id' => 'function:public-readable',
             'external_id' => 'different-private-identity',
-            'labels' => ['Function'],
-            'properties' => ['kind' => 'function', 'name' => 'PublicReadableMethod'],
+            'labels' => ['Method'],
+            'properties' => ['kind' => 'method', 'name' => 'PublicReadableMethod'],
         ],
         [
             'id' => 'function:duplicate-identity',
@@ -939,8 +1021,8 @@ it('treats direct path fields as private identity provenance across canonical an
         [
             'id' => 'service:public-readable',
             'path' => 'DifferentPrivateIdentity.php',
-            'labels' => ['Service'],
-            'properties' => ['kind' => 'service', 'name' => 'PublicReadableService'],
+            'labels' => ['Class'],
+            'properties' => ['kind' => 'class', 'name' => 'PublicReadableService'],
         ],
     ];
     $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
@@ -1007,14 +1089,14 @@ it('normalizes code namespace aliases only when comparing private graph identiti
         ],
         [
             'id' => 'App\\Private\\OrderRepository',
-            'labels' => ['Service'],
-            'properties' => ['kind' => 'service', 'name' => 'App.Public.OrderService'],
+            'labels' => ['Class'],
+            'properties' => ['kind' => 'class', 'name' => 'App.Public.OrderService'],
         ],
         [
             'id' => 'module:public-domain',
             'external_id' => 'internal.example.net',
-            'labels' => ['Module'],
-            'properties' => ['kind' => 'module', 'name' => 'internal.example.com'],
+            'labels' => ['Class'],
+            'properties' => ['kind' => 'class', 'name' => 'internal.example.com'],
         ],
     ];
     $storagePath = DB::table('artifacts')->where('id', $ids['artifact_id'])->value('storage_path');
@@ -1052,7 +1134,7 @@ it('uses a closed semantic allowlist for arbitrary producer node kinds', functio
     $nodes = [
         ['id' => 'alien:one', 'labels' => ['UnexpectedProducer'], 'properties' => ['kind' => 'alien', 'name' => 'InternalSecretToken']],
         ['id' => 'alien:two', 'labels' => ['Symbol'], 'properties' => ['kind' => 'arbitrary_producer', 'name' => 'AnotherSecretToken']],
-        ['id' => 'service:known', 'labels' => ['Symbol', 'Service'], 'properties' => ['kind' => 'service', 'name' => 'KnownPublicService']],
+        ['id' => 'method:known', 'labels' => ['Symbol', 'Method'], 'properties' => ['kind' => 'method', 'name' => 'KnownPublicMethod']],
     ];
     createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
 
@@ -1064,10 +1146,43 @@ it('uses a closed semantic allowlist for arbitrary producer node kinds', functio
     $json = json_encode($response, JSON_THROW_ON_ERROR);
 
     expect($publicNodes->where('kind', 'unknown'))->toHaveCount(0)
-        ->and($publicNodes->where('kind', 'service'))->toHaveCount(1)
-        ->and($publicNodes->firstWhere('kind', 'service')['label'])->toBe('KnownPublicService')
+        ->and($publicNodes->where('kind', 'method'))->toHaveCount(1)
+        ->and($publicNodes->firstWhere('kind', 'method')['label'])->toBe('KnownPublicMethod')
         ->and($json)->not->toContain('InternalSecretToken')
         ->not->toContain('AnotherSecretToken');
+});
+
+it('uses the exact shared kind vocabulary for canonical dashboard previews', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $kinds = [
+        'method', 'class', 'method_reference', 'external_class', 'table',
+        'route', 'trait', 'external_symbol', 'interface', 'file',
+    ];
+    $nodes = array_map(static fn (string $kind): array => [
+        'id' => $kind.':preview',
+        'labels' => [$kind],
+        'properties' => [
+            'kind' => $kind,
+            'name' => $kind === 'route' ? '/projects/{id}/wiki' : 'Preview'.ucwords($kind, '_'),
+            ...($kind === 'route' ? ['path' => '/projects/{id}/wiki'] : []),
+        ],
+    ], $kinds);
+    $nodes[] = ['id' => 'service:alias', 'labels' => ['service'], 'properties' => ['kind' => 'service', 'name' => 'AliasService']];
+    $nodes[] = ['id' => 'function:alias', 'labels' => ['function'], 'properties' => ['kind' => 'function', 'name' => 'AliasFunction']];
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+
+    expect(collect($response['nodes'])->pluck('kind')->sort()->values()->all())
+        ->toBe(collect($kinds)->sort()->values()->all())
+        ->and(json_encode($response, JSON_THROW_ON_ERROR))
+        ->not->toContain('AliasService')
+        ->not->toContain('AliasFunction');
 });
 
 it('minimizes non-route and unknown canonical nodes and never publishes raw graph identities', function () {
@@ -1158,9 +1273,9 @@ it('reports real canonical unknown and legacy-label counts while keeping the def
     for ($index = 0; $index < 55; $index++) {
         $nodes[] = [
             'id' => "function:resolved-{$index}",
-            'labels' => ['Function'],
+            'labels' => ['Method'],
             'properties' => [
-                'kind' => 'function',
+                'kind' => 'method',
                 'name' => "ResolvedService{$index}",
             ],
         ];
@@ -1182,7 +1297,7 @@ it('reports real canonical unknown and legacy-label counts while keeping the def
 
     expect(count($nodes))->toBe(200)
         ->and($response['stats']['nodes'])->toBe(200)
-        ->and($response['stats']['unknown_kind_count'])->toBe(70)
+        ->and($response['stats']['unknown_kind_count'])->toBe(145)
         ->and($response['stats']['missing_label_count'])->toBe(145)
         ->and($response['stats']['excluded_node_count'])->toBe(145)
         ->and($response['stats']['excluded_node_count'])->toBeGreaterThanOrEqual(max(
@@ -1403,7 +1518,7 @@ it('serves a bounded graph preview with total stats and analyzer relationship ke
     for ($index = 0; $index < 250; $index++) {
         $nodes[] = [
             'id' => "function:handler{$index}",
-            'labels' => ['Function'],
+            'labels' => ['Method'],
             'properties' => ['name' => "handler{$index}"],
         ];
     }

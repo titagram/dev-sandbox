@@ -34,6 +34,11 @@ it('accepts only well-formed gh1 handles', function (): void {
         ->and($service->isWellFormed('node-1'))->toBeFalse();
 });
 
+it('uses the global HMAC key fingerprint contract', function (): void {
+    expect((new DashboardGraphPublicHandle)->keyFingerprint())
+        ->toBe(hash_hmac('sha256', 'hades.graph.handle.v1', 'unit-test-app-key'));
+});
+
 it('rejects noncanonical trailing-bit aliases even when their decoded bytes match', function (): void {
     $service = new DashboardGraphPublicHandle;
     $valid = $service->forNode('project-1', 'repository', 'repo-1', 'v1', 'node-1');

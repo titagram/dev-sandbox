@@ -386,7 +386,7 @@ it('stamps the public handle key identity and binds handles to the physical cand
 
     expect($version['params']['metadata']['public_handle_key_version'])->toBe('gh1')
         ->and($version['params']['metadata']['public_handle_key_fingerprint'])
-        ->toBe(hash('sha256', 'unit-test-app-key'))
+        ->toBe(hash_hmac('sha256', 'hades.graph.handle.v1', 'unit-test-app-key'))
         ->and($nodeBatch['params']['nodes'][0]['properties']['public_handle'])
         ->toBe(app(\App\Services\Graph\DashboardGraphPublicHandle::class)->forNode(
             $projectId,
@@ -500,8 +500,8 @@ it('rotates public handles through a forced candidate and atomic publication', f
     $publishedAfter = DB::table('canonical_graph_projections')->where('id', $initial->id)->firstOrFail();
 
     expect($versionCommand['params']['metadata']['public_handle_key_fingerprint'])
-        ->toBe(hash('sha256', $keyB))
-        ->not->toBe(hash('sha256', $keyA))
+        ->toBe(hash_hmac('sha256', 'hades.graph.handle.v1', $keyB))
+        ->not->toBe(hash_hmac('sha256', 'hades.graph.handle.v1', $keyA))
         ->and($nodeCommand['params']['nodes'][0]['properties']['public_handle'])->toBe($candidateHandle)
         ->and($candidateHandle)->not->toBe($oldHandle)
         ->and($published)->not->toBeNull()

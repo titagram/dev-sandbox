@@ -49,8 +49,69 @@ it('resolves a detail node with one direct indexed project-scope-version-handle 
             'active_graph_version' => $fixture['active_graph_version'],
             'public_handle' => $fixture['handle'],
             'public_handle_key_version' => 'gh1',
-            'public_handle_key_fingerprint' => hash('sha256', 'unit-test-app-key'),
+            'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'unit-test-app-key'),
         ]);
+});
+
+it('keeps the newest ready winner when a newer queued candidate has no active version', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    DB::table('canonical_graph_projections')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $fixture['project_id'],
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => $fixture['scope_id'],
+        'artifact_type' => 'hades_agent_artifact_candidate',
+        'artifact_id' => $fixture['artifact_id'],
+        'graph_version' => 'candidate-v3',
+        'active_graph_version' => null,
+        'checksum' => hash('sha256', 'queued-candidate'),
+        'head_commit' => str_repeat('b', 40),
+        'quality' => 'partial',
+        'status' => 'queued',
+        'node_count' => 0,
+        'relationship_count' => 0,
+        'projected_at' => now()->addMinute(),
+        'created_at' => now()->addMinute(),
+        'updated_at' => now()->addMinute(),
+    ]);
+
+    $overview = $fixture['service']->overview($fixture['project_id'], 'workspace_binding', $fixture['scope_id']);
+    $search = $fixture['service']->search($fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Invoice Service', 2);
+    $detail = $fixture['service']->detail($fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle']);
+    $commands = collect($fixture['client']->commands);
+
+    expect($overview['found'])->toBeTrue()
+        ->and($search['found'])->toBeTrue()
+        ->and($detail['found'])->toBeTrue()
+        ->and($commands->filter(fn (array $command): bool => str_contains($command['cypher'], 'db.index.fulltext.queryNodes'))
+            ->last()['params']['active_graph_version'])->toBe($fixture['active_graph_version'])
+        ->and($commands->filter(fn (array $command): bool => str_contains($command['cypher'], 'OPTIONAL MATCH (node:CanonicalGraphNode'))
+            ->last()['params']['active_graph_version'])->toBe($fixture['active_graph_version']);
+});
+
+it('resolves detail key state and node existence in one combined indexed lookup', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $response = $fixture['service']->detail(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['handle'],
+    );
+    $lookups = collect($fixture['client']->commands)
+        ->filter(fn (array $command): bool => str_contains($command['cypher'], 'MATCH (node:CanonicalGraphNode'))
+        ->values();
+    $keyOnly = collect($fixture['client']->commands)
+        ->filter(fn (array $command): bool => str_contains($command['cypher'], 'RETURN version.public_handle_key_version AS public_handle_key_version'))
+        ->values();
+
+    expect($response['found'])->toBeTrue()
+        ->and($lookups)->toHaveCount(1)
+        ->and($keyOnly)->toHaveCount(0)
+        ->and($lookups[0]['cypher'])
+        ->toContain('OPTIONAL MATCH (node:CanonicalGraphNode')
+        ->toContain('version.public_handle_key_version AS version_project_key')
+        ->toContain('version.public_handle_key_fingerprint AS version_source_fingerprint')
+        ->not->toContain('version.public_handle_key_version = $public_handle_key_version');
 });
 
 it('materializes Laudis result lists and maps across explorer reads', function (): void {
@@ -129,12 +190,13 @@ it('guards direct handle resolution with the current key identity in the same in
     expect($response['found'])->toBeTrue()
         ->and($lookup['cypher'])
         ->toContain('MATCH (version:CanonicalGraphVersion')
-        ->toContain('version.public_handle_key_version = $public_handle_key_version')
-        ->toContain('version.public_handle_key_fingerprint = $public_handle_key_fingerprint')
+        ->toContain('version.public_handle_key_version AS version_project_key')
+        ->toContain('version.public_handle_key_fingerprint AS version_source_fingerprint')
+        ->toContain('OPTIONAL MATCH (node:CanonicalGraphNode')
         ->and($lookup['params'])
         ->toMatchArray([
             'public_handle_key_version' => 'gh1',
-            'public_handle_key_fingerprint' => hash('sha256', 'unit-test-app-key'),
+            'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'unit-test-app-key'),
         ]);
 });
 
@@ -145,6 +207,14 @@ it('does not resolve an old-key handle after rebuilt publication rotates APP_KEY
     $fixture = dashboardGraphExplorerFixture();
     $oldHandle = $fixture['handle'];
     config(['app.key' => $keyB]);
+    $fixture['client']->storedKeyFingerprint = hash_hmac('sha256', 'hades.graph.handle.v1', $keyB);
+    $fixture['client']->storedHandle = (new DashboardGraphPublicHandle)->forNode(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['active_graph_version'],
+        'method:InvoiceService::charge',
+    );
 
     $response = $fixture['service']->detail(
         $fixture['project_id'],
@@ -157,7 +227,7 @@ it('does not resolve an old-key handle after rebuilt publication rotates APP_KEY
         ->and($fixture['client']->commands[array_key_last($fixture['client']->commands)]['params'])
         ->toMatchArray([
             'active_graph_version' => $fixture['active_graph_version'],
-            'public_handle_key_fingerprint' => hash('sha256', $keyB),
+            'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', $keyB),
         ]);
 });
 
@@ -360,13 +430,34 @@ it('guards search results with the active scope, version, and current handle key
         ->toContain('source_scope_type: $source_scope_type')
         ->toContain('source_scope_id: $source_scope_id')
         ->toContain('graph_version: $active_graph_version')
-        ->toContain('version.public_handle_key_version = $public_handle_key_version')
-        ->toContain('version.public_handle_key_fingerprint = $public_handle_key_fingerprint')
+        ->toContain('version.public_handle_key_version AS version_project_key')
+        ->toContain('version.public_handle_key_fingerprint AS version_source_fingerprint')
         ->not->toContain('current = true')
-        ->and($search['params'])->toMatchArray([
-            'public_handle_key_version' => 'gh1',
-            'public_handle_key_fingerprint' => hash('sha256', 'unit-test-app-key'),
-        ]);
+        ->and($search['params'])->not->toHaveKey('public_handle_key_version')
+        ->and($search['params'])->not->toHaveKey('public_handle_key_fingerprint');
+});
+
+it('checks search key metadata in its single fulltext query without a key preflight', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        'Invoice Service',
+        2,
+    );
+    $fulltext = collect($fixture['client']->commands)
+        ->filter(fn (array $command): bool => str_contains($command['cypher'], 'db.index.fulltext.queryNodes'))
+        ->values();
+    $keyOnly = collect($fixture['client']->commands)
+        ->filter(fn (array $command): bool => str_contains($command['cypher'], 'RETURN version.public_handle_key_version AS public_handle_key_version'))
+        ->values();
+
+    expect($fulltext)->toHaveCount(1)
+        ->and($keyOnly)->toHaveCount(0)
+        ->and($fulltext[0]['cypher'])
+        ->toContain('version.public_handle_key_version AS version_project_key')
+        ->toContain('version.public_handle_key_fingerprint AS version_source_fingerprint');
 });
 
 it('applies the decoded score and handle boundary to the next search page', function (): void {
@@ -502,12 +593,116 @@ it('returns safe current projection metadata for an overview', function (): void
 
 it('reports rebuild required when overview metadata has a rotated handle key', function (): void {
     $fixture = dashboardGraphExplorerFixture();
-    $fixture['client']->storedKeyFingerprint = hash('sha256', 'previous-app-key');
+    $fixture['client']->storedKeyFingerprint = hash_hmac('sha256', 'hades.graph.handle.v1', 'previous-app-key');
 
     expect($fixture['service']->overview(
         $fixture['project_id'],
         'workspace_binding',
         $fixture['scope_id'],
+    ))->toMatchArray([
+        'found' => false,
+        'reason' => 'graph_projection_rebuild_required',
+    ]);
+});
+
+it('distinguishes unavailable and stale projections before node resolution', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    DB::table('canonical_graph_projections')->where('id', $fixture['projection_id'])->delete();
+
+    foreach ([
+        fn (): array => $fixture['service']->neighborhood(
+            $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 'any', 2, 10,
+        ),
+        fn (): array => $fixture['service']->path(
+            $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], $fixture['handle'], 2, 10,
+        ),
+        fn (): array => $fixture['service']->impact(
+            $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
+        ),
+    ] as $read) {
+        expect($read())->toMatchArray([
+            'found' => false,
+            'reason' => 'graph_projection_not_ready',
+        ]);
+    }
+
+    $fixture = dashboardGraphExplorerFixture();
+    DB::table('canonical_graph_projections')
+        ->where('id', $fixture['projection_id'])
+        ->update(['status' => 'stale']);
+
+    foreach ([
+        fn (): array => $fixture['service']->neighborhood(
+            $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 'any', 2, 10,
+        ),
+        fn (): array => $fixture['service']->path(
+            $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], $fixture['handle'], 2, 10,
+        ),
+        fn (): array => $fixture['service']->impact(
+            $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
+        ),
+    ] as $read) {
+        expect($read())->toMatchArray([
+            'found' => false,
+            'reason' => 'graph_projection_rebuild_required',
+        ]);
+    }
+});
+
+it('prioritizes stale or failed projection states over queued candidates without a ready winner', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    DB::table('canonical_graph_projections')->where('id', $fixture['projection_id'])->delete();
+    $base = [
+        'project_id' => $fixture['project_id'],
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => $fixture['scope_id'],
+        'artifact_type' => 'candidate_projection',
+        'checksum' => hash('sha256', 'mixed-candidates'),
+        'head_commit' => str_repeat('c', 40),
+        'quality' => 'partial',
+        'node_count' => 0,
+        'relationship_count' => 0,
+        'created_at' => now(),
+        'updated_at' => now(),
+    ];
+    DB::table('canonical_graph_projections')->insert([
+        ...$base,
+        'id' => (string) Str::ulid(),
+        'artifact_id' => (string) Str::ulid(),
+        'graph_version' => 'stale-v1',
+        'active_graph_version' => 'stale-active-v1',
+        'status' => 'stale',
+        'projected_at' => now()->addSeconds(1),
+    ]);
+    DB::table('canonical_graph_projections')->insert([
+        ...$base,
+        'id' => (string) Str::ulid(),
+        'artifact_id' => (string) Str::ulid(),
+        'graph_version' => 'queued-v2',
+        'active_graph_version' => null,
+        'status' => 'queued',
+        'projected_at' => now()->addSeconds(2),
+    ]);
+
+    expect($fixture['service']->overview(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'],
+    ))->toMatchArray([
+        'found' => false,
+        'reason' => 'graph_projection_rebuild_required',
+    ]);
+});
+
+it('returns rebuild required for search and detail when the current projection key is stale', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $fixture['client']->storedKeyFingerprint = hash_hmac('sha256', 'hades.graph.handle.v1', 'previous-app-key');
+
+    expect($fixture['service']->search(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Invoice Service', 10,
+    ))->toMatchArray([
+        'found' => false,
+        'reason' => 'graph_projection_rebuild_required',
+    ])->and($fixture['service']->detail(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
     ))->toMatchArray([
         'found' => false,
         'reason' => 'graph_projection_rebuild_required',
@@ -673,8 +868,30 @@ it('retains recognized method and service kinds in explorer responses', function
         $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
     );
 
-    expect($search['items'][0]['kind'])->toBe('service')
+    expect($search['items'][0]['kind'])->toBe('unknown')
         ->and($detail['node']['kind'])->toBe('method');
+});
+
+it('maps every exact public kind and rejects legacy aliases in service responses', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $kinds = [
+        'method', 'class', 'method_reference', 'external_class', 'table',
+        'route', 'trait', 'external_symbol', 'interface', 'file',
+    ];
+
+    foreach ($kinds as $kind) {
+        $fixture['client']->directNodeKind = $kind;
+        expect($fixture['service']->detail(
+            $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
+        )['node']['kind'])->toBe($kind);
+    }
+
+    foreach (['service', 'module', 'function', 'model', 'enum', 'http_endpoint'] as $kind) {
+        $fixture['client']->directNodeKind = $kind;
+        expect($fixture['service']->detail(
+            $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
+        )['node']['kind'])->toBe('unknown');
+    }
 });
 
 it('proves exact exhaustion at the bounded raw search ceiling', function (): void {
@@ -1117,6 +1334,14 @@ it('resolves impact existence before traversal and preserves existing zero-impac
         ->toMatchArray(['found' => false, 'reason' => 'node_not_found']);
 
     config(['app.key' => 'impact-existence-key-b']);
+    $fixture['client']->storedKeyFingerprint = hash_hmac('sha256', 'hades.graph.handle.v1', 'impact-existence-key-b');
+    $fixture['client']->storedHandle = (new DashboardGraphPublicHandle)->forNode(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['active_graph_version'],
+        'method:InvoiceService::charge',
+    );
 
     expect($fixture['service']->impact($fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10))
         ->toMatchArray(['found' => false, 'reason' => 'node_not_found']);
@@ -1235,7 +1460,7 @@ it('guards impact traversal with the active scope, version, and current handle k
         ->not->toContain('current = true')
         ->and($impact['params'])->toMatchArray([
             'public_handle_key_version' => 'gh1',
-            'public_handle_key_fingerprint' => hash('sha256', 'unit-test-app-key'),
+            'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'unit-test-app-key'),
         ]);
 });
 
@@ -1338,6 +1563,7 @@ function dashboardGraphExplorerFixture(): array
         public ?array $neighborhoodRows = null;
         /** @var list<array<string,mixed>>|null */
         public ?array $pathRows = null;
+        public string $storedHandle;
 
         public function __construct(
             private readonly string $projectId,
@@ -1345,7 +1571,8 @@ function dashboardGraphExplorerFixture(): array
             private readonly string $activeGraphVersion,
             private readonly string $handle,
         ) {
-            $this->storedKeyFingerprint = hash('sha256', (string) config('app.key'));
+            $this->storedKeyFingerprint = hash_hmac('sha256', 'hades.graph.handle.v1', (string) config('app.key'));
+            $this->storedHandle = $handle;
         }
 
         /** @param array<string,mixed> $parameters */
@@ -1497,11 +1724,22 @@ function dashboardGraphExplorerFixture(): array
             }
 
             if (str_contains($cypher, 'db.index.fulltext.queryNodes')) {
+                $withVersion = function (array $rows): array {
+                    return array_map(fn (array $row): array => [
+                        'version_project_key' => 'gh1',
+                        'version_source_fingerprint' => $this->storedKeyFingerprint,
+                        ...$row,
+                    ], $rows);
+                };
                 if ($this->searchRowBatches !== []) {
-                    return array_slice(array_shift($this->searchRowBatches), 0, (int) ($parameters['fetch_limit'] ?? PHP_INT_MAX));
+                    return $withVersion(array_slice(
+                        array_shift($this->searchRowBatches),
+                        0,
+                        (int) ($parameters['fetch_limit'] ?? PHP_INT_MAX),
+                    ));
                 }
                 if ($this->searchRows !== null) {
-                    return $this->searchRows;
+                    return $withVersion($this->searchRows);
                 }
 
                 $makeNode = function (string $externalId, string $label): array {
@@ -1521,34 +1759,40 @@ function dashboardGraphExplorerFixture(): array
                     ];
                 };
 
-                return [
+                return $withVersion([
                     ['node' => $makeNode('method:Beta', 'Beta'), 'labels' => ['Method'], 'score' => $this->searchScores[0] ?? 0.9],
                     ['node' => $makeNode('method:Alpha', 'Alpha'), 'labels' => ['Method'], 'score' => $this->searchScores[1] ?? 0.9],
                     ['node' => $makeNode('method:Gamma', 'Gamma'), 'labels' => ['Method'], 'score' => $this->searchScores[2] ?? 0.7],
-                ];
+                ]);
             }
 
             if (! str_contains($cypher, 'MATCH (node:CanonicalGraphNode')) {
                 return [];
             }
 
-            if ($parameters === [
-                'project_id' => $this->projectId,
-                'source_scope_type' => 'workspace_binding',
-                'source_scope_id' => $this->scopeId,
-                'active_graph_version' => $this->activeGraphVersion,
-                'public_handle' => $this->handle,
-                'public_handle_key_version' => 'gh1',
-                'public_handle_key_fingerprint' => $this->storedKeyFingerprint,
-            ]) {
+            if (($parameters['project_id'] ?? null) !== $this->projectId) {
+                return [];
+            }
+            if (($parameters['source_scope_type'] ?? null) !== 'workspace_binding'
+                || ($parameters['source_scope_id'] ?? null) !== $this->scopeId
+                || ($parameters['active_graph_version'] ?? null) !== $this->activeGraphVersion
+                || ($parameters['public_handle_key_version'] ?? null) !== 'gh1') {
+                return [];
+            }
+
+            if (isset($parameters['public_handle'])) {
+                $node = ($parameters['public_handle'] === $this->storedHandle) ? [
+                    'external_id' => 'method:InvoiceService::charge',
+                    'public_handle' => $this->storedHandle,
+                    'kind' => $this->directNodeKind,
+                    'public_search_label' => 'InvoiceService::charge',
+                    'path' => '/srv/private/InvoiceService.php',
+                ] : null;
+
                 return [[
-                    'node' => [
-                        'external_id' => 'method:InvoiceService::charge',
-                        'public_handle' => $this->handle,
-                        'kind' => $this->directNodeKind,
-                        'public_search_label' => 'InvoiceService::charge',
-                        'path' => '/srv/private/InvoiceService.php',
-                    ],
+                    'version_project_key' => 'gh1',
+                    'version_source_fingerprint' => $this->storedKeyFingerprint,
+                    'node' => $node,
                     'labels' => ['CanonicalGraphNode', 'Method'],
                 ]];
             }
