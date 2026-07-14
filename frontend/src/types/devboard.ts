@@ -1036,6 +1036,127 @@ export interface GraphView {
   edges: GraphEdge[];
 }
 
+export type DashboardGraphQueryType =
+  | "scopes"
+  | "overview"
+  | "search"
+  | "detail"
+  | "neighborhood"
+  | "path"
+  | "impact";
+export type DashboardGraphScopeType = "repository" | "workspace_binding";
+export type DashboardGraphDirection = "in" | "out" | "any";
+export type DashboardGraphFamily = "call" | "dependency" | "route" | "test" | "table";
+
+export interface DashboardGraphQueryRequest {
+  type: DashboardGraphQueryType;
+  scope_type?: DashboardGraphScopeType;
+  scope_id?: string;
+  query?: string;
+  node_handle?: string;
+  from_handle?: string;
+  to_handle?: string;
+  direction?: DashboardGraphDirection;
+  families?: DashboardGraphFamily[];
+  max_depth?: 1 | 2 | 3;
+  limit?: number;
+  cursor?: string | null;
+}
+
+export type DashboardGraphNodeKind =
+  | "method"
+  | "class"
+  | "method_reference"
+  | "external_class"
+  | "table"
+  | "route"
+  | "trait"
+  | "external_symbol"
+  | "interface"
+  | "file"
+  | "unknown";
+
+export interface DashboardGraphNode {
+  handle: string;
+  kind: DashboardGraphNodeKind;
+  label?: string | null;
+  score?: number;
+  distance?: number;
+  family?: DashboardGraphFamily;
+  edge_types?: string[];
+  why?: string;
+}
+
+export interface DashboardGraphEdge {
+  from_handle: string;
+  to_handle: string;
+  edge_type: string;
+  family: DashboardGraphFamily;
+}
+
+export interface DashboardGraphScopeItem {
+  source_scope_type: DashboardGraphScopeType;
+  source_scope_id: string;
+  active_graph_version?: string;
+  status?: string;
+  quality?: string;
+  node_count?: number;
+  relationship_count?: number;
+}
+
+export interface DashboardGraphSource {
+  type: "canonical_graph";
+  status: "verified_from_code";
+  origin: "canonical projection";
+}
+
+export interface DashboardGraphProjection {
+  status: string;
+  quality: string | null;
+  generated_at: string | null;
+  active_graph_version: string | null;
+  node_count: number;
+  relationship_count: number;
+  unknown_kind_count: number;
+  missing_label_count: number;
+  excluded_node_count: number;
+}
+
+export interface DashboardGraphResponseEnvelope<
+  TQueryType extends DashboardGraphQueryType,
+  TItem,
+> {
+  protocol_version: "v1";
+  project_id: string;
+  query_type: TQueryType;
+  found: boolean;
+  reason: string | null;
+  scope: GraphSourceScope | null;
+  projection: DashboardGraphProjection;
+  node: DashboardGraphNode | null;
+  items: TItem[];
+  edges: DashboardGraphEdge[];
+  returned: number;
+  limit: number;
+  next_cursor: string | null;
+  has_more: boolean;
+  truncated: boolean;
+  source: DashboardGraphSource;
+}
+
+export type DashboardGraphScopesResponse = DashboardGraphResponseEnvelope<
+  "scopes",
+  DashboardGraphScopeItem
+> & { scope: null; node: null };
+
+export type DashboardGraphDataQueryType = Exclude<DashboardGraphQueryType, "scopes">;
+export type DashboardGraphDataResponse = DashboardGraphResponseEnvelope<
+  DashboardGraphDataQueryType,
+  DashboardGraphNode
+>;
+
+export type DashboardGraphResponse = DashboardGraphScopesResponse | DashboardGraphDataResponse;
+
 // ---------- Artifacts ----------
 
 export type ArtifactKind = "genesis_import" | "delta_sync" | "analysis" | "report";

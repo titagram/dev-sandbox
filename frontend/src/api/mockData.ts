@@ -3,6 +3,8 @@ import {
   AgentWorkItem,
   AuthMatrixRow,
   BackupReadiness,
+  DashboardGraphEdge,
+  DashboardGraphNode,
   GraphView,
   KanbanBoard,
   LocalWorkspace,
@@ -738,6 +740,71 @@ export const GRAPH: GraphView = {
     { id: "g13", from: "n-fn-parse", to: "n-model-artifact", kind: "uses" },
     { id: "g14", from: "n-ctrl-run", to: "n-route-runs", kind: "routes_to" },
   ],
+};
+
+const graphHandle = (character: string) => `gh1_${character.repeat(43)}`;
+
+export const DASHBOARD_GRAPH_NODES: DashboardGraphNode[] = [
+  {
+    handle: graphHandle("a"), label: "ImportService", kind: "class",
+  },
+  {
+    handle: graphHandle("b"), label: "RunController::retryImport", kind: "method",
+  },
+  {
+    handle: graphHandle("c"), label: "ArtifactStore", kind: "class",
+  },
+  {
+    handle: graphHandle("d"), label: "POST /runs/{id}/retry-import", kind: "route",
+  },
+  {
+    handle: graphHandle("e"), label: "ImportServiceTest", kind: "class",
+  },
+  {
+    handle: graphHandle("f"), label: "artifacts", kind: "table",
+  },
+  {
+    handle: graphHandle("g"), label: "WorkspaceImportAdapter", kind: "class",
+  },
+  {
+    handle: graphHandle("h"), label: "WorkspaceSnapshot", kind: "class",
+  },
+  {
+    handle: graphHandle("i"), label: "PaymentService", kind: "class",
+  },
+  {
+    handle: graphHandle("j"), label: "InvoiceRepository", kind: "class",
+  },
+];
+
+export const DASHBOARD_GRAPH_EDGES: DashboardGraphEdge[] = [
+  {
+    from_handle: graphHandle("b"), to_handle: graphHandle("a"), edge_type: "CALLS_METHOD", family: "call",
+  },
+  {
+    from_handle: graphHandle("a"), to_handle: graphHandle("c"), edge_type: "USES_DEPENDENCY", family: "dependency",
+  },
+  {
+    from_handle: graphHandle("d"), to_handle: graphHandle("b"), edge_type: "ROUTE_HANDLER", family: "route",
+  },
+  {
+    from_handle: graphHandle("e"), to_handle: graphHandle("a"), edge_type: "TEST_COVERS_SYMBOL", family: "test",
+  },
+  {
+    from_handle: graphHandle("a"), to_handle: graphHandle("f"), edge_type: "QUERY_TABLE", family: "table",
+  },
+  {
+    from_handle: graphHandle("g"), to_handle: graphHandle("h"), edge_type: "USES_DEPENDENCY", family: "dependency",
+  },
+  {
+    from_handle: graphHandle("i"), to_handle: graphHandle("j"), edge_type: "USES_DEPENDENCY", family: "dependency",
+  },
+];
+
+export const DASHBOARD_GRAPH_SOURCE = {
+  type: "canonical_graph" as const,
+  status: "verified_from_code" as const,
+  origin: "canonical projection" as const,
 };
 
 // ---------------- Artifacts ----------------

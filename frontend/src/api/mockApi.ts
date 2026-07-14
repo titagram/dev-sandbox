@@ -1,6 +1,8 @@
 import { DevboardApi } from "@/api/devboardApi";
 import {
-  ARTIFACTS, AUTH_MATRIX, BACKUP_READINESS, buildBoard, buildGate, buildKickstart, buildReports, GRAPH, PLUGIN_DEVICES,
+  ARTIFACTS, AUTH_MATRIX, BACKUP_READINESS, buildBoard, buildGate, buildKickstart, buildReports,
+  DASHBOARD_GRAPH_EDGES, DASHBOARD_GRAPH_NODES, DASHBOARD_GRAPH_SOURCE,
+  GRAPH, PLUGIN_DEVICES,
   PLUGIN_TOKENS, PROJECT_DETAILS, PROJECTS, QUALITY_CURRENT_STATE, QUALITY_OVERVIEW,
   agentWorkItems, memoryEntries, ROADMAP, ROUTE_INVENTORY, ROUTE_SMOKE, runSummaries, RUNS, SECURITY_CHECKS, SYSTEM_STATUS,
   TASKS, TRUTH_REGISTRY, USERS, WIKI, wikiSummaries,
@@ -9,7 +11,7 @@ import {
   AgentChatThread, AgentChatThreadSummary, AgentKey, AgentWorkDetailResponse, AgentWorkItem,
   AiAgentProfile, AiAgentProfileInput, AiAgentsSnapshot, AiModelProfile, AiModelProfileCreateInput, AiModelProfileInput, AiModelProvider, AiModelProviderInput, AiModelProviderValidationResult,
   AssistantRun, AssistantSuggestion, AssistantSuggestionResponse, BacklogTriagePayload,
-  DashboardOverview, IntakeNormalizationType, LoginPayload, Project, ProjectDetail, ProjectLifecycleInput,
+  DashboardGraphDataQueryType, DashboardGraphDataResponse, DashboardGraphDirection, DashboardGraphEdge, DashboardGraphFamily, DashboardGraphNode, DashboardGraphProjection, DashboardGraphQueryRequest, DashboardGraphQueryType, DashboardGraphResponse, DashboardGraphScopeItem, DashboardGraphScopeType, DashboardGraphScopesResponse, DashboardOverview, IntakeNormalizationType, LoginPayload, Project, ProjectDetail, ProjectLifecycleInput,
   HadesCapability, ProjectMemoryDomain, ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryImportItem, ProjectMemoryQuery, ProjectStatusFilter, ProjectWorkspaceBinding, RepositoryDeclarationInput, Role, SourceStatus, TaskAttachment, TaskClarificationPayload, TaskColumn, TaskDetail, User, WikiEvidence, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
 } from "@/types/devboard";
 
@@ -1308,6 +1310,540 @@ function appendAgentChatTurn(thread: AgentChatThread, content: string, metadata:
   return refreshThreadDerivedFields(thread, completedAt);
 }
 
+function dashboardGraphEnvelope(
+  projectId: string,
+  request: DashboardGraphQueryRequest,
+  queryType: DashboardGraphDataQueryType,
+  projection: DashboardGraphProjection,
+  values: Partial<DashboardGraphDataResponse> = {},
+): DashboardGraphDataResponse {
+  const limit = request.limit ?? 50;
+
+  return {
+    protocol_version: "v1",
+    project_id: projectId,
+    query_type: queryType,
+    found: false,
+    reason: null,
+    scope: request.scope_type && request.scope_id
+      ? { type: request.scope_type, id: request.scope_id }
+      : null,
+    projection: clone(projection),
+    node: null,
+    items: [],
+    edges: [],
+    returned: 0,
+    limit,
+    next_cursor: null,
+    has_more: false,
+    truncated: false,
+    source: clone(DASHBOARD_GRAPH_SOURCE),
+    ...values,
+  };
+}
+
+function dashboardGraphScopesEnvelope(
+  projectId: string,
+  request: DashboardGraphQueryRequest,
+  projection: DashboardGraphProjection,
+  values: Partial<DashboardGraphScopesResponse> = {},
+): DashboardGraphScopesResponse {
+  return {
+    protocol_version: "v1",
+    project_id: projectId,
+    query_type: "scopes",
+    found: false,
+    reason: null,
+    scope: null,
+    projection: clone(projection),
+    node: null,
+    items: [],
+    edges: [],
+    returned: 0,
+    limit: request.limit ?? 50,
+    next_cursor: null,
+    has_more: false,
+    truncated: false,
+    source: clone(DASHBOARD_GRAPH_SOURCE),
+    ...values,
+  };
+}
+
+function graphError(reason: string, code: "404" | "422"): never {
+  throw { message: reason, code };
+}
+
+function validGraphHandle(value: unknown): value is string {
+  return typeof value === "string" && /^gh1_[A-Za-z0-9_-]{43}$/.test(value);
+}
+
+const DASHBOARD_GRAPH_QUERY_TYPES = new Set<string>([
+  "scopes", "overview", "search", "detail", "neighborhood", "path", "impact",
+]);
+const DASHBOARD_GRAPH_SCOPE_TYPES = new Set<string>(["repository", "workspace_binding"]);
+const DASHBOARD_GRAPH_DIRECTIONS = new Set<string>(["in", "out", "any"]);
+const DASHBOARD_GRAPH_FAMILIES = new Set<string>(["call", "dependency", "route", "test", "table"]);
+const DASHBOARD_GRAPH_ALLOWED_FIELDS = new Set<string>([
+  "type", "scope_type", "scope_id", "query", "node_handle", "from_handle", "to_handle",
+  "direction", "families", "max_depth", "limit", "cursor",
+]);
+
+function isGraphRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasGraphField(request: Record<string, unknown>, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(request, field);
+}
+
+function isGraphQueryType(value: unknown): value is DashboardGraphQueryType {
+  return typeof value === "string" && DASHBOARD_GRAPH_QUERY_TYPES.has(value);
+}
+
+function isGraphScopeType(value: unknown): value is DashboardGraphScopeType {
+  return typeof value === "string" && DASHBOARD_GRAPH_SCOPE_TYPES.has(value);
+}
+
+function isGraphDirection(value: unknown): value is DashboardGraphDirection {
+  return typeof value === "string" && DASHBOARD_GRAPH_DIRECTIONS.has(value);
+}
+
+function isGraphFamily(value: unknown): value is DashboardGraphFamily {
+  return typeof value === "string" && DASHBOARD_GRAPH_FAMILIES.has(value);
+}
+
+function isGraphMaxDepth(value: unknown): value is 1 | 2 | 3 {
+  return value === 1 || value === 2 || value === 3;
+}
+
+function validateDashboardGraphQuery(request: unknown): DashboardGraphQueryRequest {
+  if (!isGraphRecord(request)) {
+    graphError("validation_failed", "422");
+  }
+  if (Object.entries(request).some(([field]) => !DASHBOARD_GRAPH_ALLOWED_FIELDS.has(field))
+    || !isGraphQueryType(request.type)) {
+    graphError("validation_failed", "422");
+  }
+
+  const validated: DashboardGraphQueryRequest = { type: request.type };
+  if (hasGraphField(request, "scope_type")) {
+    const scopeType = request.scope_type;
+    if (scopeType === null) {
+      // Laravel's nullable rule accepts an explicit null and treats the scope as omitted.
+    } else if (isGraphScopeType(scopeType)) {
+      validated.scope_type = scopeType;
+    } else {
+      graphError("validation_failed", "422");
+    }
+  }
+  if (hasGraphField(request, "scope_id")) {
+    const scopeId = request.scope_id;
+    if (scopeId === null) {
+      // Laravel's nullable rule accepts an explicit null and treats the scope as omitted.
+    } else if (typeof scopeId === "string" && scopeId.length <= 191) {
+      validated.scope_id = scopeId;
+    } else {
+      graphError("validation_failed", "422");
+    }
+  }
+  if (hasGraphField(request, "query")) {
+    if (typeof request.query !== "string" || request.query.length < 1 || request.query.length > 160) {
+      graphError("validation_failed", "422");
+    }
+    validated.query = request.query;
+  }
+  for (const field of ["node_handle", "from_handle", "to_handle"] as const) {
+    if (!hasGraphField(request, field)) continue;
+    const value = request[field];
+    if (!validGraphHandle(value)) graphError("invalid_handle", "422");
+    validated[field] = value;
+  }
+  if (hasGraphField(request, "direction")) {
+    if (!isGraphDirection(request.direction)) graphError("validation_failed", "422");
+    validated.direction = request.direction;
+  }
+  if (hasGraphField(request, "families")) {
+    if (!Array.isArray(request.families) || !request.families.every(isGraphFamily)) {
+      graphError("validation_failed", "422");
+    }
+    validated.families = [...request.families];
+  }
+  if (hasGraphField(request, "max_depth")) {
+    if (!isGraphMaxDepth(request.max_depth)) graphError("validation_failed", "422");
+    validated.max_depth = request.max_depth;
+  }
+  if (hasGraphField(request, "limit")) {
+    if (typeof request.limit !== "number" || !Number.isInteger(request.limit)
+      || request.limit < 1 || request.limit > 100) {
+      graphError("validation_failed", "422");
+    }
+    validated.limit = request.limit;
+  }
+  if (hasGraphField(request, "cursor")) {
+    const cursor = request.cursor;
+    if (cursor === null) {
+      validated.cursor = null;
+    } else if (typeof cursor === "string" && cursor.length <= 512) {
+      validated.cursor = cursor;
+    } else {
+      graphError("validation_failed", "422");
+    }
+  }
+
+  if ((validated.scope_type === undefined) !== (validated.scope_id === undefined)) {
+    graphError("validation_failed", "422");
+  }
+  if (validated.type === "search" && validated.query === undefined) {
+    graphError("validation_failed", "422");
+  }
+  if (["detail", "neighborhood", "impact"].includes(validated.type)
+    && validated.node_handle === undefined) {
+    graphError("invalid_handle", "422");
+  }
+  if (validated.type === "path"
+    && (validated.from_handle === undefined || validated.to_handle === undefined)) {
+    graphError("invalid_handle", "422");
+  }
+  if (validated.type !== "scopes" && validated.type !== "search"
+    && validated.limit !== undefined && validated.limit > 50) {
+    graphError("validation_failed", "422");
+  }
+  if (validated.type === "impact" && validated.max_depth !== undefined && validated.max_depth !== 2) {
+    graphError("validation_failed", "422");
+  }
+  if (validated.cursor !== undefined && validated.cursor !== null
+    && validated.type !== "scopes" && validated.type !== "search") {
+    graphError("validation_failed", "422");
+  }
+
+  return validated;
+}
+
+interface MockGraphScopeFixture {
+  projectId: string;
+  scopeType: DashboardGraphScopeType;
+  scopeId: string;
+  nodeHandles: readonly string[];
+  projection: DashboardGraphProjection;
+}
+
+const mockGraphHandle = (character: string) => `gh1_${character.repeat(43)}`;
+const unavailableGraphProjection = (): DashboardGraphProjection => ({
+  status: "unavailable",
+  quality: null,
+  generated_at: null,
+  active_graph_version: null,
+  node_count: 0,
+  relationship_count: 0,
+  unknown_kind_count: 0,
+  missing_label_count: 0,
+  excluded_node_count: 0,
+});
+const readyGraphProjection = (
+  activeGraphVersion: string,
+  quality: string,
+  nodeCount: number,
+  relationshipCount: number,
+): DashboardGraphProjection => ({
+  status: "ready",
+  quality,
+  generated_at: new Date(Date.now() - 12 * 60_000).toISOString(),
+  active_graph_version: activeGraphVersion,
+  node_count: nodeCount,
+  relationship_count: relationshipCount,
+  unknown_kind_count: 0,
+  missing_label_count: 0,
+  excluded_node_count: 0,
+});
+const MOCK_GRAPH_SCOPE_FIXTURES: readonly MockGraphScopeFixture[] = [
+  {
+    projectId: "proj-core", scopeType: "repository", scopeId: "repo-api",
+    nodeHandles: ["a", "b", "c", "d", "e", "f"].map(mockGraphHandle),
+    projection: readyGraphProjection("canonical-proj-core-v7", "complete", 6, 5),
+  },
+  {
+    projectId: "proj-core", scopeType: "workspace_binding", scopeId: "binding-core-api",
+    nodeHandles: ["g", "h"].map(mockGraphHandle),
+    projection: readyGraphProjection("canonical-binding-core-api-v3", "partial", 2, 1),
+  },
+  {
+    projectId: "proj-pay", scopeType: "repository", scopeId: "repo-billing",
+    nodeHandles: ["i", "j"].map(mockGraphHandle),
+    projection: readyGraphProjection("canonical-proj-pay-v2", "complete", 2, 1),
+  },
+];
+
+function graphScopeItem(fixture: MockGraphScopeFixture): DashboardGraphScopeItem {
+  const projection = fixture.projection;
+
+  return {
+    source_scope_type: fixture.scopeType,
+    source_scope_id: fixture.scopeId,
+    ...(projection.active_graph_version === null ? {} : {
+      active_graph_version: projection.active_graph_version,
+    }),
+    status: projection.status,
+    ...(projection.quality === null ? {} : { quality: projection.quality }),
+    node_count: projection.node_count,
+    relationship_count: projection.relationship_count,
+  };
+}
+
+function graphFixturesForProject(projectId: string): readonly MockGraphScopeFixture[] {
+  return MOCK_GRAPH_SCOPE_FIXTURES.filter((fixture) => fixture.projectId === projectId);
+}
+
+function graphScopeFixture(projectId: string, request: DashboardGraphQueryRequest): MockGraphScopeFixture {
+  if (!request.scope_type || !request.scope_id) {
+    graphError("scope_required", "422");
+  }
+  const fixture = graphFixturesForProject(projectId).find((candidate) =>
+    candidate.scopeType === request.scope_type && candidate.scopeId === request.scope_id,
+  );
+  if (!fixture) graphError("scope_not_found", "404");
+  return fixture;
+}
+
+interface MockGraphCursorContext {
+  projectId: string;
+  queryType: "scopes" | "search";
+  scopeType: string | null;
+  scopeId: string | null;
+  query: string;
+  offset: number;
+}
+
+let mockGraphCursorSequence = 0;
+const mockGraphCursors = new Map<string, MockGraphCursorContext>();
+
+function normalizeGraphQuery(query: string): string {
+  return query.replace(/\s+/gu, " ").trim();
+}
+
+function createGraphCursor(context: MockGraphCursorContext): string {
+  mockGraphCursorSequence += 1;
+  const cursor = `mock-gc1_${mockGraphCursorSequence.toString(36).padStart(8, "0")}`;
+  mockGraphCursors.set(cursor, context);
+  return cursor;
+}
+
+function cursorOffset(
+  cursor: string | null | undefined,
+  expected: Omit<MockGraphCursorContext, "offset">,
+): number {
+  if (cursor == null) return 0;
+  const context = mockGraphCursors.get(cursor);
+  if (!context
+    || context.projectId !== expected.projectId
+    || context.queryType !== expected.queryType
+    || context.scopeType !== expected.scopeType
+    || context.scopeId !== expected.scopeId
+    || context.query !== expected.query) {
+    graphError("invalid_cursor", "422");
+  }
+  return context.offset;
+}
+
+function graphNodes(fixture: MockGraphScopeFixture): DashboardGraphNode[] {
+  const handles = new Set(fixture.nodeHandles);
+  return DASHBOARD_GRAPH_NODES.filter((node) => handles.has(node.handle));
+}
+
+function graphEdges(fixture: MockGraphScopeFixture): DashboardGraphEdge[] {
+  const handles = new Set(fixture.nodeHandles);
+  return DASHBOARD_GRAPH_EDGES.filter((edge) =>
+    handles.has(edge.from_handle) && handles.has(edge.to_handle),
+  );
+}
+
+function graphNode(fixture: MockGraphScopeFixture, handle: string | undefined): DashboardGraphNode | undefined {
+  return graphNodes(fixture).find((node) => node.handle === handle);
+}
+
+function graphEdgeTouches(edge: DashboardGraphEdge, handle: string): boolean {
+  return edge.from_handle === handle || edge.to_handle === handle;
+}
+
+function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQueryRequest): DashboardGraphResponse {
+  request = validateDashboardGraphQuery(request);
+
+  if (request.type === "scopes") {
+    const cursorContext = {
+      projectId,
+      queryType: "scopes" as const,
+      scopeType: null,
+      scopeId: null,
+      query: "",
+    };
+    const offset = cursorOffset(request.cursor, cursorContext);
+    const limit = request.limit ?? 50;
+    const fixtures = graphFixturesForProject(projectId);
+    const projection = unavailableGraphProjection();
+    if (fixtures.length === 0) {
+      return dashboardGraphScopesEnvelope(projectId, request, projection, {
+        found: false,
+        reason: "graph_scope_not_found",
+      });
+    }
+    const projectScopes = fixtures.map(graphScopeItem);
+    const page = projectScopes.slice(offset, offset + limit);
+    const hasMore = offset + page.length < projectScopes.length;
+    return dashboardGraphScopesEnvelope(projectId, request, projection, {
+      found: true,
+      items: clone(page),
+      returned: page.length,
+      next_cursor: hasMore
+        ? createGraphCursor({ ...cursorContext, offset: offset + page.length })
+        : null,
+      has_more: hasMore,
+      truncated: false,
+    });
+  }
+
+  const queryType = request.type as DashboardGraphDataQueryType;
+  if (!request.scope_type || !request.scope_id) {
+    const fixtures = graphFixturesForProject(projectId);
+    if (fixtures.length === 0) {
+      return dashboardGraphEnvelope(
+        projectId,
+        { ...request, limit: 100 },
+        queryType,
+        unavailableGraphProjection(),
+        { found: false, reason: "graph_projection_not_ready" },
+      );
+    }
+    if (fixtures.length > 1) graphError("scope_required", "422");
+    request = {
+      ...request,
+      scope_type: fixtures[0].scopeType,
+      scope_id: fixtures[0].scopeId,
+    };
+  }
+
+  const fixture = graphScopeFixture(projectId, request);
+  const scopeNodes = graphNodes(fixture);
+  const scopeEdges = graphEdges(fixture);
+
+  if (request.type === "overview") {
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, { found: true });
+  }
+
+  if (request.type === "search") {
+    const normalizedQuery = normalizeGraphQuery(request.query ?? "");
+    if (normalizedQuery === "") graphError("invalid_query", "422");
+    const query = normalizedQuery.toLocaleLowerCase();
+    const matches = scopeNodes
+      .filter((node) => node.label?.toLocaleLowerCase().includes(query))
+      .map((node, index) => ({ ...node, score: 1 - index / 10 }));
+    const cursorContext = {
+      projectId,
+      queryType: "search" as const,
+      scopeType: request.scope_type ?? null,
+      scopeId: request.scope_id ?? null,
+      query: normalizedQuery,
+    };
+    const offset = cursorOffset(request.cursor, cursorContext);
+    const limit = request.limit ?? 50;
+    const items = matches.slice(offset, offset + limit);
+    const hasMore = offset + items.length < matches.length;
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
+      found: true,
+      items: clone(items),
+      returned: items.length,
+      next_cursor: hasMore
+        ? createGraphCursor({ ...cursorContext, offset: offset + items.length })
+        : null,
+      has_more: hasMore,
+      truncated: false,
+    });
+  }
+
+  if (request.type === "detail") {
+    const selected = graphNode(fixture, request.node_handle);
+    if (!selected) graphError("node_not_found", "404");
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
+      found: true,
+      node: clone(selected),
+    });
+  }
+
+  if (request.type === "neighborhood") {
+    const selected = graphNode(fixture, request.node_handle);
+    if (!selected) graphError("node_not_found", "404");
+    const direction = request.direction ?? "any";
+    const families = new Set(request.families ?? []);
+    const matchingEdges = scopeEdges.filter((edge) => {
+      const directed = direction === "in"
+        ? edge.to_handle === selected.handle
+        : direction === "out"
+          ? edge.from_handle === selected.handle
+          : graphEdgeTouches(edge, selected.handle);
+      return directed && (families.size === 0 || families.has(edge.family));
+    });
+    const relatedHandles = new Set(matchingEdges.flatMap((edge) => [edge.from_handle, edge.to_handle]));
+    relatedHandles.delete(selected.handle);
+    const allItems = scopeNodes.filter((node) => relatedHandles.has(node.handle));
+    const limit = request.limit ?? 50;
+    const items = allItems.slice(0, limit);
+    const visible = new Set([selected.handle, ...items.map((node) => node.handle)]);
+    const edges = matchingEdges.filter((edge) => visible.has(edge.from_handle) && visible.has(edge.to_handle));
+    const truncated = items.length < allItems.length;
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
+      found: true, node: clone(selected), items: clone(items), edges: clone(edges), returned: items.length,
+      truncated,
+    });
+  }
+
+  if (request.type === "path") {
+    const from = graphNode(fixture, request.from_handle);
+    const to = graphNode(fixture, request.to_handle);
+    if (!from || !to) graphError("node_not_found", "404");
+    const edge = scopeEdges.find((candidate) =>
+      (candidate.from_handle === from.handle && candidate.to_handle === to.handle)
+      || (candidate.from_handle === to.handle && candidate.to_handle === from.handle),
+    );
+    if (!edge) graphError("path_not_found", "404");
+    const limit = request.limit ?? 50;
+    const allItems = [from, to];
+    const items = allItems.slice(0, limit);
+    const visibleHandles = new Set(items.map((node) => node.handle));
+    const edges = [edge].filter((candidate) =>
+      visibleHandles.has(candidate.from_handle) && visibleHandles.has(candidate.to_handle),
+    );
+    return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
+      found: true,
+      items: clone(items),
+      edges: clone(edges),
+      returned: items.length,
+      truncated: items.length < allItems.length,
+    });
+  }
+
+  const selected = graphNode(fixture, request.node_handle);
+  if (!selected) graphError("node_not_found", "404");
+  const relatedEdges = scopeEdges.filter((edge) => graphEdgeTouches(edge, selected.handle));
+  const impactItems = relatedEdges.map((edge) => {
+    const relatedHandle = edge.from_handle === selected.handle ? edge.to_handle : edge.from_handle;
+    const node = graphNode(fixture, relatedHandle)!;
+    return {
+      ...node,
+      family: edge.family,
+      why: `${edge.family} edge ${edge.edge_type}`,
+      distance: 1,
+      edge_types: [edge.edge_type],
+    };
+  });
+  const limit = request.limit ?? 50;
+  const items = impactItems.slice(0, limit);
+  const truncated = items.length < impactItems.length;
+  return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
+    found: true,
+    items: clone(items),
+    returned: items.length,
+    truncated,
+  });
+}
+
 export const mockApi: DevboardApi = {
   async login(payload: LoginPayload) {
     await delay();
@@ -2104,6 +2640,11 @@ export const mockApi: DevboardApi = {
     if (params?.runId) g.run_id = params.runId;
     if (params?.snapshotId) g.snapshot_id = params.snapshotId;
     return g;
+  },
+  async queryProjectGraph(projectId, request) {
+    await delay();
+    requireProject(projectId);
+    return clone(mockDashboardGraphQuery(projectId, request));
   },
 
   async getArtifacts(projectId) {

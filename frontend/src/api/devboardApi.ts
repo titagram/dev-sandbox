@@ -2,7 +2,7 @@ import {
   AgentChatCreateInput, AgentChatDetailResponse, AgentChatMessageInput, AgentChatResponse,
   AgentWorkCreateInput, AgentWorkDetailResponse, AgentWorkItem, AgentWorkResponse,
   AiAgentProfile, AiAgentProfileInput, AiAgentsSnapshot, AiModelProfile, AiModelProfileCreateInput, AiModelProfileInput, AiModelProvider, AiModelProviderInput, AiModelProviderValidationResult,
-  Artifact, AssistantApplyResponse, AssistantRunResponse, AssistantSuggestionResponse, AuthMatrixRow, BacklogTriagePayload, BackupDryRunReport, BackupExport, BackupReadiness, GraphView, IntakeNormalizeResponse, KanbanBoard, LoginPayload, PluginDevice,
+  Artifact, AssistantApplyResponse, AssistantRunResponse, AssistantSuggestionResponse, AuthMatrixRow, BacklogTriagePayload, BackupDryRunReport, BackupExport, BackupReadiness, DashboardGraphQueryRequest, DashboardGraphResponse, GraphView, IntakeNormalizeResponse, KanbanBoard, LoginPayload, PluginDevice,
   MemoryCreateInput,
   MemoryUpdateInput,
   PluginToken, DashboardOverview, Project, ProjectDetail, ProjectInput, ProjectLifecycleInput, ProjectStatusFilter, QualityCurrentState, QualityGate, QualityOverview,
@@ -80,6 +80,7 @@ export interface DevboardApi {
 
   // Graph
   getGraph(projectId?: string, params?: { snapshotId?: string; runId?: string }): Promise<GraphView>;
+  queryProjectGraph(projectId: string, request: DashboardGraphQueryRequest): Promise<DashboardGraphResponse>;
 
   // Artifacts
   getArtifacts(projectId?: string): Promise<Artifact[]>;

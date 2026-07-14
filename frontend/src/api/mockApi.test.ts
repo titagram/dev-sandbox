@@ -7,8 +7,360 @@ jest.mock("@/api/devboardApi", () => ({}), { virtual: true });
 jest.mock("@/api/mockData", () => require("./mockData"), { virtual: true });
 
 import { mockApi } from "./mockApi";
+import { DashboardGraphResponse } from "@/types/devboard";
+
+function scopeIds(response: DashboardGraphResponse): string[] {
+  if (response.query_type !== "scopes") return [];
+
+  return response.items.map((item) => item.source_scope_id);
+}
 
 describe("mockApi approved Hades Agent contracts", () => {
+  it("serves every bounded dashboard graph query through opaque handles", async () => {
+    const scopes = await mockApi.queryProjectGraph("proj-core", { type: "scopes", limit: 1 });
+    expect(scopes).toEqual(expect.objectContaining({
+      protocol_version: "v1",
+      project_id: "proj-core",
+      query_type: "scopes",
+      found: true,
+      returned: 1,
+      limit: 1,
+      has_more: true,
+      truncated: false,
+      next_cursor: expect.any(String),
+    }));
+    expect(scopes.items[0]).toEqual(expect.objectContaining({
+      source_scope_type: expect.any(String),
+      source_scope_id: expect.any(String),
+    }));
+    expect(scopeIds(scopes)).toEqual(["repo-api"]);
+
+    const scope = { scope_type: "repository" as const, scope_id: "repo-api" };
+    const search = await mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...scope, query: "Import", limit: 1,
+    });
+    if (search.query_type === "scopes") throw new Error("Expected graph-node search results.");
+    const selected = search.items[0];
+    expect(selected.handle).toMatch(/^gh1_[A-Za-z0-9_-]{43}$/);
+    expect(selected).toEqual({
+      handle: expect.any(String),
+      label: "ImportService",
+      kind: "class",
+      score: expect.any(Number),
+    });
+    expect(search.next_cursor).toEqual(expect.any(String));
+    expect(search).toEqual(expect.objectContaining({ has_more: true, truncated: false }));
+
+    const detail = await mockApi.queryProjectGraph("proj-core", {
+      type: "detail", ...scope, node_handle: selected.handle,
+    });
+    const neighborhood = await mockApi.queryProjectGraph("proj-core", {
+      type: "neighborhood", ...scope, node_handle: selected.handle, direction: "any",
+      families: ["call", "dependency", "route", "test", "table"],
+    });
+    const path = await mockApi.queryProjectGraph("proj-core", {
+      type: "path", ...scope, from_handle: selected.handle, to_handle: `gh1_${"b".repeat(43)}`,
+    });
+    const impact = await mockApi.queryProjectGraph("proj-core", {
+      type: "impact", ...scope, node_handle: selected.handle, max_depth: 2, limit: 2,
+    });
+
+    expect(search.query_type).toBe("search");
+    expect(detail).toEqual(expect.objectContaining({
+      query_type: "detail", found: true, reason: null, items: [],
+      node: { handle: selected.handle, label: "ImportService", kind: "class" },
+    }));
+    expect(path).toEqual(expect.objectContaining({ query_type: "path", found: true, reason: null }));
+    expect(neighborhood.edges.length).toBeGreaterThan(0);
+    expect(neighborhood.edges[0]).toEqual({
+      from_handle: expect.any(String),
+      to_handle: expect.any(String),
+      edge_type: expect.any(String),
+      family: expect.any(String),
+    });
+    const routeNeighborhood = await mockApi.queryProjectGraph("proj-core", {
+      type: "neighborhood", ...scope, node_handle: `gh1_${"b".repeat(43)}`, direction: "any",
+    });
+    expect([...neighborhood.edges, ...routeNeighborhood.edges].map((edge) => edge.edge_type)).toEqual(expect.arrayContaining([
+      "CALLS_METHOD", "USES_DEPENDENCY", "ROUTE_HANDLER", "TEST_COVERS_SYMBOL", "QUERY_TABLE",
+    ]));
+    expect(impact).toEqual(expect.objectContaining({
+      query_type: "impact",
+      returned: 2,
+      limit: 2,
+      has_more: false,
+      truncated: true,
+      next_cursor: null,
+    }));
+    expect(impact.items[0]).toEqual(expect.objectContaining({
+      handle: expect.any(String), family: expect.any(String), why: expect.any(String),
+      distance: 1, edge_types: expect.any(Array),
+    }));
+  });
+
+  it("rejects requests with the same validation reasons and status classes as the controller", async () => {
+    const scope = { scope_type: "repository" as const, scope_id: "repo-api" };
+    const validHandle = `gh1_${"a".repeat(43)}`;
+
+    await expect(mockApi.queryProjectGraph("proj-core", { type: "overview" }))
+      .rejects.toEqual(expect.objectContaining({ message: "scope_required", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", { type: "overview", ...scope, limit: 51 }))
+      .rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", { type: "scopes", limit: 101 }))
+      .rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", { type: "search", ...scope, query: "" }))
+      .rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", { type: "search", ...scope, query: "   " }))
+      .rejects.toEqual(expect.objectContaining({ message: "invalid_query", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "neighborhood", ...scope, node_handle: validHandle, direction: "sideways",
+    } as any)).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "neighborhood", ...scope, node_handle: validHandle, families: ["mystery"],
+    } as any)).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "overview", ...scope, internal_id: "must-not-cross-dashboard-boundary",
+    } as any)).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "detail", ...scope, node_handle: "preview-node-id",
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_handle", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "overview", ...scope, cursor: "not-allowed",
+    })).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "scopes", cursor: "tampered-cursor",
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "impact", ...scope, node_handle: validHandle, max_depth: 1,
+    })).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+  });
+
+  it("binds pagination cursors to their project, scope, normalized query, and query type", async () => {
+    const repositoryScope = { scope_type: "repository" as const, scope_id: "repo-api" };
+    const bindingScope = { scope_type: "workspace_binding" as const, scope_id: "binding-core-api" };
+    const firstSearchPage = await mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...repositoryScope, query: "Import", limit: 1,
+    });
+    if (firstSearchPage.query_type === "scopes" || !firstSearchPage.next_cursor) {
+      throw new Error("Expected a paginated search response.");
+    }
+
+    const normalizedContinuation = await mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...repositoryScope, query: "  Import  ", limit: 1,
+      cursor: firstSearchPage.next_cursor,
+    });
+    expect(normalizedContinuation.query_type).toBe("search");
+
+    await expect(mockApi.queryProjectGraph("proj-pay", {
+      type: "search", scope_type: "repository", scope_id: "repo-billing", query: "Import", limit: 1,
+      cursor: firstSearchPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...bindingScope, query: "Import", limit: 1,
+      cursor: firstSearchPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...repositoryScope, query: "Artifact", limit: 1,
+      cursor: firstSearchPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "scopes", limit: 1, cursor: firstSearchPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+
+    const firstScopesPage = await mockApi.queryProjectGraph("proj-core", { type: "scopes", limit: 1 });
+    if (firstScopesPage.query_type !== "scopes" || !firstScopesPage.next_cursor) {
+      throw new Error("Expected a paginated scopes response.");
+    }
+    await expect(mockApi.queryProjectGraph("proj-pay", {
+      type: "scopes", limit: 1, cursor: firstScopesPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+  });
+
+  it("returns coherent graph outcomes for empty searches and unknown well-formed handles", async () => {
+    const scope = { scope_type: "repository" as const, scope_id: "repo-api" };
+    const missingQuery = await mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...scope, query: "NoSuchSymbol",
+    });
+
+    expect(missingQuery).toEqual(expect.objectContaining({ found: true, reason: null, returned: 0 }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "detail", ...scope, node_handle: `gh1_${"z".repeat(43)}`,
+    })).rejects.toEqual(expect.objectContaining({ message: "node_not_found", code: "404" }));
+  });
+
+  it("isolates graph scopes and data by project ownership", async () => {
+    const coreScopes = await mockApi.queryProjectGraph("proj-core", { type: "scopes" });
+    const payScopes = await mockApi.queryProjectGraph("proj-pay", { type: "scopes" });
+
+    expect(scopeIds(coreScopes)).toEqual(["repo-api", "binding-core-api"]);
+    expect(scopeIds(payScopes)).toEqual(["repo-billing"]);
+    expect(coreScopes.items).toHaveLength(2);
+    expect(payScopes.items).toHaveLength(1);
+
+    await expect(mockApi.queryProjectGraph("proj-pay", {
+      type: "overview",
+      scope_type: "repository",
+      scope_id: "repo-api",
+    })).rejects.toEqual(expect.objectContaining({ message: "scope_not_found", code: "404" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "overview",
+      scope_type: "repository",
+      scope_id: "repo-billing",
+    })).rejects.toEqual(expect.objectContaining({ message: "scope_not_found", code: "404" }));
+  });
+
+  it("returns projection metadata for the selected project scope without leaking fixture internals", async () => {
+    const coreRepository = await mockApi.queryProjectGraph("proj-core", {
+      type: "overview",
+      scope_type: "repository",
+      scope_id: "repo-api",
+    });
+    const coreWorkspace = await mockApi.queryProjectGraph("proj-core", {
+      type: "overview",
+      scope_type: "workspace_binding",
+      scope_id: "binding-core-api",
+    });
+    const payRepository = await mockApi.queryProjectGraph("proj-pay", {
+      type: "overview",
+      scope_type: "repository",
+      scope_id: "repo-billing",
+    });
+
+    expect(coreRepository.projection).toEqual({
+      status: "ready",
+      quality: "complete",
+      generated_at: expect.any(String),
+      active_graph_version: "canonical-proj-core-v7",
+      node_count: 6,
+      relationship_count: 5,
+      unknown_kind_count: 0,
+      missing_label_count: 0,
+      excluded_node_count: 0,
+    });
+    expect(coreWorkspace.projection).toEqual({
+      status: "ready",
+      quality: "partial",
+      generated_at: expect.any(String),
+      active_graph_version: "canonical-binding-core-api-v3",
+      node_count: 2,
+      relationship_count: 1,
+      unknown_kind_count: 0,
+      missing_label_count: 0,
+      excluded_node_count: 0,
+    });
+    expect(payRepository.projection).toEqual({
+      status: "ready",
+      quality: "complete",
+      generated_at: expect.any(String),
+      active_graph_version: "canonical-proj-pay-v2",
+      node_count: 2,
+      relationship_count: 1,
+      unknown_kind_count: 0,
+      missing_label_count: 0,
+      excluded_node_count: 0,
+    });
+    expect(payRepository.projection.active_graph_version).not.toContain("core");
+  });
+
+  it("returns the controller-compatible unavailable envelope when a project has no graph scopes", async () => {
+    const response = await mockApi.queryProjectGraph("proj-docs", { type: "scopes" });
+
+    expect(response).toEqual(expect.objectContaining({
+      protocol_version: "v1",
+      project_id: "proj-docs",
+      query_type: "scopes",
+      found: false,
+      reason: "graph_scope_not_found",
+      scope: null,
+      node: null,
+      items: [],
+      edges: [],
+      returned: 0,
+      limit: 50,
+      next_cursor: null,
+      has_more: false,
+      truncated: false,
+    }));
+    expect(response.projection).toEqual({
+      status: "unavailable",
+      quality: null,
+      generated_at: null,
+      active_graph_version: null,
+      node_count: 0,
+      relationship_count: 0,
+      unknown_kind_count: 0,
+      missing_label_count: 0,
+      excluded_node_count: 0,
+    });
+
+    const overview = await mockApi.queryProjectGraph("proj-docs", { type: "overview" });
+    expect(overview).toEqual(expect.objectContaining({
+      query_type: "overview",
+      found: false,
+      reason: "graph_projection_not_ready",
+      scope: null,
+      returned: 0,
+      limit: 100,
+    }));
+  });
+
+  it("selects the only project scope when a data query omits scope fields", async () => {
+    const response = await mockApi.queryProjectGraph("proj-pay", { type: "overview" });
+
+    expect(response).toEqual(expect.objectContaining({
+      query_type: "overview",
+      found: true,
+      reason: null,
+      scope: { type: "repository", id: "repo-billing" },
+    }));
+  });
+
+  it("applies the path limit before deriving returned nodes and visible edges", async () => {
+    const response = await mockApi.queryProjectGraph("proj-core", {
+      type: "path",
+      scope_type: "repository",
+      scope_id: "repo-api",
+      from_handle: `gh1_${"a".repeat(43)}`,
+      to_handle: `gh1_${"c".repeat(43)}`,
+      limit: 1,
+    });
+
+    expect(response).toEqual(expect.objectContaining({
+      found: true,
+      returned: 1,
+      limit: 1,
+      truncated: true,
+    }));
+    expect(response.items).toHaveLength(1);
+    expect(response.edges).toEqual([]);
+  });
+
+  it("validates every supplied graph field even when the query type does not consume it", async () => {
+    const scope = { scope_type: "repository" as const, scope_id: "repo-api" };
+    const invalidRequests = [
+      { query: 42, reason: "validation_failed" },
+      { query: "", reason: "validation_failed" },
+      { node_handle: "not-a-public-handle", reason: "invalid_handle" },
+      { from_handle: 42, reason: "invalid_handle" },
+      { to_handle: [], reason: "invalid_handle" },
+      { scope_type: 42, reason: "validation_failed" },
+      { scope_id: 42, reason: "validation_failed" },
+      { direction: null, reason: "validation_failed" },
+      { families: "call", reason: "validation_failed" },
+      { max_depth: "2", reason: "validation_failed" },
+      { limit: 1.5, reason: "validation_failed" },
+      { cursor: 42, reason: "validation_failed" },
+    ];
+
+    for (const { reason, ...extra } of invalidRequests) {
+      await expect(mockApi.queryProjectGraph("proj-core", {
+        type: "overview",
+        ...scope,
+        ...extra,
+      } as any)).rejects.toEqual(expect.objectContaining({ message: reason, code: "422" }));
+    }
+  });
+
   it("uses the complete backend capability catalog for defaults and preserves an explicit empty grant", async () => {
     const expected = [
       "read_files",

@@ -9,6 +9,7 @@ jest.mock("@/api/devboardApi", () => ({
 }), { virtual: true });
 
 import { httpApi } from "./httpApi";
+import { DashboardGraphQueryRequest } from "@/types/devboard";
 
 const forbiddenPluginNamespace = ["/api", "plugin", "v1"].join("/");
 
@@ -16,6 +17,14 @@ function jsonResponse(payload: unknown): Response {
   return {
     ok: true,
     status: 200,
+    text: async () => JSON.stringify(payload),
+  } as Response;
+}
+
+function jsonErrorResponse(status: number, payload: unknown): Response {
+  return {
+    ok: false,
+    status,
     text: async () => JSON.stringify(payload),
   } as Response;
 }
@@ -75,6 +84,93 @@ describe("httpApi multiproject dashboard endpoints", () => {
       "http://127.0.0.1:8000/api/dashboard/projects/proj-core/graph?run_id=run-1",
     ]);
     expect(urls.some((url) => String(url).includes(forbiddenPluginNamespace))).toBe(false);
+  });
+
+  it("posts graph explorer queries to the dashboard endpoint with the exact request body", async () => {
+    Object.defineProperty(document, "cookie", {
+      configurable: true,
+      value: "XSRF-TOKEN=test-token",
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      protocol_version: "v1",
+      project_id: "proj/core",
+      query_type: "neighborhood",
+      found: true,
+      reason: null,
+      scope: { type: "repository", id: "repo-api" },
+      projection: {
+        status: "ready",
+        quality: "complete",
+        generated_at: "2026-07-14T10:00:00.000Z",
+        active_graph_version: "graph-v1",
+        node_count: 3,
+        relationship_count: 2,
+        unknown_kind_count: 0,
+        missing_label_count: 0,
+        excluded_node_count: 0,
+      },
+      node: {
+        handle: `gh1_${"a".repeat(43)}`,
+        kind: "class",
+        label: "ImportService",
+      },
+      items: [],
+      edges: [],
+      returned: 0,
+      limit: 25,
+      next_cursor: null,
+      has_more: false,
+      truncated: false,
+      source: { type: "canonical_graph", status: "verified_from_code", origin: "canonical projection" },
+    }));
+    const request: DashboardGraphQueryRequest = {
+      type: "neighborhood",
+      scope_type: "repository",
+      scope_id: "repo-api",
+      node_handle: `gh1_${"a".repeat(43)}`,
+      direction: "in",
+      families: ["call", "dependency"],
+      max_depth: 2,
+      limit: 25,
+    };
+
+    const response = await httpApi.queryProjectGraph("proj/core", request);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.node).toEqual({
+      handle: `gh1_${"a".repeat(43)}`,
+      kind: "class",
+      label: "ImportService",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/dashboard/projects/proj%2Fcore/graph/query",
+      expect.objectContaining({ method: "POST", body: JSON.stringify(request) }),
+    );
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(String(url)).not.toContain(forbiddenPluginNamespace);
+    expect(JSON.parse(options.body)).toEqual(request);
+  });
+
+  it("surfaces the dashboard graph reason when an error envelope has no message", async () => {
+    Object.defineProperty(document, "cookie", {
+      configurable: true,
+      value: "XSRF-TOKEN=test-token",
+    });
+    fetchMock.mockResolvedValueOnce(jsonErrorResponse(422, {
+      protocol_version: "v1",
+      project_id: "proj-core",
+      query_type: "search",
+      found: false,
+      reason: "invalid_cursor",
+    }));
+
+    await expect(httpApi.queryProjectGraph("proj-core", {
+      type: "search",
+      scope_type: "repository",
+      scope_id: "repo-api",
+      query: "Import",
+      cursor: "invalid",
+    })).rejects.toEqual({ message: "invalid_cursor", code: "422" });
   });
 
   it("uses dashboard API endpoints for project wiki refresh requests", async () => {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Command } from "cmdk";
 import { Boxes, KanbanSquare, Bot, MessageSquare, BookText, GitBranch, Activity, Shield, Search, Command as CommandIcon, Sun, Moon, LogOut, Network, FileText } from "lucide-react";
@@ -40,7 +40,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     nav(path);
   };
 
-  const actions: Action[] = useMemo(() => [
+  const actions: Action[] = [
     { id: "nav-projects", label: "Projects", section: "Navigate", icon: Boxes, run: go("/projects") },
     { id: "nav-kanban", label: "Kanban board", section: "Navigate", icon: KanbanSquare, keywords: "tasks board", run: go(scoped("/kanban")) },
     { id: "nav-agents", label: "Ask agents", section: "Navigate", icon: MessageSquare, keywords: "ai chat", run: go(scoped("/ask")) },
@@ -53,16 +53,14 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     { id: "nav-admin", label: "Admin", section: "Navigate", icon: Shield, keywords: "settings", run: go("/admin") },
     { id: "act-theme", label: theme === "dark" ? "Switch to light theme" : "Switch to dark theme", section: "Actions", icon: theme === "dark" ? Sun : Moon, run: () => { toggle(); onOpenChange(false); } },
     { id: "act-logout", label: "Sign out", section: "Actions", icon: LogOut, run: async () => { onOpenChange(false); await logout(); nav("/login"); } },
-  ], [projectId, theme, loc.pathname]);
+  ];
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, Action[]>();
-    for (const a of actions) {
-      if (!map.has(a.section)) map.set(a.section, []);
-      map.get(a.section)!.push(a);
-    }
-    return Array.from(map.entries());
-  }, [actions]);
+  const groupedMap = new Map<string, Action[]>();
+  for (const a of actions) {
+    if (!groupedMap.has(a.section)) groupedMap.set(a.section, []);
+    groupedMap.get(a.section)!.push(a);
+  }
+  const grouped = Array.from(groupedMap.entries());
 
   if (!open) return null;
 
