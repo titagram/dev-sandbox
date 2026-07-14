@@ -12,7 +12,22 @@ class CanonicalGraphQueryService
 {
     private const TYPES = ['callers', 'callees', 'path', 'traverse'];
 
-    public function __construct(private readonly ?Neo4jClient $client = null) {}
+    private const EDGE_FAMILIES = [
+        'call' => ['CALLS', 'CALLS_METHOD', 'STATIC_CALL'],
+        'dependency' => ['USES_DEPENDENCY', 'INSTANTIATES', 'EXTENDS', 'USES_FORM_REQUEST', 'THROWS_EXCEPTION', 'API_RESOURCE_REF'],
+        'route' => ['ROUTE_HANDLER'],
+        'test' => ['TEST_COVERS_SYMBOL', 'TEST_IMPORTS', 'TEST_COVERS_ROUTE'],
+        'table' => ['QUERY_TABLE', 'ELOQUENT_QUERY'],
+    ];
+
+    private readonly DashboardGraphPublicHandle $publicHandles;
+
+    public function __construct(
+        private readonly ?Neo4jClient $client = null,
+        ?DashboardGraphPublicHandle $publicHandles = null,
+    ) {
+        $this->publicHandles = $publicHandles ?? new DashboardGraphPublicHandle;
+    }
 
     /** @param array<string, mixed> $params */
     public function query(string $projectId, string $scopeType, string $scopeId, string $type, array $params = []): array
@@ -22,6 +37,10 @@ class CanonicalGraphQueryService
         }
         if (! in_array($type, self::TYPES, true)) {
             throw new RuntimeException('Unsupported query type: '.$type);
+        }
+        $this->assertFamilies($params['families'] ?? []);
+        if ($type === 'traverse') {
+            $this->assertDirection($params['direction'] ?? 'any');
         }
         $empty = $this->envelope($projectId, $scopeType, $scopeId);
         if ($projectId === '') {
@@ -47,10 +66,11 @@ class CanonicalGraphQueryService
 
         $base = $this->envelope($projectId, $scopeType, $scopeId, $projection);
         try {
+            $activeGraphVersion = $this->activeGraphVersion($projection);
             $client = $this->client ?? app(Neo4jClientFactory::class)->client();
             $rows = match ($type) {
-                'callers' => $client->run($this->adjacency('in'), $this->symbolParams($params, $projection)),
-                'callees' => $client->run($this->adjacency('out'), $this->symbolParams($params, $projection)),
+                'callers' => $client->run($this->adjacency('in', $params['families'] ?? []), $this->symbolParams($params, $projection)),
+                'callees' => $client->run($this->adjacency('out', $params['families'] ?? []), $this->symbolParams($params, $projection)),
                 'path' => $this->runPath($client, $params, $projection),
                 'traverse' => $this->runTraverse($client, $params, $projection),
             };
@@ -60,8 +80,15 @@ class CanonicalGraphQueryService
             return array_merge($base, ['found' => false, 'reason' => 'query_error']);
         }
 
-        $limit = $type === 'traverse' ? max(1, min(50, (int) ($params['limit'] ?? 20))) : null;
-        [$nodes, $edges, $truncated, $matchFields] = $this->normaliseRows($rows, $limit);
+        $limit = $type === 'traverse' ? max(1, min(51, (int) ($params['limit'] ?? 20))) : null;
+        [$nodes, $edges, $truncated, $matchFields] = $this->normaliseRows(
+            $rows,
+            $limit,
+            $projectId,
+            $scopeType,
+            $scopeId,
+            $activeGraphVersion,
+        );
 
         return array_merge($base, [
             'found' => true,
@@ -73,27 +100,54 @@ class CanonicalGraphQueryService
         ]);
     }
 
-    private function adjacency(string $direction): string
+    private function adjacency(string $direction, array $families = []): string
     {
+        $edgePredicate = $this->edgePredicate('edge', $families);
         $match = $direction === 'in'
-            ? '(result:CanonicalGraphNode {graph_version: $graph_version})-[edge:CALLS {graph_version: $graph_version}]->(node:CanonicalGraphNode {external_id: $external_id, graph_version: $graph_version})'
-            : '(node:CanonicalGraphNode {external_id: $external_id, graph_version: $graph_version})-[edge:CALLS {graph_version: $graph_version}]->(result:CanonicalGraphNode {graph_version: $graph_version})';
+            ? '(result:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $graph_version})-[edge]->(node:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, external_id: $external_id, graph_version: $graph_version})'
+            : '(node:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, external_id: $external_id, graph_version: $graph_version})-[edge]->(result:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $graph_version})';
 
-        return "MATCH {$match} RETURN properties(result) AS node, labels(result) AS labels, properties(edge) AS edge LIMIT \$limit";
+        return "MATCH {$match} WHERE {$edgePredicate} RETURN properties(result) AS node, labels(result) AS labels, properties(edge) AS edge, type(edge) AS edge_type LIMIT \$limit";
     }
 
     /** @param array<string, mixed> $params */
     private function symbolParams(array $params, object $projection): array
     {
-        return ['external_id' => (string) ($params['symbol_id'] ?? ''), 'graph_version' => $this->activeGraphVersion($projection), 'limit' => max(1, min(50, (int) ($params['limit'] ?? 50)))];
+        return [
+            'external_id' => (string) ($params['symbol_id'] ?? ''),
+            'graph_version' => $this->activeGraphVersion($projection),
+            'project_id' => (string) $projection->project_id,
+            'source_scope_type' => (string) $projection->source_scope_type,
+            'source_scope_id' => (string) $projection->source_scope_id,
+            'semantic_edge_types' => $this->edgeTypes($params['families'] ?? []),
+            'limit' => max(1, min(50, (int) ($params['limit'] ?? 50))),
+        ];
     }
 
     /** @param array<string, mixed> $params */
     private function runPath(Neo4jClient $client, array $params, object $projection): mixed
     {
         $depth = max(1, min(10, (int) ($params['max_depth'] ?? 5)));
+        $edgePredicate = $this->edgePredicate('r', $params['families'] ?? []);
 
-        return $client->run('MATCH (from:CanonicalGraphNode {external_id: $from_external_id, graph_version: $graph_version}), (to:CanonicalGraphNode {external_id: $to_external_id, graph_version: $graph_version}) MATCH p = shortestPath((from)-[:CALLS*1..'.$depth.']-(to)) WHERE ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version) RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes, [r IN relationships(p) | properties(r)] AS edges LIMIT 1', ['from_external_id' => (string) ($params['from_symbol_id'] ?? ''), 'to_external_id' => (string) ($params['to_symbol_id'] ?? ''), 'graph_version' => $this->activeGraphVersion($projection)]);
+        return $client->run(
+            'MATCH (from:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, external_id: $from_external_id, graph_version: $graph_version}), '
+            .'(to:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, external_id: $to_external_id, graph_version: $graph_version}) '
+            .'MATCH p = shortestPath((from)-[*1..'.$depth.']-(to)) '
+            .'WHERE ALL(n IN nodes(p) WHERE n.graph_version = $graph_version AND n.project_id = $project_id AND n.source_scope_type = $source_scope_type AND n.source_scope_id = $source_scope_id) '
+            .'AND ALL(r IN relationships(p) WHERE '.$edgePredicate.') '
+            .'RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes, '
+            .'[r IN relationships(p) | properties(r) + {type: type(r)}] AS edges LIMIT 1',
+            [
+                'from_external_id' => (string) ($params['from_symbol_id'] ?? ''),
+                'to_external_id' => (string) ($params['to_symbol_id'] ?? ''),
+                'graph_version' => $this->activeGraphVersion($projection),
+                'project_id' => (string) $projection->project_id,
+                'source_scope_type' => (string) $projection->source_scope_type,
+                'source_scope_id' => (string) $projection->source_scope_id,
+                'semantic_edge_types' => $this->edgeTypes($params['families'] ?? []),
+            ],
+        );
     }
 
     /** @param array<string, mixed> $params */
@@ -101,9 +155,23 @@ class CanonicalGraphQueryService
     {
         $depth = max(1, min(3, (int) ($params['max_depth'] ?? 2)));
         $direction = (string) ($params['direction'] ?? 'any');
-        $limit = max(1, min(50, (int) ($params['limit'] ?? 20)));
+        $this->assertDirection($direction);
+        $limit = max(1, min(51, (int) ($params['limit'] ?? 20)));
         $query = strtolower((string) ($params['start'] ?? ''));
+        $startExternalId = array_key_exists('start_external_id', $params)
+            ? trim((string) $params['start_external_id'])
+            : null;
+        if ($startExternalId === '') {
+            throw new InvalidArgumentException('invalid_start_external_id');
+        }
         $graphVersion = $this->activeGraphVersion($projection);
+        $semanticEdgeTypes = $this->edgeTypes($params['families'] ?? []);
+        $scopePredicate = isset($projection->project_id)
+            ? ' AND start.project_id = $project_id AND start.source_scope_type = $source_scope_type AND start.source_scope_id = $source_scope_id'
+            : '';
+        $targetScopePredicate = isset($projection->project_id)
+            ? ' AND target.project_id = $project_id AND target.source_scope_type = $source_scope_type AND target.source_scope_id = $source_scope_id'
+            : '';
         $capabilityRows = $this->materialiseSequences($client->run(
             'MATCH (version:CanonicalGraphVersion {graph_version: $graph_version}) RETURN coalesce(version.traversal_schema_version, 0) AS traversal_schema_version',
             ['graph_version' => $graphVersion],
@@ -111,22 +179,38 @@ class CanonicalGraphQueryService
         if (! is_array($capabilityRows) || (int) ($capabilityRows[0]['traversal_schema_version'] ?? 0) !== 1) {
             throw new BoundedTraversalUnavailable;
         }
-        $startMatch = implode(' OR ', [
-            "toLower(coalesce(start.external_id, '')) CONTAINS \$start_query",
-            "toLower(coalesce(start.name, '')) CONTAINS \$start_query",
-            "toLower(coalesce(start.label, '')) CONTAINS \$start_query",
-            "toLower(coalesce(start.path, '')) CONTAINS \$start_query",
-        ]);
+        $startMatch = $startExternalId !== null
+            ? 'start.external_id = $start_external_id'
+            : implode(' OR ', [
+                "toLower(coalesce(start.external_id, '')) CONTAINS \$start_query",
+                "toLower(coalesce(start.name, '')) CONTAINS \$start_query",
+                "toLower(coalesce(start.label, '')) CONTAINS \$start_query",
+                "toLower(coalesce(start.path, '')) CONTAINS \$start_query",
+            ]);
+        $matchFields = $startExternalId !== null
+            ? '[]'
+            : "[field IN ['external_id', 'name', 'label', 'path'] WHERE toLower(coalesce(start[field], '')) CONTAINS \$start_query]";
+        $startParams = [
+            'graph_version' => $graphVersion,
+            'fetch_limit' => $limit + 1,
+            'semantic_edge_types' => $semanticEdgeTypes,
+            'direction' => $direction,
+            'max_depth' => $depth,
+            'limit' => $limit,
+            ...$this->scopeParams($projection),
+        ];
+        if ($startExternalId !== null) {
+            $startParams['start_external_id'] = $startExternalId;
+        } else {
+            $startParams['start_query'] = $query;
+        }
         $startRows = $client->run(
             'MATCH (start:CanonicalGraphNode {graph_version: $graph_version}) WHERE ('.$startMatch.') '
+            .$scopePredicate
             .'WITH start ORDER BY start.external_id LIMIT $fetch_limit '
             .'RETURN properties(start) AS node, labels(start) AS labels, '
-            ."[field IN ['external_id', 'name', 'label', 'path'] WHERE toLower(coalesce(start[field], '')) CONTAINS \$start_query] AS match_fields",
-            [
-                'start_query' => $query,
-                'graph_version' => $graphVersion,
-                'fetch_limit' => $limit + 1,
-            ],
+            .$matchFields.' AS match_fields',
+            $startParams,
         );
         [$starts, , , $matchFields] = $this->normaliseRows($startRows);
         $truncated = count($starts) > $limit;
@@ -147,9 +231,10 @@ class CanonicalGraphQueryService
                 'UNWIND $frontier_ids AS frontier_id '
                 .'CALL { WITH frontier_id '
                 .'MATCH (adjacency:CanonicalGraphAdjacency {graph_version: $graph_version, from_external_id: frontier_id'.$directionClause.'}) '
-                .'WHERE adjacency.'.$rankProperty.' < $per_frontier_fetch_limit '
+                .'WHERE adjacency.edge_type IN $semantic_edge_types '
                 .'WITH frontier_id, adjacency ORDER BY adjacency.'.$rankProperty.' LIMIT $per_frontier_fetch_limit '
                 .'MATCH (target:CanonicalGraphNode {graph_version: $graph_version, external_id: adjacency.to_external_id}) '
+                .$targetScopePredicate
                 .'RETURN frontier_id AS source_id, properties(target) AS node, labels(target) AS labels, '
                 .'adjacency {edge_json: adjacency.edge_json, external_id: adjacency.edge_external_id, type: adjacency.edge_type} AS edge } '
                 .'RETURN source_id, node, labels, edge ORDER BY source_id, node.external_id, edge.external_id LIMIT $hop_fetch_limit',
@@ -159,6 +244,8 @@ class CanonicalGraphQueryService
                     'direction' => $direction,
                     'per_frontier_fetch_limit' => $perFrontierFetchLimit,
                     'hop_fetch_limit' => $hopFetchLimit,
+                    'semantic_edge_types' => $semanticEdgeTypes,
+                    ...$this->scopeParams($projection),
                 ],
             );
             $materializedRows = $this->materialiseSequences($hopRows);
@@ -240,16 +327,51 @@ class CanonicalGraphQueryService
             $headCommit = is_array($payload) ? ($payload['head_commit'] ?? $payload['commit'] ?? $headCommit) : $headCommit;
         }
 
-        return ['found' => false, 'reason' => null, 'graph_version' => $projection?->graph_version, 'quality' => $projection?->quality, 'results' => [], 'edges' => [], 'metadata' => ['project_id' => $projectId, 'source_scope_type' => $scopeType, 'source_scope_id' => $scopeId, 'projection_id' => $projection?->id, 'graph_version' => $projection?->graph_version, 'artifact_id' => $projection?->artifact_id, 'artifact_type' => $projection?->artifact_type, 'schema' => $schema, 'head_commit' => $headCommit, 'quality' => $projection?->quality, 'node_count' => $projection?->node_count, 'relationship_count' => $projection?->relationship_count]];
+        return [
+            'found' => false,
+            'reason' => null,
+            'graph_version' => $projection?->graph_version,
+            'active_graph_version' => $projection?->active_graph_version,
+            'quality' => $projection?->quality,
+            'results' => [],
+            'edges' => [],
+            'metadata' => [
+                'project_id' => $projectId,
+                'source_scope_type' => $scopeType,
+                'source_scope_id' => $scopeId,
+                'projection_id' => $projection?->id,
+                'graph_version' => $projection?->graph_version,
+                'active_graph_version' => $projection?->active_graph_version,
+                'artifact_id' => $projection?->artifact_id,
+                'artifact_type' => $projection?->artifact_type,
+                'schema' => $schema,
+                'head_commit' => $headCommit,
+                'quality' => $projection?->quality,
+                'node_count' => $projection?->node_count,
+                'relationship_count' => $projection?->relationship_count,
+            ],
+        ];
     }
 
     private function activeGraphVersion(object $projection): string
     {
-        return (string) (($projection->active_graph_version ?? null) ?: $projection->graph_version);
+        $active = trim((string) ($projection->active_graph_version ?? ''));
+        if ($active === '') {
+            throw new BoundedTraversalUnavailable;
+        }
+
+        return $active;
     }
 
     /** @return array{0: list<array<string,mixed>>, 1: list<array<string,mixed>>, 2: bool, 3: list<string>} */
-    private function normaliseRows(mixed $result, ?int $limit = null): array
+    private function normaliseRows(
+        mixed $result,
+        ?int $limit = null,
+        ?string $projectId = null,
+        ?string $scopeType = null,
+        ?string $scopeId = null,
+        ?string $activeGraphVersion = null,
+    ): array
     {
         $result = $this->materialiseSequences($result);
         if (! is_array($result)) {
@@ -265,20 +387,42 @@ class CanonicalGraphQueryService
             }
             if (isset($row['nodes']) && is_array($row['nodes'])) {
                 foreach ($row['nodes'] as $node) {
-                    $normalised = $this->node(is_array($node) ? $node : []);
+                    $normalised = $this->node(
+                        is_array($node) ? $node : [],
+                        $projectId,
+                        $scopeType,
+                        $scopeId,
+                        $activeGraphVersion,
+                    );
                     $nodesById[$normalised['id']] ??= $normalised;
                 }
             } elseif (isset($row['node'])) {
-                $normalised = $this->node($row);
+                $normalised = $this->node($row, $projectId, $scopeType, $scopeId, $activeGraphVersion);
                 $nodesById[$normalised['id']] ??= $normalised;
             }
             if (isset($row['edge']) && is_array($row['edge'])) {
-                $edgesById[$this->edgeIdentity($row['edge'])] ??= $row['edge'];
+                $edge = $row['edge'];
+                if (isset($row['edge_type'])) {
+                    $edge['type'] ??= $row['edge_type'];
+                }
+                $edgesById[$this->edgeIdentity($edge)] ??= $this->normaliseEdge(
+                    $edge,
+                    $projectId,
+                    $scopeType,
+                    $scopeId,
+                    $activeGraphVersion,
+                );
             }
             if (isset($row['edges']) && is_array($row['edges'])) {
                 foreach ($row['edges'] as $edge) {
                     if (is_array($edge)) {
-                        $edgesById[$this->edgeIdentity($edge)] ??= $edge;
+                        $edgesById[$this->edgeIdentity($edge)] ??= $this->normaliseEdge(
+                            $edge,
+                            $projectId,
+                            $scopeType,
+                            $scopeId,
+                            $activeGraphVersion,
+                        );
                     }
                 }
             }
@@ -328,11 +472,155 @@ class CanonicalGraphQueryService
         return (string) ($edge['external_id'] ?? $edge['id'] ?? hash('sha256', json_encode($edge)));
     }
 
-    private function node(array $row): array
+    private function node(
+        array $row,
+        ?string $projectId = null,
+        ?string $scopeType = null,
+        ?string $scopeId = null,
+        ?string $activeGraphVersion = null,
+    ): array
     {
         $props = is_array($row['node'] ?? null) ? $row['node'] : $row;
+        $id = (string) ($props['external_id'] ?? $props['symbol_id'] ?? $props['id'] ?? 'node-'.md5(json_encode($props)));
+        $handle = (string) ($props['public_handle'] ?? '');
+        if ($handle === '' && $projectId !== null && $scopeType !== null && $scopeId !== null && $activeGraphVersion !== null) {
+            try {
+                $handle = $this->publicHandles->forNode($projectId, $scopeType, $scopeId, $activeGraphVersion, $id);
+            } catch (InvalidArgumentException) {
+                $handle = '';
+            }
+        }
 
-        return ['id' => (string) ($props['external_id'] ?? $props['symbol_id'] ?? $props['id'] ?? 'node-'.md5(json_encode($props))), 'labels' => array_values($row['labels'] ?? []), 'properties' => $props];
+        return [
+            'id' => $id,
+            'handle' => $handle !== '' ? $handle : null,
+            'kind' => $this->nodeKind($row, $props),
+            'labels' => array_values($row['labels'] ?? []),
+            'properties' => $props,
+        ];
+    }
+
+    private function normaliseEdge(
+        array $edge,
+        ?string $projectId = null,
+        ?string $scopeType = null,
+        ?string $scopeId = null,
+        ?string $activeGraphVersion = null,
+    ): array
+    {
+        $edgeType = strtoupper((string) ($edge['edge_type'] ?? $edge['type'] ?? 'RELATED'));
+        $sourceId = (string) ($edge['source_id'] ?? $edge['from'] ?? $edge['from_external_id'] ?? '');
+        $targetId = (string) ($edge['target_id'] ?? $edge['to'] ?? $edge['to_external_id'] ?? '');
+        $normalised = array_merge($edge, [
+            'type' => $edgeType,
+            'edge_type' => $edgeType,
+            'family' => $this->edgeFamily($edgeType),
+            'source_id' => $sourceId,
+            'target_id' => $targetId,
+        ]);
+
+        if ($projectId !== null && $scopeType !== null && $scopeId !== null && $activeGraphVersion !== null) {
+            try {
+                $normalised['source_handle'] = $sourceId === ''
+                    ? null
+                    : $this->publicHandles->forNode($projectId, $scopeType, $scopeId, $activeGraphVersion, $sourceId);
+                $normalised['target_handle'] = $targetId === ''
+                    ? null
+                    : $this->publicHandles->forNode($projectId, $scopeType, $scopeId, $activeGraphVersion, $targetId);
+            } catch (InvalidArgumentException) {
+                $normalised['source_handle'] = null;
+                $normalised['target_handle'] = null;
+            }
+        }
+
+        return $normalised;
+    }
+
+    private function nodeKind(array $row, array $properties): string
+    {
+        $kind = strtolower(trim((string) ($properties['kind'] ?? '')));
+        if ($kind !== '') {
+            return $kind;
+        }
+
+        foreach (($row['labels'] ?? []) as $label) {
+            $kind = strtolower(trim((string) $label));
+            if ($kind !== '' && $kind !== 'symbol') {
+                return $kind;
+            }
+        }
+
+        return 'unknown';
+    }
+
+    private function edgeFamily(string $edgeType): string
+    {
+        foreach (self::EDGE_FAMILIES as $family => $types) {
+            if (in_array($edgeType, $types, true)) {
+                return $family;
+            }
+        }
+
+        return 'other';
+    }
+
+    /** @param mixed $families */
+    private function edgeTypes(mixed $families): array
+    {
+        $this->assertFamilies($families);
+        if ($families === []) {
+            return array_values(array_unique(array_merge(...array_values(self::EDGE_FAMILIES))));
+        }
+
+        $types = [];
+        foreach ($families as $family) {
+            array_push($types, ...self::EDGE_FAMILIES[$family]);
+        }
+
+        return array_values(array_unique($types));
+    }
+
+    private function assertFamilies(mixed $families): void
+    {
+        if (! is_array($families) || ! array_is_list($families)) {
+            throw new InvalidArgumentException('invalid_family');
+        }
+
+        foreach ($families as $family) {
+            if (! is_string($family) || ! isset(self::EDGE_FAMILIES[$family])) {
+                throw new InvalidArgumentException('invalid_family');
+            }
+        }
+    }
+
+    private function assertDirection(mixed $direction): void
+    {
+        if (! is_string($direction) || ! in_array($direction, ['in', 'out', 'any'], true)) {
+            throw new InvalidArgumentException('invalid_direction');
+        }
+    }
+
+    private function edgePredicate(string $edgeAlias, mixed $families = []): string
+    {
+        $types = array_map(
+            static fn (string $type): string => "'".$type."'",
+            $this->edgeTypes($families),
+        );
+
+        return 'type('.$edgeAlias.') IN ['.implode(', ', $types).']';
+    }
+
+    private function scopeParams(object $projection): array
+    {
+        if (! isset($projection->project_id)) {
+            return [];
+        }
+
+        return [
+            'project_id' => (string) $projection->project_id,
+            'source_scope_type' => (string) $projection->source_scope_type,
+            'source_scope_id' => (string) $projection->source_scope_id,
+        ];
     }
 }
 

@@ -122,6 +122,7 @@ function graphQueryEnsureSnapshot(string $projectId, string $repoId, string $cre
         'artifact_id' => $artifactId,
         'checksum' => str_repeat('b', 64),
         'graph_version' => 'graph-version-'.$snapshotId,
+        'active_graph_version' => 'graph-version-'.$snapshotId,
         'quality' => 'verified',
         'status' => 'ready',
         'created_at' => now(),
@@ -314,7 +315,7 @@ it('callers cypher uses canonical graph version and external_id', function () {
     $cmd = $fakeClient->commands[0];
 
     expect($cmd['cypher'])->toContain('external_id');
-    expect($cmd['cypher'])->toContain('(result:CanonicalGraphNode {graph_version: $graph_version})');
+    expect($cmd['cypher'])->toContain('(result:CanonicalGraphNode {project_id: $project_id');
     expect($cmd['cypher'])->toContain('CanonicalGraphNode');
     expect($cmd['cypher'])->not->toContain('{symbol_id:');
 
@@ -339,6 +340,7 @@ it('queries the current canonical graph projection', function () {
         'artifact_id' => (string) Str::ulid(),
         'checksum' => str_repeat('a', 64),
         'graph_version' => 'canonical-version-1',
+        'active_graph_version' => 'canonical-version-1',
         'quality' => 'verified',
         'status' => 'ready',
         'created_at' => now()->addSecond(),
@@ -399,7 +401,7 @@ it('path cypher uses canonical graph version and external_id', function () {
 
     expect($cmd['cypher'])->toContain('external_id');
     expect($cmd['cypher'])->toContain('CanonicalGraphNode');
-    expect($cmd['cypher'])->toContain(':CALLS*1..5');
+    expect($cmd['cypher'])->toContain('[*1..5]');
     expect($cmd['cypher'])->not->toContain('{symbol_id:');
     expect($cmd['cypher'])->not->toContain('{from_symbol_id:');
 
@@ -499,10 +501,58 @@ it('emits one-hop relationship-type agnostic version-isolated Cypher for every t
         ->and($startCypher)->toContain("toLower(coalesce(start.external_id, '')) CONTAINS \$start_query")
         ->and($fakeClient->commands[2]['params']['graph_version'])->toStartWith('graph-version-');
 })->with([
-    'out' => ['out', 'direction: $direction}) WHERE adjacency.direction_rank < $per_frontier_fetch_limit'],
-    'in' => ['in', 'direction: $direction}) WHERE adjacency.direction_rank < $per_frontier_fetch_limit'],
-    'any' => ['any', 'WHERE adjacency.any_rank < $per_frontier_fetch_limit'],
+    'out' => ['out', 'direction: $direction}) WHERE adjacency.edge_type IN $semantic_edge_types'],
+    'in' => ['in', 'direction: $direction}) WHERE adjacency.edge_type IN $semantic_edge_types'],
+    'any' => ['any', 'WHERE adjacency.edge_type IN $semantic_edge_types'],
 ]);
+
+it('selects a requested edge family before applying the per-frontier rank limit', function () {
+    $client = new class implements Neo4jClient
+    {
+        public array $hopParams = [];
+
+        public function run(string $cypher, array $params = []): mixed
+        {
+            if (str_contains($cypher, 'traversal_schema_version')) {
+                return [['traversal_schema_version' => 1]];
+            }
+            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
+                return [['node' => ['external_id' => 'start'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => []]];
+            }
+            if (str_contains($cypher, 'UNWIND $frontier_ids AS frontier_id')) {
+                $this->hopParams = $params;
+                if (str_contains($cypher, 'adjacency.direction_rank < $per_frontier_fetch_limit')) {
+                    return [];
+                }
+
+                return [[
+                    'source_id' => 'start',
+                    'node' => ['external_id' => 'route-target'],
+                    'labels' => ['CanonicalGraphNode'],
+                    'edge' => ['external_id' => 'route-edge', 'source_id' => 'start', 'target_id' => 'route-target', 'type' => 'ROUTE_HANDLER'],
+                ]];
+            }
+
+            return [];
+        }
+    };
+    $service = new CanonicalGraphQueryService($client);
+    $projectId = graphQueryProjectId();
+    $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+    graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+
+    $result = $service->query($projectId, 'repository', $repo->id, 'traverse', [
+        'start_external_id' => 'start',
+        'start' => '',
+        'direction' => 'out',
+        'max_depth' => 1,
+        'limit' => 2,
+        'families' => ['route'],
+    ]);
+
+    expect(array_column($result['results'], 'id'))->toContain('route-target')
+        ->and($client->hopParams['semantic_edge_types'])->toBe(['ROUTE_HANDLER']);
+});
 
 it('returns path relationships and constrains every path node and edge to the graph version', function () {
     $fakeClient = new FakeNeo4jClient;
@@ -516,10 +566,10 @@ it('returns path relationships and constrains every path node and edge to the gr
     ]);
 
     $cypher = $fakeClient->commands[0]['cypher'];
-    expect($cypher)->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
-        ->and($cypher)->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
+    expect($cypher)->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version AND n.project_id')
+        ->and($cypher)->toContain('ALL(r IN relationships(p) WHERE type(r) IN')
         ->and($cypher)->toContain('RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes')
-        ->and($cypher)->toContain('[r IN relationships(p) | properties(r)] AS edges')
+        ->and($cypher)->toContain('[r IN relationships(p) | properties(r) + {type: type(r)}] AS edges')
         ->and($cypher)->not->toContain('UNWIND nodes(p)');
 });
 
@@ -874,7 +924,7 @@ it('bounds every dense traversal frontier before advancing to the next hop', fun
         ->and($hop['params']['per_frontier_fetch_limit'])->toBe(11)
         ->and($hop['params']['hop_fetch_limit'])->toBe(22)
         ->and($hop['cypher'])->toContain('CanonicalGraphAdjacency')
-        ->and($hop['cypher'])->toContain('adjacency.any_rank < $per_frontier_fetch_limit')
+        ->and($hop['cypher'])->toContain('adjacency.edge_type IN $semantic_edge_types')
         ->and($hop['cypher'])->not->toContain('(source)-[edge]')
         ->and($hop['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
         ->and($hop['cypher'])->toContain('LIMIT $hop_fetch_limit');

@@ -239,6 +239,49 @@ it('keeps the canonical normalizer strict for legacy nodes without real identity
     app(CanonicalGraphRepository::class)->latestForScope($projectId, 'workspace_binding', $bindingId);
 })->throws(InvalidArgumentException::class, 'Legacy graph node identity is missing.');
 
+it('stamps server-owned route provenance across contracted and legacy route records', function (): void {
+    $contract = [
+        'version' => 'hades.graph_artifact.v1',
+        'extractor' => ['name' => 'hades-native-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full', 'fallback_reason' => null],
+        'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
+        'source' => ['branch' => 'main', 'head_commit' => str_repeat('a', 40)],
+    ];
+    $repository = app(CanonicalGraphRepository::class);
+    $contracted = $repository->prepareHadesUpload([
+        'graph_contract' => $contract,
+        'nodes' => [
+            ['id' => 'route:contracted', 'kind' => 'route', 'properties' => ['uri' => 'api/invoices/{id}']],
+            ['id' => 'route:spoofed', 'kind' => 'route', 'properties' => ['path' => '/api/spoofed', 'route_provenance' => 'route_registry']],
+            ['id' => 'route:filesystem', 'kind' => 'route', 'properties' => ['path' => '/data/private/secret', 'route_provenance' => 'route_registry']],
+        ],
+        'relationships' => [],
+    ]);
+    $contractedNodes = collect($contracted['nodes'])->keyBy('id');
+
+    $legacy = $repository->prepareHadesUpload([
+        'language' => 'php',
+        'routes' => [
+            ['name' => 'invoices.show', 'method' => 'GET', 'uri' => 'api/invoices/{id}'],
+        ],
+        'nodes' => [[
+            'id' => 'route:invoices.show',
+            'kind' => 'route',
+            'name' => 'invoices.show',
+            'properties' => ['uri' => 'api/invoices/{id}', 'route_provenance' => 'client_claim'],
+        ]],
+        'relationships' => [],
+    ]);
+    $legacyNodes = collect($legacy['nodes'])->keyBy('id');
+
+    expect($contractedNodes['route:contracted']['properties']['uri'])->toBe('/api/invoices/{id}')
+        ->and($contracted['private_route_provenance']['route:contracted'])->toBeTrue()
+        ->and($contractedNodes['route:spoofed']['properties'])->not->toHaveKey('__hades_server_route_provenance')
+        ->and($contractedNodes['route:filesystem']['properties'])->not->toHaveKey('__hades_server_route_provenance')
+        ->and($legacyNodes['route:invoices.show']['properties']['uri'])->toBe('/api/invoices/{id}')
+        ->and($legacy['private_route_provenance']['route:invoices.show'])->toBeTrue()
+        ->and(collect($legacy['nodes'])->pluck('id')->filter(fn (string $id): bool => $id === 'route:invoices.show'))->toHaveCount(1);
+});
+
 function canonicalRepoHades(string $projectId, string $status = 'linked'): array
 {
     $agentId = (string) Str::ulid();

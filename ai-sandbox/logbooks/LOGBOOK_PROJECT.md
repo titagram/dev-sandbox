@@ -121,6 +121,26 @@ ai-sandbox/logbooks/LOGBOOK_PROJECT.md
 ai-sandbox/logbooks/LOGBOOK_PROJECT.md
 --> 
 
+## 2026-07-14 - Task 2 A33 second independent-review blockers
+
+- Request: fix comprehensive filesystem-identity privacy, Neo4j composite-index upgrade semantics, and live acceptance strength. No commit, push, deploy, database mutation, container restart, or live graph mutation was performed.
+- RED: `APP_KEY=... php artisan test --filter=CanonicalGraphProjectionTest` -> 31 tests, 29 passed, 2 failed, 144 assertions. Failures were the new arbitrary/embedded filesystem identities and the required versioned index names.
+- GREEN projector evidence: `APP_KEY=... php artisan test --filter=CanonicalGraphProjectionTest` -> 31 tests, 31 passed, 163 assertions after the new private classifier, explicit route provenance policy, legacy route provenance stamping, and independent versioned index names were implemented.
+- Index operations: historical `canonical_adjacency_direction_rank` and `canonical_adjacency_any_rank` are intentionally retained; projector emits only idempotent `canonical_adjacency_direction_edge_type_rank_v2` and `canonical_adjacency_any_edge_type_rank_v2` definitions with `edge_type` before rank, awaits indexes, and never drops live indexes.
+- Acceptance setup: enable with `NEO4J_GRAPH_ACCEPTANCE_ENABLED=1` and provide `NEO4J_GRAPH_ACCEPTANCE_PROJECT_ID`, `NEO4J_GRAPH_ACCEPTANCE_SCOPE_TYPE`, `NEO4J_GRAPH_ACCEPTANCE_SCOPE_ID`, `NEO4J_GRAPH_ACCEPTANCE_ACTIVE_GRAPH_VERSION`, `NEO4J_GRAPH_ACCEPTANCE_FROM_HANDLE`, `NEO4J_GRAPH_ACCEPTANCE_TO_HANDLE`, `NEO4J_GRAPH_ACCEPTANCE_QUERY`, `NEO4J_GRAPH_ACCEPTANCE_EXPECTED_SEARCH_HANDLE`, `NEO4J_GRAPH_ACCEPTANCE_EXPECTED_NEIGHBOR_HANDLE`, `NEO4J_GRAPH_ACCEPTANCE_EXPECTED_PATH_HANDLE`, and `NEO4J_GRAPH_ACCEPTANCE_EXPECTED_IMPACT_HANDLE`. Disabled mode skips; enabled mode with any missing variable fails with the exact missing list. The test is read-only and requires non-empty materialization, `gh1_` handles/endpoints, allowed edge vocabulary, bounded results, coherent truncation, and no raw IDs or paths.
+- Focused graph gate: `php artisan test tests/Unit/Services/Graph tests/Feature/CanonicalGraphProjectionTest.php tests/Feature/Graph/CanonicalGraphTraverseNeo4jReadOnlyTest.php tests/Feature/Plugin/GraphQueryApiTest.php tests/Feature/Dashboard/DashboardApiContractTest.php tests/Feature/Assistants/AiAgentReadToolsTest.php tests/Feature/Graph/CanonicalGraphExplorerNeo4jAcceptanceTest.php` -> 148 tests, 145 passed, 3 skipped, 1,284 assertions. The equivalent broad Task 2 graph filter also passed with 148/145/3/1,284.
+- Acceptance setup guard: with only `NEO4J_GRAPH_ACCEPTANCE_ENABLED=1`, the test failed with the precise list of all 11 missing fixture variables; disabled mode skips locally.
+- Initial broad backend evidence before the DeltaSync correction: `APP_KEY=... php artisan test` -> 953 tests, 933 passed, 8 skipped, 10 failures/errors. The result included the now-corrected DeltaSync fake-client adjacency-count regression alongside environment/runtime failures.
+
+## 2026-07-14 - Task 2 DeltaSync fake-client integration correction
+
+- Review correction: the DeltaSync fake-client failures were a Task 2 regression, because adjacency verification was added without updating `ImportGraphToNeo4j::fakeClient()`.
+- RED: new `DeltaSyncTest` actual-job-path test -> 1 test, 4 assertions, failed at `Canonical graph adjacency verification count mismatch`.
+- GREEN: added the missing `RETURN count(a) AS adjacencies` response using `expected_adjacencies` in `ImportGraphToNeo4j::fakeClient()`. Audited all production/test fakes that implement canonical verification; each now answers both node/relationship and adjacency-count queries.
+- Isolated DeltaSync: `APP_KEY=... php artisan test tests/Feature/DeltaSyncTest.php` -> 20 tests, 20 passed, 143 assertions.
+- Full relevant Task 2 integration gate, including DeltaSync, GenesisGraphImport, Hades canonical projection, and rebuild command coverage -> 281 tests, 278 passed, 3 skipped, 2,332 assertions.
+- Corrected full backend gate -> 954 tests, 938 passed, 8 skipped, 7 failures plus 1 error. DeltaSync failures are gone; remaining failures are missing Neo4j credentials, two legacy Hades endpoint 404s, and the known test storage-directory error. No commit, push, deploy, database mutation, container restart, or live graph mutation occurred.
+
 <!-- Task 4.1 intended write paths (embedding generation and indexing lifecycle) -->
 <!--
 backend/app/Contracts/EmbeddingGenerator.php
@@ -2506,3 +2526,83 @@ Operational rule: before project writes, record intended paths here, then follow
 - GREEN verification: the boundary test passed (1 suite, 1 test); the focused boundary plus source metadata suite passed (2 suites, 3 tests); `corepack yarn tsc --noEmit` passed; and the exact task diff check passed. The test commands emitted only the existing Node `DEP0040` `punycode` deprecation warning.
 - Files changed: `frontend/src/index.js`, `frontend/src/components/devboard/AppErrorBoundary.tsx`, `frontend/src/components/devboard/AppErrorBoundary.test.tsx`, `.superpowers/sdd/task-1-report.md`, and this logbook.
 - Residual risks or skipped checks: no browser/plugin visual QA or production build was run because Task 1 acceptance is the specified jsdom/focused suite and the frontend has no configured Playwright test script; no runtime/deployment operation was authorized.
+## 2026-07-14 - Frontend resilience graph explorer Task 2
+
+### Rotation review gate continuation
+
+- Lifecycle correction: replaced the DB-only active-v3 stale-handle assertion with key-rotation coverage. The projector lifecycle test acquires a forced candidate from the old ready winner, rotates key A to B, verifies changed metadata fingerprint and candidate-bound handle, calls publishPublicationAttempt plus publishCurrent, and asserts PostgreSQL active_graph_version becomes the candidate. The Explorer test now resolves an old-key handle as node_not_found under the unchanged active version.
+
+- Explorer handle-path correction: search and impact now guard exact project/scope/active-version and key metadata in Cypher; overview checks compatibility and fails closed without requiring Neo4j current=true. Full explorer plus dashboard contract verification passed 46 tests/722 assertions.
+
+- Dashboard guard correction: when no direct client is injected, the reader now resolves Neo4jClientFactory; factory/query/row-shape failures return graph_projection_rebuild_required. The query returns scalar aliases, and ArrayAccess/toArray/object rows are normalized. DashboardApiContractTest now passes 29 tests/547 assertions with current-key factory metadata; mismatch and unavailable factory cases remain explicit fail-closed tests.
+
+- Correction: projector handles now use the physical candidate projection.graph_version; the RED fixture models logical_graph_version=origin-v1, graph_version=published-v2, and prior active_graph_version=old-v1.
+- Added and observed three genuine REDs before production edits: missing CanonicalGraphVersion key metadata/active-version handle binding; dashboard `ready` instead of `graph_projection_rebuild_required`; and explorer resolution without a same-request key guard.
+- GREEN work stamped `public_handle_key_version` and `public_handle_key_fingerprint` on existing Neo4j CanonicalGraphVersion metadata without migration or field repurposing, bound projector handles to the physical candidate graph version, added a fakeable dashboard Neo4j metadata check with exact project/scope/active-version predicates, and combined explorer key guards with the indexed direct node match.
+- Verification: explorer 14 tests/147 assertions, projector 25/100, dashboard contract 27/527, and focused combined 92 passing tests/925 assertions with 2 required Neo4j smoke tests skipped; PHP lint and git diff --check passed. The post-rebuild active-version test confirms the old handle is `node_not_found`; Pest temp results were restored after runs.
+
+- Request: implement plan1 task2 for canonical graph semantic edges, opaque dashboard node handles, signed explorer cursors, canonical preview handle mapping, and the scoped test coverage described in `.superpowers/sdd/task-2-brief.md`.
+- Context read: `AGENTS.md`, `ai-sandbox/INIT.md`, task-routing index, all sandbox policies, initialized `ai-sandbox/config/project.yaml`, `ai-sandbox/wiki/README.md`, Task 2 brief/plan, existing canonical graph repository/query/projector/projection code, dashboard graph reader, Neo4j client fakes, and the target feature tests.
+- Intended write paths: `backend/app/Services/Graph/DashboardGraphPublicHandle.php`, `backend/app/Services/Graph/DashboardGraphExplorerService.php`, `backend/app/Services/Graph/DashboardGraphExplorerCursor.php`, `backend/app/Services/Graph/CanonicalGraphQueryService.php`, `backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php`, `backend/app/Dashboard/DashboardApiReader.php`, the Task 2 target tests under `backend/tests/Unit/Services/Graph`, `backend/tests/Feature/Dashboard/DashboardApiContractTest.php`, `backend/tests/Feature/Graph/CanonicalGraphTraverseNeo4jReadOnlyTest.php`, `backend/tests/Feature/Assistants/AiAgentReadToolsTest.php`, and this logbook.
+- Safety boundary: project source/tests plus required project logbook only; no `project/` changes, migrations, database contents, containers, deployment, push, or commit. Existing Traefik infrastructure is out of scope.
+- Source status: implementation requirements are `developer_provided`; existing code/schema/test behavior and command results are `verified_from_code`; any unresolved runtime Neo4j behavior will be recorded as `needs_verification`.
+- Work performed: completed the staged RED/GREEN implementation. Added opaque HMAC node handles with canonical base64url validation and key fingerprint/version helpers; signed canonical cursors with strict canonical decoding; materialized public handles and sanitized FULLTEXT/index properties in the projector; enforced active graph versions and exact semantic edge vocabularies in canonical reads; added the bounded dashboard explorer service for scopes, overview, search, detail, neighborhood, path, and grouped two-hop impact; and updated the dashboard preview plus the stale assistant canonical-projection fixture. The test-only local storage directory was corrected to `ubuntu:ubuntu`; no database contents, migration, container, deployment, push, or commit operation was performed.
+- TDD and review gates: initial handle/cursor commands returned zero tests; corrected unit namespaces produced genuine missing-class REDs; projector changes were restored and reapplied only after a projector RED; canonical base64url alias, APP_KEY fail-closed, service lookup, pagination-boundary, and bound-Lucene-query review findings each received explicit RED coverage before GREEN implementation. The explorer service was introduced only after a one-test missing-class RED, then expanded incrementally through 12 service tests.
+- Verification commands and result: environment detection and dependency bootstrap passed; the explorer service suite passed 12 tests / 131 assertions; `AiAgentReadToolsTest.php` passed 14 tests / 92 assertions; `DashboardApiContractTest.php` passed 25 tests / 511 assertions with a process-local valid 32-byte APP_KEY; the complete focused command passed 87 tests / 890 assertions with two required environment-gated Neo4j tests skipped (89 total); PHP lint and `git diff --check` passed; `backend/vendor/pestphp/pest/.temp/test-results` was restored clean after every Pest run.
+- Files changed: `backend/app/Services/Graph/DashboardGraphPublicHandle.php`, `backend/app/Services/Graph/DashboardGraphExplorerCursor.php`, `backend/app/Services/Graph/DashboardGraphExplorerService.php`, `backend/app/Services/Graph/CanonicalGraphQueryService.php`, `backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php`, `backend/app/Dashboard/DashboardApiReader.php`, the three graph unit tests, `backend/tests/Feature/CanonicalGraphProjectionTest.php`, `backend/tests/Feature/Dashboard/DashboardApiContractTest.php`, `backend/tests/Feature/Graph/CanonicalGraphTraverseNeo4jReadOnlyTest.php`, `backend/tests/Feature/Assistants/AiAgentReadToolsTest.php`, and this logbook.
+- Residual risks or skipped checks: the two live Neo4j read-only smoke tests remain skipped because their explicit environment variables were not supplied; no live Neo4j runtime validation was authorized. Task 3 controller/routes and later frontend explorer tasks remain outside this Task 2 scope. No commit was created.
+
+### Laudis result-shape correction
+
+- Review finding: real Laudis `SummarizedResult`/`CypherList` results contain `CypherMap` rows, so array-only checks dropped dashboard compatibility and Explorer detail/search/impact/overview results.
+- Work performed: added the shared `Neo4jResultMaterializer::materializeRows()` helper. It recursively handles iterables, `toArray()` rows, nested values, and `ArrayAccess` rows; dashboard key compatibility and every direct Explorer Neo4j run result now use it. The key guard continues to query scalar aliases.
+- TDD evidence: the Explorer RED used actual vendor `CypherList` and `CypherMap` values and failed with `detail.found=false` before the helper; the dashboard rotation mismatch fixture now uses the same vendor types.
+- Verification: dashboard/Explorer suites passed 47 tests/730 assertions; the broader Task 2 graph gate passed 99 tests/993 assertions with 2 required Neo4j smoke tests skipped. PHP lint and `git diff --check` passed, and the Pest temporary result artifact was restored.
+
+### Missing active-version fail-closed correction
+
+- Review finding: a ready dashboard projection with a null or empty `active_graph_version` bypassed key compatibility and could return a ready preview without handles.
+- TDD evidence: the new DashboardApiContract RED returned `projection_status: ready` for a ready projection with a null active pointer; the implementation now rejects empty/whitespace-normalized active versions before preview construction.
+- Verification: the missing-active RED now passes with an empty node/edge preview and `graph_projection_rebuild_required`; dashboard/Explorer suites pass 48 tests/735 assertions. Pest temporary results were restored.
+
+### Projector missing-key preflight correction
+
+- Review finding: the projector discovered a missing `APP_KEY` only while deriving the first node handle, after creating indexes and version metadata with a fingerprint of the empty string.
+- TDD evidence: the strengthened missing-key RED captured the fake Neo4j client and failed because eight index/metadata commands had already been issued.
+- Work performed: `DashboardGraphPublicHandle::keyFingerprint()` now fails closed for an empty key; `Neo4jCanonicalGraphProjector::project()` validates the fingerprint before any Neo4j write and reuses the validated key version/fingerprint for version metadata.
+- Verification: the missing-key test now passes with zero client commands; projector/public-handle/Explorer/dashboard suites pass 79 tests/864 assertions. PHP lint and the restored Pest artifact checks passed.
+
+### Explorer pagination quality correction
+
+- TDD evidence: added RED coverage for search limit 101 and score `0.123456789`, impact exact/extra rows and edge ordering, and scopes latest-ready selection plus SQL cursor boundaries. The pre-fix failures showed six-decimal cursor rounding, post-group truncation, and unbounded scope loading.
+- Work performed: search now computes one bounded limit in the 1..100 range, fetches/slices/report `boundedLimit + 1`, and encodes scores with `%.17g`. Impact now uses deterministic path tiebreakers and fetch-plus-one, truncates before grouping, and sorts/deduplicates edge types before `why`. Scopes now use a SQL window for latest-ready-per-scope, SQL cursor boundaries/order, and bounded `LIMIT` queries.
+- Verification: full Explorer service suite passed 22 tests/203 assertions; broader Task 2 graph gate passed 104 tests with 2 required Neo4j smoke tests skipped and 1,019 assertions. Pest temporary results were restored and `git diff --check` passed.
+
+### Semantic quality correction
+
+- TDD evidence: RED coverage reproduced missing `&&`/`||` Lucene escaping, empty/invalid searches reaching the index, neighborhood direction/depth being ignored, unknown families broadening to all edge types, and technical legacy labels leaking from projector and Explorer mappings.
+- Work performed: completed QueryParser escaping and pre-index normalized-query validation; neighborhood now validates `in|out|any` and routes through bounded exact-start traversal using `start_external_id`; family lists reject unknown/non-list entries while empty remains all; and `hades-public-*`, `legacy-*`, `node-*`, `edge-*`, and `internal-*` technical values are excluded from projector search fields and Explorer public labels.
+- Verification: semantic tests pass; the broader Task 2 graph gate passed 109 tests with 2 required Neo4j smoke tests skipped and 1,048 assertions. PHP lint and `git diff --check` passed; Pest temporary results were restored.
+
+### A31 canonical encoding hardening
+
+- Request: after A30, add strict canonical base64url alias rejection for public handles and both signed cursor segments; reject invalid UTF-8 cursor queries; independently verify canonical JSON/HMAC, encode-twice stability, APP_KEY rotation rejection, and Explorer cursor project/scope/version/query-type/query mismatches. No commit was authorized.
+- TDD evidence: added test coverage before any production edit. The handle and cursor implementations already had the required decode-and-reencode equality checks and UTF-8 validation from the preceding review gates, so no new production change was required. The test aliases change only unused trailing bits and test-side decoding confirms the underlying bytes remain identical.
+- Verification: focused `DashboardGraphPublicHandleTest.php`, `DashboardGraphExplorerCursorTest.php`, and `DashboardGraphExplorerServiceTest.php` passed 37 tests / 283 assertions. The broad graph gate passed 111 tests / 1,054 assertions, with 109 passing and 2 required environment-gated Neo4j smoke tests skipped. PHP lint and `git diff --check` passed, and `backend/vendor/pestphp/pest/.temp/test-results` was restored after each Pest run.
+- Scope/safety: retained the existing narrow `Neo4jResultMaterializer::materializeRows()` utility; no shared API was widened, no migration/database/container/deployment/push/commit operation was performed.
+
+### A32 final-review fixes
+
+- Request: address all Critical/Important review findings plus the label Minor, with strict TDD and no commit. Scope covered path/technical identity sanitization, real relationship endpoint properties, impact existence, public limit semantics, family-aware traversal ranking/indexes, and a gated live Neo4j acceptance test.
+- TDD evidence: RED coverage reproduced the projector path/label leaks, missing relationship endpoints, missing adjacency composite indexes, neighborhood root consuming the limit, path over-returning, impact treating nonexistent handles as found, pre-group impact limiting, and family rank filtering before family selection. GREEN applied the smallest fixes in the existing projector, canonical query service, and Explorer service.
+- Path/identity result: one projector-private guard rejects local POSIX roots, drive paths, UNC paths, file URIs, and technical legacy identities from both search values and route paths; legitimate `/api/invoices/{id}` survives; labels no longer use `kind` as a fallback.
+- Graph result: relationship properties persist source/target external IDs for path materialization, while public mappings emit only opaque handles. Traversal now filters the requested exact edge vocabulary before rank order, and both direction/any adjacency indexes include `edge_type`.
+- Limit/existence result: impact resolves the handle through the guarded indexed lookup before traversal; path/neighborhood/impact public item counts honor bounded limits, edge endpoints are filtered to retained nodes, grouped impact truncation is computed after affected-node/family grouping, and neighborhood uses an internal root-plus-neighbor budget.
+- Acceptance coverage: added `CanonicalGraphExplorerNeo4jAcceptanceTest.php`, read-only and environment-gated by `NEO4J_GRAPH_ACCEPTANCE_*`; it covers search/path/neighborhood/impact and rejects raw endpoint/path leaks. It skipped locally because the variables were not supplied; no live data was mutated.
+- Verification: A32 focused graph gate passed 89 of 92 tests with 3 skips and 557 assertions. Broad Task 2 gate passed 116 of 118 tests with 2 existing Neo4j smoke skips and 1,109 assertions. PHP lint and `git diff --check` passed; Pest temporary results were restored. No commit or push was performed; work is ready for re-review.
+
+### A32 sanitizer follow-up
+
+- Request: extend the private projector sanitizer to common absolute local roots `/root`, `/etc`, `/mnt`, `/Volumes`, `/app` and relative source paths such as `backend/app/Foo.php` and `src/Foo.ts`, while preserving `/api/invoices/{id}` and `/.well-known/openid-configuration`.
+- TDD evidence: the new focused RED failed on `/root/Secret.php`; the minimal guard extension then passed all requested absolute-root, relative-source, and route-preservation assertions.
+- Verification: follow-up focused graph gate passed 90 of 93 tests with 3 environment skips and 567 assertions. Broad Task 2 gate passed 117 of 119 tests with 2 existing Neo4j smoke skips and 1,119 assertions. PHP lint and `git diff --check` passed; Pest temporary results were restored. No commit or push was performed.

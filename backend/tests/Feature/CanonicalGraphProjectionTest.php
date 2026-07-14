@@ -10,7 +10,12 @@ use Illuminate\Support\Facades\DB;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
+    config(['app.key' => 'unit-test-app-key']);
     $this->seed(DevBoardSeeder::class);
+});
+
+afterEach(function (): void {
+    config(['app.key' => 'unit-test-app-key']);
 });
 
 it('keeps the previous projection ready until its replacement is ready', function () {
@@ -31,6 +36,464 @@ it('keeps the previous projection ready until its replacement is ready', functio
             ->where('source_scope_id', 'binding-1')
             ->where('status', 'ready')
             ->count())->toBe(1);
+});
+
+it('materializes opaque handles and only sanitized fulltext fields', function (): void {
+    config(['app.key' => 'unit-test-app-key']);
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $projection = $service->queue(canonicalProjectionGraph($projectId, 'artifact-public-handle', str_repeat('a', 64)));
+    $client = new FakeNeo4jClient;
+    $graph = [
+        'nodes' => [[
+            'id' => 'method:InvoiceService::charge',
+            'labels' => ['Symbol', 'Method'],
+            'properties' => [
+                'kind' => 'method',
+                'name' => 'InvoiceService::charge',
+                'path' => '/srv/private/app/InvoiceService.php',
+            ],
+        ]],
+        'relationships' => [],
+    ];
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+
+    $fulltext = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'CREATE FULLTEXT INDEX canonical_node_search'),
+    );
+    $lookup = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'canonical_node_public_lookup'),
+    );
+    $nodeBatch = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
+    );
+
+    expect($fulltext['cypher'])->toContain('n.graph_version')
+        ->toContain('n.public_search_name')
+        ->toContain('n.public_search_label')
+        ->toContain('n.public_search_path')
+        ->not->toContain('n.external_id')
+        ->not->toContain('n.path')
+        ->and($lookup['cypher'])->toContain('project_id, n.source_scope_type, n.source_scope_id, n.graph_version, n.public_handle')
+        ->and($nodeBatch['params']['nodes'][0]['properties']['public_handle'])->toStartWith('gh1_')
+        ->and($nodeBatch['params']['nodes'][0]['properties']['public_search_name'])->toBe('InvoiceService::charge')
+        ->and($nodeBatch['params']['nodes'][0]['properties']['public_search_path'])->toBeNull();
+});
+
+it('rejects filesystem identities from public fields while preserving legitimate route paths', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-path-sanitization', str_repeat('f', 64)));
+    $graph = [
+        'nodes' => [
+            [
+                'id' => 'method:local-identity',
+                'labels' => ['Method'],
+                'properties' => [
+                    'kind' => 'method',
+                    'name' => '/home/ubuntu/dev-sandbox/Secret.php',
+                    'label' => '/home/ubuntu/dev-sandbox/Secret.php',
+                ],
+            ],
+            ['id' => 'route:posix', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'path' => '/srv/private/app/Invoice.php']],
+            ['id' => 'route:drive-backslash', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'path' => 'C:\\workspace\\Invoice.php']],
+            ['id' => 'route:drive-slash', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'path' => 'C:/workspace/Invoice.php']],
+            ['id' => 'route:drive-relative', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'path' => 'C:workspace\\Invoice.php']],
+            ['id' => 'route:unc', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'path' => '\\\\server\\private\\Invoice.php']],
+            ['id' => 'route:file-uri', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'path' => 'file:///srv/private/Invoice.php']],
+            ['id' => 'route:embedded', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'source' => 'route_registry', 'path' => 'source=/data/private/Foo.php']],
+            ['id' => 'route:unproven-legitimate', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'path' => '/api/invoices/{id}']],
+            ['id' => 'route:legitimate', 'labels' => ['Route'], 'properties' => ['kind' => 'route', 'source' => 'route_registry', 'path' => '/api/invoices/{id}']],
+            ['id' => 'method:no-label', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => 'InvoiceService::charge']],
+            ['id' => 'method:data-path', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => '/data/private/Foo.php', 'label' => '/data/private/Foo.php']],
+            ['id' => 'method:applications-path', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => '/Applications/Foo.php', 'label' => '/Applications/Foo.php']],
+            ['id' => 'method:dot-relative', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => './src/Foo.ts', 'label' => './src/Foo.ts']],
+            ['id' => 'method:parent-relative', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => '../backend/app/Foo.php', 'label' => '../backend/app/Foo.php']],
+            ['id' => 'method:drive-relative', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => 'C:workspace\\Foo.php', 'label' => 'C:workspace\\Foo.php']],
+            ['id' => 'method:embedded-path', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => 'source=/data/private/Foo.php', 'label' => 'source=/data/private/Foo.php']],
+        ],
+        'relationships' => [],
+        'private_route_provenance' => [
+            'route:legitimate' => true,
+        ],
+    ];
+    $client = new FakeNeo4jClient;
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+    $nodeBatch = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
+    );
+    $properties = collect($nodeBatch['params']['nodes'])->keyBy('id')->map(fn (array $node): array => $node['properties']);
+
+    expect($properties['method:local-identity']['public_search_name'])->toBeNull()
+        ->and($properties['method:local-identity']['public_search_label'])->toBeNull()
+        ->and($properties['route:posix']['public_search_path'])->toBeNull()
+        ->and($properties['route:drive-backslash']['public_search_path'])->toBeNull()
+        ->and($properties['route:drive-slash']['public_search_path'])->toBeNull()
+        ->and($properties['route:drive-relative']['public_search_path'])->toBeNull()
+        ->and($properties['route:unc']['public_search_path'])->toBeNull()
+        ->and($properties['route:file-uri']['public_search_path'])->toBeNull()
+        ->and($properties['route:embedded']['public_search_path'])->toBeNull()
+        ->and($properties['route:unproven-legitimate']['public_search_path'])->toBeNull()
+        ->and($properties['route:legitimate']['public_search_path'])->toBe('/api/invoices/{id}')
+        ->and($properties['method:no-label']['public_search_label'])->toBeNull()
+        ->and($properties['method:data-path']['public_search_name'])->toBeNull()
+        ->and($properties['method:data-path']['public_search_label'])->toBeNull()
+        ->and($properties['method:applications-path']['public_search_name'])->toBeNull()
+        ->and($properties['method:applications-path']['public_search_label'])->toBeNull()
+        ->and($properties['method:dot-relative']['public_search_name'])->toBeNull()
+        ->and($properties['method:dot-relative']['public_search_label'])->toBeNull()
+        ->and($properties['method:parent-relative']['public_search_name'])->toBeNull()
+        ->and($properties['method:parent-relative']['public_search_label'])->toBeNull()
+        ->and($properties['method:drive-relative']['public_search_name'])->toBeNull()
+        ->and($properties['method:drive-relative']['public_search_label'])->toBeNull()
+        ->and($properties['method:embedded-path']['public_search_name'])->toBeNull()
+        ->and($properties['method:embedded-path']['public_search_label'])->toBeNull();
+});
+
+it('rejects common local roots and relative source paths while preserving dotted routes', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-common-path-roots', str_repeat('i', 64)));
+    $paths = [
+        '/root/Secret.php',
+        '/etc/passwd',
+        '/mnt/workspace/Foo.php',
+        '/Volumes/private/Foo.php',
+        '/app/Foo.php',
+    ];
+    $graph = [
+        'nodes' => array_merge(
+            array_map(static fn (string $path, int $index): array => [
+                'id' => 'route:local-root-'.$index,
+                'labels' => ['Route'],
+                'properties' => ['kind' => 'route', 'path' => $path],
+            ], $paths, array_keys($paths)),
+            [
+                [
+                    'id' => 'method:relative-php',
+                    'labels' => ['Method'],
+                    'properties' => ['kind' => 'method', 'name' => 'backend/app/Foo.php', 'label' => 'backend/app/Foo.php'],
+                ],
+                [
+                    'id' => 'method:relative-ts',
+                    'labels' => ['Method'],
+                    'properties' => ['kind' => 'method', 'name' => 'src/Foo.ts', 'label' => 'src/Foo.ts'],
+                ],
+                [
+                    'id' => 'route:dotted',
+                    'labels' => ['Route'],
+                    'properties' => ['kind' => 'route', 'source' => 'route_registry', 'path' => '/.well-known/openid-configuration'],
+                ],
+            ],
+        ),
+        'relationships' => [],
+        'private_route_provenance' => [
+            'route:dotted' => true,
+        ],
+    ];
+    $client = new FakeNeo4jClient;
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+    $nodeBatch = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
+    );
+    $properties = collect($nodeBatch['params']['nodes'])->keyBy('id')->map(fn (array $node): array => $node['properties']);
+
+    foreach (array_keys($paths) as $index) {
+        expect($properties['route:local-root-'.$index]['public_search_path'])->toBeNull();
+    }
+    expect($properties['method:relative-php']['public_search_name'])->toBeNull()
+        ->and($properties['method:relative-php']['public_search_label'])->toBeNull()
+        ->and($properties['method:relative-ts']['public_search_name'])->toBeNull()
+        ->and($properties['method:relative-ts']['public_search_label'])->toBeNull()
+        ->and($properties['route:dotted']['public_search_path'])->toBe('/.well-known/openid-configuration');
+});
+
+it('preserves valid PHP namespaces while rejecting Windows and source-path identities', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-fqcn-boundaries', str_repeat('j', 64)));
+    $valid = [
+        'App\\Services\\InvoiceService',
+        'Domain\\Billing\\ChargeInvoice',
+    ];
+    $invalid = [
+        'C:\\workspace\\Foo.php',
+        'C:workspace\\Foo.php',
+        '.\\src\\Foo.php',
+        '..\\backend\\Foo.php',
+        '\\\\server\\share\\Foo.php',
+        '\\\\?\\C:\\Foo.php',
+        'source=C:\\Foo.php',
+        'src\\Foo.php',
+    ];
+    $nodes = [];
+    foreach ([...$valid, ...$invalid] as $index => $value) {
+        $nodes[] = [
+            'id' => 'class:boundary-'.$index,
+            'labels' => ['Class'],
+            'properties' => [
+                'kind' => 'class',
+                'name' => $value,
+                'label' => $value,
+            ],
+        ];
+    }
+    $client = new FakeNeo4jClient;
+
+    app(Neo4jCanonicalGraphProjector::class)->project(['nodes' => $nodes, 'relationships' => []], $projection, $client);
+    $nodeBatch = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
+    );
+    $properties = collect($nodeBatch['params']['nodes'])->keyBy('id')->map(fn (array $node): array => $node['properties']);
+
+    foreach (array_keys($valid) as $index) {
+        expect($properties['class:boundary-'.$index]['public_search_name'])->toBe($valid[$index])
+            ->and($properties['class:boundary-'.$index]['public_search_label'])->toBe($valid[$index]);
+    }
+    foreach (array_keys($invalid) as $offset) {
+        $index = count($valid) + $offset;
+        expect($properties['class:boundary-'.$index]['public_search_name'])->toBeNull()
+            ->and($properties['class:boundary-'.$index]['public_search_label'])->toBeNull();
+    }
+});
+
+it('persists relationship source and target identities for path endpoint materialization', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-edge-endpoints', str_repeat('g', 64)));
+    $graph = [
+        'nodes' => [
+            ['id' => 'method:Caller', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => 'Caller']],
+            ['id' => 'method:Target', 'labels' => ['Method'], 'properties' => ['kind' => 'method', 'name' => 'Target']],
+        ],
+        'relationships' => [[
+            'id' => 'edge:caller-target',
+            'source_id' => 'method:Caller',
+            'target_id' => 'method:Target',
+            'type' => 'CALLS_METHOD',
+            'properties' => ['weight' => 1],
+        ]],
+    ];
+    $client = new FakeNeo4jClient;
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+    $relationshipBatch = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $relationships AS relationship'),
+    );
+    $edgeProperties = $relationshipBatch['params']['relationships'][0]['properties'];
+
+    expect($edgeProperties)->toMatchArray([
+        'weight' => 1,
+        'source_id' => 'method:Caller',
+        'target_id' => 'method:Target',
+    ]);
+});
+
+it('creates edge-type composite indexes for deterministic adjacency traversal', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-adjacency-indexes', str_repeat('h', 64)));
+    $client = new FakeNeo4jClient;
+
+    app(Neo4jCanonicalGraphProjector::class)->project([
+        'nodes' => [],
+        'relationships' => [],
+    ], $projection, $client);
+    $indexCyphers = collect($client->commands)
+        ->filter(fn (array $command): bool => str_contains($command['cypher'], 'CREATE INDEX canonical_adjacency_'))
+        ->pluck('cypher')
+        ->all();
+
+    $historicalNames = ['canonical_adjacency_direction_rank', 'canonical_adjacency_any_rank'];
+    $newNames = ['canonical_adjacency_direction_edge_type_rank_v2', 'canonical_adjacency_any_edge_type_rank_v2'];
+    $historicalDefinitions = [
+        'CREATE INDEX canonical_adjacency_direction_rank IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.direction, a.direction_rank)',
+        'CREATE INDEX canonical_adjacency_any_rank IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.any_rank)',
+    ];
+
+    expect($indexCyphers)->toContain('CREATE INDEX canonical_adjacency_direction_edge_type_rank_v2 IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.direction, a.edge_type, a.direction_rank)')
+        ->and($indexCyphers)->toContain('CREATE INDEX canonical_adjacency_any_edge_type_rank_v2 IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.edge_type, a.any_rank)')
+        ->and(array_intersect($newNames, $historicalNames))->toBe([])
+        ->and(array_intersect($historicalDefinitions, $indexCyphers))->toBe([])
+        ->and(collect($indexCyphers)->filter(fn (string $query): bool => str_contains($query, $newNames[0]))->first())->toContain('a.edge_type, a.direction_rank')
+        ->and(collect($indexCyphers)->filter(fn (string $query): bool => str_contains($query, $newNames[1]))->first())->toContain('a.edge_type, a.any_rank');
+});
+
+it('stamps the public handle key identity and binds handles to the physical candidate graph version', function (): void {
+    config(['app.key' => 'unit-test-app-key']);
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-rotation-metadata', str_repeat('c', 64)));
+    $projection->logical_graph_version = 'origin-v1';
+    $projection->graph_version = 'published-v2';
+    $projection->active_graph_version = 'old-v1';
+    $client = new FakeNeo4jClient;
+    $graph = [
+        'nodes' => [[
+            'id' => 'method:Rotation::run',
+            'labels' => ['Method'],
+            'properties' => ['kind' => 'method', 'name' => 'Rotation::run'],
+        ]],
+        'relationships' => [],
+    ];
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+
+    $version = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'MERGE (v:CanonicalGraphVersion'),
+    );
+    $nodeBatch = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
+    );
+
+    expect($version['params']['metadata']['public_handle_key_version'])->toBe('gh1')
+        ->and($version['params']['metadata']['public_handle_key_fingerprint'])
+        ->toBe(hash('sha256', 'unit-test-app-key'))
+        ->and($nodeBatch['params']['nodes'][0]['properties']['public_handle'])
+        ->toBe(app(\App\Services\Graph\DashboardGraphPublicHandle::class)->forNode(
+            $projectId,
+            'workspace_binding',
+            'binding-1',
+            'published-v2',
+            'method:Rotation::run',
+        ));
+});
+
+it('does not persist technical legacy values into public search fields', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-legacy-search-values', str_repeat('e', 64)));
+    $graph = [
+        'nodes' => [
+            [
+                'id' => 'method:LegacyHades',
+                'labels' => ['Method'],
+                'properties' => [
+                    'kind' => 'method',
+                    'name' => 'hades-public-v1-node-legacy',
+                    'label' => 'hades-public-v1-label-legacy',
+                ],
+            ],
+            [
+                'id' => 'method:LegacyTechnical',
+                'labels' => ['Method'],
+                'properties' => [
+                    'kind' => 'method',
+                    'name' => 'node-legacy-123',
+                    'label' => 'edge-legacy-123',
+                ],
+            ],
+        ],
+        'relationships' => [],
+    ];
+    $client = new FakeNeo4jClient;
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+    $nodeBatch = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
+    );
+    $properties = array_column($nodeBatch['params']['nodes'], 'properties');
+
+    expect($properties[0]['public_search_name'])->toBeNull()
+        ->and($properties[0]['public_search_label'])->toBeNull()
+        ->and($properties[1]['public_search_name'])->toBeNull()
+        ->and($properties[1]['public_search_label'])->toBeNull();
+});
+
+it('rotates public handles through a forced candidate and atomic publication', function (): void {
+    $keyA = 'rotation-key-a';
+    $keyB = 'rotation-key-b';
+    config(['app.key' => $keyA]);
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $service = app(CanonicalGraphProjectionService::class);
+    $identityGraph = canonicalProjectionGraph($projectId, 'artifact-rotation-lifecycle', str_repeat('d', 64));
+    $initial = $service->queue($identityGraph);
+    $service->markProjecting($initial->id);
+    $service->markReady($initial->id, 1, 0, function (): void {});
+    $publishedBefore = DB::table('canonical_graph_projections')->where('id', $initial->id)->firstOrFail();
+    $oldHandle = app(\App\Services\Graph\DashboardGraphPublicHandle::class)->forNode(
+        $projectId,
+        'workspace_binding',
+        'binding-1',
+        (string) $publishedBefore->active_graph_version,
+        'method:Rotation::run',
+    );
+
+    $claim = $service->acquireForForcedRebuild($identityGraph);
+    expect($claim['claimed'])->toBeTrue();
+    $candidate = $claim['projection'];
+    expect($candidate->logical_graph_version)->toBe($publishedBefore->graph_version)
+        ->and($candidate->active_graph_version)->toBe($publishedBefore->active_graph_version)
+        ->and($candidate->graph_version)->not->toBe($publishedBefore->graph_version);
+
+    config(['app.key' => $keyB]);
+    $client = new FakeNeo4jClient;
+    $physicalGraph = [
+        'nodes' => [[
+            'id' => 'method:Rotation::run',
+            'labels' => ['Method'],
+            'properties' => ['kind' => 'method', 'name' => 'Rotation::run'],
+        ]],
+        'relationships' => [],
+    ];
+    $projector = app(Neo4jCanonicalGraphProjector::class);
+    $counts = $projector->project($physicalGraph, $candidate, $client);
+    $versionCommand = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'MERGE (v:CanonicalGraphVersion'),
+    );
+    $nodeCommand = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
+    );
+    $candidateHandle = app(\App\Services\Graph\DashboardGraphPublicHandle::class)->forNode(
+        $projectId,
+        'workspace_binding',
+        'binding-1',
+        (string) $candidate->graph_version,
+        'method:Rotation::run',
+    );
+
+    $published = $service->publishPublicationAttempt(
+        $claim['attempt_id'],
+        $claim['owner_token'],
+        $counts['nodes'],
+        $counts['relationships'],
+        fn (): mixed => $projector->publishCurrent($candidate, $client),
+    );
+    $publishedAfter = DB::table('canonical_graph_projections')->where('id', $initial->id)->firstOrFail();
+
+    expect($versionCommand['params']['metadata']['public_handle_key_fingerprint'])
+        ->toBe(hash('sha256', $keyB))
+        ->not->toBe(hash('sha256', $keyA))
+        ->and($nodeCommand['params']['nodes'][0]['properties']['public_handle'])->toBe($candidateHandle)
+        ->and($candidateHandle)->not->toBe($oldHandle)
+        ->and($published)->not->toBeNull()
+        ->and($publishedAfter->status)->toBe('ready')
+        ->and($publishedAfter->active_graph_version)->toBe($candidate->graph_version)
+        ->and($publishedAfter->active_graph_version)->not->toBe($publishedBefore->active_graph_version);
+});
+
+it('fails closed when APP_KEY is unavailable instead of storing a null public handle', function (): void {
+    config(['app.key' => null]);
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-missing-key', str_repeat('b', 64)));
+    $graph = [
+        'nodes' => [[
+            'id' => 'method:MissingKey',
+            'labels' => ['Method'],
+            'properties' => ['kind' => 'method', 'name' => 'MissingKey'],
+        ]],
+        'relationships' => [],
+    ];
+    $client = new FakeNeo4jClient;
+
+    expect(fn (): array => app(Neo4jCanonicalGraphProjector::class)
+        ->project($graph, $projection, $client))
+        ->toThrow(InvalidArgumentException::class, 'invalid_handle');
+    expect($client->commands)->toBe([]);
 });
 
 it('locks the stable project row before locking the projection candidate', function () {

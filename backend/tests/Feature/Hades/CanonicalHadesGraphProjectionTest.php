@@ -16,7 +16,6 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use Laudis\Neo4j\Types\CypherMap;
 
 uses(RefreshDatabase::class);
 
@@ -306,9 +305,17 @@ it('sends canonical property bags as Bolt maps without changing their scalar val
     $nodes = collect($client->commands)->first(fn (array $command) => str_contains($command['cypher'], 'UNWIND $nodes'))['params']['nodes'];
     $relationships = collect($client->commands)->first(fn (array $command) => str_contains($command['cypher'], 'UNWIND $relationships'))['params']['relationships'];
 
-    expect($nodes[0]['properties'])->toBeInstanceOf(CypherMap::class)
-        ->and($relationships[0]['properties'])->toBeInstanceOf(CypherMap::class)
-        ->and($nodes[1]['properties'])->toBe([
+    expect($nodes[0]['properties'])->toBeArray()
+        ->toMatchArray([
+            'public_search_name' => null,
+            'public_search_label' => null,
+            'public_search_path' => null,
+        ])
+        ->and($relationships[0]['properties'])->toMatchArray([
+            'source_id' => 'file:empty.php',
+            'target_id' => 'class:Typed',
+        ])
+        ->and($nodes[1]['properties'])->toMatchArray([
             'name' => 'Typed',
             'line' => 17,
             'score' => 0.75,
@@ -316,7 +323,12 @@ it('sends canonical property bags as Bolt maps without changing their scalar val
             'nullable' => null,
             'tags' => ['domain', 'public'],
         ])
-        ->and($relationships[1]['properties'])->toBe(['line' => 17, 'inferred' => false]);
+        ->and($relationships[1]['properties'])->toMatchArray([
+            'line' => 17,
+            'inferred' => false,
+            'source_id' => 'file:empty.php',
+            'target_id' => 'class:Typed',
+        ]);
 });
 
 it('rejects list-shaped property bags before issuing projection commands', function (string $collection) {

@@ -96,6 +96,10 @@ class ImportGraphToNeo4j implements ShouldQueue
                     ]];
                 }
 
+                if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
+                    return [['adjacencies' => $params['expected_adjacencies']]];
+                }
+
                 return [];
             }
         };

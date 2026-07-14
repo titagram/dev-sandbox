@@ -12,24 +12,46 @@ class Neo4jCanonicalGraphProjector
 {
     private const BATCH_SIZE = 500;
 
+    private readonly DashboardGraphPublicHandle $publicHandles;
+
+    public function __construct(?DashboardGraphPublicHandle $publicHandles = null)
+    {
+        $this->publicHandles = $publicHandles ?? new DashboardGraphPublicHandle;
+    }
+
     /** @return array{nodes:int, relationships:int} */
     public function project(array $graph, object $projection, Neo4jClient $client, ?Closure $heartbeat = null): array
     {
         $this->assertPropertyBagsAreMaps($graph);
         $this->assertHeartbeat($heartbeat);
+        $publicHandleKeyVersion = $this->publicHandles->keyVersion();
+        $publicHandleKeyFingerprint = $this->publicHandles->keyFingerprint();
 
         $scope = ['graph_version' => $projection->graph_version, 'project_id' => $projection->project_id, 'source_scope_type' => $projection->source_scope_type, 'source_scope_id' => $projection->source_scope_id];
         $client->run('CREATE INDEX canonical_node_version_external IF NOT EXISTS FOR (n:CanonicalGraphNode) ON (n.graph_version, n.external_id)');
         $client->run('CREATE INDEX canonical_version_identity IF NOT EXISTS FOR (v:CanonicalGraphVersion) ON (v.graph_version)');
-        $client->run('CREATE INDEX canonical_adjacency_direction_rank IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.direction, a.direction_rank)');
-        $client->run('CREATE INDEX canonical_adjacency_any_rank IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.any_rank)');
+        $client->run('CREATE INDEX canonical_adjacency_direction_edge_type_rank_v2 IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.direction, a.edge_type, a.direction_rank)');
+        $client->run('CREATE INDEX canonical_adjacency_any_edge_type_rank_v2 IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.edge_type, a.any_rank)');
+        $client->run('CALL db.awaitIndexes(300)');
+        $client->run('CREATE INDEX canonical_node_public_lookup IF NOT EXISTS FOR (n:CanonicalGraphNode) ON (n.project_id, n.source_scope_type, n.source_scope_id, n.graph_version, n.public_handle)');
+        $client->run('CREATE FULLTEXT INDEX canonical_node_search IF NOT EXISTS FOR (n:CanonicalGraphNode) ON EACH [n.graph_version, n.public_search_name, n.public_search_label, n.public_search_path]');
         $client->run('CALL db.awaitIndexes(300)');
         $this->assertHeartbeat($heartbeat);
-        $client->run('MERGE (v:CanonicalGraphVersion {graph_version: $graph_version}) ON CREATE SET v.current = false SET v += $metadata, v.status = \'projecting\'', $scope + ['metadata' => $this->boltPropertyMap($scope + ['snapshot_id' => $projection->snapshot_id ?? null])]);
+        $client->run(
+            'MERGE (v:CanonicalGraphVersion {graph_version: $graph_version}) ON CREATE SET v.current = false SET v += $metadata, v.status = \'projecting\'',
+            $scope + ['metadata' => $this->boltPropertyMap($scope + [
+                'snapshot_id' => $projection->snapshot_id ?? null,
+                'public_handle_key_version' => $publicHandleKeyVersion,
+                'public_handle_key_fingerprint' => $publicHandleKeyFingerprint,
+            ])],
+        );
 
+        $serverRouteProvenance = is_array($graph['private_route_provenance'] ?? null)
+            ? $graph['private_route_provenance']
+            : [];
         foreach (array_chunk($graph['nodes'], self::BATCH_SIZE) as $batch) {
             $this->assertHeartbeat($heartbeat);
-            $client->run('UNWIND $nodes AS node MERGE (n:CanonicalGraphNode {graph_version: $graph_version, external_id: node.id}) SET n += node.properties, n.graph_version = $graph_version, n.external_id = node.id, n.labels = node.labels, n.project_id = $project_id, n.source_scope_type = $source_scope_type, n.source_scope_id = $source_scope_id', $scope + ['nodes' => $this->withBoltPropertyMaps($batch)]);
+            $client->run('UNWIND $nodes AS node MERGE (n:CanonicalGraphNode {graph_version: $graph_version, external_id: node.id}) SET n += node.properties, n.graph_version = $graph_version, n.external_id = node.id, n.labels = node.labels, n.project_id = $project_id, n.source_scope_type = $source_scope_type, n.source_scope_id = $source_scope_id, n.public_handle = node.properties.public_handle', $scope + ['nodes' => $this->withCanonicalNodeProperties($batch, $projection, $serverRouteProvenance)]);
         }
         foreach ($this->relationshipsByType($graph['relationships']) as $type => $relationships) {
             foreach (array_chunk($relationships, self::BATCH_SIZE) as $batch) {
@@ -111,6 +133,143 @@ class Neo4jCanonicalGraphProjector
         ];
     }
 
+    /**
+     * Add only dashboard-safe, derived search fields to the stored node
+     * properties. Raw external ids and local filesystem paths are deliberately
+     * kept out of the FULLTEXT fields.
+     *
+     * @param list<array<string, mixed>> $rows
+     * @param array<string, true> $serverRouteProvenance
+     * @return list<array<string, mixed>>
+     */
+    private function withCanonicalNodeProperties(array $rows, object $projection, array $serverRouteProvenance = []): array
+    {
+        foreach ($rows as &$row) {
+            $externalId = (string) ($row['id'] ?? '');
+            $properties = is_array($row['properties'] ?? null) ? $row['properties'] : [];
+            $kind = $this->nodeKind($row, $properties);
+            $publicProperties = [
+                'public_handle' => $this->safePublicHandle($projection, $externalId),
+                'public_search_name' => $this->safeSearchValue($properties['name'] ?? null),
+                'public_search_label' => $this->safeSearchValue($properties['label'] ?? null),
+                'public_search_path' => $kind === 'route'
+                    ? $this->safeRoutePath($properties['path'] ?? $properties['uri'] ?? $properties['route'] ?? null, isset($serverRouteProvenance[$externalId]))
+                    : null,
+            ];
+            unset($properties['__hades_server_route_provenance'], $properties['route_provenance']);
+            $row['properties'] = $this->boltPropertyMap(array_merge($properties, $publicProperties));
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    private function safePublicHandle(object $projection, string $externalId): string
+    {
+        return $this->publicHandles->forNode(
+            (string) $projection->project_id,
+            (string) $projection->source_scope_type,
+            (string) $projection->source_scope_id,
+            (string) $projection->graph_version,
+            $externalId,
+        );
+    }
+
+    private function nodeKind(array $row, array $properties): string
+    {
+        $kind = strtolower(trim((string) ($properties['kind'] ?? '')));
+        if ($kind !== '') {
+            return $kind;
+        }
+
+        foreach (($row['labels'] ?? []) as $label) {
+            $normalized = strtolower(trim((string) $label));
+            if ($normalized !== '' && $normalized !== 'symbol') {
+                return $normalized;
+            }
+        }
+
+        return 'unknown';
+    }
+
+    private function safeSearchValue(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+        $value = trim(preg_replace('/[\x00-\x1F\x7F]+/', ' ', $value) ?? '');
+
+        return $value === '' || $this->isTechnicalIdentity($value)
+            ? null
+            : mb_substr($value, 0, 200);
+    }
+
+    private function isTechnicalIdentity(string $value, bool $allowPublicRouteSyntax = false): bool
+    {
+        if (preg_match('/\A(?:hades-public-|legacy[-_:]|(?:node|edge|internal)[-_:])/i', $value) === 1) {
+            return true;
+        }
+
+        $normalised = str_replace('\\', '/', $value);
+        if (stripos($normalised, 'file://') !== false
+            || preg_match('~(?:\A|[^A-Za-z0-9_])([A-Za-z]):(?:[\\/]|[A-Za-z0-9_.-]*[\\/])~', $value) === 1
+            || preg_match('~(?:\A|[\s:=\[\(,|])(?:\\\\\?\\\\|\\\\\\\\|//)~', $value) === 1
+            || preg_match('~(?:\A|[\s:=\[\(,|])\.\.?[\\/]~', $value) === 1
+            || (str_contains($value, '\\') && ! $this->isValidPhpFqcn($value))) {
+            return true;
+        }
+
+        if (! $allowPublicRouteSyntax && preg_match('~(?:\A|[\s:=\[\(,|])/~', $normalised) === 1) {
+            return true;
+        }
+
+        if (! $allowPublicRouteSyntax
+            && preg_match('~(?:\A|[\s:=\[\(,|])(?:[^\s:=\[\(,|/]+/)+[^\s/]+~', $normalised) === 1) {
+            return true;
+        }
+
+        if (! $allowPublicRouteSyntax
+            && preg_match('/(?:\A|[\s:=\[\(,|])(?:\.\.?|[A-Za-z0-9_.-]+)[\\/][^\s]+/D', $value) === 1) {
+            return true;
+        }
+
+        if ($allowPublicRouteSyntax && preg_match('/(?:\A|\/)[^\/{}?*]+\.(?:php|phar|inc|phtml|ts|tsx|js|jsx|mjs|cjs|py|rb|go|java|kt|kts|rs|c|cc|cpp|h|hpp|swift|dart|vue|svelte|sql|yaml|yml|json|xml|toml|ini|env)(?:\/|\z)/i', $normalised) === 1) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function isValidPhpFqcn(string $value): bool
+    {
+        return preg_match('/\A\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+\z/D', $value) === 1;
+    }
+
+    private function safeRoutePath(mixed $value, bool $serverOwnedRoute): ?string
+    {
+        if (! is_string($value) || ! $serverOwnedRoute) {
+            return null;
+        }
+        $value = trim($value);
+
+        return strlen($value) <= 512
+            && ! $this->isTechnicalIdentity($value, true)
+            && $this->isPublicRoutePath($value)
+                ? $value
+                : null;
+    }
+
+    private function isPublicRoutePath(string $value): bool
+    {
+        if (preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) !== 1) {
+            return false;
+        }
+        $segments = array_values(array_filter(explode('/', trim($value, '/')), static fn (string $segment): bool => $segment !== ''));
+        $root = strtolower((string) ($segments[0] ?? ''));
+
+        return $root === 'api' || $root === '.well-known' || count($segments) === 1;
+    }
+
     private function assertHeartbeat(?Closure $heartbeat): void
     {
         if ($heartbeat !== null && $heartbeat() !== true) {
@@ -184,6 +343,10 @@ class Neo4jCanonicalGraphProjector
         foreach ($relationships as $relationship) {
             $type = preg_replace('/[^A-Z0-9_]/', '_', strtoupper((string) $relationship['type'])) ?: 'RELATED';
             $relationship['id'] ??= hash('sha256', $relationship['source_id'].'|'.$type.'|'.$relationship['target_id']);
+            $relationship['properties'] = array_merge($relationship['properties'] ?? [], [
+                'source_id' => (string) $relationship['source_id'],
+                'target_id' => (string) $relationship['target_id'],
+            ]);
             $groups[$type][] = $relationship;
         }
 

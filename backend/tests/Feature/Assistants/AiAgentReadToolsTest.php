@@ -284,7 +284,7 @@ it('QueryProjectGraphTool accepts structured query arguments for callers', funct
         ->and($payload['symbol_id'])->toBe('App\\Services\\InvoiceService');
 });
 
-it('scopes structured callers graph queries to the requested project latest snapshot', function () {
+it('scopes structured callers graph queries to the requested project active canonical projection', function () {
     Storage::fake('local');
 
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
@@ -297,6 +297,27 @@ it('scopes structured callers graph queries to the requested project latest snap
         'relationships' => [
             ['id' => 'calls-1', 'source_id' => 'App\\Http\\Controllers\\InvoiceController', 'target_id' => 'App\\Services\\InvoiceService', 'type' => 'CALLS'],
         ],
+    ]);
+    $artifactId = (string) DB::table('snapshots')->where('id', $snapshotId)->value('graph_snapshot_artifact_id');
+    $now = now();
+    DB::table('canonical_graph_projections')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $projectId,
+        'source_scope_type' => 'repository',
+        'source_scope_id' => $repositoryId,
+        'artifact_type' => 'legacy_artifact',
+        'artifact_id' => $artifactId,
+        'graph_version' => 'origin-v1',
+        'active_graph_version' => 'published-v2',
+        'checksum' => hash('sha256', $snapshotId),
+        'head_commit' => str_repeat('b', 40),
+        'quality' => 'full',
+        'status' => 'ready',
+        'node_count' => 2,
+        'relationship_count' => 1,
+        'projected_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
     ]);
     $fakeClient = new FakeNeo4jClient;
 
@@ -314,13 +335,17 @@ it('scopes structured callers graph queries to the requested project latest snap
         'project_id' => $payload['project_id'],
         'reason' => $payload['reason'] ?? null,
         'commands' => count($fakeClient->commands),
-        'command_snapshot_id' => $fakeClient->commands[0]['params']['snapshot_id'] ?? null,
+        'command_graph_version' => $fakeClient->commands[0]['params']['graph_version'] ?? null,
+        'command_source_scope_type' => $fakeClient->commands[0]['params']['source_scope_type'] ?? null,
+        'command_source_scope_id' => $fakeClient->commands[0]['params']['source_scope_id'] ?? null,
     ])->toBe([
         'found' => true,
         'project_id' => $projectId,
         'reason' => null,
         'commands' => 1,
-        'command_snapshot_id' => $snapshotId,
+        'command_graph_version' => 'published-v2',
+        'command_source_scope_type' => 'repository',
+        'command_source_scope_id' => $repositoryId,
     ]);
 });
 

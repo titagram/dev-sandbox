@@ -11,6 +11,8 @@ class CanonicalGraphRepository
 {
     private const SCOPES = ['workspace_binding', 'repository'];
 
+    private const SERVER_ROUTE_PROVENANCE_FIELD = '__hades_server_route_provenance';
+
     public function __construct(private readonly CanonicalGraphNormalizer $normalizer) {}
 
     /**
@@ -338,9 +340,14 @@ class CanonicalGraphRepository
         $language = (string) ($payload['language'] ?? ($schema === 'hades.php_graph.v1' ? 'php' : 'unknown'));
         $payload = $this->adaptLegacy($payload, 'hades-legacy-'.$language, $language);
         $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
+        $contracted = array_key_exists('graph_contract', $payload);
+        $legacyRouteIds = is_array($payload['__hades_route_record_ids'] ?? null)
+            ? array_fill_keys(array_map('strval', $payload['__hades_route_record_ids']), true)
+            : [];
+        $graph = $this->normalizer->normalize($payload, $identity);
+        $graph['private_route_provenance'] = $this->stampRouteProvenance($graph, $contracted, $legacyRouteIds);
 
-        return $this->normalizer->normalize($payload, $identity)
-            + ['private_identity_provenance' => $privateIdentityProvenance];
+        return $graph + ['private_identity_provenance' => $privateIdentityProvenance];
     }
 
     private function normalizeSnapshot(object $artifact, string $projectId, string $repositoryId): ?array
@@ -353,9 +360,88 @@ class CanonicalGraphRepository
         $language = (string) ($payload['language'] ?? 'unknown');
         $payload = $this->adaptLegacy($payload, 'legacy-analyzer', $language);
         $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
+        $contracted = array_key_exists('graph_contract', $payload);
+        $legacyRouteIds = is_array($payload['__hades_route_record_ids'] ?? null)
+            ? array_fill_keys(array_map('strval', $payload['__hades_route_record_ids']), true)
+            : [];
+        $graph = $this->normalizer->normalize($payload, $this->identity($projectId, 'repository', $repositoryId, 'legacy_artifact', $artifact, $json));
+        $graph['private_route_provenance'] = $this->stampRouteProvenance($graph, $contracted, $legacyRouteIds);
 
-        return $this->normalizer->normalize($payload, $this->identity($projectId, 'repository', $repositoryId, 'legacy_artifact', $artifact, $json))
-            + ['private_identity_provenance' => $privateIdentityProvenance];
+        return $graph + ['private_identity_provenance' => $privateIdentityProvenance];
+    }
+
+    /**
+     * Mark only route identities validated by this backend normalization pass.
+     * The marker is kept outside the public graph property bag so producer
+     * supplied allowlist strings cannot authorize a route in projection.
+     *
+     * @param array<string, mixed> $graph
+     * @param array<string, true> $legacyRouteIds
+     * @return array<string, true>
+     */
+    private function stampRouteProvenance(array &$graph, bool $contracted, array $legacyRouteIds): array
+    {
+        $provenance = [];
+        foreach ($graph['nodes'] as &$node) {
+            $id = (string) ($node['id'] ?? '');
+            $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+            unset($properties[self::SERVER_ROUTE_PROVENANCE_FIELD], $properties['route_provenance']);
+
+            if ($this->isRouteNode($properties)) {
+                $uri = $this->normalizedRouteUri($properties, $contracted || isset($legacyRouteIds[$id]));
+                if ($uri !== null) {
+                    $field = array_key_exists('path', $properties) ? 'path' : (array_key_exists('route', $properties) ? 'route' : 'uri');
+                    $properties[$field] = $uri;
+                    $provenance[$id] = true;
+                }
+            }
+
+            $node['properties'] = $properties;
+        }
+        unset($node);
+
+        return $provenance;
+    }
+
+    private function isRouteNode(array $properties): bool
+    {
+        return in_array(strtolower(trim((string) ($properties['kind'] ?? ''))), ['route', 'http_endpoint', 'httpendpoint', 'endpoint'], true);
+    }
+
+    private function normalizedRouteUri(array $properties, bool $allowContractRoute): ?string
+    {
+        $candidate = null;
+        foreach (['path', 'uri', 'route', 'url'] as $field) {
+            if (is_string($properties[$field] ?? null)) {
+                $candidate = trim($properties[$field]);
+                break;
+            }
+        }
+        if ($candidate === null || $candidate === '' || strlen($candidate) > 512) {
+            return null;
+        }
+
+        if (! str_starts_with($candidate, '/')) {
+            $candidate = '/'.$candidate;
+        }
+        if (preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $candidate) !== 1
+            || preg_match('/(?:\A|\/)[^\/{}?*]+\.(?:php|phar|inc|phtml|ts|tsx|js|jsx|mjs|cjs|py|rb|go|java|kt|kts|rs|c|cc|cpp|h|hpp|swift|dart|vue|svelte|sql|yaml|yml|json|xml|toml|ini|env)(?:\/|\z)/i', $candidate) === 1
+            || str_contains($candidate, '\\')
+            || stripos($candidate, 'file://') !== false) {
+            return null;
+        }
+
+        $segments = array_values(array_filter(explode('/', trim($candidate, '/')), static fn (string $segment): bool => $segment !== ''));
+        $root = strtolower((string) ($segments[0] ?? ''));
+        if (! $allowContractRoute) {
+            return $candidate;
+        }
+
+        return $root === 'api'
+            || $root === '.well-known'
+            || count($segments) === 1
+                ? $candidate
+                : null;
     }
 
     /**
@@ -438,6 +524,7 @@ class CanonicalGraphRepository
         $nodeKey = is_array($payload['nodes'] ?? null) ? 'nodes' : 'symbols';
         $nodes = is_array($payload[$nodeKey] ?? null) ? array_values($payload[$nodeKey]) : [];
         $knownIds = [];
+        $routeRecordIds = [];
         foreach (array_filter($nodes, 'is_array') as $node) {
             $nodeId = $node['id'] ?? $node['symbol_id'] ?? null;
             if (is_string($nodeId) && trim($nodeId) !== '') {
@@ -460,6 +547,7 @@ class CanonicalGraphRepository
             }
             $nodeId = 'route:'.$routeReference;
             if (isset($knownIds[$nodeId])) {
+                $routeRecordIds[] = $nodeId;
                 continue;
             }
 
@@ -472,16 +560,18 @@ class CanonicalGraphRepository
                 'id' => $nodeId,
                 'kind' => 'route',
                 'name' => $name !== '' ? $name : trim($method.' '.$uri),
-                'properties' => $properties,
+                'properties' => $properties + ['route_provenance' => 'legacy_route_record'],
             ];
             if (is_string($route['path'] ?? null) && trim($route['path']) !== '') {
                 $node['path'] = trim($route['path']);
             }
             $nodes[] = $node;
             $knownIds[$nodeId] = true;
+            $routeRecordIds[] = $nodeId;
         }
 
         $payload[$nodeKey] = $nodes;
+        $payload['__hades_route_record_ids'] = array_values(array_unique($routeRecordIds));
 
         return $payload;
     }

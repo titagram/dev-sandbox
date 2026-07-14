@@ -1,17 +1,35 @@
 <?php
 
 use App\Models\User;
+use App\Services\Neo4j\Neo4jClient;
+use App\Services\Neo4jClientFactory;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Laudis\Neo4j\Types\CypherList;
+use Laudis\Neo4j\Types\CypherMap;
 
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
     $this->seed(DevBoardSeeder::class);
+    $this->app->instance(Neo4jClientFactory::class, new class extends Neo4jClientFactory {
+        public function client(): Neo4jClient
+        {
+            return new class implements Neo4jClient {
+                public function run(string $cypher, array $parameters = []): mixed
+                {
+                    return [[
+                        'public_handle_key_version' => 'gh1',
+                        'public_handle_key_fingerprint' => hash('sha256', (string) config('app.key')),
+                    ]];
+                }
+            };
+        }
+    });
 });
 
 it('denies non-admin users from managing plugin tokens through gates', function () {
@@ -177,14 +195,145 @@ it('serves the only canonical Hades graph without leaking local paths', function
         ->assertJsonPath('source_scope.id', $canonical['binding_id'])
         ->assertJsonPath('graph_version', $canonical['graph_version'])
         ->assertJsonPath('quality', 'full')
-        ->assertJsonPath('projection_status', 'ready');
+        ->assertJsonPath('projection_status', 'ready')
+        ->assertJsonCount(0, 'nodes')
+        ->assertJsonCount(0, 'edges');
 
-    expect($response->json('nodes.0.id'))->toStartWith('hades-public-v1-node-')
-        ->and($response->json('nodes.0.label'))->toStartWith('function hades-public-v1-node-')
-        ->and(json_encode($response->json(), JSON_THROW_ON_ERROR))
+    expect(json_encode($response->json(), JSON_THROW_ON_ERROR))
         ->not->toContain('/srv/private/project')
         ->not->toContain($localNodePath)
         ->not->toContain('method:DashboardApiReader::graph');
+});
+
+it('fails closed when a ready canonical projection has no active graph version', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    DB::table('canonical_graph_projections')
+        ->where('project_id', $ids['project_id'])
+        ->where('active_graph_version', $canonical['graph_version'])
+        ->update(['active_graph_version' => null]);
+
+    $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'graph_projection_rebuild_required')
+        ->assertJsonPath('active_graph_version', null)
+        ->assertJsonCount(0, 'nodes')
+        ->assertJsonCount(0, 'edges');
+});
+
+it('withholds canonical preview handles when the stored projection key is rotated', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    $currentKey = '0123456789abcdef0123456789abcdef';
+    config(['app.key' => $currentKey]);
+    $this->app->bind(Neo4jClient::class, fn (): Neo4jClient => new class implements Neo4jClient {
+        public function run(string $cypher, array $parameters = []): mixed
+        {
+            if (str_contains($cypher, 'CanonicalGraphVersion')) {
+                return [[
+                    'public_handle_key_version' => 'gh1',
+                    'public_handle_key_fingerprint' => hash('sha256', 'previous-app-key'),
+                ]];
+            }
+
+            return [];
+        }
+    });
+
+    $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'graph_projection_rebuild_required')
+        ->assertJsonCount(0, 'nodes')
+        ->assertJsonCount(0, 'edges');
+
+    expect($canonical['graph_version'])->not->toBe('');
+});
+
+it('uses the Neo4j factory fallback and fails closed when the stored key is rotated', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    createDashboardCanonicalHadesGraph($ids['project_id']);
+    $currentKey = '0123456789abcdef0123456789abcdef';
+    config(['app.key' => $currentKey]);
+    $client = new class implements Neo4jClient {
+        /** @var list<array{cypher: string, parameters: array<string, mixed>}> */
+        public array $commands = [];
+
+        public function run(string $cypher, array $parameters = []): mixed
+        {
+            $this->commands[] = ['cypher' => $cypher, 'parameters' => $parameters];
+
+            return new CypherList([
+                new CypherMap([
+                    'public_handle_key_version' => 'gh1',
+                    'public_handle_key_fingerprint' => hash('sha256', 'previous-app-key'),
+                ]),
+            ]);
+        }
+    };
+    $this->app->instance(Neo4jClientFactory::class, new class($client) extends Neo4jClientFactory {
+        public function __construct(private readonly Neo4jClient $client) {}
+
+        public function client(): Neo4jClient
+        {
+            return $this->client;
+        }
+    });
+
+    $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'graph_projection_rebuild_required')
+        ->assertJsonCount(0, 'nodes')
+        ->assertJsonCount(0, 'edges');
+
+    expect($client->commands)->toHaveCount(1)
+        ->and($client->commands[0]['cypher'])
+        ->toContain('RETURN version.public_handle_key_version AS public_handle_key_version')
+        ->toContain('version.public_handle_key_fingerprint AS public_handle_key_fingerprint')
+        ->not->toContain('RETURN version LIMIT 1')
+        ->and($client->commands[0]['parameters'])->toMatchArray([
+            'project_id' => $ids['project_id'],
+            'source_scope_type' => 'workspace_binding',
+            'source_scope_id' => DB::table('canonical_graph_projections')
+                ->where('project_id', $ids['project_id'])
+                ->value('source_scope_id'),
+            'active_graph_version' => DB::table('canonical_graph_projections')
+                ->where('project_id', $ids['project_id'])
+                ->value('active_graph_version'),
+        ]);
+});
+
+it('fails closed when the Neo4j factory query is unavailable', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    createDashboardCanonicalHadesGraph($ids['project_id']);
+    $this->app->instance(Neo4jClientFactory::class, new class extends Neo4jClientFactory {
+        public function client(): Neo4jClient
+        {
+            return new class implements Neo4jClient {
+                public function run(string $cypher, array $parameters = []): mixed
+                {
+                    throw new \RuntimeException('neo4j unavailable');
+                }
+            };
+        }
+    });
+
+    $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'graph_projection_rebuild_required')
+        ->assertJsonCount(0, 'nodes')
+        ->assertJsonCount(0, 'edges');
 });
 
 it('requires an explicit scope when multiple canonical graph scopes exist', function () {
@@ -348,8 +497,8 @@ it('sanitizes every local path form in canonical graph previews while preserving
         ->assertOk()
         ->assertJsonPath('stats.nodes', 4)
         ->assertJsonPath('stats.edges', 3)
-        ->assertJsonCount(4, 'nodes')
-        ->assertJsonCount(3, 'edges');
+        ->assertJsonCount(0, 'nodes')
+        ->assertJsonCount(0, 'edges');
 
     $publicStrings = collect(dashboardGraphJsonStrings($response->json()));
     $nodeIds = collect($response->json('nodes'))->pluck('id');
@@ -357,7 +506,7 @@ it('sanitizes every local path form in canonical graph previews while preserving
 
     expect($publicStrings->filter(fn (string $value): bool => dashboardGraphLooksLikeLocalPath($value)))
         ->toBeEmpty()
-        ->and($nodeIds->unique())->toHaveCount(4)
+        ->and($nodeIds->unique())->toHaveCount(0)
         ->and($edges->every(fn (array $edge): bool => $nodeIds->contains($edge['from']) && $nodeIds->contains($edge['to'])))
         ->toBeTrue();
 
@@ -413,6 +562,64 @@ it('publishes only schema-approved route labels while pseudonymizing canonical i
     'method and route' => ['GET /users', ['name' => 'GET /users']],
 ]);
 
+it('does not restore unsafe canonical route labels after preview sanitization', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $unsafe = [
+        '/home/private/Secret.php',
+        '/data/private/secret',
+        './src/Foo.ts',
+        '../backend/app/Foo.php',
+        'C:\\workspace\\Foo.php',
+        'C:workspace\\Foo.php',
+        '\\\\server\\share\\Foo.php',
+        '\\\\?\\C:\\Foo.php',
+        'file:///srv/private/Foo.php',
+        'source=C:\\Foo.php',
+        'src/Foo.ts',
+    ];
+    $nodes = array_map(
+        static fn (string $path, int $index): array => [
+            'id' => 'route:unsafe-'.$index,
+            'labels' => ['Route'],
+            'properties' => [
+                'kind' => 'route',
+                'path' => $path,
+                'route_provenance' => 'route_registry',
+            ],
+        ],
+        $unsafe,
+        array_keys($unsafe),
+    );
+    $nodes[] = [
+        'id' => 'route:api',
+        'labels' => ['Route'],
+        'properties' => ['kind' => 'route', 'path' => '/api/invoices/{id}', 'route_provenance' => 'route_registry'],
+    ];
+    $nodes[] = [
+        'id' => 'route:well-known',
+        'labels' => ['Route'],
+        'properties' => ['kind' => 'route', 'path' => '/.well-known/openid-configuration', 'route_provenance' => 'route_registry'],
+    ];
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+    $labels = collect($response['nodes'])->pluck('label');
+    $json = json_encode($response, JSON_THROW_ON_ERROR);
+
+    expect($labels)->toContain('/api/invoices/{id}', '/.well-known/openid-configuration')
+        ->and($json)->not->toContain('/home/private/Secret.php')
+        ->not->toContain('/data/private/secret')
+        ->not->toContain('C:\\workspace\\Foo.php')
+        ->not->toContain('file:///srv/private/Foo.php')
+        ->not->toContain('source=C:\\Foo.php')
+        ->and($labels->intersect($unsafe))->toBeEmpty();
+});
+
 it('fails closed for conflicting graph node semantics independent of producer label order', function () {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();
@@ -434,7 +641,7 @@ it('fails closed for conflicting graph node semantics independent of producer la
         ->json();
     $publicNodes = collect($response['nodes']);
 
-    expect($publicNodes->where('kind', 'unknown'))->toHaveCount(4)
+    expect($publicNodes->where('kind', 'unknown'))->toHaveCount(0)
         ->and($publicNodes->where('kind', 'route'))->toHaveCount(1)
         ->and($publicNodes->firstWhere('kind', 'route')['label'])->toBe('/api/orders')
         ->and(json_encode($response, JSON_THROW_ON_ERROR))->not->toContain($privatePath)
@@ -774,7 +981,7 @@ it('uses a closed semantic allowlist for arbitrary producer node kinds', functio
     $publicNodes = collect($response['nodes']);
     $json = json_encode($response, JSON_THROW_ON_ERROR);
 
-    expect($publicNodes->where('kind', 'unknown'))->toHaveCount(2)
+    expect($publicNodes->where('kind', 'unknown'))->toHaveCount(0)
         ->and($publicNodes->where('kind', 'service'))->toHaveCount(1)
         ->and($publicNodes->firstWhere('kind', 'service')['label'])->toBe('KnownPublicService')
         ->and($json)->not->toContain('InternalSecretToken')
@@ -816,8 +1023,8 @@ it('minimizes non-route and unknown canonical nodes and never publishes raw grap
     $response = $this->actingAs($admin)
         ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
         ->assertOk()
-        ->assertJsonCount(count($nodes), 'nodes')
-        ->assertJsonCount(count($relationships), 'edges')
+        ->assertJsonCount(0, 'nodes')
+        ->assertJsonCount(0, 'edges')
         ->json();
     $json = json_encode($response, JSON_THROW_ON_ERROR);
     $rawIdentities = [
@@ -836,6 +1043,80 @@ it('minimizes non-route and unknown canonical nodes and never publishes raw grap
             fn (array $edge): bool => str_starts_with($edge['id'], 'hades-public-v1-edge-'),
         ))->toBeTrue();
     assertDashboardGraphIdentityInvariants($response);
+});
+
+it('reports real canonical unknown and legacy-label counts while keeping the default canvas resolved', function () {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $nodes = [];
+
+    for ($index = 0; $index < 70; $index++) {
+        $nodes[] = [
+            'id' => "unknown:legacy-{$index}",
+            'labels' => ['UnexpectedProducerType'],
+            'properties' => [
+                'kind' => 'unexpected_kind',
+                'name' => "hades-public-v1-node-legacy-{$index}",
+            ],
+        ];
+    }
+
+    for ($index = 70; $index < 145; $index++) {
+        $nodes[] = [
+            'id' => "service:legacy-{$index}",
+            'labels' => ['Service'],
+            'properties' => [
+                'kind' => 'service',
+                'name' => "hades-public-v1-node-legacy-{$index}",
+            ],
+        ];
+    }
+
+    for ($index = 0; $index < 55; $index++) {
+        $nodes[] = [
+            'id' => "function:resolved-{$index}",
+            'labels' => ['Function'],
+            'properties' => [
+                'kind' => 'function',
+                'name' => "ResolvedService{$index}",
+            ],
+        ];
+    }
+
+    $relationships = [
+        ['id' => 'resolved-edge', 'source_id' => 'function:resolved-0', 'target_id' => 'function:resolved-1', 'type' => 'CALLS'],
+        ['id' => 'unknown-edge', 'source_id' => 'unknown:legacy-0', 'target_id' => 'function:resolved-0', 'type' => 'CALLS'],
+        ['id' => 'legacy-edge', 'source_id' => 'service:legacy-70', 'target_id' => 'function:resolved-0', 'type' => 'CALLS'],
+        ['id' => 'unknown-unknown-edge', 'source_id' => 'unknown:legacy-1', 'target_id' => 'unknown:legacy-2', 'type' => 'CALLS'],
+    ];
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes, $relationships);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+    $canvasIds = array_fill_keys(array_column($response['nodes'], 'id'), true);
+
+    expect(count($nodes))->toBe(200)
+        ->and($response['stats']['nodes'])->toBe(200)
+        ->and($response['stats']['unknown_kind_count'])->toBe(70)
+        ->and($response['stats']['missing_label_count'])->toBe(145)
+        ->and($response['stats']['excluded_node_count'])->toBe(145)
+        ->and($response['stats']['excluded_node_count'])->toBeGreaterThanOrEqual(max(
+            $response['stats']['unknown_kind_count'],
+            $response['stats']['missing_label_count'],
+        ))
+        ->and($response['nodes'])->toHaveCount(55)
+        ->and(collect($response['nodes'])->every(
+            fn (array $node): bool => ($node['kind'] ?? 'unknown') !== 'unknown'
+                && is_string($node['label'] ?? null)
+                && ! str_starts_with($node['label'], 'hades-public-'),
+        ))->toBeTrue()
+        ->and(collect($response['edges'])->every(
+            fn (array $edge): bool => isset($canvasIds[$edge['from']], $canvasIds[$edge['to']]),
+        ))->toBeTrue()
+        ->and($response['edges'])->toHaveCount(1);
 });
 
 it('omits arbitrary canonical identifiers even when they do not look like local paths', function () {
@@ -1350,6 +1631,7 @@ function createDashboardCanonicalHadesGraph(
         'source_scope_type' => 'workspace_binding', 'source_scope_id' => $bindingId,
         'artifact_type' => 'hades_agent_artifact', 'artifact_id' => $artifactId,
         'graph_version' => $graphVersion, 'checksum' => hash('sha256', $json),
+        'active_graph_version' => $graphVersion,
         'head_commit' => str_repeat('a', 40), 'quality' => 'full', 'status' => 'ready',
         'node_count' => count($artifact['nodes']), 'relationship_count' => count($artifact['relationships']), 'projected_at' => $now,
         'created_at' => $now, 'updated_at' => $now,

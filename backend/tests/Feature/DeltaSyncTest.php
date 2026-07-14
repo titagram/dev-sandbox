@@ -237,6 +237,27 @@ it('finalizes a valid delta bundle and creates a new snapshot', function () {
     expect(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
 });
 
+it('completes the actual fake ImportGraphToNeo4j path after adjacency verification', function (): void {
+    Queue::fake();
+    $context = createDeltaContext();
+    $artifacts = [
+        deltaArtifact('diff_summary', 'diff-summary.json', '{"changed_file_count":0}'),
+        deltaArtifact('graph_snapshot', 'graph-snapshot.json', '{"nodes":[],"relationships":[]}'),
+        deltaArtifact('security_report', 'security-report.json', '{"blocked":[]}'),
+    ];
+    $deltaId = deltaStart($context, deltaManifest($artifacts))->json('delta_id');
+
+    foreach ($artifacts as $artifact) {
+        deltaChunk($context, $deltaId, $artifact['artifact_id'], 0, $artifact['content'], hash('sha256', $artifact['content']))->assertOk();
+    }
+
+    deltaFinalize($context, $deltaId)->assertOk();
+    (new ImportGraphToNeo4j('delta', $deltaId))->handle(app(GenesisGraphImportService::class));
+
+    expect(DB::table('canonical_graph_projections')->where('status', 'ready')->exists())->toBeTrue()
+        ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeTrue();
+});
+
 it('returns the existing Delta result on sequential finalize without duplicate side effects', function () {
     config(['queue.default' => 'database']);
     Queue::fake();
