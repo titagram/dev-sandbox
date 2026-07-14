@@ -1,4 +1,4 @@
-// DevBoard typed domain model.
+// Hades Agent typed domain model.
 // Every technical fact carries source metadata. See API_CONTRACT.md.
 
 export type Role = "admin" | "pm" | "developer" | "sysadmin" | "agent";

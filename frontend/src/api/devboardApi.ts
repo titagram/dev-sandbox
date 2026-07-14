@@ -14,7 +14,7 @@ import {
 import { API_BASE_URL } from "@/api/apiBaseUrl";
 
 /**
- * Single adapter contract for all DevBoard data access.
+ * Single adapter contract for all Hades Agent data access.
  * Components depend ONLY on this interface — never on raw endpoints.
  * Two implementations exist: MockApi (default) and HttpApi (Laravel).
  */

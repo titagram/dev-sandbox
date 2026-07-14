@@ -1,4 +1,4 @@
-// Small formatting helpers used across DevBoard.
+// Small formatting helpers used across Hades Agent.
 
 export function relativeTime(iso: string | null): string {
   if (!iso) return "—";

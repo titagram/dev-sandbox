@@ -202,9 +202,9 @@ export default function SystemPage() {
               requireApproval="I confirm I am authorized to export audit data for this range."
               onConfirm={runExport} testId="export-confirm" />
 
-            <ConfirmDialog open={confirm === "backup-export"} onOpenChange={(v) => !v && setConfirm(null)} title="Export DevBoard backup" confirmLabel="Export backup"
+            <ConfirmDialog open={confirm === "backup-export"} onOpenChange={(v) => !v && setConfirm(null)} title="Export Hades Agent backup" confirmLabel="Export backup"
               description={<>Create a portable <span className="font-mono">devboard-backup-v1</span> bundle. Plaintext secrets and target source repositories are excluded.</>}
-              requireApproval="I confirm I am authorized to export DevBoard control-plane state and DevBoard-held evidence."
+              requireApproval="I confirm I am authorized to export Hades Agent control-plane state and Hades Agent-held evidence."
               onConfirm={runBackupExport} testId="backup-export-confirm" />
           </>
         )}

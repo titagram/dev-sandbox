@@ -8,7 +8,7 @@ jest.mock("@/api/mockData", () => require("./mockData"), { virtual: true });
 
 import { mockApi } from "./mockApi";
 
-describe("mockApi approved DevBoard Hades contracts", () => {
+describe("mockApi approved Hades Agent contracts", () => {
   it("creates manual project memory as user_inserted", async () => {
     await mockApi.login({ email: "pm@devboard.local", password: "demo", role: "pm" });
 

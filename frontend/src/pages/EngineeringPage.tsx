@@ -161,7 +161,7 @@ export default function EngineeringPage() {
     <div className="space-y-5" data-testid="engineering-page">
       <PageHeader
         title="Engineering"
-        subtitle={projectId ? "Project cockpit for operational queues, evidence, artifacts, and platform checks." : "Cockpit for DevBoard operational and technical surfaces."}
+        subtitle={projectId ? "Project cockpit for operational queues, evidence, artifacts, and platform checks." : "Cockpit for Hades Agent operational and technical surfaces."}
         meta={projectId && <Link to={`/projects/${projectId}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5" />Project {projectId}</Link>}
         actions={projectId && <Button size="sm" variant="outline" asChild><Link to={`/projects/${projectId}`}><Boxes className="mr-1.5 h-3.5 w-3.5" /> Project</Link></Button>}
       />

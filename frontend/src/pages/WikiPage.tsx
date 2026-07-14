@@ -281,7 +281,7 @@ function WikiRefreshPanel({ projectId }: { projectId: string }) {
         workspace_binding_id: workspaceBindingId,
         repository_id: scope === "repository" ? repositoryId : null,
         scope,
-        reason: reason.trim() || "Manual project wiki refresh from DevBoard.",
+        reason: reason.trim() || "Manual project wiki refresh from Hades Agent.",
         sections: ["overview", "architecture", "runbook", "risks"],
         policy: "manual",
       });

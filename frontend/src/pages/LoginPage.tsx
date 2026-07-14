@@ -54,7 +54,7 @@ export default function LoginPage() {
               <Terminal className="h-4 w-4" />
             </div>
             <div>
-              <p className="text-base font-semibold tracking-tight">DevBoard</p>
+              <p className="text-base font-semibold tracking-tight">Hades Agent</p>
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Self-hosted operations</p>
             </div>
           </div>

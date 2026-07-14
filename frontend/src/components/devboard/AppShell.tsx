@@ -186,7 +186,7 @@ function Brand() {
         <Terminal className="h-4 w-4" />
       </div>
       <div className="leading-tight">
-        <p className="text-sm font-semibold tracking-tight">DevBoard</p>
+        <p className="text-sm font-semibold tracking-tight">Hades Agent</p>
         <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Operations</p>
       </div>
     </div>

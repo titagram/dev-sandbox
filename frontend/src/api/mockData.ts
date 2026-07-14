@@ -242,7 +242,7 @@ REPOSITORIES.forEach((repository) => {
 
 export const PROJECTS: Project[] = [
   {
-    id: "proj-core", key: "CORE", name: "DevBoard Core Platform",
+    id: "proj-core", key: "CORE", name: "Hades Agent Core Platform",
     description: "Self-hosted dashboard, API, and worker for AI coding-agent operations.",
     owner: "Priya Menon", repository_count: 3, open_tasks: 9, risk_level: "high",
     wiki_freshness: "stale", genesis_status: "complete", delta_status: "in_progress", graph_status: "stale",
@@ -768,7 +768,7 @@ export const QUALITY_OVERVIEW: QualityOverview = {
 
 export const QUALITY_CURRENT_STATE: QualityCurrentState = {
   deterministic: true,
-  description: "DevBoard quality verification is deterministic and controlled. Tests verify domain truth, not only that routes return 200.",
+  description: "Hades Agent quality verification is deterministic and controlled. Tests verify domain truth, not only that routes return 200.",
   current_state: "Route inventory + SAFE_READ smoke + PR gate active. DAST/load/E2E configured but disabled.",
   desired_state: "Full gate coverage with verified truth registry, human-approved destructive scans, machine + human readable evidence per run.",
   transition_notes: [
@@ -944,7 +944,7 @@ export const BACKUP_READINESS: BackupReadiness = {
   can_restore_dry_run: true,
   components: [
     { key: "database", label: "Database metadata", included: true, detail: "Control-plane tables and product state." },
-    { key: "storage", label: "DevBoard storage", included: true, detail: "Artifacts, reports, task attachments, and audit exports." },
+    { key: "storage", label: "Hades Agent storage", included: true, detail: "Artifacts, reports, task attachments, and audit exports." },
     { key: "secrets", label: "Secrets", included: false, detail: "Plaintext secrets are never included." },
   ],
   secret_policy: {
