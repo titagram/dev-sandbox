@@ -1,0 +1,1640 @@
+# Review package: 353037b3..c1f694dd
+
+## Commits
+c1f694dd fix(graph): unify durable publication attempts
+
+## Files changed
+ backend/app/Jobs/ProjectCanonicalGraphToNeo4j.php  |  46 +++-
+ backend/app/Services/GenesisGraphImportService.php |  67 ++---
+ .../Graph/CanonicalGraphProjectionService.php      | 289 ++++++++++++++++++---
+ .../Graph/Neo4jCanonicalGraphProjector.php         |   2 +-
+ ...000_add_canonical_graph_projection_attempts.php |   1 +
+ backend/docs/hades/canonical-graph-operations.md   |  43 ++-
+ .../tests/Feature/CanonicalGraphProjectionTest.php |  17 +-
+ .../Feature/CanonicalGraphRebuildCommandTest.php   |   7 +-
+ backend/tests/Feature/GenesisGraphImportTest.php   |  17 +-
+ .../Hades/CanonicalHadesGraphProjectionTest.php    | 173 +++++++++++-
+ .../Feature/Hades/HadesNoCodebaseDiagnosisTest.php |   5 +-
+ 11 files changed, 558 insertions(+), 109 deletions(-)
+
+## Diff
+diff --git a/backend/app/Jobs/ProjectCanonicalGraphToNeo4j.php b/backend/app/Jobs/ProjectCanonicalGraphToNeo4j.php
+index 825f44c3..792206ed 100644
+--- a/backend/app/Jobs/ProjectCanonicalGraphToNeo4j.php
++++ b/backend/app/Jobs/ProjectCanonicalGraphToNeo4j.php
+@@ -15,47 +15,83 @@ class ProjectCanonicalGraphToNeo4j implements ShouldQueue
+ {
+     use Queueable;
+ 
+     public int $tries = 3;
+ 
+     public function __construct(public readonly string $projectionId) {}
+ 
+     public function handle(CanonicalGraphRepository $repository, CanonicalGraphProjectionService $projections, Neo4jCanonicalGraphProjector $projector, Neo4jClientFactory $clients): void
+     {
+         $projection = $projections->findForWorker($this->projectionId);
+-        if ($projection === null || ! $projections->claimForWorker($this->projectionId)) {
++        if ($projection === null || ! in_array($projection->status, ['queued', 'projecting'], true)) {
+             return;
+         }
++        $claim = null;
++        $client = null;
+         try {
+             $graph = $repository->findByIdentity($projection->project_id, $projection->source_scope_type, $projection->source_scope_id, $projection->artifact_type, $projection->artifact_id);
+             if ($graph === null) {
+                 throw new RuntimeException('artifact_missing');
+             }
+             if (! hash_equals($projection->checksum, $graph['identity']['checksum'])) {
+                 throw new RuntimeException('artifact_changed');
+             }
+-            $counts = $projector->project($graph, $projection, $clients->client());
+-            if (! $projections->markReady($projection->id, $counts['nodes'], $counts['relationships'])) {
++            $client = $clients->client();
++            $projections->recoverStalePublications($graph, $client, $projector);
++            $claim = $projections->acquireForWorkerPublication($projection->id, $graph);
++            if (! $claim['claimed']) {
++                if ($claim['retry_after'] !== null) {
++                    $this->release($claim['retry_after']);
++                }
++
+                 return;
+             }
++            $candidate = $claim['projection'];
++            $heartbeat = function () use ($projections, $claim): bool {
++                if (! $projections->heartbeatPublicationAttempt($claim['attempt_id'], $claim['owner_token'])) {
++                    throw new RuntimeException('ownership_lost');
++                }
++
++                return true;
++            };
++            $counts = $projector->project($graph, $candidate, $client, $heartbeat);
++            $ready = $projections->publishPublicationAttempt(
++                $claim['attempt_id'], $claim['owner_token'], $counts['nodes'], $counts['relationships'],
++                fn () => $projector->publishCurrent($candidate, $client),
++            );
++            if ($ready === null) {
++                throw new RuntimeException('ownership_lost');
++            }
+         } catch (Throwable $exception) {
+-            $projections->markRetryPending($projection->id, $this->failureCode($exception));
++            $failureCode = $this->failureCode($exception);
++            if ($claim !== null && $claim['claimed'] && $client !== null) {
++                $projections->markPublicationAttemptFailed($claim['attempt_id'], $claim['owner_token'], $failureCode);
++                try {
++                    $projections->cleanupPublicationAttempt(
++                        $claim['attempt_id'], $claim['owner_token'], $client, $projector,
++                    );
++                } catch (Throwable $cleanupException) {
++                    report($cleanupException);
++                }
++            } else {
++                $projections->markQueuedRetryPending($projection->id, $failureCode);
++            }
+             throw $exception;
+         }
+     }
+ 
+     /**
+      * Laravel invokes this hook only after the queue has exhausted retries.
+      */
+     public function failed(Throwable $exception): void
+     {
+-        app(CanonicalGraphProjectionService::class)->markFailedIfQueued(
++        app(CanonicalGraphProjectionService::class)->markFailedAfterAttemptExhaustion(
+             $this->projectionId,
+             $this->failureCode($exception),
+         );
+     }
+ 
+     private function failureCode(Throwable $exception): string
+     {
+         if (in_array($exception->getMessage(), ['artifact_missing', 'artifact_changed'], true)) {
+             return $exception->getMessage();
+         }
+diff --git a/backend/app/Services/GenesisGraphImportService.php b/backend/app/Services/GenesisGraphImportService.php
+index ba6017b1..dcd41c6a 100644
+--- a/backend/app/Services/GenesisGraphImportService.php
++++ b/backend/app/Services/GenesisGraphImportService.php
+@@ -421,32 +421,32 @@ public function importGraphArtifact(
+                 ? 'Legacy delta graph artifact could not be normalized.'
+                 : 'Legacy graph artifact could not be normalized.');
+         }
+         if ($graphMode === 'affected_subgraph') {
+             $payload = $graph;
+             $payload['graph_contract'] = $canonical['contract'];
+             [$payload['nodes'], $payload['relationships']] = $this->materializeDeltaVersion($graph, $baseSnapshotId, $nodes, $relationships);
+             $canonical = $this->canonicalNormalizer->normalize($payload, $canonical['identity']);
+         }
+ 
+-        if ($force) {
+-            $this->canonicalProjections->recoverStaleForcedRebuilds($canonical, $client, $this->canonicalProjector);
+-        }
+-        $forceClaim = $force ? $this->canonicalProjections->acquireForForcedRebuild($canonical) : null;
+-        $projection = $forceClaim['projection'] ?? $this->canonicalProjections->queue($canonical);
+-        if (($forceClaim['conflict'] ?? false) || ! $this->canonicalProjections->matchesGraph($projection, $canonical)) {
++        $this->canonicalProjections->recoverStalePublications($canonical, $client, $this->canonicalProjector);
++        $publicationClaim = $force
++            ? $this->canonicalProjections->acquireForForcedRebuild($canonical)
++            : $this->canonicalProjections->acquireForWorkerPublication(
++                (string) $this->canonicalProjections->queue($canonical)->id,
++                $canonical,
++            );
++        $projection = $publicationClaim['projection'];
++        if ($publicationClaim['conflict'] || ! $this->canonicalProjections->matchesGraph($projection, $canonical)) {
+             throw new CanonicalGraphProjectionException((string) $projection->id, 'projection_conflict');
+         }
+-        $claimed = $force
+-            ? $forceClaim['claimed']
+-            : $this->canonicalProjections->claimForWorker((string) $projection->id);
+-        if (! $claimed) {
++        if (! $publicationClaim['claimed']) {
+             $current = $this->canonicalProjections->findForWorker((string) $projection->id);
+             if (! $force
+                 && $current !== null
+                 && $this->canonicalProjections->matchesGraph($current, $canonical)
+                 && $current->status === 'ready'
+                 && is_numeric($current->node_count)
+                 && is_numeric($current->relationship_count)) {
+                 $this->publishImportSuccess($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $current, $force);
+ 
+                 return;
+@@ -506,63 +506,52 @@ public function importGraphArtifact(
+ 
+                 foreach (array_chunk($relationships, self::BATCH_SIZE) as $relationshipBatch) {
+                     if ($relationshipBatch !== []) {
+                         foreach (self::relationshipBatchCommands($relationshipBatch, $snapshotId, $runId, $repositoryId) as $cmd) {
+                             $this->runCommand($client, $cmd);
+                         }
+                     }
+                 }
+             }
+ 
+-            $heartbeat = $force ? function () use ($forceClaim, $projection): bool {
+-                if (! $this->canonicalProjections->heartbeatForcedRebuild(
+-                    (string) $forceClaim['attempt_id'], (string) $forceClaim['owner_token'],
++            $heartbeat = function () use ($publicationClaim, $projection): bool {
++                if (! $this->canonicalProjections->heartbeatPublicationAttempt(
++                    (string) $publicationClaim['attempt_id'], (string) $publicationClaim['owner_token'],
+                 )) {
+                     throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+                 }
+ 
+                 return true;
+-            } : null;
++            };
+             $counts = $this->canonicalProjector->project($canonical, $projection, $client, $heartbeat);
+-            if ($force) {
+-                $ready = $this->canonicalProjections->publishForcedRebuild(
+-                    (string) $forceClaim['attempt_id'], (string) $forceClaim['owner_token'],
+-                    $counts['nodes'], $counts['relationships'],
+-                    fn () => $this->canonicalProjector->publishCurrent($projection, $client),
+-                );
+-                if ($ready === null) {
+-                    throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+-                }
+-            } elseif (! $this->canonicalProjections->publishProjection(
+-                (string) $projection->id, $counts['nodes'], $counts['relationships'],
++            $ready = $this->canonicalProjections->publishPublicationAttempt(
++                (string) $publicationClaim['attempt_id'], (string) $publicationClaim['owner_token'],
++                $counts['nodes'], $counts['relationships'],
+                 fn () => $this->canonicalProjector->publishCurrent($projection, $client),
+-            )) {
++            );
++            if ($ready === null) {
+                 throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+             }
+         } catch (Throwable $exception) {
+             $failureCode = $exception instanceof CanonicalGraphProjectionException
+                 ? $exception->failureCode
+                 : 'neo4j_query_failed';
+-            if ($force) {
+-                $this->canonicalProjections->markForcedRebuildFailed(
+-                    (string) $forceClaim['attempt_id'], (string) $forceClaim['owner_token'], $failureCode,
++            $this->canonicalProjections->markPublicationAttemptFailed(
++                (string) $publicationClaim['attempt_id'], (string) $publicationClaim['owner_token'], $failureCode,
++            );
++            try {
++                $this->canonicalProjections->cleanupPublicationAttempt(
++                    (string) $publicationClaim['attempt_id'], (string) $publicationClaim['owner_token'],
++                    $client, $this->canonicalProjector,
+                 );
+-                try {
+-                    $this->canonicalProjections->cleanupForcedRebuild(
+-                        (string) $forceClaim['attempt_id'], (string) $forceClaim['owner_token'],
+-                        $client, $this->canonicalProjector,
+-                    );
+-                } catch (Throwable $cleanupException) {
+-                    report($cleanupException);
+-                }
+-            } else {
+-                $this->canonicalProjections->markRetryPending((string) $projection->id, $failureCode);
++            } catch (Throwable $cleanupException) {
++                report($cleanupException);
+             }
+ 
+             throw $exception instanceof CanonicalGraphProjectionException
+                 ? $exception
+                 : new CanonicalGraphProjectionException((string) $projection->id, $failureCode, $exception);
+         }
+ 
+         $ready ??= $this->canonicalProjections->findForWorker((string) $projection->id);
+         if ($ready === null || $ready->status !== 'ready') {
+             throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+diff --git a/backend/app/Services/Graph/CanonicalGraphProjectionService.php b/backend/app/Services/Graph/CanonicalGraphProjectionService.php
+index 034a69d0..727a611b 100644
+--- a/backend/app/Services/Graph/CanonicalGraphProjectionService.php
++++ b/backend/app/Services/Graph/CanonicalGraphProjectionService.php
+@@ -1,23 +1,24 @@
+ <?php
+ 
+ namespace App\Services\Graph;
+ 
+ use App\Services\Neo4j\Neo4jClient;
++use Carbon\CarbonImmutable;
+ use Closure;
+ use Illuminate\Support\Facades\DB;
+ use Illuminate\Support\Str;
+ use RuntimeException;
+ 
+ class CanonicalGraphProjectionService
+ {
+-    private const FORCED_REBUILD_LEASE_SECONDS = 300;
++    public const PUBLICATION_LEASE_SECONDS = 900;
+ 
+     /**
+      * Fetch exact projection identities with one bounded query.
+      *
+      * @param  list<array>  $graphs
+      * @return array<string, object>
+      */
+     public function findForGraphs(array $graphs, bool $lockForUpdate = false): array
+     {
+         if ($graphs === []) {
+@@ -59,21 +60,21 @@ public function claimForReconcile(array $graphs): array
+         }
+ 
+         $projectIds = collect($graphs)->pluck('identity.project_id')->unique()->values();
+         if ($projectIds->count() !== 1) {
+             throw new RuntimeException('A reconciliation claim must target one project.');
+         }
+ 
+         return DB::transaction(function () use ($graphs, $projectIds): array {
+             DB::table('projects')->where('id', (string) $projectIds->first())->lockForUpdate()->firstOrFail();
+             $existing = $this->findForGraphs($graphs, lockForUpdate: true);
+-            $now = now();
++            $now = $this->databaseNow();
+             $proposals = [];
+ 
+             foreach ($graphs as $graph) {
+                 $identity = $graph['identity'];
+                 $key = $this->identityKey((string) $identity['artifact_type'], (string) $identity['artifact_id']);
+                 if (isset($existing[$key])) {
+                     continue;
+                 }
+ 
+                 $proposals[$key] = $this->projectionAttributes($graph, (string) Str::ulid(), $now);
+@@ -172,99 +173,190 @@ public function acquireForForcedRebuild(array $graph): array
+                         });
+                 })
+                 ->exists();
+             if ($conflict || ! $inactive || $activeAttempt) {
+                 return ['projection' => $existing, 'claimed' => false, 'conflict' => $conflict, 'attempt_id' => null, 'owner_token' => null];
+             }
+ 
+             $attemptId = (string) Str::ulid();
+             $ownerToken = hash('sha256', Str::random(64));
+             $candidateVersion = hash('sha256', $existing->graph_version.'|forced|'.$attemptId);
+-            $now = now();
++            $now = $this->databaseNow();
+             $ready = DB::table('canonical_graph_projections')
+                 ->where('project_id', $existing->project_id)
+                 ->where('source_scope_type', $existing->source_scope_type)
+                 ->where('source_scope_id', $existing->source_scope_id)
+                 ->where('status', 'ready')
+                 ->lockForUpdate()
+                 ->first();
+             DB::table('canonical_graph_projection_attempts')->insert([
+                 'id' => $attemptId,
+                 'projection_id' => $existing->id,
+                 'candidate_graph_version' => $candidateVersion,
+                 'owner_token' => $ownerToken,
++                'kind' => 'forced',
+                 'expected_ready_projection_id' => $ready?->id,
+                 'expected_active_graph_version' => $ready?->active_graph_version,
+                 'status' => 'projecting',
+                 'publication_stage' => 'building',
+                 'node_count' => null,
+                 'relationship_count' => null,
+                 'error_code' => null,
+                 'started_at' => $now,
+                 'heartbeat_at' => $now,
+-                'lease_expires_at' => $now->copy()->addSeconds(self::FORCED_REBUILD_LEASE_SECONDS),
++                'lease_expires_at' => $now->addSeconds(self::PUBLICATION_LEASE_SECONDS),
+                 'finished_at' => null,
+                 'created_at' => $now,
+                 'updated_at' => $now,
+             ]);
+             $projection = clone $existing;
+             $projection->logical_graph_version = $existing->graph_version;
+             $projection->graph_version = $candidateVersion;
+             $projection->attempt_id = $attemptId;
+             $projection->owner_token = $ownerToken;
+ 
+             return ['projection' => $projection, 'claimed' => true, 'conflict' => false, 'attempt_id' => $attemptId, 'owner_token' => $ownerToken];
+         });
+     }
+ 
+     public function findForWorker(string $id): ?object
+     {
+         return DB::table('canonical_graph_projections')->where('id', $id)->first();
+     }
+ 
++    /**
++     * Claim a queued delivery by creating the same durable publication attempt
++     * used by forced rebuilds. The returned projection carries the candidate
++     * physical version; the stored projection retains its logical identity.
++     *
++     * @return array{projection: object, claimed: bool, conflict: bool, attempt_id: string|null, owner_token: string|null, retry_after: int|null}
++     */
++    public function acquireForWorkerPublication(string $id, array $graph): array
++    {
++        return DB::transaction(function () use ($id, $graph): array {
++            $candidate = DB::table('canonical_graph_projections')->where('id', $id)->first();
++            if ($candidate === null) {
++                throw new RuntimeException('Canonical graph projection not found.');
++            }
++            DB::table('projects')->where('id', $candidate->project_id)->lockForUpdate()->firstOrFail();
++            $projection = DB::table('canonical_graph_projections')->where('id', $id)->lockForUpdate()->firstOrFail();
++            $conflict = ! $this->matchesGraph($projection, $graph);
++            $now = $this->databaseNow();
++            $unresolved = DB::table('canonical_graph_projection_attempts')
++                ->where('projection_id', $id)
++                ->where(function ($query): void {
++                    $query->whereIn('status', ['projecting', 'publishing'])
++                        ->orWhere(function ($terminal): void {
++                            $terminal->whereIn('status', ['failed', 'superseded', 'abandoned'])
++                                ->where('publication_stage', '!=', 'cleaned');
++                        });
++                })
++                ->orderByDesc('created_at')
++                ->lockForUpdate()
++                ->first();
++            if ($conflict || $projection->status !== 'queued' || $unresolved !== null) {
++                $retryAfter = $unresolved !== null && in_array($unresolved->status, ['projecting', 'publishing'], true)
++                    ? max(1, (int) ceil($now->diffInSeconds(CarbonImmutable::parse($unresolved->lease_expires_at), false)))
++                    : null;
++
++                return ['projection' => $projection, 'claimed' => false, 'conflict' => $conflict,
++                    'attempt_id' => null, 'owner_token' => null, 'retry_after' => $retryAfter];
++            }
++
++            $ready = DB::table('canonical_graph_projections')
++                ->where('project_id', $projection->project_id)
++                ->where('source_scope_type', $projection->source_scope_type)
++                ->where('source_scope_id', $projection->source_scope_id)
++                ->where('status', 'ready')
++                ->lockForUpdate()
++                ->first();
++            $attemptId = (string) Str::ulid();
++            $ownerToken = hash('sha256', Str::random(64));
++            $candidateVersion = hash('sha256', $projection->graph_version.'|ordinary|'.$attemptId);
++            DB::table('canonical_graph_projection_attempts')->insert([
++                'id' => $attemptId,
++                'projection_id' => $projection->id,
++                'candidate_graph_version' => $candidateVersion,
++                'owner_token' => $ownerToken,
++                'kind' => 'ordinary',
++                'expected_ready_projection_id' => $ready?->id,
++                'expected_active_graph_version' => $ready?->active_graph_version,
++                'status' => 'projecting',
++                'publication_stage' => 'building',
++                'node_count' => null,
++                'relationship_count' => null,
++                'error_code' => null,
++                'started_at' => $now,
++                'heartbeat_at' => $now,
++                'lease_expires_at' => $now->addSeconds(self::PUBLICATION_LEASE_SECONDS),
++                'finished_at' => null,
++                'created_at' => $now,
++                'updated_at' => $now,
++            ]);
++            DB::table('canonical_graph_projections')->where('id', $id)->where('status', 'queued')->update([
++                'status' => 'projecting', 'error_code' => null, 'updated_at' => $now,
++            ]);
++            $physical = clone $projection;
++            $physical->logical_graph_version = $projection->graph_version;
++            $physical->graph_version = $candidateVersion;
++            $physical->attempt_id = $attemptId;
++            $physical->owner_token = $ownerToken;
++
++            return ['projection' => $physical, 'claimed' => true, 'conflict' => false,
++                'attempt_id' => $attemptId, 'owner_token' => $ownerToken, 'retry_after' => null];
++        });
++    }
++
+     public function forcedRebuildActive(string $projectionId): bool
+     {
+         return DB::table('canonical_graph_projection_attempts')
+             ->where('projection_id', $projectionId)
+             ->where(function ($query): void {
+                 $query->whereIn('status', ['projecting', 'publishing'])
+                     ->orWhere(function ($terminal): void {
+                         $terminal->whereIn('status', ['failed', 'superseded', 'abandoned'])
+                             ->where('publication_stage', '!=', 'cleaned');
+                     });
+             })
+             ->exists();
+     }
+ 
+-    public function heartbeatForcedRebuild(string $attemptId, string $ownerToken): bool
++    public function heartbeatPublicationAttempt(string $attemptId, string $ownerToken): bool
+     {
+-        $now = now();
++        $now = $this->databaseNow();
+ 
+         return DB::table('canonical_graph_projection_attempts')
+             ->where('id', $attemptId)
+             ->where('owner_token', $ownerToken)
+             ->whereIn('status', ['projecting', 'publishing'])
+             ->where('lease_expires_at', '>', $now)
+             ->update([
+                 'heartbeat_at' => $now,
+-                'lease_expires_at' => $now->copy()->addSeconds(self::FORCED_REBUILD_LEASE_SECONDS),
++                'lease_expires_at' => $now->addSeconds(self::PUBLICATION_LEASE_SECONDS),
+                 'updated_at' => $now,
+             ]) === 1;
+     }
+ 
++    /** @deprecated Use heartbeatPublicationAttempt(). */
++    public function heartbeatForcedRebuild(string $attemptId, string $ownerToken): bool
++    {
++        return $this->heartbeatPublicationAttempt($attemptId, $ownerToken);
++    }
++
+     /**
+      * Atomically claim one queued projection for a queue worker.
+      *
+      * False means the projection is missing or another worker/job already
+      * owns or completed it. The result comes directly from the conditional
+      * update so a fallible read cannot make a successful claim ambiguous.
+      */
++    /** @deprecated Test-transition helper. Production workers claim durable attempts. */
+     public function claimForWorker(string $id): bool
+     {
+         $now = now();
+ 
+         return DB::table('canonical_graph_projections')
+             ->where('id', $id)
+             ->where('status', 'queued')
+             ->update([
+                 'status' => 'projecting',
+                 'error_code' => null,
+@@ -289,26 +381,31 @@ public function claimForForcedRebuild(string $id, array $graph): bool
+ 
+     public function markProjecting(string $id): void
+     {
+         DB::table('canonical_graph_projections')->where('id', $id)->update([
+             'status' => 'projecting',
+             'error_code' => null,
+             'updated_at' => now(),
+         ]);
+     }
+ 
+-    public function markReady(string $id, int $nodes, int $relationships): bool
++    /**
++     * @deprecated Test-transition helper only. Production publication must use
++     *             a durable publication attempt. The marker callback is
++     *             mandatory so PostgreSQL can never advance by itself.
++     */
++    public function markReady(string $id, int $nodes, int $relationships, Closure $publishMarker): bool
+     {
+-        return $this->publishProjection($id, $nodes, $relationships, static function (): void {});
++        return $this->publishProjection($id, $nodes, $relationships, $publishMarker);
+     }
+ 
+-    public function publishProjection(string $id, int $nodes, int $relationships, Closure $publishMarker): bool
++    private function publishProjection(string $id, int $nodes, int $relationships, Closure $publishMarker): bool
+     {
+         return DB::transaction(function () use ($id, $nodes, $relationships, $publishMarker): bool {
+             $projectId = DB::table('canonical_graph_projections')->where('id', $id)->value('project_id');
+             if ($projectId === null) {
+                 throw new RuntimeException('Canonical graph projection not found.');
+             }
+ 
+             DB::table('projects')->where('id', $projectId)->lockForUpdate()->firstOrFail();
+ 
+             $candidate = DB::table('canonical_graph_projections')->where('id', $id)->lockForUpdate()->first();
+@@ -363,94 +460,128 @@ public function markFailedIfQueued(string $id, string $code): bool
+         return DB::table('canonical_graph_projections')
+             ->where('id', $id)
+             ->where('status', 'queued')
+             ->update([
+                 'status' => 'failed',
+                 'error_code' => $this->boundedFailureCode($code),
+                 'updated_at' => now(),
+             ]) === 1;
+     }
+ 
++    public function markFailedAfterAttemptExhaustion(string $id, string $code): bool
++    {
++        return DB::transaction(function () use ($id, $code): bool {
++            $projection = DB::table('canonical_graph_projections')->where('id', $id)->first();
++            if ($projection === null) {
++                return false;
++            }
++            DB::table('projects')->where('id', $projection->project_id)->lockForUpdate()->firstOrFail();
++            $attempt = DB::table('canonical_graph_projection_attempts')
++                ->where('projection_id', $id)->where('kind', 'ordinary')
++                ->orderByDesc('created_at')->lockForUpdate()->first();
++            if ($attempt === null || $attempt->status !== 'failed') {
++                return $this->markFailedIfQueued($id, $code);
++            }
++
++            return DB::table('canonical_graph_projections')->where('id', $id)
++                ->whereIn('status', ['queued', 'projecting'])
++                ->update(['status' => 'failed', 'error_code' => $this->boundedFailureCode($code),
++                    'updated_at' => $this->databaseNow()]) === 1;
++        });
++    }
++
+     /**
+      * Release an owned projection for Laravel's next attempt without making
+      * it claimable by reconciliation. Reconcile only claims final `failed`
+      * records; queued records remain owned by the already-dispatched job.
+      */
+     public function markRetryPending(string $id, string $code): void
+     {
+         DB::table('canonical_graph_projections')
+             ->where('id', $id)
+             ->where('status', 'projecting')
+             ->update([
+                 'status' => 'queued',
+                 'error_code' => $this->boundedFailureCode($code),
+                 'updated_at' => now(),
+             ]);
+     }
+ 
++    public function markQueuedRetryPending(string $id, string $code): void
++    {
++        DB::table('canonical_graph_projections')
++            ->where('id', $id)
++            ->where('status', 'queued')
++            ->update(['error_code' => $this->boundedFailureCode($code), 'updated_at' => now()]);
++    }
++
+     /**
+      * Persist publication intent, then switch Neo4j and PostgreSQL while the
+      * stable project lock excludes every competing publication for the scope.
+      * If the marker callback crashes, marker_pending remains committed and a
+      * later reclaimer restores Neo4j from PostgreSQL's active pointer.
+      */
+-    public function publishForcedRebuild(
++    public function publishPublicationAttempt(
+         string $attemptId,
+         string $ownerToken,
+         int $nodes,
+         int $relationships,
+         Closure $publishMarker,
+     ): ?object {
+         $begun = DB::transaction(function () use ($attemptId, $ownerToken, $nodes, $relationships): bool {
+-            [$attempt, $projection] = $this->lockForcedAttempt($attemptId);
++            [$attempt, $projection] = $this->lockPublicationAttempt($attemptId);
+             if (! $this->ownsLiveAttempt($attempt, $ownerToken, ['projecting'])) {
+                 return false;
+             }
+-            if (! $this->forcedAttemptBaseMatches($attempt, $projection)) {
+-                $this->finishForcedAttempt($attemptId, 'superseded', 'publication_superseded');
++            if (! $this->publicationAttemptBaseMatches($attempt, $projection)) {
++                $this->finishPublicationAttempt($attemptId, 'superseded', 'publication_superseded');
+ 
+                 return false;
+             }
+-            $now = now();
++            $now = $this->databaseNow();
+             DB::table('canonical_graph_projection_attempts')->where('id', $attemptId)->update([
+                 'status' => 'publishing',
+                 'publication_stage' => 'marker_pending',
+                 'node_count' => $nodes,
+                 'relationship_count' => $relationships,
+                 'heartbeat_at' => $now,
+-                'lease_expires_at' => $now->copy()->addSeconds(self::FORCED_REBUILD_LEASE_SECONDS),
++                'lease_expires_at' => $now->addSeconds(self::PUBLICATION_LEASE_SECONDS),
+                 'updated_at' => $now,
+             ]);
+ 
+             return true;
+         });
+         if (! $begun) {
+             return null;
+         }
+ 
+         return DB::transaction(function () use ($attemptId, $ownerToken, $nodes, $relationships, $publishMarker): ?object {
+-            [$attempt, $projection] = $this->lockForcedAttempt($attemptId);
++            [$attempt, $projection] = $this->lockPublicationAttempt($attemptId);
+             if (! $this->ownsLiveAttempt($attempt, $ownerToken, ['publishing'])
+                 || $attempt->publication_stage !== 'marker_pending') {
+                 return null;
+             }
+-            if (! $this->forcedAttemptBaseMatches($attempt, $projection)) {
+-                $this->finishForcedAttempt($attemptId, 'superseded', 'publication_superseded');
++            if (! $this->publicationAttemptBaseMatches($attempt, $projection)) {
++                $this->finishPublicationAttempt($attemptId, 'superseded', 'publication_superseded');
+ 
+                 return null;
+             }
+ 
+             $publishMarker();
+             if (! $this->ownsLiveAttempt($attempt, $ownerToken, ['publishing'])) {
+                 return null;
+             }
+-            $now = now();
++            if ($attempt->kind === 'ordinary'
++                && DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status') !== 'projecting') {
++                return null;
++            }
++            $now = $this->databaseNow();
+             DB::table('canonical_graph_projections')
+                 ->where('project_id', $projection->project_id)
+                 ->where('source_scope_type', $projection->source_scope_type)
+                 ->where('source_scope_id', $projection->source_scope_id)
+                 ->where('status', 'ready')
+                 ->where('id', '!=', $projection->id)
+                 ->update(['status' => 'stale', 'updated_at' => $now]);
+             DB::table('canonical_graph_projections')->where('id', $projection->id)->update([
+                 'status' => 'ready',
+                 'active_graph_version' => $attempt->candidate_graph_version,
+@@ -465,38 +596,50 @@ public function publishForcedRebuild(
+                 'publication_stage' => 'published',
+                 'error_code' => null,
+                 'finished_at' => $now,
+                 'updated_at' => $now,
+             ]);
+ 
+             return DB::table('canonical_graph_projections')->where('id', $projection->id)->firstOrFail();
+         });
+     }
+ 
++    /** @deprecated Use publishPublicationAttempt(). */
++    public function publishForcedRebuild(
++        string $attemptId,
++        string $ownerToken,
++        int $nodes,
++        int $relationships,
++        Closure $publishMarker,
++    ): ?object {
++        return $this->publishPublicationAttempt($attemptId, $ownerToken, $nodes, $relationships, $publishMarker);
++    }
++
+     /** Restore stale attempts from the PostgreSQL source-of-truth pointer. */
+-    public function recoverStaleForcedRebuilds(
++    public function recoverStalePublications(
+         array $graph,
+         Neo4jClient $client,
+         Neo4jCanonicalGraphProjector $projector,
+     ): int {
+         return DB::transaction(function () use ($graph, $client, $projector): int {
+             $identity = $graph['identity'];
+             DB::table('projects')->where('id', $identity['project_id'])->lockForUpdate()->firstOrFail();
++            $databaseNow = $this->databaseNow();
+             $stale = DB::table('canonical_graph_projection_attempts as attempts')
+                 ->join('canonical_graph_projections as projections', 'projections.id', '=', 'attempts.projection_id')
+                 ->where('projections.project_id', $identity['project_id'])
+                 ->where('projections.source_scope_type', $identity['source_scope_type'])
+                 ->where('projections.source_scope_id', $identity['source_scope_id'])
+-                ->where(function ($query): void {
+-                    $query->where(function ($active): void {
++                ->where(function ($query) use ($databaseNow): void {
++                    $query->where(function ($active) use ($databaseNow): void {
+                         $active->whereIn('attempts.status', ['projecting', 'publishing'])
+-                            ->where('attempts.lease_expires_at', '<=', now());
++                            ->where('attempts.lease_expires_at', '<=', $databaseNow);
+                     })->orWhere(function ($terminal): void {
+                         $terminal->whereIn('attempts.status', ['failed', 'superseded', 'abandoned'])
+                             ->where('attempts.publication_stage', '!=', 'cleaned');
+                     });
+                 })
+                 ->select('attempts.*')
+                 ->lockForUpdate()
+                 ->get();
+             if ($stale->isEmpty()) {
+                 return 0;
+@@ -510,106 +653,160 @@ public function recoverStaleForcedRebuilds(
+                 ->firstOrFail();
+             $ready = DB::table('canonical_graph_projections')
+                 ->where('project_id', $identity['project_id'])
+                 ->where('source_scope_type', $identity['source_scope_type'])
+                 ->where('source_scope_id', $identity['source_scope_id'])
+                 ->where('status', 'ready')
+                 ->lockForUpdate()
+                 ->first();
+             $activeVersion = $ready?->active_graph_version;
+             $projector->reconcileCurrent($scope, $activeVersion, $client);
+-            $now = now();
++            $now = $databaseNow;
+             foreach ($stale as $attempt) {
+                 if ($activeVersion !== null && hash_equals((string) $activeVersion, (string) $attempt->candidate_graph_version)) {
++                    DB::table('canonical_graph_projections')->where('id', $attempt->projection_id)->update([
++                        'status' => 'ready', 'active_graph_version' => $attempt->candidate_graph_version,
++                        'node_count' => $attempt->node_count, 'relationship_count' => $attempt->relationship_count,
++                        'error_code' => null, 'projected_at' => $now, 'updated_at' => $now,
++                    ]);
+                     DB::table('canonical_graph_projection_attempts')->where('id', $attempt->id)->update([
+                         'status' => 'ready', 'publication_stage' => 'published', 'finished_at' => $now, 'updated_at' => $now,
+                     ]);
+                 } else {
+                     $projector->cleanupCandidate($scope, (string) $attempt->candidate_graph_version, $client);
+-                    $terminalStatus = in_array($attempt->status, ['failed', 'superseded', 'abandoned'], true)
++                    $attemptProjection = DB::table('canonical_graph_projections')->where('id', $attempt->projection_id)->lockForUpdate()->firstOrFail();
++                    $baseMatches = $this->publicationAttemptBaseMatches($attempt, $attemptProjection);
++                    $terminalStatus = ! $baseMatches ? 'superseded' : (in_array($attempt->status, ['failed', 'superseded', 'abandoned'], true)
+                         ? $attempt->status
+-                        : 'abandoned';
++                        : 'abandoned');
+                     DB::table('canonical_graph_projection_attempts')->where('id', $attempt->id)->update([
+                         'status' => $terminalStatus, 'publication_stage' => 'cleaned',
+                         'error_code' => $attempt->error_code ?? 'lease_expired',
+                         'finished_at' => $now, 'updated_at' => $now,
+                     ]);
++                    if ($attempt->kind === 'ordinary') {
++                        DB::table('canonical_graph_projections')->where('id', $attempt->projection_id)
++                            ->where('status', 'projecting')
++                            ->update(['status' => $baseMatches ? 'queued' : 'stale',
++                                'error_code' => $baseMatches ? 'lease_expired' : 'publication_superseded',
++                                'updated_at' => $now]);
++                    }
+                 }
+             }
+ 
+             return $stale->count();
+         });
+     }
+ 
++    /** @deprecated Use recoverStalePublications(). */
++    public function recoverStaleForcedRebuilds(array $graph, Neo4jClient $client, Neo4jCanonicalGraphProjector $projector): int
++    {
++        return $this->recoverStalePublications($graph, $client, $projector);
++    }
++
+     /** Finalize only the forced attempt still owned by this caller. */
+-    public function markForcedRebuildFailed(string $attemptId, string $ownerToken, string $code): bool
++    public function markPublicationAttemptFailed(string $attemptId, string $ownerToken, string $code): bool
+     {
+         return DB::transaction(function () use ($attemptId, $ownerToken, $code): bool {
+-            [$attempt] = $this->lockForcedAttempt($attemptId);
++            [$attempt] = $this->lockPublicationAttempt($attemptId);
+             if (! $this->ownsLiveAttempt($attempt, $ownerToken, ['projecting', 'publishing'])) {
+                 return false;
+             }
+-            $this->finishForcedAttempt($attemptId, 'failed', $code);
++            $this->finishPublicationAttempt($attemptId, 'failed', $code);
++            if ($attempt->kind === 'ordinary') {
++                DB::table('canonical_graph_projections')->where('id', $attempt->projection_id)
++                    ->where('status', 'projecting')
++                    ->update(['status' => 'queued', 'error_code' => $this->boundedFailureCode($code),
++                        'updated_at' => $this->databaseNow()]);
++            }
+ 
+             return true;
+         });
+     }
+ 
++    /** @deprecated Use markPublicationAttemptFailed(). */
++    public function markForcedRebuildFailed(string $attemptId, string $ownerToken, string $code): bool
++    {
++        return $this->markPublicationAttemptFailed($attemptId, $ownerToken, $code);
++    }
++
+     /**
+      * Reconcile and clean a normally-failed/superseded candidate. Owner loss
+      * is a hard abort: a caller can never clean another attempt's candidate.
+      */
+-    public function cleanupForcedRebuild(
++    public function cleanupPublicationAttempt(
+         string $attemptId,
+         string $ownerToken,
+         Neo4jClient $client,
+         Neo4jCanonicalGraphProjector $projector,
+     ): bool {
+         return DB::transaction(function () use ($attemptId, $ownerToken, $client, $projector): bool {
+-            [$attempt, $projection] = $this->lockForcedAttempt($attemptId);
++            [$attempt, $projection] = $this->lockPublicationAttempt($attemptId);
+             if (! $this->ownsLiveAttempt($attempt, $ownerToken, ['failed', 'superseded', 'abandoned'])) {
+                 return false;
+             }
+             $ready = DB::table('canonical_graph_projections')
+                 ->where('project_id', $projection->project_id)
+                 ->where('source_scope_type', $projection->source_scope_type)
+                 ->where('source_scope_id', $projection->source_scope_id)
+                 ->where('status', 'ready')
+                 ->lockForUpdate()
+                 ->first();
+             $activeVersion = $ready?->active_graph_version;
+             $projector->reconcileCurrent($projection, $activeVersion, $client);
+             if ($activeVersion === null || ! hash_equals((string) $activeVersion, (string) $attempt->candidate_graph_version)) {
+                 $projector->cleanupCandidate($projection, (string) $attempt->candidate_graph_version, $client);
+             }
+             DB::table('canonical_graph_projection_attempts')->where('id', $attemptId)
+                 ->whereIn('status', ['failed', 'superseded', 'abandoned'])
+-                ->update(['publication_stage' => 'cleaned', 'updated_at' => now()]);
++                ->update(['publication_stage' => 'cleaned', 'updated_at' => $this->databaseNow()]);
++            if ($attempt->kind === 'ordinary') {
++                $baseMatches = $this->publicationAttemptBaseMatches($attempt, $projection);
++                DB::table('canonical_graph_projections')->where('id', $attempt->projection_id)
++                    ->where('status', 'projecting')
++                    ->update([
++                        'status' => $baseMatches && $attempt->status === 'failed' ? 'queued' : 'stale',
++                        'error_code' => $baseMatches && $attempt->status === 'failed'
++                            ? $attempt->error_code
++                            : 'publication_superseded',
++                        'updated_at' => $this->databaseNow(),
++                    ]);
++            }
+ 
+             return true;
+         });
+     }
+ 
++    /** @deprecated Use cleanupPublicationAttempt(). */
++    public function cleanupForcedRebuild(
++        string $attemptId,
++        string $ownerToken,
++        Neo4jClient $client,
++        Neo4jCanonicalGraphProjector $projector,
++    ): bool {
++        return $this->cleanupPublicationAttempt($attemptId, $ownerToken, $client, $projector);
++    }
++
+     public function readyForScope(string $projectId, string $scopeType, string $scopeId): ?object
+     {
+         return DB::table('canonical_graph_projections')
+             ->where('project_id', $projectId)
+             ->where('source_scope_type', $scopeType)
+             ->where('source_scope_id', $scopeId)
+             ->where('status', 'ready')
+             ->orderByDesc('projected_at')
+             ->orderByDesc('id')
+             ->first();
+     }
+ 
+     /** @return array{0: object|null, 1: object|null} */
+-    private function lockForcedAttempt(string $attemptId): array
++    private function lockPublicationAttempt(string $attemptId): array
+     {
+         $candidate = DB::table('canonical_graph_projection_attempts')->where('id', $attemptId)->first();
+         if ($candidate === null) {
+             return [null, null];
+         }
+         $projection = DB::table('canonical_graph_projections')->where('id', $candidate->projection_id)->first();
+         if ($projection === null) {
+             return [null, null];
+         }
+         DB::table('projects')->where('id', $projection->project_id)->lockForUpdate()->firstOrFail();
+@@ -619,40 +816,40 @@ private function lockForcedAttempt(string $attemptId): array
+         return [$attempt, $projection];
+     }
+ 
+     /** @param list<string> $statuses */
+     private function ownsLiveAttempt(?object $attempt, string $ownerToken, array $statuses): bool
+     {
+         return $attempt !== null
+             && hash_equals((string) $attempt->owner_token, $ownerToken)
+             && in_array($attempt->status, $statuses, true)
+             && $attempt->lease_expires_at !== null
+-            && now()->lt($attempt->lease_expires_at);
++            && $this->databaseNow()->lt($attempt->lease_expires_at);
+     }
+ 
+-    private function forcedAttemptBaseMatches(object $attempt, object $projection): bool
++    private function publicationAttemptBaseMatches(object $attempt, object $projection): bool
+     {
+         $ready = DB::table('canonical_graph_projections')
+             ->where('project_id', $projection->project_id)
+             ->where('source_scope_type', $projection->source_scope_type)
+             ->where('source_scope_id', $projection->source_scope_id)
+             ->where('status', 'ready')
+             ->lockForUpdate()
+             ->first();
+ 
+         return ($ready?->id === $attempt->expected_ready_projection_id)
+             && ($ready?->active_graph_version === $attempt->expected_active_graph_version);
+     }
+ 
+-    private function finishForcedAttempt(string $attemptId, string $status, string $code): void
++    private function finishPublicationAttempt(string $attemptId, string $status, string $code): void
+     {
+-        $now = now();
++        $now = $this->databaseNow();
+         DB::table('canonical_graph_projection_attempts')->where('id', $attemptId)->update([
+             'status' => $status,
+             'error_code' => $this->boundedFailureCode($code),
+             'finished_at' => $now,
+             'updated_at' => $now,
+         ]);
+     }
+ 
+     private function identityKey(string $artifactType, string $artifactId): string
+     {
+@@ -696,11 +893,27 @@ private function projectionAttributes(array $graph, string $id, mixed $now): arr
+             'status' => 'queued',
+             'created_at' => $now,
+             'updated_at' => $now,
+         ];
+     }
+ 
+     private function boundedFailureCode(string $code): string
+     {
+         return preg_match('/\A[a-z0-9_]{1,100}\z/', $code) === 1 ? $code : 'projection_failed';
+     }
++
++    public function databaseClock(): CarbonImmutable
++    {
++        return $this->databaseNow();
++    }
++
++    private function databaseNow(): CarbonImmutable
++    {
++        // PostgreSQL CURRENT_TIMESTAMP is fixed at transaction start, which
++        // would let a long Neo4j marker call outlive its lease unnoticed.
++        // clock_timestamp() remains database-sourced but advances in-flight.
++        $clock = DB::getDriverName() === 'pgsql' ? 'clock_timestamp()' : 'CURRENT_TIMESTAMP';
++        $row = DB::selectOne("SELECT {$clock} AS current_time");
++
++        return CarbonImmutable::parse((string) $row->current_time);
++    }
+ }
+diff --git a/backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php b/backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php
+index 9b5a0089..1a67eebe 100644
+--- a/backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php
++++ b/backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php
+@@ -107,21 +107,21 @@ private function projectionScope(object $projection): array
+             'graph_version' => (string) ($projection->graph_version ?? ''),
+             'project_id' => (string) $projection->project_id,
+             'source_scope_type' => (string) $projection->source_scope_type,
+             'source_scope_id' => (string) $projection->source_scope_id,
+         ];
+     }
+ 
+     private function assertHeartbeat(?Closure $heartbeat): void
+     {
+         if ($heartbeat !== null && $heartbeat() !== true) {
+-            throw new RuntimeException('Canonical forced rebuild ownership was lost.');
++            throw new RuntimeException('Canonical publication ownership was lost.');
+         }
+     }
+ 
+     /**
+      * Build two lookup records for every relationship. Ranks are scoped to a
+      * source node and are assigned only after a stable identity sort, so the
+      * traversal query can apply an indexed upper bound before loading targets.
+      *
+      * @return list<array<string, mixed>>
+      */
+diff --git a/backend/database/migrations/2026_07_14_000000_add_canonical_graph_projection_attempts.php b/backend/database/migrations/2026_07_14_000000_add_canonical_graph_projection_attempts.php
+index 16bddfe6..93edc696 100644
+--- a/backend/database/migrations/2026_07_14_000000_add_canonical_graph_projection_attempts.php
++++ b/backend/database/migrations/2026_07_14_000000_add_canonical_graph_projection_attempts.php
+@@ -14,20 +14,21 @@ public function up(): void
+         });
+         DB::table('canonical_graph_projections')
+             ->whereNull('active_graph_version')
+             ->update(['active_graph_version' => DB::raw('graph_version')]);
+ 
+         Schema::create('canonical_graph_projection_attempts', function (Blueprint $table) {
+             $table->ulid('id')->primary();
+             $table->foreignUlid('projection_id')->constrained('canonical_graph_projections')->cascadeOnDelete();
+             $table->string('candidate_graph_version', 64)->unique();
+             $table->string('owner_token', 64);
++            $table->string('kind', 16);
+             $table->ulid('expected_ready_projection_id')->nullable();
+             $table->string('expected_active_graph_version', 64)->nullable();
+             $table->string('status', 32);
+             $table->string('publication_stage', 32)->default('building');
+             $table->unsignedBigInteger('node_count')->nullable();
+             $table->unsignedBigInteger('relationship_count')->nullable();
+             $table->string('error_code', 100)->nullable();
+             $table->timestamp('started_at');
+             $table->timestamp('heartbeat_at');
+             $table->timestamp('lease_expires_at');
+diff --git a/backend/docs/hades/canonical-graph-operations.md b/backend/docs/hades/canonical-graph-operations.md
+index c850a119..2aeb4a5c 100644
+--- a/backend/docs/hades/canonical-graph-operations.md
++++ b/backend/docs/hades/canonical-graph-operations.md
+@@ -86,32 +86,51 @@ ## Source resolution and read compatibility
+ references remain coherent without exposing canonical identities. Preview
+ aliases are presentation values, not canonical graph ids.
+ 
+ ## Projection lifecycle and concurrency
+ 
+ Projection rows move through `queued`, `projecting`, `ready`, `failed`, and
+ `stale`. The public `graph_version` is derived from the canonical artifact
+ identity and checksum. `active_graph_version` selects the verified physical
+ Neo4j copy without changing that public artifact identity.
+ 
+-Queue workers claim `queued` rows conditionally. Reconciliation inserts missing
+-rows or retries final `failed` rows but does not steal `queued` or `projecting`
+-work. A forced synchronous rebuild can claim only an inactive row with the same
+-project, scope, artifact, checksum, and version. It creates a persistent,
+-single-owner projection attempt with a distinct candidate physical version;
+-the verified projection row remains `ready` and its active version remains
+-queryable throughout the attempt. A failed attempt records only its bounded
+-failure code and never demotes or rewrites the verified projection. A
+-successful attempt switches `active_graph_version`, verified counts, and the
+-attempt state in one PostgreSQL transaction after Neo4j count verification;
+-only then can another ready row in the scope become `stale`.
+-Persisted failure codes are bounded and never contain raw exception text.
++Queue workers and forced synchronous rebuilds use one durable publication
++protocol in `canonical_graph_projection_attempts`; `kind=ordinary` and
++`kind=forced` describe the caller, not separate state machines. Reconciliation
++inserts missing rows or retries final `failed` rows but does not steal healthy
++`queued` or `projecting` work. Every owner projects a distinct physical
++candidate, verifies node, relationship, and adjacency counts, persists
++`publication_stage=marker_pending`, publishes the Neo4j current/capability
++marker, and only then advances PostgreSQL to `ready` with the new
++`active_graph_version`. The stable project lock and compare-and-swap base
++pointer serialize ordinary/forced interleavings. A losing attempt is
++superseded and its candidate is cleaned; it cannot overwrite the winner.
++
++The publication lease is **900 seconds** and every acquisition, comparison,
++heartbeat, and expiry decision uses PostgreSQL `clock_timestamp()` rather than
++an application-host clock or transaction-fixed `CURRENT_TIMESTAMP`. Ownership
++is live strictly before `lease_expires_at`; at the exact timestamp it is
++expired. Projection heartbeats renew the full
++900-second lease after each bounded Neo4j phase. The longest declared Neo4j
++wait is `db.awaitIndexes(300)` and queue workers are killed at 600 seconds in
++both development and production Compose, leaving a 300-second reclaim margin.
++Do not increase either timeout beyond the lease or reduce the lease without
++re-running the just-before/at/after-expiry and wrong-owner heartbeat tests.
++
++If a process dies before the marker, recovery restores Neo4j to PostgreSQL's
++active pointer, deletes the partial candidate, and makes an ordinary delivery
++claimable again. If it dies after the marker but before the PostgreSQL pointer,
++the same recovery first restores the PostgreSQL source-of-truth marker, then
++cleans the abandoned candidate and retries. The verified projection remains
++queryable throughout a forced attempt. A failed attempt records only a bounded
++failure code; it never silently publishes PostgreSQL without the Neo4j marker.
++Persisted failure codes never contain raw exception text.
+ 
+ ## Reconcile and rebuild
+ 
+ The canonical command always requires `--reconcile` and `--project`. Before the
+ human gate, only its bounded read-only preview may be run:
+ 
+ ```bash
+ php artisan devboard:neo4j-rebuild --reconcile --project=<project_uuid> --dry-run
+ ```
+ 
+diff --git a/backend/tests/Feature/CanonicalGraphProjectionTest.php b/backend/tests/Feature/CanonicalGraphProjectionTest.php
+index 502a5c81..ab93f167 100644
+--- a/backend/tests/Feature/CanonicalGraphProjectionTest.php
++++ b/backend/tests/Feature/CanonicalGraphProjectionTest.php
+@@ -1,53 +1,55 @@
+ <?php
+ 
+ use App\Services\Graph\CanonicalGraphProjectionService;
++use App\Services\Graph\Neo4jCanonicalGraphProjector;
++use App\Services\Neo4j\FakeNeo4jClient;
+ use Database\Seeders\DevBoardSeeder;
+ use Illuminate\Foundation\Testing\RefreshDatabase;
+ use Illuminate\Support\Facades\DB;
+ 
+ uses(RefreshDatabase::class);
+ 
+ beforeEach(function () {
+     $this->seed(DevBoardSeeder::class);
+ });
+ 
+ it('keeps the previous projection ready until its replacement is ready', function () {
+     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+     $service = app(CanonicalGraphProjectionService::class);
+     $first = $service->queue(canonicalProjectionGraph($projectId, 'artifact-1', str_repeat('a', 64)));
+     $service->markProjecting($first->id);
+-    $service->markReady($first->id, 10, 5);
++    $service->markReady($first->id, 10, 5, canonicalProjectionMarker($first));
+     $second = $service->queue(canonicalProjectionGraph($projectId, 'artifact-2', str_repeat('b', 64)));
+     $service->markProjecting($second->id);
+     expect($service->readyForScope($projectId, 'workspace_binding', 'binding-1')->id)->toBe($first->id);
+-    $service->markReady($second->id, 12, 7);
++    $service->markReady($second->id, 12, 7, canonicalProjectionMarker($second));
+     expect($service->readyForScope($projectId, 'workspace_binding', 'binding-1')->id)->toBe($second->id)
+         ->and(DB::table('canonical_graph_projections')->where('id', $first->id)->value('status'))->toBe('stale')
+         ->and(DB::table('canonical_graph_projections')
+             ->where('project_id', $projectId)
+             ->where('source_scope_type', 'workspace_binding')
+             ->where('source_scope_id', 'binding-1')
+             ->where('status', 'ready')
+             ->count())->toBe(1);
+ });
+ 
+ it('locks the stable project row before locking the projection candidate', function () {
+     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+     $service = app(CanonicalGraphProjectionService::class);
+     $candidate = $service->queue(canonicalProjectionGraph($projectId, 'artifact-1', str_repeat('a', 64)));
+     $queries = [];
+     DB::listen(function ($query) use (&$queries): void {
+         $queries[] = strtolower($query->sql);
+     });
+ 
+-    $service->markReady($candidate->id, 10, 5);
++    $service->markReady($candidate->id, 10, 5, canonicalProjectionMarker($candidate));
+ 
+     $projectLock = array_find_key($queries, fn (string $sql): bool => str_contains($sql, 'from "projects"'));
+     $candidateLock = array_find_key($queries, fn (string $sql): bool => str_starts_with($sql, 'select *') && str_contains($sql, 'from "canonical_graph_projections"'));
+     expect($projectLock)->not->toBeNull()
+         ->and($candidateLock)->not->toBeNull()
+         ->and($projectLock)->toBeLessThan($candidateLock);
+ });
+ 
+ it('queues an artifact identity idempotently', function () {
+     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+@@ -193,33 +195,33 @@
+     expect($changed)->toBeFalse()
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe($status)
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBeNull();
+ })->with(['projecting', 'ready', 'stale', 'failed']);
+ 
+ it('refuses a stale ready transition without staling or publishing anything', function (string $candidateStatus) {
+     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+     $service = app(CanonicalGraphProjectionService::class);
+     $current = $service->queue(canonicalProjectionGraph($projectId, 'artifact-current', str_repeat('e', 64)));
+     $service->markProjecting($current->id);
+-    expect($service->markReady($current->id, 10, 5))->toBeTrue();
++    expect($service->markReady($current->id, 10, 5, canonicalProjectionMarker($current)))->toBeTrue();
+ 
+     $candidate = $service->queue(canonicalProjectionGraph($projectId, 'artifact-stale-worker', str_repeat('f', 64)));
+     DB::table('canonical_graph_projections')->where('id', $candidate->id)->update([
+         'status' => $candidateStatus,
+         'node_count' => null,
+         'relationship_count' => null,
+         'projected_at' => null,
+     ]);
+     $beforeCurrent = DB::table('canonical_graph_projections')->where('id', $current->id)->first();
+     $beforeCandidate = DB::table('canonical_graph_projections')->where('id', $candidate->id)->first();
+ 
+-    $published = $service->markReady($candidate->id, 99, 88);
++    $published = $service->markReady($candidate->id, 99, 88, canonicalProjectionMarker($candidate));
+ 
+     $afterCurrent = DB::table('canonical_graph_projections')->where('id', $current->id)->first();
+     $afterCandidate = DB::table('canonical_graph_projections')->where('id', $candidate->id)->first();
+     expect($published)->toBeFalse()
+         ->and($afterCurrent->status)->toBe('ready')
+         ->and($afterCurrent->updated_at)->toBe($beforeCurrent->updated_at)
+         ->and($afterCandidate->status)->toBe($candidateStatus)
+         ->and($afterCandidate->node_count)->toBe($beforeCandidate->node_count)
+         ->and($afterCandidate->relationship_count)->toBe($beforeCandidate->relationship_count)
+         ->and($afterCandidate->projected_at)->toBe($beforeCandidate->projected_at)
+@@ -236,10 +238,15 @@ function canonicalProjectionGraph(string $projectId, string $artifactId, string
+             'artifact_type' => 'hades_agent_artifact',
+             'artifact_id' => $artifactId,
+             'checksum' => $checksum,
+         ],
+         'contract' => [
+             'extractor' => ['quality' => 'full'],
+             'source' => ['head_commit' => 'abc123'],
+         ],
+     ];
+ }
++
++function canonicalProjectionMarker(object $projection): Closure
++{
++    return fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, new FakeNeo4jClient);
++}
+diff --git a/backend/tests/Feature/CanonicalGraphRebuildCommandTest.php b/backend/tests/Feature/CanonicalGraphRebuildCommandTest.php
+index 2303b54e..1bf37536 100644
+--- a/backend/tests/Feature/CanonicalGraphRebuildCommandTest.php
++++ b/backend/tests/Feature/CanonicalGraphRebuildCommandTest.php
+@@ -1,15 +1,17 @@
+ <?php
+ 
+ use App\Jobs\ProjectCanonicalGraphToNeo4j;
+ use App\Services\Graph\CanonicalGraphProjectionService;
+ use App\Services\Graph\CanonicalGraphRepository;
++use App\Services\Graph\Neo4jCanonicalGraphProjector;
++use App\Services\Neo4j\FakeNeo4jClient;
+ use App\Services\Neo4jClientFactory;
+ use Database\Seeders\DevBoardSeeder;
+ use Illuminate\Foundation\Testing\RefreshDatabase;
+ use Illuminate\Support\Facades\Artisan;
+ use Illuminate\Support\Facades\Bus;
+ use Illuminate\Support\Facades\DB;
+ use Illuminate\Support\Facades\Storage;
+ use Illuminate\Support\Str;
+ 
+ uses(RefreshDatabase::class);
+@@ -140,21 +142,24 @@
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('queued')
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBeNull();
+     Bus::assertDispatchedTimes(ProjectCanonicalGraphToNeo4j::class, 1);
+ });
+ 
+ it('reports and skips a ready exact artifact and checksum match', function () {
+     $context = canonicalRebuildHadesContext();
+     $graph = app(CanonicalGraphRepository::class)->latestForScope($context['project_id'], 'workspace_binding', $context['scope_id']);
+     $projection = app(CanonicalGraphProjectionService::class)->queue($graph);
+     app(CanonicalGraphProjectionService::class)->markProjecting($projection->id);
+-    app(CanonicalGraphProjectionService::class)->markReady($projection->id, 2, 1);
++    app(CanonicalGraphProjectionService::class)->markReady(
++        $projection->id, 2, 1,
++        fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, new FakeNeo4jClient),
++    );
+     Bus::fake();
+ 
+     Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);
+ 
+     expect(canonicalRebuildSummary())->toBe([
+         'scanned' => 1,
+         'queued' => 0,
+         'ready' => 1,
+         'failed' => 0,
+         'skipped' => 0,
+diff --git a/backend/tests/Feature/GenesisGraphImportTest.php b/backend/tests/Feature/GenesisGraphImportTest.php
+index cdb5395f..7ac18e5c 100644
+--- a/backend/tests/Feature/GenesisGraphImportTest.php
++++ b/backend/tests/Feature/GenesisGraphImportTest.php
+@@ -252,21 +252,24 @@ public function run(string $cypher, array $params = []): mixed
+         ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->exists())->toBeFalse()
+         ->and(DB::table('artifacts')->where('id', $context['artifact_id'])->value('status'))->toBe('uploaded');
+ });
+ 
+ it('treats an exact ready projection as idempotent success without another Neo4j write', function () {
+     $context = createGraphImportContext();
+     $canonical = canonicalGraphForImportContext($context);
+     $projections = app(CanonicalGraphProjectionService::class);
+     $projection = $projections->queue($canonical);
+     expect($projections->claimForWorker($projection->id))->toBeTrue()
+-        ->and($projections->markReady($projection->id, 2, 1))->toBeTrue();
++        ->and($projections->markReady(
++            $projection->id, 2, 1,
++            fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, new FakeNeo4jClient),
++        ))->toBeTrue();
+     $client = new FakeNeo4jClient;
+ 
+     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client, 'fake', false);
+ 
+     expect($client->commands)->toBe([])
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready')
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('node_count'))->toBe(2)
+         ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count())->toBe(1);
+ });
+ 
+@@ -482,21 +485,20 @@ public function run(string $cypher, array $params = []): mixed
+         'event_type' => 'graph.imported',
+         'severity' => 'info',
+         'message' => 'Graph was already imported before rebuild.',
+         'payload' => json_encode(['snapshot_id' => $context['snapshot_id'], 'mode' => 'fake'], JSON_THROW_ON_ERROR),
+         'created_at' => now(),
+     ]);
+ 
+     $result = app(Neo4jRebuildService::class)->rebuild([
+         'snapshot_id' => $context['snapshot_id'],
+     ], $client, 'fake');
+-
+     expect($result)->toMatchArray([
+         'scanned' => 1,
+         'rebuilt' => 1,
+         'failed' => 0,
+     ]);
+ 
+     expect($client->commands[0]['cypher'])->toContain('DETACH DELETE');
+     expect($client->commands[0]['params']['snapshot_id'])->toBe($context['snapshot_id']);
+     expect(collect($client->commands)->contains(
+         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes'),
+@@ -580,21 +582,21 @@ public function run(string $cypher, array $params = []): mixed
+         $during = canonicalGraphQueryProbe($context);
+     };
+ 
+     $service->importGraphArtifact(
+         $context['snapshot_id'], $context['repository_id'], $context['run_id'],
+         $context['artifact_id'], $client, 'fake', force: true,
+     );
+     $after = canonicalGraphQueryProbe($context);
+ 
+     expect($during['result']['found'])->toBeTrue()
+-        ->and($during['params']['graph_version'])->toBe($published->graph_version)
++        ->and($during['params']['graph_version'])->toBe($published->active_graph_version)
+         ->and($after['result']['found'])->toBeTrue()
+         ->and($after['result']['graph_version'])->toBe($published->graph_version)
+         ->and($after['params']['graph_version'])->not->toBe($during['params']['graph_version'])
+         ->and(DB::table('canonical_graph_projections')->where('id', $published->id)->value('status'))->toBe('ready');
+ });
+ 
+ it('keeps the verified graph queryable after a failed forced rebuild', function () {
+     $context = createGraphImportContext();
+     $service = app(GenesisGraphImportService::class);
+     $service->importGenesis($context['import_id'], new FakeNeo4jClient);
+@@ -621,21 +623,21 @@ public function run(string $cypher, array $params = []): mixed
+ 
+     expect(fn () => $service->importGraphArtifact(
+         $context['snapshot_id'], $context['repository_id'], $context['run_id'],
+         $context['artifact_id'], $client, 'fake', force: true,
+     ))->toThrow(CanonicalGraphProjectionException::class, 'neo4j_query_failed');
+     $after = canonicalGraphQueryProbe($context);
+ 
+     expect($during['result']['found'])->toBeTrue()
+         ->and($after['result']['found'])->toBeTrue()
+         ->and($after['params']['graph_version'])->toBe($during['params']['graph_version'])
+-        ->and($after['params']['graph_version'])->toBe($published->graph_version)
++        ->and($after['params']['graph_version'])->toBe($published->active_graph_version)
+         ->and(DB::table('canonical_graph_projections')->where('id', $published->id)->value('status'))->toBe('ready');
+ });
+ 
+ it('allows only one of two interleaved force callers to project and publish', function () {
+     $context = createGraphImportContext();
+     $service = app(GenesisGraphImportService::class);
+     $service->importGenesis($context['import_id'], new FakeNeo4jClient);
+     $secondFailure = null;
+ 
+     $client = new class implements Neo4jClient
+@@ -701,39 +703,42 @@ public function run(string $cypher, array $params = []): mixed
+     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FakeNeo4jClient);
+     $graph = canonicalGraphForImportContext($context);
+     $service = app(CanonicalGraphProjectionService::class);
+ 
+     $claim = $service->acquireForForcedRebuild($graph);
+     $attempt = DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->firstOrFail();
+ 
+     expect($claim['owner_token'])->toBeString()->not->toBeEmpty()
+         ->and($attempt->owner_token)->toBe($claim['owner_token'])
+         ->and($attempt->expected_ready_projection_id)->toBe($claim['projection']->id)
+-        ->and($attempt->expected_active_graph_version)->toBe($claim['projection']->logical_graph_version)
++        ->and($attempt->expected_active_graph_version)->toBe($claim['projection']->active_graph_version)
+         ->and($attempt->lease_expires_at)->not->toBeNull()
+         ->and($service->heartbeatForcedRebuild($claim['attempt_id'], 'wrong-owner'))->toBeFalse()
+         ->and($service->heartbeatForcedRebuild($claim['attempt_id'], $claim['owner_token']))->toBeTrue();
+ });
+ 
+ it('does not let a superseded forced attempt overwrite a newer publication', function () {
+     $context = createGraphImportContext();
+     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], new FakeNeo4jClient);
+     $graph = canonicalGraphForImportContext($context);
+     $service = app(CanonicalGraphProjectionService::class);
+     $claim = $service->acquireForForcedRebuild($graph);
+     $markerCalled = false;
+     $newerGraph = $graph;
+     $newerGraph['identity']['artifact_id'] = (string) Str::ulid();
+     $newerGraph['identity']['checksum'] = str_repeat('f', 64);
+     $newer = $service->queue($newerGraph);
+     expect($service->claimForWorker($newer->id))->toBeTrue()
+-        ->and($service->markReady($newer->id, 3, 2))->toBeTrue();
++        ->and($service->markReady(
++            $newer->id, 3, 2,
++            fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($newer, new FakeNeo4jClient),
++        ))->toBeTrue();
+ 
+     $published = $service->publishForcedRebuild(
+         $claim['attempt_id'], $claim['owner_token'], 2, 1,
+         function () use (&$markerCalled): void {
+             $markerCalled = true;
+         },
+     );
+ 
+     expect($published)->toBeNull()
+         ->and($markerCalled)->toBeFalse()
+diff --git a/backend/tests/Feature/Hades/CanonicalHadesGraphProjectionTest.php b/backend/tests/Feature/Hades/CanonicalHadesGraphProjectionTest.php
+index 8c76ac82..e415f170 100644
+--- a/backend/tests/Feature/Hades/CanonicalHadesGraphProjectionTest.php
++++ b/backend/tests/Feature/Hades/CanonicalHadesGraphProjectionTest.php
+@@ -49,20 +49,188 @@
+ 
+     $counts = app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+ 
+     expect($counts)->toBe(['nodes' => 2, 'relationships' => 1]);
+     foreach (['UNWIND $nodes', 'UNWIND $relationships'] as $needle) {
+         $command = collect($client->commands)->first(fn (array $item) => str_contains($item['cypher'], $needle));
+         expect($command['params'])->toMatchArray(['project_id' => $agent['project_id'], 'source_scope_type' => 'workspace_binding', 'source_scope_id' => $bindingId, 'graph_version' => $projection->graph_version]);
+     }
+ });
+ 
++it('publishes an ordinary queued job through one durable marker-aware attempt', function () {
++    Bus::fake();
++    [$agent, $bindingId] = canonicalProjectionAgent();
++    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
++    $projection = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->firstOrFail();
++    $client = new FakeNeo4jClient;
++
++    runCanonicalProjectionJob($projection->id, $client);
++
++    $verificationIndex = collect($client->commands)->search(fn (array $command): bool => str_contains($command['cypher'], 'RETURN count(a) AS adjacencies'));
++    $markerIndex = collect($client->commands)->search(fn (array $command): bool => str_contains($command['cypher'], 'candidate.current = true'));
++    $attempt = DB::table('canonical_graph_projection_attempts')->where('projection_id', $projection->id)->sole();
++    $ready = DB::table('canonical_graph_projections')->where('id', $projection->id)->firstOrFail();
++
++    expect($verificationIndex)->toBeInt()
++        ->and($markerIndex)->toBeInt()->toBeGreaterThan($verificationIndex)
++        ->and($client->commands[$markerIndex]['cypher'])->toContain('candidate.traversal_schema_version = 1')
++        ->and($attempt->kind)->toBe('ordinary')
++        ->and($attempt->status)->toBe('ready')
++        ->and($attempt->publication_stage)->toBe('published')
++        ->and($ready->status)->toBe('ready')
++        ->and($ready->active_graph_version)->toBe($attempt->candidate_graph_version)
++        ->and($client->commands[$markerIndex]['params']['graph_version'])->toBe($ready->active_graph_version);
++});
++
++it('recovers marker-before-pointer hard crash and converges on a real job retry', function () {
++    Bus::fake();
++    [$agent, $bindingId] = canonicalProjectionAgent();
++    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
++    $stored = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->firstOrFail();
++    $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
++    $service = app(CanonicalGraphProjectionService::class);
++    $projector = app(Neo4jCanonicalGraphProjector::class);
++    $client = new FakeNeo4jClient;
++    $claim = $service->acquireForWorkerPublication($stored->id, $graph);
++    $counts = $projector->project($graph, $claim['projection'], $client);
++
++    expect(fn () => $service->publishPublicationAttempt(
++        $claim['attempt_id'], $claim['owner_token'], $counts['nodes'], $counts['relationships'],
++        function () use ($projector, $claim, $client): void {
++            $projector->publishCurrent($claim['projection'], $client);
++            throw new RuntimeException('simulated hard stop after marker');
++        },
++    ))->toThrow(RuntimeException::class, 'simulated hard stop after marker');
++    expect(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('publication_stage'))->toBe('marker_pending')
++        ->and(DB::table('canonical_graph_projections')->where('id', $stored->id)->value('status'))->toBe('projecting');
++
++    DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])
++        ->update(['lease_expires_at' => $service->databaseClock()->subMinute()]);
++    runCanonicalProjectionJob($stored->id, $client);
++
++    $attempts = DB::table('canonical_graph_projection_attempts')->where('projection_id', $stored->id)->orderBy('created_at')->get();
++    $ready = DB::table('canonical_graph_projections')->where('id', $stored->id)->firstOrFail();
++    expect($attempts)->toHaveCount(2)
++        ->and($attempts[0]->status)->toBe('abandoned')
++        ->and($attempts[0]->publication_stage)->toBe('cleaned')
++        ->and($attempts[1]->status)->toBe('ready')
++        ->and($ready->status)->toBe('ready')
++        ->and($ready->active_graph_version)->toBe($attempts[1]->candidate_graph_version)
++        ->and(collect($client->commands)->pluck('cypher')->contains(fn (string $query): bool => str_contains($query, 'recovery source of truth')))->toBeTrue()
++        ->and(collect($client->commands)->pluck('cypher')->contains(fn (string $query): bool => str_contains($query, 'cleanup non-current candidate')))->toBeTrue();
++});
++
++it('cleans a partial ordinary candidate before a real job retry', function () {
++    Bus::fake();
++    [$agent, $bindingId] = canonicalProjectionAgent();
++    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
++    $stored = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->firstOrFail();
++    $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
++    $service = app(CanonicalGraphProjectionService::class);
++    $claim = $service->acquireForWorkerPublication($stored->id, $graph);
++    $partial = new class implements Neo4jClient
++    {
++        public function run(string $cypher, array $parameters = []): mixed
++        {
++            if (str_contains($cypher, 'UNWIND $relationships')) {
++                throw new RuntimeException('simulated hard stop during projection');
++            }
++
++            return [];
++        }
++    };
++    expect(fn () => app(Neo4jCanonicalGraphProjector::class)->project($graph, $claim['projection'], $partial))
++        ->toThrow(RuntimeException::class, 'simulated hard stop during projection');
++    DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])
++        ->update(['lease_expires_at' => $service->databaseClock()->subMinute()]);
++    $client = new FakeNeo4jClient;
++
++    runCanonicalProjectionJob($stored->id, $client);
++
++    $attempts = DB::table('canonical_graph_projection_attempts')->where('projection_id', $stored->id)->orderBy('created_at')->get();
++    expect($attempts)->toHaveCount(2)
++        ->and($attempts[0]->status)->toBe('abandoned')
++        ->and($attempts[0]->publication_stage)->toBe('cleaned')
++        ->and($attempts[1]->status)->toBe('ready')
++        ->and(DB::table('canonical_graph_projections')->where('id', $stored->id)->value('status'))->toBe('ready')
++        ->and(collect($client->commands)->pluck('cypher')->contains(fn (string $query): bool => str_contains($query, 'cleanup non-current candidate')))->toBeTrue();
++});
++
++it('uses database-clock lease boundaries and renews only the live owner', function () {
++    Bus::fake();
++    [$agent, $bindingId] = canonicalProjectionAgent();
++    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
++    $stored = DB::table('canonical_graph_projections')->where('artifact_id', $response->json('artifact.id'))->firstOrFail();
++    $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
++    $service = app(CanonicalGraphProjectionService::class);
++    $claim = $service->acquireForWorkerPublication($stored->id, $graph);
++    $attempt = DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->firstOrFail();
++    $databaseNow = $service->databaseClock();
++
++    expect($databaseNow->diffInSeconds($attempt->lease_expires_at))->toBeGreaterThanOrEqual(899)
++        ->and($service->heartbeatPublicationAttempt($claim['attempt_id'], 'wrong-owner'))->toBeFalse();
++
++    DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])
++        ->update(['lease_expires_at' => $service->databaseClock()->addSeconds(5)]);
++    expect($service->heartbeatPublicationAttempt($claim['attempt_id'], $claim['owner_token']))->toBeTrue();
++    $renewed = DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->firstOrFail();
++    expect($service->databaseClock()->diffInSeconds($renewed->lease_expires_at))->toBeGreaterThanOrEqual(899);
++
++    DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])
++        ->update(['lease_expires_at' => $service->databaseClock()]);
++    expect($service->heartbeatPublicationAttempt($claim['attempt_id'], $claim['owner_token']))->toBeFalse();
++
++    DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])
++        ->update(['lease_expires_at' => $service->databaseClock()->subSecond()]);
++    expect($service->heartbeatPublicationAttempt($claim['attempt_id'], $claim['owner_token']))->toBeFalse();
++});
++
++it('keeps a newer ordinary artifact as winner when an older ordinary publish interleaves', function () {
++    Bus::fake();
++    [$agent, $bindingId] = canonicalProjectionAgent();
++    $firstResponse = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
++    $firstStored = DB::table('canonical_graph_projections')->where('artifact_id', $firstResponse->json('artifact.id'))->firstOrFail();
++    $firstGraph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $firstResponse->json('artifact.id'));
++    $service = app(CanonicalGraphProjectionService::class);
++    $projector = app(Neo4jCanonicalGraphProjector::class);
++    $firstClaim = $service->acquireForWorkerPublication($firstStored->id, $firstGraph);
++    $firstClient = new FakeNeo4jClient;
++    $counts = $projector->project($firstGraph, $firstClaim['projection'], $firstClient);
++
++    $newerPayload = canonicalProjectionUpload($agent, $bindingId);
++    $newerPayload['artifact']['nodes'][] = ['id' => 'function:newer', 'kind' => 'function'];
++    $newerResponse = $this->postJson('/api/hades/v1/artifacts', $newerPayload, ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
++    $newerStored = DB::table('canonical_graph_projections')->where('artifact_id', $newerResponse->json('artifact.id'))->firstOrFail();
++    runCanonicalProjectionJob($newerStored->id, new FakeNeo4jClient);
++    $winnerBefore = DB::table('canonical_graph_projections')->where('id', $newerStored->id)->firstOrFail();
++    $oldMarkerCalled = false;
++
++    $published = $service->publishPublicationAttempt(
++        $firstClaim['attempt_id'], $firstClaim['owner_token'], $counts['nodes'], $counts['relationships'],
++        function () use (&$oldMarkerCalled): void {
++            $oldMarkerCalled = true;
++        },
++    );
++    $service->cleanupPublicationAttempt(
++        $firstClaim['attempt_id'], $firstClaim['owner_token'], $firstClient, $projector,
++    );
++
++    $winnerAfter = DB::table('canonical_graph_projections')->where('id', $newerStored->id)->firstOrFail();
++    expect($published)->toBeNull()
++        ->and($oldMarkerCalled)->toBeFalse()
++        ->and($winnerAfter->status)->toBe('ready')
++        ->and($winnerAfter->active_graph_version)->toBe($winnerBefore->active_graph_version)
++        ->and(DB::table('canonical_graph_projections')->where('id', $firstStored->id)->value('status'))->toBe('stale')
++        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $firstClaim['attempt_id'])->value('status'))->toBe('superseded')
++        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $firstClaim['attempt_id'])->value('publication_stage'))->toBe('cleaned');
++});
++
+ it('materializes deterministically ranked adjacency rows for bounded traversal', function () {
+     Bus::fake();
+     [$agent, $bindingId] = canonicalProjectionAgent();
+     $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+     $projection = DB::table('canonical_graph_projections')->first();
+     $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
+     $client = new FakeNeo4jClient;
+ 
+     $projector = app(Neo4jCanonicalGraphProjector::class);
+     $projector->project($graph, $projection, $client);
+@@ -694,21 +862,24 @@ public function run(string $cypher, array $parameters = []): mixed
+     $failure = new RuntimeException('projection wrapper', 0, new RuntimeException('Connection refused to private-host.example'));
+ 
+     expect($service->claimForWorker($projection->id))->toBeTrue();
+     $service->markRetryPending($projection->id, 'neo4j_unavailable');
+     expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('queued')
+         ->and($service->claimForWorker($projection->id))->toBeTrue();
+ 
+     $oldDelivery->failed($failure);
+     expect(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting')
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBeNull()
+-        ->and($service->markReady($projection->id, 2, 1))->toBeTrue()
++        ->and($service->markReady(
++            $projection->id, 2, 1,
++            fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, new FakeNeo4jClient),
++        ))->toBeTrue()
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready');
+ 
+     Bus::fake();
+     $summary = app(Neo4jRebuildService::class)->reconcile(['project_id' => $agent['project_id']]);
+     expect($summary['queued'])->toBe(0);
+     Bus::assertNotDispatched(ProjectCanonicalGraphToNeo4j::class);
+ });
+ 
+ it('does not call Neo4j for duplicate jobs after a projection is nonclaimable', function (string $status) {
+     Bus::fake();
+diff --git a/backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest.php b/backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest.php
+index dde2ae85..ba85c410 100644
+--- a/backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest.php
++++ b/backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest.php
+@@ -724,21 +724,24 @@ function hadesNoCodebaseProjectGraph(string $projectId, string $bindingId, strin
+         ->where('project_id', $projectId)
+         ->where('source_scope_type', 'workspace_binding')
+         ->where('source_scope_id', $bindingId)
+         ->where('artifact_type', 'hades_agent_artifact')
+         ->where('artifact_id', $artifactId)
+         ->firstOrFail();
+ 
+     expect($graph)->not->toBeNull()
+         ->and($projections->claimForWorker($projection->id))->toBeTrue();
+     $counts = app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $neo4j);
+-    expect($projections->markReady($projection->id, $counts['nodes'], $counts['relationships']))->toBeTrue();
++    expect($projections->markReady(
++        $projection->id, $counts['nodes'], $counts['relationships'],
++        fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, $neo4j),
++    ))->toBeTrue();
+ }
+ 
+ /**
+  * Stateful projection/query fake: the projector writes the canonical graph and
+  * traversal reads only that projected state. It deliberately interprets the
+  * relationship selector in the generated Cypher, so tests cannot return graph
+  * rows which were never projected or which the query could not reach.
+  */
+ class HadesNoCodebaseNeo4jClient implements Neo4jClient
+ {

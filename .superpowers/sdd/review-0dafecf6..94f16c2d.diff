@@ -1,0 +1,175 @@
+# Review package: 0dafecf6..94f16c2d
+
+## Commits
+94f16c2d fix(graph): retain bounded traversal starts
+
+## Files changed
+ .../Services/Graph/CanonicalGraphQueryService.php  | 30 +++++++----
+ backend/tests/Feature/Plugin/GraphQueryApiTest.php | 63 ++++++++++++++++++++--
+ 2 files changed, 80 insertions(+), 13 deletions(-)
+
+## Diff
+diff --git a/backend/app/Services/Graph/CanonicalGraphQueryService.php b/backend/app/Services/Graph/CanonicalGraphQueryService.php
+index 0ea1e40b..e3b38b10 100644
+--- a/backend/app/Services/Graph/CanonicalGraphQueryService.php
++++ b/backend/app/Services/Graph/CanonicalGraphQueryService.php
+@@ -109,33 +109,43 @@ private function runTraverse(Neo4jClient $client, array $params, object $project
+         $query = strtolower((string) ($params['start'] ?? ''));
+         $startMatch = implode(' OR ', [
+             "toLower(coalesce(start.external_id, '')) CONTAINS \$start_query",
+             "toLower(coalesce(start.name, '')) CONTAINS \$start_query",
+             "toLower(coalesce(start.label, '')) CONTAINS \$start_query",
+             "toLower(coalesce(start.path, '')) CONTAINS \$start_query",
+         ]);
+ 
+         $cypher = 'MATCH (start:CanonicalGraphNode {graph_version: $graph_version}) WHERE ('.$startMatch.') '
+             .'WITH start ORDER BY start.external_id LIMIT $fetch_limit '
+-            .'WITH collect(start) AS starts UNWIND starts AS start '
++            .'WITH collect(start) AS fetchedStarts '
++            .'WITH fetchedStarts[0..$limit] AS starts, size(fetchedStarts) > $limit AS startTruncated '
++            .'UNWIND starts AS start '
+             .'OPTIONAL MATCH p=(start)'.$pattern.'(node:CanonicalGraphNode {graph_version: $graph_version}) '
+             .'WHERE p IS NULL OR (ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)) '
+-            .'WITH starts, start, p ORDER BY start.external_id, length(p) LIMIT $path_fetch_limit '
+-            .'WITH starts, collect(p) AS matchedPaths '
+-            .'WITH matchedPaths[0..$path_limit] AS paths, starts, size(matchedPaths) > $path_limit AS pathTruncated '
+-            .'WITH starts, pathTruncated, '
+-            .'reduce(candidateNodes = starts, matchedPath IN paths | candidateNodes + nodes(matchedPath)) AS candidateNodes, '
++            .'WITH starts, startTruncated, start, p ORDER BY start.external_id, length(p) LIMIT $path_fetch_limit '
++            .'WITH starts, startTruncated, collect(p) AS matchedPaths '
++            .'WITH matchedPaths[0..$path_limit] AS paths, starts, startTruncated, size(matchedPaths) > $path_limit AS pathTruncated '
++            .'WITH starts, startTruncated, pathTruncated, '
++            .'reduce(candidatePathNodes = [], matchedPath IN paths | candidatePathNodes + nodes(matchedPath)) AS candidatePathNodes, '
+             .'reduce(candidateEdges = [], matchedPath IN paths | candidateEdges + relationships(matchedPath)) AS candidateEdges '
+-            .'UNWIND candidateNodes AS candidate WITH starts, pathTruncated, candidateEdges, collect(DISTINCT candidate) AS uniqueNodes '
+-            .'RETURN [n IN uniqueNodes[0..$fetch_limit] | {node: properties(n), labels: labels(n)}] AS nodes, '
+-            .'[r IN candidateEdges | r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}] AS edges, '
+-            .'size(uniqueNodes) > $limit OR pathTruncated AS truncated, '
++            .'UNWIND starts AS candidate '
++            .'WITH starts, startTruncated, pathTruncated, candidatePathNodes, candidateEdges, candidate ORDER BY candidate.external_id '
++            .'WITH starts, startTruncated, pathTruncated, candidatePathNodes, candidateEdges, collect(DISTINCT candidate) AS uniqueStarts '
++            .'UNWIND CASE WHEN candidatePathNodes = [] THEN [null] ELSE candidatePathNodes END AS pathNode '
++            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, pathNode ORDER BY pathNode.external_id '
++            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, collect(DISTINCT pathNode) AS uniquePathNodes '
++            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, [n IN uniquePathNodes WHERE n IS NOT NULL] AS uniquePathNodes '
++            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts + [n IN uniquePathNodes WHERE NOT n IN uniqueStarts] AS orderedNodes '
++            .'WITH starts, startTruncated, pathTruncated, candidateEdges, orderedNodes, orderedNodes[0..$limit] AS finalNodes '
++            .'RETURN [n IN finalNodes | {node: properties(n), labels: labels(n)}] AS nodes, '
++            .'[r IN candidateEdges WHERE startNode(r) IN finalNodes AND endNode(r) IN finalNodes | r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}] AS edges, '
++            .'startTruncated OR size(orderedNodes) > $limit OR pathTruncated AS truncated, '
+             ."[field IN ['external_id', 'name', 'label', 'path'] WHERE any(s IN starts WHERE toLower(coalesce(s[field], '')) CONTAINS \$start_query)] AS match_fields";
+ 
+         $pathLimit = min(200, max($limit + 1, $limit * $depth));
+ 
+         return $client->run($cypher, [
+             'start_query' => $query,
+             'graph_version' => (string) $projection->graph_version,
+             'limit' => $limit,
+             'fetch_limit' => $limit + 1,
+             'path_limit' => $pathLimit,
+diff --git a/backend/tests/Feature/Plugin/GraphQueryApiTest.php b/backend/tests/Feature/Plugin/GraphQueryApiTest.php
+index 8eaeaebf..ca6bc5a7 100644
+--- a/backend/tests/Feature/Plugin/GraphQueryApiTest.php
++++ b/backend/tests/Feature/Plugin/GraphQueryApiTest.php
+@@ -528,41 +528,98 @@ public function run(string $cypher, array $params = []): mixed
+     $projectId = graphQueryProjectId();
+     $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+     graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+ 
+     $result = $service->query($projectId, 'repository', $repo->id, 'traverse', [
+         'start' => 'Isolated', 'direction' => 'out', 'max_depth' => 2, 'limit' => 2,
+     ]);
+ 
+     $command = $fakeClient->commands[0];
+     expect($command['cypher'])
+-        ->toContain('WITH start ORDER BY start.external_id LIMIT $fetch_limit WITH collect(start) AS starts UNWIND starts AS start')
++        ->toContain('WITH start ORDER BY start.external_id LIMIT $fetch_limit WITH collect(start) AS fetchedStarts')
++        ->toContain('WITH fetchedStarts[0..$limit] AS starts, size(fetchedStarts) > $limit AS startTruncated UNWIND starts AS start')
+         ->toContain('OPTIONAL MATCH p=(start)-[*1..2]->(node:CanonicalGraphNode {graph_version: $graph_version})')
+-        ->toContain('WITH starts, start, p ORDER BY start.external_id, length(p)')
++        ->toContain('WITH starts, startTruncated, start, p ORDER BY start.external_id, length(p)')
+         ->not->toContain('collect(DISTINCT start)')
+         ->toContain('collect(p) AS matchedPaths')
+-        ->toContain('reduce(candidateNodes = starts, matchedPath IN paths | candidateNodes + nodes(matchedPath))')
++        ->toContain('reduce(candidatePathNodes = [], matchedPath IN paths | candidatePathNodes + nodes(matchedPath))')
+         ->toContain('reduce(candidateEdges = [], matchedPath IN paths | candidateEdges + relationships(matchedPath))')
++        ->toContain('startNode(r) IN finalNodes AND endNode(r) IN finalNodes')
+         ->toContain('r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}')
+         ->not->toContain('collect({nodes:')
+         ->not->toContain('path.nodes')
+         ->not->toContain('path.edges')
+         ->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
+         ->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
+         ->not->toMatch('/\\b(?:CREATE|MERGE|SET|DELETE|REMOVE|DROP)\\b/i')
+         ->and($command['params']['graph_version'])->toStartWith('graph-version-')
+         ->and($command['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
+         ->and(array_column($result['results'], 'id'))->toBe(['isolated'])
+         ->and($result['edges'])->toBe([])
+         ->and($result['traversal_match_fields'])->toBe(['name']);
+ });
+ 
++it('retains every bounded matching start before path nodes when the traversal cap is saturated', function () {
++    $client = new class implements Neo4jClient
++    {
++        public array $commands = [];
++
++        public function run(string $cypher, array $params = []): mixed
++        {
++            $this->commands[] = compact('cypher', 'params');
++
++            return [[
++                'nodes' => [
++                    ['node' => ['external_id' => 'partial-isolated', 'name' => 'Partial Isolated'], 'labels' => ['CanonicalGraphNode']],
++                    ['node' => ['external_id' => 'partial-connected', 'name' => 'Partial Connected'], 'labels' => ['CanonicalGraphNode']],
++                    ['node' => ['external_id' => 'path-one', 'name' => 'Path One'], 'labels' => ['CanonicalGraphNode']],
++                ],
++                'edges' => [[
++                    'external_id' => 'kept-edge',
++                    'source_id' => 'partial-connected',
++                    'target_id' => 'path-one',
++                ]],
++                'truncated' => true,
++                'match_fields' => ['external_id', 'name'],
++            ]];
++        }
++    };
++    $service = new CanonicalGraphQueryService($client);
++    $projectId = graphQueryProjectId();
++    $repo = DB::table('repositories')->where('project_id', $projectId)->first();
++    graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
++
++    $result = $service->query($projectId, 'repository', $repo->id, 'traverse', [
++        'start' => 'partial', 'direction' => 'out', 'max_depth' => 3, 'limit' => 3,
++    ]);
++
++    $command = $client->commands[0];
++    expect($command['cypher'])
++        ->toContain('WITH collect(start) AS fetchedStarts')
++        ->toContain('fetchedStarts[0..$limit] AS starts')
++        ->toContain('size(fetchedStarts) > $limit AS startTruncated')
++        ->toContain('collect(DISTINCT candidate) AS uniqueStarts')
++        ->toContain('collect(DISTINCT pathNode) AS uniquePathNodes')
++        ->toContain('uniqueStarts + [n IN uniquePathNodes WHERE NOT n IN uniqueStarts] AS orderedNodes')
++        ->toContain('orderedNodes[0..$limit] AS finalNodes')
++        ->toContain('startNode(r) IN finalNodes AND endNode(r) IN finalNodes')
++        ->toContain('startTruncated OR size(orderedNodes) > $limit OR pathTruncated AS truncated')
++        ->and($command['params']['fetch_limit'])->toBe(4)
++        ->and(array_column($result['results'], 'id'))->toBe([
++            'partial-isolated',
++            'partial-connected',
++            'path-one',
++        ])
++        ->and(array_column($result['edges'], 'external_id'))->toBe(['kept-edge'])
++        ->and($result['truncated'])->toBeTrue();
++});
++
+ it('normalizes iterable rows returned by the real Neo4j driver', function () {
+     $client = new class implements Neo4jClient
+     {
+         public function run(string $cypher, array $params = []): mixed
+         {
+             return new ArrayIterator([
+                 new ArrayIterator([
+                     'nodes' => new ArrayIterator([
+                         new ArrayIterator([
+                             'node' => new ArrayIterator(['external_id' => 'driver-start', 'name' => 'DriverStart']),

@@ -1,0 +1,2624 @@
+# Review package: 94f16c2d..ff085a83
+
+## Commits
+ff085a83 fix(graph): bound canonical traversal frontiers
+617366a8 fix(graph): preserve ready projection during rebuild
+b112c0c2 fix(graph): bound canonical contract metadata
+
+## Files changed
+ backend/app/Services/GenesisGraphImportService.php |  29 ++-
+ .../Services/Graph/CanonicalGraphNormalizer.php    |  48 +++-
+ .../Graph/CanonicalGraphProjectionService.php      | 167 +++++++++-----
+ .../Services/Graph/CanonicalGraphQueryService.php  | 173 ++++++++++----
+ .../Graph/Neo4jCanonicalGraphProjector.php         |  78 ++++++-
+ backend/app/Services/Neo4j/FakeNeo4jClient.php     |   4 +
+ backend/app/Services/Neo4jRebuildService.php       |   4 +
+ ...000_add_canonical_graph_projection_attempts.php |  41 ++++
+ backend/docs/hades/canonical-graph-operations.md   |  75 ++++++-
+ backend/docs/hades/openapi-hades-v1.json           |  30 ++-
+ .../tests/Feature/CanonicalGraphProjectionTest.php |  24 +-
+ backend/tests/Feature/GenesisGraphImportTest.php   | 117 ++++++++++
+ .../Hades/CanonicalHadesGraphProjectionTest.php    |  56 ++++-
+ .../Feature/Hades/HadesM3SharedMemoryTest.php      |  74 +++---
+ .../Feature/Hades/HadesNoCodebaseDiagnosisTest.php |  81 ++++++-
+ backend/tests/Feature/Plugin/GraphQueryApiTest.php | 250 ++++++++++++++-------
+ .../tests/Unit/CanonicalGraphNormalizerTest.php    |  72 ++++++
+ 17 files changed, 1064 insertions(+), 259 deletions(-)
+
+## Diff
+diff --git a/backend/app/Services/GenesisGraphImportService.php b/backend/app/Services/GenesisGraphImportService.php
+index 7de18036..df182bed 100644
+--- a/backend/app/Services/GenesisGraphImportService.php
++++ b/backend/app/Services/GenesisGraphImportService.php
+@@ -442,27 +442,29 @@ public function importGraphArtifact(
+                 && $current !== null
+                 && $this->canonicalProjections->matchesGraph($current, $canonical)
+                 && $current->status === 'ready'
+                 && is_numeric($current->node_count)
+                 && is_numeric($current->relationship_count)) {
+                 $this->publishImportSuccess($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $current, $force);
+ 
+                 return;
+             }
+ 
+-            $failureCode = match ($current?->status) {
+-                'queued', 'projecting' => 'projection_busy',
+-                'ready' => 'projection_ready_unverified',
+-                'failed' => 'projection_failed',
+-                'stale' => 'projection_stale',
+-                default => 'projection_missing',
+-            };
++            $failureCode = $force && $current !== null && $this->canonicalProjections->forcedRebuildActive((string) $current->id)
++                ? 'projection_busy'
++                : match ($current?->status) {
++                    'queued', 'projecting' => 'projection_busy',
++                    'ready' => 'projection_ready_unverified',
++                    'failed' => 'projection_failed',
++                    'stale' => 'projection_stale',
++                    default => 'projection_missing',
++                };
+ 
+             throw new CanonicalGraphProjectionException((string) $projection->id, $failureCode);
+         }
+ 
+         $projection->snapshot_id = $snapshotId;
+         try {
+             if ($force) {
+                 $this->purgeLegacySnapshot($client, $snapshotId);
+             }
+             $this->ensureIndexes($client);
+@@ -502,39 +504,46 @@ public function importGraphArtifact(
+                 foreach (array_chunk($relationships, self::BATCH_SIZE) as $relationshipBatch) {
+                     if ($relationshipBatch !== []) {
+                         foreach (self::relationshipBatchCommands($relationshipBatch, $snapshotId, $runId, $repositoryId) as $cmd) {
+                             $this->runCommand($client, $cmd);
+                         }
+                     }
+                 }
+             }
+ 
+             $counts = $this->canonicalProjector->project($canonical, $projection, $client);
+-            if (! $this->canonicalProjections->markReady((string) $projection->id, $counts['nodes'], $counts['relationships'])) {
++            if ($force) {
++                $ready = $this->canonicalProjections->publishForcedRebuild(
++                    (string) $forceClaim['attempt_id'], $counts['nodes'], $counts['relationships'],
++                );
++                if ($ready === null) {
++                    throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
++                }
++            } elseif (! $this->canonicalProjections->markReady((string) $projection->id, $counts['nodes'], $counts['relationships'])) {
+                 throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+             }
+         } catch (Throwable $exception) {
+             $failureCode = $exception instanceof CanonicalGraphProjectionException
+                 ? $exception->failureCode
+                 : 'neo4j_query_failed';
+             if ($force) {
+-                $this->canonicalProjections->markForcedRebuildFailed((string) $projection->id, $failureCode);
++                $this->canonicalProjections->markForcedRebuildFailed((string) $forceClaim['attempt_id'], $failureCode);
+             } else {
+                 $this->canonicalProjections->markRetryPending((string) $projection->id, $failureCode);
+             }
+ 
+             throw $exception instanceof CanonicalGraphProjectionException
+                 ? $exception
+                 : new CanonicalGraphProjectionException((string) $projection->id, $failureCode, $exception);
+         }
+ 
+-        $ready = $this->canonicalProjections->findForWorker((string) $projection->id);
++        $ready ??= $this->canonicalProjections->findForWorker((string) $projection->id);
+         if ($ready === null || $ready->status !== 'ready') {
+             throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
+         }
+         $this->publishImportSuccess($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $ready, $force);
+     }
+ 
+     private function publishImportSuccess(string $artifactId, string $runId, string $snapshotId, string $mode, string $fakeMessage, string $neo4jMessage, object $projection, bool $allowExistingEvent): void
+     {
+         DB::transaction(function () use ($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $projection, $allowExistingEvent): void {
+             DB::table('runs')->where('id', $runId)->lockForUpdate()->firstOrFail();
+diff --git a/backend/app/Services/Graph/CanonicalGraphNormalizer.php b/backend/app/Services/Graph/CanonicalGraphNormalizer.php
+index 3e31e711..cdce25a8 100644
+--- a/backend/app/Services/Graph/CanonicalGraphNormalizer.php
++++ b/backend/app/Services/Graph/CanonicalGraphNormalizer.php
+@@ -1,18 +1,26 @@
+ <?php
+ 
+ namespace App\Services\Graph;
+ 
+ use InvalidArgumentException;
+ 
+ class CanonicalGraphNormalizer
+ {
++    private const FALLBACK_REASONS = [
++        'no_relationships_extracted',
++        'bounded_or_omitted_input',
++        'canonicalization_omissions',
++        'graphify_unavailable',
++        'missing_contract_metadata',
++    ];
++
+     public function normalize(array $payload, array $identity): array
+     {
+         $contract = $payload['graph_contract'] ?? null;
+         if (! is_array($contract) || ($contract['version'] ?? null) !== 'hades.graph_artifact.v1') {
+             throw new InvalidArgumentException('Canonical graph contract is missing or unsupported.');
+         }
+         $this->validateContract($contract);
+         $rawNodes = is_array($payload['nodes'] ?? null) ? $payload['nodes'] : ($payload['symbols'] ?? []);
+         $rawEdges = is_array($payload['relationships'] ?? null) ? $payload['relationships'] : ($payload['edges'] ?? []);
+         $nodes = array_map(fn (array $node): array => $this->node($node), array_values(array_filter($rawNodes, 'is_array')));
+@@ -23,78 +31,100 @@ public function normalize(array $payload, array $identity): array
+ 
+     private function validateContract(array $contract): void
+     {
+         $this->assertExactKeys($contract, ['version', 'extractor', 'coverage', 'source'], 'graph_contract');
+ 
+         $extractor = $contract['extractor'] ?? null;
+         if (! is_array($extractor)) {
+             $this->malformed('extractor');
+         }
+         $this->assertExactKeys($extractor, ['name', 'version', 'mode', 'quality', 'fallback_reason'], 'extractor');
+-        $this->assertNonEmptyString($extractor['name'], 'extractor.name');
+-        $this->assertNonEmptyString($extractor['version'], 'extractor.version');
++        $this->assertPattern($extractor['name'], 'extractor.name', 64, '/\A[a-z0-9][a-z0-9._-]*\z/D');
++        $this->assertPattern($extractor['version'], 'extractor.version', 32, '/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/D');
+         if (! in_array($extractor['mode'], ['native', 'graphify', 'fallback', 'legacy_adapter'], true)) {
+             $this->malformed('extractor.mode');
+         }
+         if (! in_array($extractor['quality'], ['full', 'partial', 'inventory_only'], true)) {
+             $this->malformed('extractor.quality');
+         }
+         if ($extractor['fallback_reason'] !== null) {
+-            $this->assertNonEmptyString($extractor['fallback_reason'], 'extractor.fallback_reason');
++            $reason = $extractor['fallback_reason'];
++            if (! is_string($reason) || strlen($reason) > 100 || (! in_array($reason, self::FALLBACK_REASONS, true)
++                && preg_match('/\Agraphify_failed:[A-Za-z_][A-Za-z0-9_]{0,63}\z/D', $reason) !== 1)) {
++                $this->malformed('extractor.fallback_reason');
++            }
++        }
++        if (($extractor['quality'] === 'full') !== ($extractor['fallback_reason'] === null)) {
++            $this->malformed('extractor');
+         }
+ 
+         $coverage = $contract['coverage'] ?? null;
+         if (! is_array($coverage)) {
+             $this->malformed('coverage');
+         }
+         $this->assertExactKeys($coverage, ['languages', 'files_total', 'files_analyzed', 'files_failed'], 'coverage');
+-        if (! is_array($coverage['languages']) || ! array_is_list($coverage['languages'])) {
++        if (! is_array($coverage['languages']) || ! array_is_list($coverage['languages'])
++            || $coverage['languages'] === [] || count($coverage['languages']) > 16
++            || count(array_unique($coverage['languages'], SORT_REGULAR)) !== count($coverage['languages'])) {
+             $this->malformed('coverage.languages');
+         }
+         foreach ($coverage['languages'] as $language) {
+-            $this->assertNonEmptyString($language, 'coverage.languages');
++            $this->assertPattern($language, 'coverage.languages', 32, '/\A[a-z0-9][a-z0-9+#._-]*\z/D');
+         }
+         foreach (['files_total', 'files_analyzed', 'files_failed'] as $field) {
+             if (! is_int($coverage[$field]) || $coverage[$field] < 0) {
+                 $this->malformed('coverage.'.$field);
+             }
+         }
++        if ($coverage['files_analyzed'] > $coverage['files_total']
++            || $coverage['files_failed'] > $coverage['files_total']
++            || $coverage['files_total'] !== $coverage['files_analyzed'] + $coverage['files_failed']) {
++            $this->malformed('coverage');
++        }
+ 
+         $source = $contract['source'] ?? null;
+         if (! is_array($source)) {
+             $this->malformed('source');
+         }
+         $this->assertExactKeys($source, ['branch', 'head_commit'], 'source');
+-        foreach (['branch', 'head_commit'] as $field) {
+-            if ($source[$field] !== null) {
+-                $this->assertNonEmptyString($source[$field], 'source.'.$field);
+-            }
++        if ($source['branch'] !== null) {
++            $this->assertPattern($source['branch'], 'source.branch', 255, '/\A[A-Za-z0-9][A-Za-z0-9._\/-]*\z/D');
++        }
++        if ($source['head_commit'] !== null) {
++            $this->assertPattern($source['head_commit'], 'source.head_commit', 80, '/\A[0-9a-fA-F]{4,80}\z/D');
+         }
+     }
+ 
+     private function assertExactKeys(array $value, array $expected, string $field): void
+     {
+         $actual = array_keys($value);
+         sort($actual);
+         sort($expected);
+         if ($actual !== $expected) {
+             $this->malformed($field);
+         }
+     }
+ 
+     private function assertNonEmptyString(mixed $value, string $field): void
+     {
+         if (! is_string($value) || trim($value) === '') {
+             $this->malformed($field);
+         }
+     }
+ 
++    private function assertPattern(mixed $value, string $field, int $maxLength, string $pattern): void
++    {
++        if (! is_string($value) || strlen($value) > $maxLength || preg_match($pattern, $value) !== 1) {
++            $this->malformed($field);
++        }
++    }
++
+     private function malformed(string $field): never
+     {
+         throw new InvalidArgumentException("Canonical graph contract is malformed at {$field}.");
+     }
+ 
+     private function node(array $node): array
+     {
+         $id = $node['id'] ?? $node['symbol_id'] ?? null;
+         if (! is_string($id) || trim($id) === '') {
+             throw new InvalidArgumentException('Canonical graph node id is missing.');
+diff --git a/backend/app/Services/Graph/CanonicalGraphProjectionService.php b/backend/app/Services/Graph/CanonicalGraphProjectionService.php
+index 2775da4e..d881cdca 100644
+--- a/backend/app/Services/Graph/CanonicalGraphProjectionService.php
++++ b/backend/app/Services/Graph/CanonicalGraphProjectionService.php
+@@ -132,59 +132,85 @@ public function queue(array $graph): object
+             $this->projectionAttributes($graph, (string) Str::ulid(), $now),
+         );
+ 
+         return DB::table('canonical_graph_projections')
+             ->where('artifact_type', $artifactType)
+             ->where('artifact_id', $artifactId)
+             ->firstOrFail();
+     }
+ 
+     /**
+-     * Acquire a synchronous forced rebuild without stealing an active queue
+-     * delivery. A missing projection is created directly as projecting while
+-     * the stable project row is locked; existing inactive rows go through the
+-     * exact conditional forced-rebuild claim.
++     * Acquire a separate physical attempt while the published projection row
++     * remains queryable. The stable project lock serializes competing force
++     * callers without stealing queued or projecting worker deliveries.
+      *
+-     * @return array{projection: object, claimed: bool, conflict: bool}
++     * @return array{projection: object, claimed: bool, conflict: bool, attempt_id: string|null}
+      */
+     public function acquireForForcedRebuild(array $graph): array
+     {
+         return DB::transaction(function () use ($graph): array {
+             $identity = $graph['identity'];
+             DB::table('projects')->where('id', (string) $identity['project_id'])->lockForUpdate()->firstOrFail();
+ 
+             $key = $this->identityKey((string) $identity['artifact_type'], (string) $identity['artifact_id']);
+             $proposal = $this->projectionAttributes($graph, (string) Str::ulid(), now());
+-            $proposal['status'] = 'projecting';
+             DB::table('canonical_graph_projections')->insertOrIgnore($proposal);
+             $existing = $this->findForGraphs([$graph], lockForUpdate: true)[$key];
+-            if ((string) $existing->id === $proposal['id']) {
+-                $projection = $existing;
+-
+-                return ['projection' => $projection, 'claimed' => true, 'conflict' => false];
++            $conflict = ! $this->matchesGraph($existing, $graph);
++            $inserted = (string) $existing->id === $proposal['id'];
++            $inactive = $inserted || in_array($existing->status, ['ready', 'stale', 'failed'], true);
++            $activeAttempt = DB::table('canonical_graph_projection_attempts')
++                ->where('projection_id', $existing->id)
++                ->where('status', 'projecting')
++                ->exists();
++            if ($conflict || ! $inactive || $activeAttempt) {
++                return ['projection' => $existing, 'claimed' => false, 'conflict' => $conflict, 'attempt_id' => null];
+             }
+ 
+-            $conflict = ! $this->matchesGraph($existing, $graph);
+-            $claimed = ! $conflict && $this->claimForForcedRebuild((string) $existing->id, $graph);
+-            $projection = $claimed
+-                ? DB::table('canonical_graph_projections')->where('id', $existing->id)->firstOrFail()
+-                : $existing;
++            $attemptId = (string) Str::ulid();
++            $candidateVersion = hash('sha256', $existing->graph_version.'|forced|'.$attemptId);
++            $now = now();
++            DB::table('canonical_graph_projection_attempts')->insert([
++                'id' => $attemptId,
++                'projection_id' => $existing->id,
++                'candidate_graph_version' => $candidateVersion,
++                'status' => 'projecting',
++                'node_count' => null,
++                'relationship_count' => null,
++                'error_code' => null,
++                'started_at' => $now,
++                'finished_at' => null,
++                'created_at' => $now,
++                'updated_at' => $now,
++            ]);
++            $projection = clone $existing;
++            $projection->logical_graph_version = $existing->graph_version;
++            $projection->graph_version = $candidateVersion;
++            $projection->attempt_id = $attemptId;
+ 
+-            return ['projection' => $projection, 'claimed' => $claimed, 'conflict' => $conflict];
++            return ['projection' => $projection, 'claimed' => true, 'conflict' => false, 'attempt_id' => $attemptId];
+         });
+     }
+ 
+     public function findForWorker(string $id): ?object
+     {
+         return DB::table('canonical_graph_projections')->where('id', $id)->first();
+     }
+ 
++    public function forcedRebuildActive(string $projectionId): bool
++    {
++        return DB::table('canonical_graph_projection_attempts')
++            ->where('projection_id', $projectionId)
++            ->where('status', 'projecting')
++            ->exists();
++    }
++
+     /**
+      * Atomically claim one queued projection for a queue worker.
+      *
+      * False means the projection is missing or another worker/job already
+      * owns or completed it. The result comes directly from the conditional
+      * update so a fallible read cannot make a successful claim ambiguous.
+      */
+     public function claimForWorker(string $id): bool
+     {
+         $now = now();
+@@ -193,54 +219,32 @@ public function claimForWorker(string $id): bool
+             ->where('id', $id)
+             ->where('status', 'queued')
+             ->update([
+                 'status' => 'projecting',
+                 'error_code' => null,
+                 'updated_at' => $now,
+             ]) === 1;
+     }
+ 
+     /**
+-     * Atomically take ownership of an exact, inactive projection for a
+-     * synchronous forced rebuild.
+-     *
+-     * Ready, stale, and final failed projections are rebuildable. Queued and
+-     * projecting rows belong to an active delivery and are never stolen. The
+-     * full canonical identity is part of the compare-and-swap so an artifact
+-     * id reused with different content cannot be projected accidentally.
++     * Compatibility wrapper for callers that only need the atomic claim bit.
+      */
+     public function claimForForcedRebuild(string $id, array $graph): bool
+     {
+-        $identity = $graph['identity'];
+-        $artifactType = (string) $identity['artifact_type'];
+-        $artifactId = (string) $identity['artifact_id'];
+-        $checksum = (string) $identity['checksum'];
+-        $graphVersion = hash('sha256', $artifactType.'|'.$artifactId.'|'.$checksum);
++        $existing = DB::table('canonical_graph_projections')->where('id', $id)->first();
++        if ($existing === null || ! $this->matchesGraph($existing, $graph)) {
++            return false;
++        }
+ 
+-        return DB::table('canonical_graph_projections')
+-            ->where('id', $id)
+-            ->where('project_id', (string) $identity['project_id'])
+-            ->where('source_scope_type', (string) $identity['source_scope_type'])
+-            ->where('source_scope_id', (string) $identity['source_scope_id'])
+-            ->where('artifact_type', $artifactType)
+-            ->where('artifact_id', $artifactId)
+-            ->where('checksum', $checksum)
+-            ->where('graph_version', $graphVersion)
+-            ->whereIn('status', ['ready', 'stale', 'failed'])
+-            ->update([
+-                'status' => 'projecting',
+-                'node_count' => null,
+-                'relationship_count' => null,
+-                'error_code' => null,
+-                'projected_at' => null,
+-                'updated_at' => now(),
+-            ]) === 1;
++        $claim = $this->acquireForForcedRebuild($graph);
++
++        return $claim['claimed'] && (string) $claim['projection']->id === $id;
+     }
+ 
+     public function markProjecting(string $id): void
+     {
+         DB::table('canonical_graph_projections')->where('id', $id)->update([
+             'status' => 'projecting',
+             'error_code' => null,
+             'updated_at' => now(),
+         ]);
+     }
+@@ -266,20 +270,21 @@ public function markReady(string $id, int $nodes, int $relationships): bool
+             DB::table('canonical_graph_projections')
+                 ->where('project_id', $candidate->project_id)
+                 ->where('source_scope_type', $candidate->source_scope_type)
+                 ->where('source_scope_id', $candidate->source_scope_id)
+                 ->where('status', 'ready')
+                 ->where('id', '!=', $id)
+                 ->update(['status' => 'stale', 'updated_at' => now()]);
+ 
+             DB::table('canonical_graph_projections')->where('id', $id)->update([
+                 'status' => 'ready',
++                'active_graph_version' => $candidate->graph_version,
+                 'node_count' => $nodes,
+                 'relationship_count' => $relationships,
+                 'error_code' => null,
+                 'projected_at' => now(),
+                 'updated_at' => now(),
+             ]);
+ 
+             return true;
+         });
+     }
+@@ -319,31 +324,82 @@ public function markRetryPending(string $id, string $code): void
+         DB::table('canonical_graph_projections')
+             ->where('id', $id)
+             ->where('status', 'projecting')
+             ->update([
+                 'status' => 'queued',
+                 'error_code' => $this->boundedFailureCode($code),
+                 'updated_at' => now(),
+             ]);
+     }
+ 
+-    /** Finalize only a forced rebuild claim still owned by this caller. */
+-    public function markForcedRebuildFailed(string $id, string $code): bool
++    /** Publish a verified forced attempt and switch the physical version atomically. */
++    public function publishForcedRebuild(string $attemptId, int $nodes, int $relationships): ?object
+     {
+-        return DB::table('canonical_graph_projections')
+-            ->where('id', $id)
+-            ->where('status', 'projecting')
+-            ->update([
++        return DB::transaction(function () use ($attemptId, $nodes, $relationships): ?object {
++            $attempt = DB::table('canonical_graph_projection_attempts')->where('id', $attemptId)->lockForUpdate()->first();
++            if ($attempt === null || $attempt->status !== 'projecting') {
++                return null;
++            }
++            $projection = DB::table('canonical_graph_projections')->where('id', $attempt->projection_id)->firstOrFail();
++            DB::table('projects')->where('id', $projection->project_id)->lockForUpdate()->firstOrFail();
++            $now = now();
++            DB::table('canonical_graph_projections')
++                ->where('project_id', $projection->project_id)
++                ->where('source_scope_type', $projection->source_scope_type)
++                ->where('source_scope_id', $projection->source_scope_id)
++                ->where('status', 'ready')
++                ->where('id', '!=', $projection->id)
++                ->update(['status' => 'stale', 'updated_at' => $now]);
++            DB::table('canonical_graph_projections')->where('id', $projection->id)->update([
++                'status' => 'ready',
++                'active_graph_version' => $attempt->candidate_graph_version,
++                'node_count' => $nodes,
++                'relationship_count' => $relationships,
++                'error_code' => null,
++                'projected_at' => $now,
++                'updated_at' => $now,
++            ]);
++            DB::table('canonical_graph_projection_attempts')->where('id', $attemptId)->update([
++                'status' => 'ready',
++                'node_count' => $nodes,
++                'relationship_count' => $relationships,
++                'error_code' => null,
++                'finished_at' => $now,
++                'updated_at' => $now,
++            ]);
++
++            return DB::table('canonical_graph_projections')->where('id', $projection->id)->firstOrFail();
++        });
++    }
++
++    /** Finalize only the forced attempt still owned by this caller. */
++    public function markForcedRebuildFailed(string $attemptId, string $code): bool
++    {
++        return DB::transaction(function () use ($attemptId, $code): bool {
++            $attempt = DB::table('canonical_graph_projection_attempts')->where('id', $attemptId)->lockForUpdate()->first();
++            if ($attempt === null || $attempt->status !== 'projecting') {
++                return false;
++            }
++            $now = now();
++            DB::table('canonical_graph_projection_attempts')->where('id', $attemptId)->update([
+                 'status' => 'failed',
+                 'error_code' => $this->boundedFailureCode($code),
+-                'updated_at' => now(),
+-            ]) === 1;
++                'finished_at' => $now,
++                'updated_at' => $now,
++            ]);
++            DB::table('canonical_graph_projections')
++                ->where('id', $attempt->projection_id)
++                ->where('status', 'queued')
++                ->update(['status' => 'failed', 'error_code' => $this->boundedFailureCode($code), 'updated_at' => $now]);
++
++            return true;
++        });
+     }
+ 
+     public function readyForScope(string $projectId, string $scopeType, string $scopeId): ?object
+     {
+         return DB::table('canonical_graph_projections')
+             ->where('project_id', $projectId)
+             ->where('source_scope_type', $scopeType)
+             ->where('source_scope_id', $scopeId)
+             ->where('status', 'ready')
+             ->orderByDesc('projected_at')
+@@ -361,38 +417,39 @@ public function matchesGraph(object $projection, array $graph): bool
+         $identity = $graph['identity'];
+         $expectedVersion = hash(
+             'sha256',
+             $identity['artifact_type'].'|'.$identity['artifact_id'].'|'.$identity['checksum'],
+         );
+ 
+         return (string) $projection->project_id === (string) $identity['project_id']
+             && (string) $projection->source_scope_type === (string) $identity['source_scope_type']
+             && (string) $projection->source_scope_id === (string) $identity['source_scope_id']
+             && hash_equals((string) $projection->checksum, (string) $identity['checksum'])
+-            && hash_equals((string) $projection->graph_version, $expectedVersion);
++            && hash_equals((string) ($projection->logical_graph_version ?? $projection->graph_version), $expectedVersion);
+     }
+ 
+     private function projectionAttributes(array $graph, string $id, mixed $now): array
+     {
+         $identity = $graph['identity'];
+         $artifactType = (string) $identity['artifact_type'];
+         $artifactId = (string) $identity['artifact_id'];
+         $checksum = (string) $identity['checksum'];
+ 
+         return [
+             'id' => $id,
+             'project_id' => $identity['project_id'],
+             'source_scope_type' => $identity['source_scope_type'],
+             'source_scope_id' => $identity['source_scope_id'],
+             'artifact_type' => $artifactType,
+             'artifact_id' => $artifactId,
+             'graph_version' => hash('sha256', $artifactType.'|'.$artifactId.'|'.$checksum),
++            'active_graph_version' => null,
+             'checksum' => $checksum,
+             'head_commit' => $graph['contract']['source']['head_commit'] ?? null,
+             'quality' => $graph['contract']['extractor']['quality'],
+             'status' => 'queued',
+             'created_at' => $now,
+             'updated_at' => $now,
+         ];
+     }
+ 
+     private function boundedFailureCode(string $code): string
+diff --git a/backend/app/Services/Graph/CanonicalGraphQueryService.php b/backend/app/Services/Graph/CanonicalGraphQueryService.php
+index e3b38b10..cd47dbf6 100644
+--- a/backend/app/Services/Graph/CanonicalGraphQueryService.php
++++ b/backend/app/Services/Graph/CanonicalGraphQueryService.php
+@@ -47,20 +47,22 @@ public function query(string $projectId, string $scopeType, string $scopeId, str
+ 
+         $base = $this->envelope($projectId, $scopeType, $scopeId, $projection);
+         try {
+             $client = $this->client ?? app(Neo4jClientFactory::class)->client();
+             $rows = match ($type) {
+                 'callers' => $client->run($this->adjacency('in'), $this->symbolParams($params, $projection)),
+                 'callees' => $client->run($this->adjacency('out'), $this->symbolParams($params, $projection)),
+                 'path' => $this->runPath($client, $params, $projection),
+                 'traverse' => $this->runTraverse($client, $params, $projection),
+             };
++        } catch (BoundedTraversalUnavailable) {
++            return array_merge($base, ['found' => false, 'reason' => 'graph_projection_rebuild_required']);
+         } catch (\Throwable) {
+             return array_merge($base, ['found' => false, 'reason' => 'query_error']);
+         }
+ 
+         $limit = $type === 'traverse' ? max(1, min(50, (int) ($params['limit'] ?? 20))) : null;
+         [$nodes, $edges, $truncated, $matchFields] = $this->normaliseRows($rows, $limit);
+ 
+         return array_merge($base, [
+             'found' => true,
+             'reason' => null,
+@@ -76,104 +78,183 @@ private function adjacency(string $direction): string
+         $match = $direction === 'in'
+             ? '(result:CanonicalGraphNode {graph_version: $graph_version})-[edge:CALLS {graph_version: $graph_version}]->(node:CanonicalGraphNode {external_id: $external_id, graph_version: $graph_version})'
+             : '(node:CanonicalGraphNode {external_id: $external_id, graph_version: $graph_version})-[edge:CALLS {graph_version: $graph_version}]->(result:CanonicalGraphNode {graph_version: $graph_version})';
+ 
+         return "MATCH {$match} RETURN properties(result) AS node, labels(result) AS labels, properties(edge) AS edge LIMIT \$limit";
+     }
+ 
+     /** @param array<string, mixed> $params */
+     private function symbolParams(array $params, object $projection): array
+     {
+-        return ['external_id' => (string) ($params['symbol_id'] ?? ''), 'graph_version' => (string) $projection->graph_version, 'limit' => max(1, min(50, (int) ($params['limit'] ?? 50)))];
++        return ['external_id' => (string) ($params['symbol_id'] ?? ''), 'graph_version' => $this->activeGraphVersion($projection), 'limit' => max(1, min(50, (int) ($params['limit'] ?? 50)))];
+     }
+ 
+     /** @param array<string, mixed> $params */
+     private function runPath(Neo4jClient $client, array $params, object $projection): mixed
+     {
+         $depth = max(1, min(10, (int) ($params['max_depth'] ?? 5)));
+ 
+-        return $client->run('MATCH (from:CanonicalGraphNode {external_id: $from_external_id, graph_version: $graph_version}), (to:CanonicalGraphNode {external_id: $to_external_id, graph_version: $graph_version}) MATCH p = shortestPath((from)-[:CALLS*1..'.$depth.']-(to)) WHERE ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version) RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes, [r IN relationships(p) | properties(r)] AS edges LIMIT 1', ['from_external_id' => (string) ($params['from_symbol_id'] ?? ''), 'to_external_id' => (string) ($params['to_symbol_id'] ?? ''), 'graph_version' => (string) $projection->graph_version]);
++        return $client->run('MATCH (from:CanonicalGraphNode {external_id: $from_external_id, graph_version: $graph_version}), (to:CanonicalGraphNode {external_id: $to_external_id, graph_version: $graph_version}) MATCH p = shortestPath((from)-[:CALLS*1..'.$depth.']-(to)) WHERE ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version) RETURN [n IN nodes(p) | {node: properties(n), labels: labels(n)}] AS nodes, [r IN relationships(p) | properties(r)] AS edges LIMIT 1', ['from_external_id' => (string) ($params['from_symbol_id'] ?? ''), 'to_external_id' => (string) ($params['to_symbol_id'] ?? ''), 'graph_version' => $this->activeGraphVersion($projection)]);
+     }
+ 
+     /** @param array<string, mixed> $params */
+     private function runTraverse(Neo4jClient $client, array $params, object $projection): mixed
+     {
+         $depth = max(1, min(3, (int) ($params['max_depth'] ?? 2)));
+         $direction = (string) ($params['direction'] ?? 'any');
+-        $pattern = match ($direction) {
+-            'in' => '<-[*1..'.$depth.']-',
+-            'out' => '-[*1..'.$depth.']->',
+-            default => '-[*1..'.$depth.']-',
+-        };
+-
+         $limit = max(1, min(50, (int) ($params['limit'] ?? 20)));
+         $query = strtolower((string) ($params['start'] ?? ''));
++        $graphVersion = $this->activeGraphVersion($projection);
++        $capabilityRows = $this->materialiseSequences($client->run(
++            'MATCH (version:CanonicalGraphVersion {graph_version: $graph_version}) RETURN coalesce(version.traversal_schema_version, 0) AS traversal_schema_version',
++            ['graph_version' => $graphVersion],
++        ));
++        if (! is_array($capabilityRows) || (int) ($capabilityRows[0]['traversal_schema_version'] ?? 0) !== 1) {
++            throw new BoundedTraversalUnavailable;
++        }
+         $startMatch = implode(' OR ', [
+             "toLower(coalesce(start.external_id, '')) CONTAINS \$start_query",
+             "toLower(coalesce(start.name, '')) CONTAINS \$start_query",
+             "toLower(coalesce(start.label, '')) CONTAINS \$start_query",
+             "toLower(coalesce(start.path, '')) CONTAINS \$start_query",
+         ]);
+-
+-        $cypher = 'MATCH (start:CanonicalGraphNode {graph_version: $graph_version}) WHERE ('.$startMatch.') '
++        $startRows = $client->run(
++            'MATCH (start:CanonicalGraphNode {graph_version: $graph_version}) WHERE ('.$startMatch.') '
+             .'WITH start ORDER BY start.external_id LIMIT $fetch_limit '
+-            .'WITH collect(start) AS fetchedStarts '
+-            .'WITH fetchedStarts[0..$limit] AS starts, size(fetchedStarts) > $limit AS startTruncated '
+-            .'UNWIND starts AS start '
+-            .'OPTIONAL MATCH p=(start)'.$pattern.'(node:CanonicalGraphNode {graph_version: $graph_version}) '
+-            .'WHERE p IS NULL OR (ALL(n IN nodes(p) WHERE n.graph_version = $graph_version) AND ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)) '
+-            .'WITH starts, startTruncated, start, p ORDER BY start.external_id, length(p) LIMIT $path_fetch_limit '
+-            .'WITH starts, startTruncated, collect(p) AS matchedPaths '
+-            .'WITH matchedPaths[0..$path_limit] AS paths, starts, startTruncated, size(matchedPaths) > $path_limit AS pathTruncated '
+-            .'WITH starts, startTruncated, pathTruncated, '
+-            .'reduce(candidatePathNodes = [], matchedPath IN paths | candidatePathNodes + nodes(matchedPath)) AS candidatePathNodes, '
+-            .'reduce(candidateEdges = [], matchedPath IN paths | candidateEdges + relationships(matchedPath)) AS candidateEdges '
+-            .'UNWIND starts AS candidate '
+-            .'WITH starts, startTruncated, pathTruncated, candidatePathNodes, candidateEdges, candidate ORDER BY candidate.external_id '
+-            .'WITH starts, startTruncated, pathTruncated, candidatePathNodes, candidateEdges, collect(DISTINCT candidate) AS uniqueStarts '
+-            .'UNWIND CASE WHEN candidatePathNodes = [] THEN [null] ELSE candidatePathNodes END AS pathNode '
+-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, pathNode ORDER BY pathNode.external_id '
+-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, collect(DISTINCT pathNode) AS uniquePathNodes '
+-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts, [n IN uniquePathNodes WHERE n IS NOT NULL] AS uniquePathNodes '
+-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, uniqueStarts + [n IN uniquePathNodes WHERE NOT n IN uniqueStarts] AS orderedNodes '
+-            .'WITH starts, startTruncated, pathTruncated, candidateEdges, orderedNodes, orderedNodes[0..$limit] AS finalNodes '
+-            .'RETURN [n IN finalNodes | {node: properties(n), labels: labels(n)}] AS nodes, '
+-            .'[r IN candidateEdges WHERE startNode(r) IN finalNodes AND endNode(r) IN finalNodes | r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}] AS edges, '
+-            .'startTruncated OR size(orderedNodes) > $limit OR pathTruncated AS truncated, '
+-            ."[field IN ['external_id', 'name', 'label', 'path'] WHERE any(s IN starts WHERE toLower(coalesce(s[field], '')) CONTAINS \$start_query)] AS match_fields";
+-
+-        $pathLimit = min(200, max($limit + 1, $limit * $depth));
+-
+-        return $client->run($cypher, [
+-            'start_query' => $query,
+-            'graph_version' => (string) $projection->graph_version,
+-            'limit' => $limit,
+-            'fetch_limit' => $limit + 1,
+-            'path_limit' => $pathLimit,
+-            'path_fetch_limit' => $pathLimit + 1,
+-        ]);
++            .'RETURN properties(start) AS node, labels(start) AS labels, '
++            ."[field IN ['external_id', 'name', 'label', 'path'] WHERE toLower(coalesce(start[field], '')) CONTAINS \$start_query] AS match_fields",
++            [
++                'start_query' => $query,
++                'graph_version' => $graphVersion,
++                'fetch_limit' => $limit + 1,
++            ],
++        );
++        [$starts, , , $matchFields] = $this->normaliseRows($startRows);
++        $truncated = count($starts) > $limit;
++        $starts = array_slice($starts, 0, $limit);
++        $visited = [];
++        foreach ($starts as $start) {
++            $visited[$start['id']] = $start;
++        }
++        $frontier = array_keys($visited);
++        $edges = [];
++        $directionClause = in_array($direction, ['in', 'out'], true) ? ', direction: $direction' : '';
++        $rankProperty = in_array($direction, ['in', 'out'], true) ? 'direction_rank' : 'any_rank';
++
++        for ($hop = 0; $hop < $depth && $frontier !== []; $hop++) {
++            $perFrontierFetchLimit = $limit + 1;
++            $hopFetchLimit = count($frontier) * $perFrontierFetchLimit;
++            $hopRows = $client->run(
++                'UNWIND $frontier_ids AS frontier_id '
++                .'CALL { WITH frontier_id '
++                .'MATCH (adjacency:CanonicalGraphAdjacency {graph_version: $graph_version, from_external_id: frontier_id'.$directionClause.'}) '
++                .'WHERE adjacency.'.$rankProperty.' < $per_frontier_fetch_limit '
++                .'WITH frontier_id, adjacency ORDER BY adjacency.'.$rankProperty.' LIMIT $per_frontier_fetch_limit '
++                .'MATCH (target:CanonicalGraphNode {graph_version: $graph_version, external_id: adjacency.to_external_id}) '
++                .'RETURN frontier_id AS source_id, properties(target) AS node, labels(target) AS labels, '
++                .'adjacency {edge_json: adjacency.edge_json, external_id: adjacency.edge_external_id, type: adjacency.edge_type} AS edge } '
++                .'RETURN source_id, node, labels, edge ORDER BY source_id, node.external_id, edge.external_id LIMIT $hop_fetch_limit',
++                [
++                    'frontier_ids' => $frontier,
++                    'graph_version' => $graphVersion,
++                    'direction' => $direction,
++                    'per_frontier_fetch_limit' => $perFrontierFetchLimit,
++                    'hop_fetch_limit' => $hopFetchLimit,
++                ],
++            );
++            $materializedRows = $this->materialiseSequences($hopRows);
++            if (! is_array($materializedRows)) {
++                $materializedRows = [];
++            }
++            foreach ($materializedRows as &$materializedRow) {
++                if (! is_array($materializedRow) || ! is_array($materializedRow['edge'] ?? null) || ! is_string($materializedRow['edge']['edge_json'] ?? null)) {
++                    continue;
++                }
++                $decodedEdge = json_decode($materializedRow['edge']['edge_json'], true, flags: JSON_THROW_ON_ERROR);
++                if (! is_array($decodedEdge)) {
++                    throw new RuntimeException('Canonical graph adjacency edge payload is invalid.');
++                }
++                $materializedRow['edge'] = $decodedEdge;
++            }
++            unset($materializedRow);
++            $rowsBySource = [];
++            foreach ($materializedRows as $row) {
++                if (is_array($row)) {
++                    $rowsBySource[(string) ($row['source_id'] ?? '')] = ($rowsBySource[(string) ($row['source_id'] ?? '')] ?? 0) + 1;
++                }
++            }
++            if (collect($rowsBySource)->contains(fn (int $count): bool => $count >= $perFrontierFetchLimit)) {
++                $truncated = true;
++            }
++            [$hopNodes, $hopEdges] = $this->normaliseRows($materializedRows);
++            foreach ($hopEdges as $edge) {
++                $edges[$this->edgeIdentity($edge)] = $edge;
++            }
++            $nextFrontier = [];
++            foreach ($hopNodes as $node) {
++                if (isset($visited[$node['id']])) {
++                    continue;
++                }
++                if (count($visited) >= $limit) {
++                    $truncated = true;
++
++                    continue;
++                }
++                $visited[$node['id']] = $node;
++                $nextFrontier[] = $node['id'];
++            }
++            $frontier = $nextFrontier;
++            if (count($visited) >= $limit) {
++                break;
++            }
++        }
++
++        $returnedIds = array_fill_keys(array_keys($visited), true);
++        $edges = array_filter($edges, fn (array $edge): bool => isset(
++            $returnedIds[(string) ($edge['source_id'] ?? '')],
++            $returnedIds[(string) ($edge['target_id'] ?? '')],
++        ));
++        ksort($edges);
++        $nodes = array_map(function (array $node): array {
++            $properties = $node['properties'];
++            $properties['external_id'] ??= $node['id'];
++
++            return ['node' => $properties, 'labels' => $node['labels']];
++        }, array_values($visited));
++
++        return [[
++            'nodes' => $nodes,
++            'edges' => array_values($edges),
++            'truncated' => $truncated,
++            'match_fields' => $matchFields,
++        ]];
+     }
+ 
+     private function envelope(string $projectId, string $scopeType, string $scopeId, ?object $projection = null): array
+     {
+         $schema = $projection?->artifact_type;
+         $headCommit = $projection?->head_commit;
+         if ($projection !== null && $scopeType === 'workspace_binding') {
+             $artifact = DB::table('hades_agent_artifacts')->where('id', $projection->artifact_id)->first();
+             $schema = $artifact?->schema ?? $schema;
+             $payload = $artifact ? json_decode((string) $artifact->artifact, true) : [];
+             $headCommit = is_array($payload) ? ($payload['head_commit'] ?? $payload['commit'] ?? $headCommit) : $headCommit;
+         }
+ 
+         return ['found' => false, 'reason' => null, 'graph_version' => $projection?->graph_version, 'quality' => $projection?->quality, 'results' => [], 'edges' => [], 'metadata' => ['project_id' => $projectId, 'source_scope_type' => $scopeType, 'source_scope_id' => $scopeId, 'projection_id' => $projection?->id, 'graph_version' => $projection?->graph_version, 'artifact_id' => $projection?->artifact_id, 'artifact_type' => $projection?->artifact_type, 'schema' => $schema, 'head_commit' => $headCommit, 'quality' => $projection?->quality, 'node_count' => $projection?->node_count, 'relationship_count' => $projection?->relationship_count]];
+     }
+ 
++    private function activeGraphVersion(object $projection): string
++    {
++        return (string) (($projection->active_graph_version ?? null) ?: $projection->graph_version);
++    }
++
+     /** @return array{0: list<array<string,mixed>>, 1: list<array<string,mixed>>, 2: bool, 3: list<string>} */
+     private function normaliseRows(mixed $result, ?int $limit = null): array
+     {
+         $result = $this->materialiseSequences($result);
+         if (! is_array($result)) {
+             return [[], [], false, []];
+         }
+         $nodesById = [];
+         $edgesById = [];
+         $truncated = false;
+@@ -247,10 +328,12 @@ private function edgeIdentity(array $edge): string
+         return (string) ($edge['external_id'] ?? $edge['id'] ?? hash('sha256', json_encode($edge)));
+     }
+ 
+     private function node(array $row): array
+     {
+         $props = is_array($row['node'] ?? null) ? $row['node'] : $row;
+ 
+         return ['id' => (string) ($props['external_id'] ?? $props['symbol_id'] ?? $props['id'] ?? 'node-'.md5(json_encode($props))), 'labels' => array_values($row['labels'] ?? []), 'properties' => $props];
+     }
+ }
++
++class BoundedTraversalUnavailable extends RuntimeException {}
+diff --git a/backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php b/backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php
+index af96852b..aeb1edf4 100644
+--- a/backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php
++++ b/backend/app/Services/Graph/Neo4jCanonicalGraphProjector.php
+@@ -12,54 +12,130 @@ class Neo4jCanonicalGraphProjector
+     private const BATCH_SIZE = 500;
+ 
+     /** @return array{nodes:int, relationships:int} */
+     public function project(array $graph, object $projection, Neo4jClient $client): array
+     {
+         $this->assertPropertyBagsAreMaps($graph);
+ 
+         $scope = ['graph_version' => $projection->graph_version, 'project_id' => $projection->project_id, 'source_scope_type' => $projection->source_scope_type, 'source_scope_id' => $projection->source_scope_id];
+         $client->run('CREATE INDEX canonical_node_version_external IF NOT EXISTS FOR (n:CanonicalGraphNode) ON (n.graph_version, n.external_id)');
+         $client->run('CREATE INDEX canonical_version_identity IF NOT EXISTS FOR (v:CanonicalGraphVersion) ON (v.graph_version)');
++        $client->run('CREATE INDEX canonical_adjacency_direction_rank IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.direction, a.direction_rank)');
++        $client->run('CREATE INDEX canonical_adjacency_any_rank IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.any_rank)');
+         $client->run('CALL db.awaitIndexes(300)');
+         $client->run('MERGE (v:CanonicalGraphVersion {graph_version: $graph_version}) ON CREATE SET v.current = false SET v += $metadata, v.status = \'projecting\'', $scope + ['metadata' => $this->boltPropertyMap($scope + ['snapshot_id' => $projection->snapshot_id ?? null])]);
+ 
+         foreach (array_chunk($graph['nodes'], self::BATCH_SIZE) as $batch) {
+             $client->run('UNWIND $nodes AS node MERGE (n:CanonicalGraphNode {graph_version: $graph_version, external_id: node.id}) SET n += node.properties, n.graph_version = $graph_version, n.external_id = node.id, n.labels = node.labels, n.project_id = $project_id, n.source_scope_type = $source_scope_type, n.source_scope_id = $source_scope_id', $scope + ['nodes' => $this->withBoltPropertyMaps($batch)]);
+         }
+         foreach ($this->relationshipsByType($graph['relationships']) as $type => $relationships) {
+             foreach (array_chunk($relationships, self::BATCH_SIZE) as $batch) {
+                 $client->run("UNWIND \$relationships AS relationship MATCH (source:CanonicalGraphNode {graph_version: \$graph_version, external_id: relationship.source_id}) MATCH (target:CanonicalGraphNode {graph_version: \$graph_version, external_id: relationship.target_id}) MERGE (source)-[r:{$type} {graph_version: \$graph_version, external_id: relationship.id}]->(target) SET r += relationship.properties, r.graph_version = \$graph_version, r.external_id = relationship.id, r.project_id = \$project_id, r.source_scope_type = \$source_scope_type, r.source_scope_id = \$source_scope_id", $scope + ['relationships' => $this->withBoltPropertyMaps($batch)]);
+             }
+         }
++        $adjacencies = $this->adjacencyRows($graph['relationships']);
++        foreach (array_chunk($adjacencies, self::BATCH_SIZE) as $batch) {
++            $client->run('UNWIND $adjacencies AS adjacency MERGE (a:CanonicalGraphAdjacency {graph_version: $graph_version, external_id: adjacency.id}) SET a += adjacency.properties, a.graph_version = $graph_version, a.external_id = adjacency.id, a.project_id = $project_id, a.source_scope_type = $source_scope_type, a.source_scope_id = $source_scope_id', $scope + ['adjacencies' => $this->withBoltPropertyMaps($batch)]);
++        }
+ 
+         $verified = $client->run('MATCH (n:CanonicalGraphNode {graph_version: $graph_version}) WITH count(n) AS nodes OPTIONAL MATCH ()-[r {graph_version: $graph_version}]->() RETURN nodes, count(r) AS relationships', $scope + ['expected_nodes' => count($graph['nodes']), 'expected_relationships' => count($graph['relationships'])]);
+         if (! is_iterable($verified)) {
+             throw new RuntimeException('Canonical graph verification did not return rows.');
+         }
+         $rows = [];
+         foreach ($verified as $row) {
+             $rows[] = $row;
+         }
+         if (count($rows) !== 1) {
+             throw new RuntimeException('Canonical graph verification must return exactly one row.');
+         }
+         $row = $rows[0];
+         $actualNodes = $this->verificationValue($row, 'nodes');
+         $actualRelationships = $this->verificationValue($row, 'relationships');
+         if (! is_numeric($actualNodes) || ! is_numeric($actualRelationships) || (int) $actualNodes !== count($graph['nodes']) || (int) $actualRelationships !== count($graph['relationships'])) {
+             throw new RuntimeException('Canonical graph verification count mismatch.');
+         }
+-        $client->run("MATCH (candidate:CanonicalGraphVersion {graph_version: \$graph_version})\nMATCH (other:CanonicalGraphVersion {project_id: \$project_id, source_scope_type: \$source_scope_type, source_scope_id: \$source_scope_id})\nSET other.current = false, candidate.current = true, candidate.status = 'ready', candidate.projected_at = datetime()", $scope);
++        $verifiedAdjacencies = $client->run('MATCH (a:CanonicalGraphAdjacency {graph_version: $graph_version}) RETURN count(a) AS adjacencies', $scope + ['expected_adjacencies' => count($adjacencies)]);
++        $adjacencyRows = [];
++        if (is_iterable($verifiedAdjacencies)) {
++            foreach ($verifiedAdjacencies as $adjacencyRow) {
++                $adjacencyRows[] = $adjacencyRow;
++            }
++        }
++        if (count($adjacencyRows) !== 1 || ! is_numeric($this->verificationValue($adjacencyRows[0], 'adjacencies')) || (int) $this->verificationValue($adjacencyRows[0], 'adjacencies') !== count($adjacencies)) {
++            throw new RuntimeException('Canonical graph adjacency verification count mismatch.');
++        }
++        $client->run("MATCH (candidate:CanonicalGraphVersion {graph_version: \$graph_version})\nMATCH (other:CanonicalGraphVersion {project_id: \$project_id, source_scope_type: \$source_scope_type, source_scope_id: \$source_scope_id})\nSET other.current = false, candidate.current = true, candidate.status = 'ready', candidate.traversal_schema_version = 1, candidate.projected_at = datetime()", $scope);
+ 
+         return ['nodes' => count($graph['nodes']), 'relationships' => count($graph['relationships'])];
+     }
+ 
++    /**
++     * Build two lookup records for every relationship. Ranks are scoped to a
++     * source node and are assigned only after a stable identity sort, so the
++     * traversal query can apply an indexed upper bound before loading targets.
++     *
++     * @return list<array<string, mixed>>
++     */
++    private function adjacencyRows(array $relationships): array
++    {
++        $rows = [];
++        foreach ($relationships as $relationship) {
++            $type = preg_replace('/[^A-Z0-9_]/', '_', strtoupper((string) $relationship['type'])) ?: 'RELATED';
++            $edgeId = (string) ($relationship['id'] ?? hash('sha256', $relationship['source_id'].'|'.$type.'|'.$relationship['target_id']));
++            $edge = array_merge($relationship['properties'] ?? [], [
++                'external_id' => $edgeId,
++                'type' => $type,
++                'source_id' => (string) $relationship['source_id'],
++                'target_id' => (string) $relationship['target_id'],
++            ]);
++            foreach ([
++                ['direction' => 'out', 'from' => (string) $relationship['source_id'], 'to' => (string) $relationship['target_id']],
++                ['direction' => 'in', 'from' => (string) $relationship['target_id'], 'to' => (string) $relationship['source_id']],
++            ] as $lookup) {
++                $rows[] = [
++                    'id' => hash('sha256', $edgeId.'|'.$lookup['direction'].'|'.$lookup['from'].'|'.$lookup['to']),
++                    'properties' => [
++                        'from_external_id' => $lookup['from'],
++                        'to_external_id' => $lookup['to'],
++                        'direction' => $lookup['direction'],
++                        'edge_external_id' => $edgeId,
++                        'edge_type' => $type,
++                        'edge_json' => json_encode($edge, JSON_THROW_ON_ERROR),
++                    ],
++                ];
++            }
++        }
++        usort($rows, fn (array $left, array $right): int => [
++            $left['properties']['from_external_id'], $left['properties']['direction'],
++            $left['properties']['to_external_id'], $left['properties']['edge_type'], $left['properties']['edge_external_id'],
++        ] <=> [
++            $right['properties']['from_external_id'], $right['properties']['direction'],
++            $right['properties']['to_external_id'], $right['properties']['edge_type'], $right['properties']['edge_external_id'],
++        ]);
++        $directionRanks = [];
++        $anyRanks = [];
++        foreach ($rows as &$row) {
++            $properties = &$row['properties'];
++            $directionKey = $properties['from_external_id'].'|'.$properties['direction'];
++            $anyKey = $properties['from_external_id'];
++            $properties['direction_rank'] = $directionRanks[$directionKey] ?? 0;
++            $properties['any_rank'] = $anyRanks[$anyKey] ?? 0;
++            $directionRanks[$directionKey] = $properties['direction_rank'] + 1;
++            $anyRanks[$anyKey] = $properties['any_rank'] + 1;
++            unset($properties);
++        }
++        unset($row);
++
++        return $rows;
++    }
++
+     private function relationshipsByType(array $relationships): array
+     {
+         $groups = [];
+         foreach ($relationships as $relationship) {
+             $type = preg_replace('/[^A-Z0-9_]/', '_', strtoupper((string) $relationship['type'])) ?: 'RELATED';
+             $relationship['id'] ??= hash('sha256', $relationship['source_id'].'|'.$type.'|'.$relationship['target_id']);
+             $groups[$type][] = $relationship;
+         }
+ 
+         return $groups;
+diff --git a/backend/app/Services/Neo4j/FakeNeo4jClient.php b/backend/app/Services/Neo4j/FakeNeo4jClient.php
+index 14f5b0e6..95aa6a1e 100644
+--- a/backend/app/Services/Neo4j/FakeNeo4jClient.php
++++ b/backend/app/Services/Neo4j/FakeNeo4jClient.php
+@@ -9,13 +9,17 @@ class FakeNeo4jClient implements Neo4jClient
+ 
+     /** @param array<string, mixed> $params */
+     public function run(string $cypher, array $params = []): mixed
+     {
+         $this->commands[] = ['cypher' => $cypher, 'params' => $params];
+ 
+         if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+             return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+         }
+ 
++        if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++            return [['adjacencies' => $params['expected_adjacencies']]];
++        }
++
+         return [];
+     }
+ }
+diff --git a/backend/app/Services/Neo4jRebuildService.php b/backend/app/Services/Neo4jRebuildService.php
+index da7b5007..8730ec99 100644
+--- a/backend/app/Services/Neo4jRebuildService.php
++++ b/backend/app/Services/Neo4jRebuildService.php
+@@ -244,20 +244,24 @@ private function fakeClient(): Neo4jClient
+         {
+             public function run(string $cypher, array $params = []): mixed
+             {
+                 if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                     return [[
+                         'nodes' => $params['expected_nodes'],
+                         'relationships' => $params['expected_relationships'],
+                     ]];
+                 }
+ 
++                if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++                    return [['adjacencies' => $params['expected_adjacencies']]];
++                }
++
+                 return [];
+             }
+         };
+     }
+ 
+     private function optionalString(mixed $value): ?string
+     {
+         if (! is_string($value) || trim($value) === '') {
+             return null;
+         }
+diff --git a/backend/database/migrations/2026_07_14_000000_add_canonical_graph_projection_attempts.php b/backend/database/migrations/2026_07_14_000000_add_canonical_graph_projection_attempts.php
+new file mode 100644
+index 00000000..c53440f1
+--- /dev/null
++++ b/backend/database/migrations/2026_07_14_000000_add_canonical_graph_projection_attempts.php
+@@ -0,0 +1,41 @@
++<?php
++
++use Illuminate\Database\Migrations\Migration;
++use Illuminate\Database\Schema\Blueprint;
++use Illuminate\Support\Facades\DB;
++use Illuminate\Support\Facades\Schema;
++
++return new class extends Migration
++{
++    public function up(): void
++    {
++        Schema::table('canonical_graph_projections', function (Blueprint $table) {
++            $table->string('active_graph_version', 64)->nullable()->after('graph_version');
++        });
++        DB::table('canonical_graph_projections')
++            ->whereNull('active_graph_version')
++            ->update(['active_graph_version' => DB::raw('graph_version')]);
++
++        Schema::create('canonical_graph_projection_attempts', function (Blueprint $table) {
++            $table->ulid('id')->primary();
++            $table->foreignUlid('projection_id')->constrained('canonical_graph_projections')->cascadeOnDelete();
++            $table->string('candidate_graph_version', 64)->unique();
++            $table->string('status', 32);
++            $table->unsignedBigInteger('node_count')->nullable();
++            $table->unsignedBigInteger('relationship_count')->nullable();
++            $table->string('error_code', 100)->nullable();
++            $table->timestamp('started_at');
++            $table->timestamp('finished_at')->nullable();
++            $table->timestamps();
++            $table->index(['projection_id', 'status'], 'canonical_graph_attempt_projection_status_idx');
++        });
++    }
++
++    public function down(): void
++    {
++        Schema::dropIfExists('canonical_graph_projection_attempts');
++        Schema::table('canonical_graph_projections', function (Blueprint $table) {
++            $table->dropColumn('active_graph_version');
++        });
++    }
++};
+diff --git a/backend/docs/hades/canonical-graph-operations.md b/backend/docs/hades/canonical-graph-operations.md
+index 509b1891..811c9adf 100644
+--- a/backend/docs/hades/canonical-graph-operations.md
++++ b/backend/docs/hades/canonical-graph-operations.md
+@@ -29,36 +29,40 @@ ## Artifact contract
+   },
+   "source": {
+     "branch": "main",
+     "head_commit": "<commit>"
+   }
+ }
+ ```
+ 
+ `quality` is `full`, `partial`, or `inventory_only`. Fallback reasons are
+ bounded machine values: native Hades may report
+-`no_relationships_extracted` or `bounded_or_omitted_input`; the analyzer may
++`no_relationships_extracted`, `bounded_or_omitted_input`, or
++`canonicalization_omissions`; the analyzer may
+ report `graphify_unavailable` or `graphify_failed:<ExceptionClass>`. It never
+ serializes a raw exception message or an absolute workspace path. Trusted
+ pre-contract rows are adapted at read time with `mode=legacy_adapter`,
+ `quality=partial`, and `fallback_reason=missing_contract_metadata`; stored
+ payloads are not rewritten.
+ 
+ When `graph_contract` is present, it is explicit canonical input and the
+ backend validates it before creating or running a projection. The four top
+ level keys above are required. `extractor` must contain exactly `name`,
+ `version`, `mode`, `quality`, and nullable `fallback_reason`; `coverage` must
+ contain exactly `languages`, `files_total`, `files_analyzed`, and
+ `files_failed`; `source` must contain exactly nullable `branch` and
+-`head_commit`. Names, versions, and languages are non-empty strings, coverage
+-counts are non-negative integers, and `mode` is one of `native`, `graphify`,
+-`fallback`, or `legacy_adapter`. An explicit malformed contract is rejected;
++`head_commit`. Extractor names (64 characters), versions (32), languages (up
++to 16 entries of 32), branches (255), commits (80 hexadecimal characters),
++and fallback codes (100) are bounded and grammar checked. Coverage is a
++partition: `files_total = files_analyzed + files_failed`. `full` quality
++requires a null fallback; degraded quality requires a bounded code. `mode` is
++one of `native`, `graphify`, `fallback`, or `legacy_adapter`. An explicit malformed contract is rejected;
+ it is never silently downgraded to the legacy adapter.
+ 
+ ## Source resolution and read compatibility
+ 
+ Every canonical lookup uses `project_id` and exactly one source scope:
+ 
+ - `workspace_binding` plus the linked Hades binding id; or
+ - `repository` plus the repository id.
+ 
+ The repository never falls back across scope types. Clients can select a scope
+@@ -78,32 +82,35 @@ ## Source resolution and read compatibility
+ scope is selected. The selected preview is data-minimized: raw/private
+ identifiers, labels, source refs, local paths, and raw edge endpoints are never
+ returned. Nodes may contain schema-approved safe presentation labels; node ids
+ and returned edge endpoints are deterministic pseudonyms, so node-edge
+ references remain coherent without exposing canonical identities. Preview
+ aliases are presentation values, not canonical graph ids.
+ 
+ ## Projection lifecycle and concurrency
+ 
+ Projection rows move through `queued`, `projecting`, `ready`, `failed`, and
+-`stale`. Each `graph_version` is derived from the canonical artifact identity
+-and checksum and scopes every Neo4j node and relationship.
++`stale`. The public `graph_version` is derived from the canonical artifact
++identity and checksum. `active_graph_version` selects the verified physical
++Neo4j copy without changing that public artifact identity.
+ 
+ Queue workers claim `queued` rows conditionally. Reconciliation inserts missing
+ rows or retries final `failed` rows but does not steal `queued` or `projecting`
+ work. A forced synchronous rebuild can claim only an inactive row with the same
+-project, scope, artifact, checksum, and version. That claimed row can move from
+-`ready` to `projecting` and then to `failed` if verification fails. Neo4j keeps
+-the previously verified current marker queryable during that failure; operators
+-must retry or reconcile the failed PostgreSQL lifecycle row. A successful
+-replacement is marked `ready` only after projected node and relationship counts
+-verify atomically; then the previous `ready` row in that scope becomes `stale`.
++project, scope, artifact, checksum, and version. It creates a persistent,
++single-owner projection attempt with a distinct candidate physical version;
++the verified projection row remains `ready` and its active version remains
++queryable throughout the attempt. A failed attempt records only its bounded
++failure code and never demotes or rewrites the verified projection. A
++successful attempt switches `active_graph_version`, verified counts, and the
++attempt state in one PostgreSQL transaction after Neo4j count verification;
++only then can another ready row in the scope become `stale`.
+ Persisted failure codes are bounded and never contain raw exception text.
+ 
+ ## Reconcile and rebuild
+ 
+ The canonical command always requires `--reconcile` and `--project`. Before the
+ human gate, only its bounded read-only preview may be run:
+ 
+ ```bash
+ php artisan devboard:neo4j-rebuild --reconcile --project=<project_uuid> --dry-run
+ ```
+@@ -120,20 +127,64 @@ ## Reconcile and rebuild
+ `devboard:neo4j-rebuild --reconcile --project PROJECT [--scope-type TYPE
+ --scope-id ID]`. Its real invocation appears only in the authorized procedure
+ below.
+ 
+ The JSON summary contains `scanned`, `queued`, `ready`, `failed`, `skipped`,
+ and `dry_run`. Dry run performs bounded reads only: it neither creates
+ projection rows nor dispatches jobs nor writes Neo4j. A real reconciliation
+ queues the latest canonical artifact for each selected source; process the
+ Laravel queue before expecting it to become `ready`.
+ 
++### Bounded traversal rollout
++
++Canonical traversal schema version 1 materializes two
++`CanonicalGraphAdjacency` lookup nodes for every relationship (`in` and
++`out`). Their deterministic `direction_rank` and `any_rank` values are indexed
++with graph version and source node. A traversal therefore applies its
++per-frontier rank bound in a Neo4j range index seek before loading target
++nodes; it never performs an unbounded relationship expansion.
++
++Projections published before this schema do not have adjacency lookup nodes or
++the `CanonicalGraphVersion.traversal_schema_version = 1` capability marker.
++The backend deliberately returns `graph_projection_rebuild_required` for
++traversal against those versions. It does not silently fall back to the legacy
++unbounded query. Callers, callees, and shortest-path reads retain their existing
++behavior while the traversal rebuild is pending.
++
++Roll out the feature in this order: enter the approved maintenance window,
++deploy the compatible application code, run the additive database migration,
++then force-rebuild each selected canonical scope. A forced rebuild writes a
++distinct candidate physical graph version while PostgreSQL continues pointing
++at the previously published version. Only after node, relationship, and
++adjacency counts all verify does one final Neo4j statement mark the candidate
++current and set its traversal schema marker; only after that does PostgreSQL
++publish the candidate as `active_graph_version`. A failed or partial candidate
++is never queried and leaves the previous published projection unchanged.
++
++After every scope is rebuilt, verify the marker and adjacency count with
++read-only Cypher, then smoke traversal. The adjacency count must be exactly
++twice the relationship count for the same active physical graph version:
++
++```cypher
++MATCH (v:CanonicalGraphVersion {graph_version: $active_graph_version})
++OPTIONAL MATCH ()-[r {graph_version: $active_graph_version}]->()
++WITH v, count(r) AS relationships
++OPTIONAL MATCH (a:CanonicalGraphAdjacency {graph_version: $active_graph_version})
++RETURN v.current AS current,
++       v.traversal_schema_version AS traversal_schema_version,
++       relationships,
++       count(a) AS adjacencies;
++```
++
++Expected: `current = true`, `traversal_schema_version = 1`, and
++`adjacencies = relationships * 2`. Stop the rollout if any invariant differs.
++
+ The historical command without `--reconcile` remains available for legacy
+ snapshot artifacts and accepts `--repository`, `--snapshot`, and `--mode`.
+ This path performs a forceful rebuild rather than a read-only preview, even when
+ `--mode=fake`; it has no `--dry-run` and requires the same backup, verification,
+ test, and explicit human gate as any non-dry canonical reconciliation. Those
+ options are incompatible with canonical reconciliation. This preserves Genesis
+ events and legacy behavior while canonical readers share the new source-scoped
+ service.
+ 
+ ## Migration, backup, and verification order
+diff --git a/backend/docs/hades/openapi-hades-v1.json b/backend/docs/hades/openapi-hades-v1.json
+index 30e55c2d..90f3afe9 100644
+--- a/backend/docs/hades/openapi-hades-v1.json
++++ b/backend/docs/hades/openapi-hades-v1.json
+@@ -372,21 +372,21 @@
+             "description": "project_mismatch: the authenticated Hades agent belongs to another project.",
+             "content": {
+               "application/json": {
+                 "schema": {
+                   "$ref": "#/components/schemas/HadesStructuredErrorResponse"
+                 }
+               }
+             }
+           },
+           "404": {
+-            "description": "workspace_binding_not_found, graph_scope_not_found, graph_projection_not_ready, or query_error. A not-ready projection is not an empty graph.",
++            "description": "workspace_binding_not_found, graph_scope_not_found, graph_projection_not_ready, graph_projection_rebuild_required, or query_error. A not-ready or pre-adjacency projection is not an empty graph; rebuild-required traversal never falls back to an unbounded query.",
+             "content": {
+               "application/json": {
+                 "schema": {
+                   "$ref": "#/components/schemas/HadesStructuredErrorResponse"
+                 }
+               }
+             }
+           },
+           "409": {
+             "description": "workspace_binding_unlinked: the binding exists but is not linked.",
+@@ -938,25 +938,29 @@
+             "required": [
+               "name",
+               "version",
+               "mode",
+               "quality",
+               "fallback_reason"
+             ],
+             "properties": {
+               "name": {
+                 "type": "string",
+-                "minLength": 1
++                "minLength": 1,
++                "maxLength": 64,
++                "pattern": "^[a-z0-9][a-z0-9._-]*$"
+               },
+               "version": {
+                 "type": "string",
+-                "minLength": 1
++                "minLength": 1,
++                "maxLength": 32,
++                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+               },
+               "mode": {
+                 "type": "string",
+                 "enum": [
+                   "native",
+                   "graphify",
+                   "fallback",
+                   "legacy_adapter"
+                 ]
+               },
+@@ -967,39 +971,46 @@
+                   "partial",
+                   "inventory_only"
+                 ]
+               },
+               "fallback_reason": {
+                 "type": [
+                   "string",
+                   "null"
+                 ],
+                 "minLength": 1,
++                "maxLength": 100,
++                "pattern": "^(no_relationships_extracted|bounded_or_omitted_input|canonicalization_omissions|graphify_unavailable|missing_contract_metadata|graphify_failed:[A-Za-z_][A-Za-z0-9_]{0,63})$",
+                 "description": "Bounded machine-readable reason. Graphify failures use graphify_failed:<ExceptionClass>; raw exception messages and absolute paths are forbidden."
+               }
+             },
+             "additionalProperties": false
+           },
+           "coverage": {
+             "type": "object",
+             "required": [
+               "languages",
+               "files_total",
+               "files_analyzed",
+               "files_failed"
+             ],
+             "properties": {
+               "languages": {
+                 "type": "array",
++                "minItems": 1,
++                "maxItems": 16,
++                "uniqueItems": true,
+                 "items": {
+                   "type": "string",
+-                  "minLength": 1
++                  "minLength": 1,
++                  "maxLength": 32,
++                  "pattern": "^[a-z0-9][a-z0-9+#._-]*$"
+                 }
+               },
+               "files_total": {
+                 "type": "integer",
+                 "minimum": 0
+               },
+               "files_analyzed": {
+                 "type": "integer",
+                 "minimum": 0
+               },
+@@ -1015,28 +1026,32 @@
+             "required": [
+               "branch",
+               "head_commit"
+             ],
+             "properties": {
+               "branch": {
+                 "type": [
+                   "string",
+                   "null"
+                 ],
+-                "minLength": 1
++                "minLength": 1,
++                "maxLength": 255,
++                "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+               },
+               "head_commit": {
+                 "type": [
+                   "string",
+                   "null"
+                 ],
+-                "minLength": 1
++                "minLength": 4,
++                "maxLength": 80,
++                "pattern": "^[0-9a-fA-F]{4,80}$"
+               }
+             },
+             "additionalProperties": false
+           }
+         },
+         "additionalProperties": false
+       },
+       "CanonicalGraphTraverseResponse": {
+         "type": "object",
+         "required": [
+@@ -1215,21 +1230,22 @@
+             ],
+             "properties": {
+               "code": {
+                 "type": "string",
+                 "examples": [
+                   "project_mismatch",
+                   "workspace_binding_not_found",
+                   "workspace_binding_unlinked",
+                   "graph_scope_not_found",
+                   "query_error",
+-                  "graph_projection_not_ready"
++                  "graph_projection_not_ready",
++                  "graph_projection_rebuild_required"
+                 ]
+               },
+               "message": {
+                 "type": "string"
+               }
+             },
+             "additionalProperties": false
+           }
+         },
+         "additionalProperties": false
+diff --git a/backend/tests/Feature/CanonicalGraphProjectionTest.php b/backend/tests/Feature/CanonicalGraphProjectionTest.php
+index 39fda1a2..8b889658 100644
+--- a/backend/tests/Feature/CanonicalGraphProjectionTest.php
++++ b/backend/tests/Feature/CanonicalGraphProjectionTest.php
+@@ -89,69 +89,71 @@
+     $graph = canonicalProjectionGraph($projectId, 'artifact-force-'.$status, str_repeat('7', 64));
+     $projection = $service->queue($graph);
+     DB::table('canonical_graph_projections')->where('id', $projection->id)->update([
+         'status' => $status,
+         'error_code' => $status === 'failed' ? 'neo4j_unavailable' : null,
+     ]);
+ 
+     $claimed = $service->claimForForcedRebuild($projection->id, $graph);
+ 
+     expect($claimed)->toBeTrue()
+-        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('projecting')
+-        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('error_code'))->toBeNull();
++        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe($status)
++        ->and(DB::table('canonical_graph_projection_attempts')->where('projection_id', $projection->id)->where('status', 'projecting')->count())->toBe(1);
+ })->with(['ready', 'stale', 'failed']);
+ 
+ it('allows only one forced rebuild owner and leaves active work untouched', function (string $initialStatus) {
+     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+     $service = app(CanonicalGraphProjectionService::class);
+     $graph = canonicalProjectionGraph($projectId, 'artifact-force-owner-'.$initialStatus, str_repeat('8', 64));
+     $projection = $service->queue($graph);
+     DB::table('canonical_graph_projections')->where('id', $projection->id)->update(['status' => $initialStatus]);
+ 
+     $first = $service->claimForForcedRebuild($projection->id, $graph);
+     $second = $service->claimForForcedRebuild($projection->id, $graph);
+ 
+     expect($first)->toBe($initialStatus === 'ready')
+         ->and($second)->toBeFalse()
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))
+-        ->toBe($initialStatus === 'ready' ? 'projecting' : $initialStatus);
++        ->toBe($initialStatus);
+ })->with(['ready', 'queued', 'projecting']);
+ 
+ it('refuses a forced rebuild when checksum or graph version is not exact', function (string $field) {
+     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+     $service = app(CanonicalGraphProjectionService::class);
+     $graph = canonicalProjectionGraph($projectId, 'artifact-force-conflict-'.$field, str_repeat('9', 64));
+     $projection = $service->queue($graph);
+     DB::table('canonical_graph_projections')->where('id', $projection->id)->update([
+         'status' => 'ready',
+         $field => str_repeat('0', 64),
+     ]);
+ 
+     expect($service->claimForForcedRebuild($projection->id, $graph))->toBeFalse()
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready');
+ })->with(['checksum', 'graph_version']);
+ 
+-it('leaves a failed forced rebuild available to canonical reconciliation', function () {
++it('records a failed forced attempt without demoting the verified projection', function () {
+     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+     $service = app(CanonicalGraphProjectionService::class);
+     $graph = canonicalProjectionGraph($projectId, 'artifact-force-reconcile', str_repeat('6', 64));
+     $projection = $service->queue($graph);
+     DB::table('canonical_graph_projections')->where('id', $projection->id)->update(['status' => 'ready']);
+-    expect($service->claimForForcedRebuild($projection->id, $graph))->toBeTrue();
++    $claim = $service->acquireForForcedRebuild($graph);
++    expect($claim['claimed'])->toBeTrue();
+ 
+-    expect($service->markForcedRebuildFailed($projection->id, 'neo4j_unavailable'))->toBeTrue()
+-        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('failed');
++    expect($service->markForcedRebuildFailed($claim['attempt_id'], 'neo4j_unavailable'))->toBeTrue()
++        ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready')
++        ->and(DB::table('canonical_graph_projection_attempts')->where('id', $claim['attempt_id'])->value('status'))->toBe('failed');
+ 
+-    $claim = $service->claimForReconcile([$graph])["hades_agent_artifact\0artifact-force-reconcile"];
+-    expect($claim['claimed'])->toBeTrue()
+-        ->and($claim['conflict'])->toBeFalse()
+-        ->and($claim['projection']->status)->toBe('queued');
++    $reconcile = $service->claimForReconcile([$graph])["hades_agent_artifact\0artifact-force-reconcile"];
++    expect($reconcile['claimed'])->toBeFalse()
++        ->and($reconcile['conflict'])->toBeFalse()
++        ->and($reconcile['projection']->status)->toBe('ready');
+ });
+ 
+ it('returns the atomic claim result without a fallible post claim read', function () {
+     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+     $service = app(CanonicalGraphProjectionService::class);
+     $projection = $service->queue(canonicalProjectionGraph($projectId, 'artifact-no-post-read', str_repeat('d', 64)));
+     $rejectPostClaimRead = true;
+     $failure = null;
+     $claimed = null;
+ 
+diff --git a/backend/tests/Feature/GenesisGraphImportTest.php b/backend/tests/Feature/GenesisGraphImportTest.php
+index 83a79fdc..6ed6a47a 100644
+--- a/backend/tests/Feature/GenesisGraphImportTest.php
++++ b/backend/tests/Feature/GenesisGraphImportTest.php
+@@ -1,17 +1,18 @@
+ <?php
+ 
+ use App\Exceptions\CanonicalGraphProjectionException;
+ use App\Jobs\ImportGenesisGraphToNeo4j;
+ use App\Jobs\ImportGraphToNeo4j;
+ use App\Services\GenesisGraphImportService;
+ use App\Services\Graph\CanonicalGraphProjectionService;
++use App\Services\Graph\CanonicalGraphQueryService;
+ use App\Services\Graph\CanonicalGraphRepository;
+ use App\Services\Neo4j\FailingNeo4jClient;
+ use App\Services\Neo4j\FakeNeo4jClient;
+ use App\Services\Neo4j\Neo4jClient;
+ use App\Services\Neo4jClientFactory;
+ use App\Services\Neo4jRebuildService;
+ use Database\Seeders\DevBoardSeeder;
+ use Illuminate\Foundation\Testing\RefreshDatabase;
+ use Illuminate\Support\Facades\Artisan;
+ use Illuminate\Support\Facades\DB;
+@@ -192,20 +193,23 @@
+ 
+         public function run(string $cypher, array $params = []): mixed
+         {
+             $this->calls++;
+             expect(DB::table('canonical_graph_projections')->count())->toBe(1)
+                 ->and(DB::table('canonical_graph_projections')->value('status'))->toBe('projecting');
+ 
+             if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                 return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+             }
++            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++                return [['adjacencies' => $params['expected_adjacencies']]];
++            }
+ 
+             return [];
+         }
+     };
+ 
+     app(GenesisGraphImportService::class)->importGraphArtifact(
+         $context['snapshot_id'],
+         $context['repository_id'],
+         $context['run_id'],
+         $context['artifact_id'],
+@@ -270,20 +274,23 @@ public function run(string $cypher, array $params = []): mixed
+     $client = new class implements Neo4jClient
+     {
+         public function run(string $cypher, array $params = []): mixed
+         {
+             if (str_contains($cypher, "candidate.status = 'ready'")) {
+                 DB::table('canonical_graph_projections')->update(['status' => 'failed']);
+             }
+             if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                 return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+             }
++            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++                return [['adjacencies' => $params['expected_adjacencies']]];
++            }
+ 
+             return [];
+         }
+     };
+     $caught = null;
+ 
+     try {
+         app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client, 'fake', false);
+     } catch (Throwable $exception) {
+         $caught = $exception;
+@@ -532,20 +539,105 @@ public function run(string $cypher, array $params = []): mixed
+         ->and($cypher->contains(fn (string $query): bool => str_contains($query, 'UNWIND $relationships')))->toBeTrue()
+         ->and($cypher->contains(fn (string $query): bool => str_contains($query, 'RETURN nodes, count(r) AS relationships')))->toBeTrue()
+         ->and($cypher->contains(fn (string $query): bool => str_contains($query, 'candidate.current = true')))->toBeTrue()
+         ->and(DB::table('canonical_graph_projections')->where('id', $projection->id)->value('status'))->toBe('ready')
+         ->and(DB::table('run_events')->where('run_id', $context['run_id'])->where('event_type', 'graph.imported')->count())->toBe(2)
+         ->and($eventPayload['node_count'])->toBe(2)
+         ->and($eventPayload['relationship_count'])->toBe(1)
+         ->and($eventPayload['forced_rebuild'])->toBeTrue();
+ });
+ 
++it('keeps the verified graph queryable until a forced rebuild publishes atomically', function () {
++    $context = createGraphImportContext();
++    $service = app(GenesisGraphImportService::class);
++    $service->importGenesis($context['import_id'], new FakeNeo4jClient);
++    $published = DB::table('canonical_graph_projections')->first();
++    $during = null;
++
++    $client = new class implements Neo4jClient
++    {
++        public Closure $during;
++
++        public bool $observed = false;
++
++        public function run(string $cypher, array $params = []): mixed
++        {
++            if (! $this->observed && str_contains($cypher, 'CREATE INDEX canonical_node_version_external')) {
++                $this->observed = true;
++                ($this->during)();
++            }
++            if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
++                return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
++            }
++            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++                return [['adjacencies' => $params['expected_adjacencies']]];
++            }
++
++            return [];
++        }
++    };
++    $client->during = function () use ($context, &$during): void {
++        $during = canonicalGraphQueryProbe($context);
++    };
++
++    $service->importGraphArtifact(
++        $context['snapshot_id'], $context['repository_id'], $context['run_id'],
++        $context['artifact_id'], $client, 'fake', force: true,
++    );
++    $after = canonicalGraphQueryProbe($context);
++
++    expect($during['result']['found'])->toBeTrue()
++        ->and($during['params']['graph_version'])->toBe($published->graph_version)
++        ->and($after['result']['found'])->toBeTrue()
++        ->and($after['result']['graph_version'])->toBe($published->graph_version)
++        ->and($after['params']['graph_version'])->not->toBe($during['params']['graph_version'])
++        ->and(DB::table('canonical_graph_projections')->where('id', $published->id)->value('status'))->toBe('ready');
++});
++
++it('keeps the verified graph queryable after a failed forced rebuild', function () {
++    $context = createGraphImportContext();
++    $service = app(GenesisGraphImportService::class);
++    $service->importGenesis($context['import_id'], new FakeNeo4jClient);
++    $published = DB::table('canonical_graph_projections')->first();
++    $during = null;
++
++    $client = new class implements Neo4jClient
++    {
++        public Closure $during;
++
++        public function run(string $cypher, array $params = []): mixed
++        {
++            if (str_contains($cypher, 'CREATE INDEX canonical_node_version_external')) {
++                ($this->during)();
++                throw new RuntimeException('simulated forced rebuild failure');
++            }
++
++            return [];
++        }
++    };
++    $client->during = function () use ($context, &$during): void {
++        $during = canonicalGraphQueryProbe($context);
++    };
++
++    expect(fn () => $service->importGraphArtifact(
++        $context['snapshot_id'], $context['repository_id'], $context['run_id'],
++        $context['artifact_id'], $client, 'fake', force: true,
++    ))->toThrow(CanonicalGraphProjectionException::class, 'neo4j_query_failed');
++    $after = canonicalGraphQueryProbe($context);
++
++    expect($during['result']['found'])->toBeTrue()
++        ->and($after['result']['found'])->toBeTrue()
++        ->and($after['params']['graph_version'])->toBe($during['params']['graph_version'])
++        ->and($after['params']['graph_version'])->toBe($published->graph_version)
++        ->and(DB::table('canonical_graph_projections')->where('id', $published->id)->value('status'))->toBe('ready');
++});
++
+ it('allows only one of two interleaved force callers to project and publish', function () {
+     $context = createGraphImportContext();
+     $service = app(GenesisGraphImportService::class);
+     $service->importGenesis($context['import_id'], new FakeNeo4jClient);
+     $secondFailure = null;
+ 
+     $client = new class implements Neo4jClient
+     {
+         /** @var list<array{cypher: string, params: array<string, mixed>}> */
+         public array $commands = [];
+@@ -557,20 +649,23 @@ public function run(string $cypher, array $params = []): mixed
+         public function run(string $cypher, array $params = []): mixed
+         {
+             $this->commands[] = ['cypher' => $cypher, 'params' => $params];
+             if (! $this->interleaved) {
+                 $this->interleaved = true;
+                 ($this->secondCall)();
+             }
+             if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+                 return [['nodes' => $params['expected_nodes'], 'relationships' => $params['expected_relationships']]];
+             }
++            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++                return [['adjacencies' => $params['expected_adjacencies']]];
++            }
+ 
+             return [];
+         }
+     };
+     $client->secondCall = function () use ($service, $context, $client, &$secondFailure): void {
+         try {
+             $service->importGraphArtifact(
+                 $context['snapshot_id'],
+                 $context['repository_id'],
+                 $context['run_id'],
+@@ -708,20 +803,42 @@ function canonicalGraphForImportContext(array $context): array
+         'repository',
+         $context['repository_id'],
+         'legacy_artifact',
+         $context['artifact_id'],
+     );
+     expect($canonical)->not->toBeNull();
+ 
+     return $canonical;
+ }
+ 
++/** @return array{result: array<string, mixed>, params: array<string, mixed>} */
++function canonicalGraphQueryProbe(array $context): array
++{
++    $client = new class implements Neo4jClient
++    {
++        public array $params = [];
++
++        public function run(string $cypher, array $params = []): mixed
++        {
++            $this->params = $params;
++
++            return [];
++        }
++    };
++    $projectId = DB::table('artifacts')->where('id', $context['artifact_id'])->value('project_id');
++    $result = (new CanonicalGraphQueryService($client))->query(
++        $projectId, 'repository', $context['repository_id'], 'callers', ['symbol_id' => 'function:health'],
++    );
++
++    return ['result' => $result, 'params' => $client->params];
++}
++
+ function makeGraphImportContextAffected(array $context): void
+ {
+     $artifact = DB::table('artifacts')->where('id', $context['artifact_id'])->first();
+     $payload = json_decode(Storage::disk('local')->get($artifact->storage_path), true, flags: JSON_THROW_ON_ERROR);
+     $payload['graph_mode'] = 'affected_subgraph';
+     $payload['base_snapshot_id'] = $context['snapshot_id'];
+     $payload['nodes_upserted'] = $payload['nodes'];
+     $payload['relationships_upserted'] = $payload['relationships'];
+     $payload['nodes_deleted'] = [];
+     $payload['relationships_deleted'] = [];
+diff --git a/backend/tests/Feature/Hades/CanonicalHadesGraphProjectionTest.php b/backend/tests/Feature/Hades/CanonicalHadesGraphProjectionTest.php
+index 6d72a6d1..e0708099 100644
+--- a/backend/tests/Feature/Hades/CanonicalHadesGraphProjectionTest.php
++++ b/backend/tests/Feature/Hades/CanonicalHadesGraphProjectionTest.php
+@@ -49,20 +49,49 @@
+ 
+     $counts = app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+ 
+     expect($counts)->toBe(['nodes' => 2, 'relationships' => 1]);
+     foreach (['UNWIND $nodes', 'UNWIND $relationships'] as $needle) {
+         $command = collect($client->commands)->first(fn (array $item) => str_contains($item['cypher'], $needle));
+         expect($command['params'])->toMatchArray(['project_id' => $agent['project_id'], 'source_scope_type' => 'workspace_binding', 'source_scope_id' => $bindingId, 'graph_version' => $projection->graph_version]);
+     }
+ });
+ 
++it('materializes deterministically ranked adjacency rows for bounded traversal', function () {
++    Bus::fake();
++    [$agent, $bindingId] = canonicalProjectionAgent();
++    $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
++    $projection = DB::table('canonical_graph_projections')->first();
++    $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
++    $client = new FakeNeo4jClient;
++
++    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
++
++    $indexCommands = collect($client->commands)->filter(fn (array $command): bool => str_contains($command['cypher'], 'CREATE INDEX canonical_adjacency_'));
++    $adjacencyCommand = collect($client->commands)->first(fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $adjacencies'));
++    $rows = $adjacencyCommand['params']['adjacencies'] ?? [];
++    $properties = array_column($rows, 'properties');
++    $verificationIndex = collect($client->commands)->search(fn (array $command): bool => str_contains($command['cypher'], 'RETURN count(a) AS adjacencies'));
++    $publishIndex = collect($client->commands)->search(fn (array $command): bool => str_contains($command['cypher'], 'candidate.current = true'));
++
++    expect($indexCommands)->toHaveCount(2)
++        ->and($rows)->toHaveCount(2)
++        ->and(array_column($properties, 'direction'))->toBe(['in', 'out'])
++        ->and(array_column($properties, 'direction_rank'))->toBe([0, 0])
++        ->and(array_column($properties, 'any_rank'))->toBe([0, 0])
++        ->and(array_column($properties, 'from_external_id'))->toContain('file:a.php', 'class:A')
++        ->and(array_column($properties, 'to_external_id'))->toContain('file:a.php', 'class:A')
++        ->and($verificationIndex)->toBeInt()
++        ->and($publishIndex)->toBeInt()->toBeGreaterThan($verificationIndex)
++        ->and($client->commands[$publishIndex]['cypher'])->toContain('candidate.traversal_schema_version = 1');
++});
++
+ it('sends canonical property bags as Bolt maps without changing their scalar values', function () {
+     $graph = [
+         'nodes' => [
+             ['id' => 'file:empty.php', 'labels' => ['File'], 'properties' => []],
+             ['id' => 'class:Typed', 'labels' => ['Class'], 'properties' => [
+                 'name' => 'Typed',
+                 'line' => 17,
+                 'score' => 0.75,
+                 'indexed' => true,
+                 'nullable' => null,
+@@ -85,20 +114,24 @@
+         'snapshot_id' => null,
+     ];
+     $client = new class implements Neo4jClient
+     {
+         public array $commands = [];
+ 
+         public function run(string $cypher, array $parameters = []): mixed
+         {
+             $this->commands[] = ['cypher' => $cypher, 'params' => $parameters];
+ 
++            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++                return [['adjacencies' => 4]];
++            }
++
+             return str_contains($cypher, 'RETURN nodes')
+                 ? [['nodes' => 2, 'relationships' => 2]]
+                 : [];
+         }
+     };
+ 
+     app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+ 
+     $nodes = collect($client->commands)->first(fn (array $command) => str_contains($command['cypher'], 'UNWIND $nodes'))['params']['nodes'];
+     $relationships = collect($client->commands)->first(fn (array $command) => str_contains($command['cypher'], 'UNWIND $relationships'))['params']['relationships'];
+@@ -166,40 +199,59 @@ public function run(string $cypher, array $parameters = []): mixed
+ 
+     expect(fn () => app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client))->toThrow(RuntimeException::class);
+     expect(collect($client->commands)->contains(fn (array $command) => str_contains($command['cypher'], 'candidate.current = true')))->toBeFalse();
+ })->with(['empty' => [[]], 'mismatch' => [[['nodes' => 1, 'relationships' => 1]]], 'non numeric' => [[['nodes' => 'two', 'relationships' => 1]]]]);
+ 
+ it('reasserts reserved identity properties after payload properties', function () {
+     Bus::fake();
+     [$agent, $bindingId] = canonicalProjectionAgent();
+     $payload = canonicalProjectionUpload($agent, $bindingId);
+     $payload['artifact']['nodes'][0]['properties'] = ['graph_version' => 'evil', 'external_id' => 'evil'];
+-    $payload['artifact']['relationships'][0]['properties'] = ['graph_version' => 'evil', 'external_id' => 'evil'];
++    $payload['artifact']['relationships'][0]['properties'] = [
++        'graph_version' => 'evil',
++        'external_id' => 'evil',
++        'type' => 'EVIL',
++        'source_id' => 'evil-source',
++        'target_id' => 'evil-target',
++    ];
+     $response = $this->postJson('/api/hades/v1/artifacts', $payload, ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+     $projection = DB::table('canonical_graph_projections')->first();
+     $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
+     $client = new class implements Neo4jClient
+     {
+         public array $commands = [];
+ 
+         public function run(string $cypher, array $parameters = []): mixed
+         {
+             $this->commands[] = ['cypher' => $cypher, 'params' => $parameters];
+ 
++            if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++                return [['adjacencies' => 2]];
++            }
++
+             return str_contains($cypher, 'RETURN nodes') ? [['nodes' => 2, 'relationships' => 1]] : [];
+         }
+     };
+     app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+     $node = collect($client->commands)->first(fn ($command) => str_contains($command['cypher'], 'UNWIND $nodes'));
+     $edge = collect($client->commands)->first(fn ($command) => str_contains($command['cypher'], 'UNWIND $relationships'));
++    $adjacencies = collect($client->commands)->first(fn ($command) => str_contains($command['cypher'], 'UNWIND $adjacencies'))['params']['adjacencies'];
++    $adjacencyEdges = array_map(
++        fn (array $adjacency): array => json_decode($adjacency['properties']['edge_json'], true, flags: JSON_THROW_ON_ERROR),
++        $adjacencies,
++    );
+     expect($node['cypher'])->toContain('n.graph_version = $graph_version')->toContain('n.external_id = node.id')
+-        ->and($edge['cypher'])->toContain('r.graph_version = $graph_version')->toContain('r.external_id = relationship.id');
++        ->and($edge['cypher'])->toContain('r.graph_version = $graph_version')->toContain('r.external_id = relationship.id')
++        ->and(array_column($adjacencyEdges, 'external_id'))->toBe(['declares:a', 'declares:a'])
++        ->and(array_column($adjacencyEdges, 'type'))->toBe(['DECLARES', 'DECLARES'])
++        ->and(array_column($adjacencyEdges, 'source_id'))->toBe(['file:a.php', 'file:a.php'])
++        ->and(array_column($adjacencyEdges, 'target_id'))->toBe(['class:A', 'class:A']);
+ });
+ 
+ it('does not clear an existing current candidate before verification on retry', function () {
+     Bus::fake();
+     [$agent, $bindingId] = canonicalProjectionAgent();
+     $response = $this->postJson('/api/hades/v1/artifacts', canonicalProjectionUpload($agent, $bindingId), ['Authorization' => 'Bearer '.$agent['token']])->assertCreated();
+     $projection = DB::table('canonical_graph_projections')->first();
+     $graph = app(CanonicalGraphRepository::class)->findByIdentity($agent['project_id'], 'workspace_binding', $bindingId, 'hades_agent_artifact', $response->json('artifact.id'));
+     $client = new class implements Neo4jClient
+     {
+diff --git a/backend/tests/Feature/Hades/HadesM3SharedMemoryTest.php b/backend/tests/Feature/Hades/HadesM3SharedMemoryTest.php
+index 476461d4..31164aa8 100644
+--- a/backend/tests/Feature/Hades/HadesM3SharedMemoryTest.php
++++ b/backend/tests/Feature/Hades/HadesM3SharedMemoryTest.php
+@@ -1322,30 +1322,36 @@
+             'from' => 'App\Services\OrderPresenter',
+             'to' => 'App\Models\Order',
+         ]],
+         'raw_source_included' => false,
+     ]);
+ 
+     $this->app->bind(CanonicalGraphQueryService::class, fn () => new CanonicalGraphQueryService(new class implements Neo4jClient
+     {
+         public function run(string $cypher, array $params = []): mixed
+         {
++            if (str_contains($cypher, 'traversal_schema_version')) {
++                return [['traversal_schema_version' => 1]];
++            }
++            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
++                return [[
++                    'node' => ['external_id' => 'route:orders.show'],
++                    'labels' => ['CanonicalGraphNode'],
++                    'match_fields' => [],
++                ]];
++            }
++
+             return [[
+-                'node' => ['external_id' => 'route:orders.show'],
+-                'labels' => ['CanonicalGraphNode'],
+-            ], [
++                'source_id' => 'route:orders.show',
+                 'node' => ['external_id' => 'OrderController@show', 'name' => 'OrderController@show'],
+                 'labels' => ['CanonicalGraphNode'],
+-                'edges' => [['id' => 'edge-1', 'type' => 'CALLS', 'source_id' => 'route:orders.show', 'target_id' => 'OrderController@show']],
+-            ], [
+-                'node' => ['external_id' => 'App\\Services\\OrderPresenter', 'name' => 'App\\Services\\OrderPresenter'],
+-                'labels' => ['CanonicalGraphNode'],
++                'edge' => ['id' => 'edge-1', 'type' => 'CALLS', 'source_id' => 'route:orders.show', 'target_id' => 'OrderController@show'],
+             ]];
+         }
+     }));
+ 
+     $response = $this->getJson('/api/hades/v1/graph/traverse?'.http_build_query([
+         'project_id' => $agent['project_id'],
+         'workspace_binding_id' => $binding['workspace_binding_id'],
+         'start' => 'orders.show',
+         'max_depth' => 2,
+         'limit' => 10,
+@@ -1393,62 +1399,70 @@ public function run(string $cypher, array $params = []): mixed
+     ]);
+ 
+     $client = new class implements Neo4jClient
+     {
+         public array $commands = [];
+ 
+         public function run(string $cypher, array $params = []): mixed
+         {
+             $this->commands[] = compact('cypher', 'params');
+ 
++            if (str_contains($cypher, 'traversal_schema_version')) {
++                return [['traversal_schema_version' => 1]];
++            }
++
++            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
++                return [[
++                    'node' => ['external_id' => 'one', 'name' => 'InvoiceController'],
++                    'labels' => ['CanonicalGraphNode'],
++                    'match_fields' => ['name'],
++                ]];
++            }
++
+             return [[
+-                'nodes' => [
+-                    ['node' => ['external_id' => 'one', 'name' => 'InvoiceController'], 'labels' => ['CanonicalGraphNode']],
+-                    ['node' => ['external_id' => 'one', 'name' => 'InvoiceController'], 'labels' => ['CanonicalGraphNode']],
+-                    ['node' => ['external_id' => 'two', 'path' => 'app/InvoiceService.php'], 'labels' => ['CanonicalGraphNode']],
+-                    ['node' => ['external_id' => 'three', 'label' => 'third'], 'labels' => ['CanonicalGraphNode']],
+-                ],
+-                'edges' => [
+-                    ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
+-                    ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
+-                    ['id' => 'edge-2', 'source_id' => 'two', 'target_id' => 'three'],
+-                ],
+-                'truncated' => true,
+-                'match_fields' => ['name', 'path'],
++                'source_id' => 'one',
++                'node' => ['external_id' => 'two', 'path' => 'app/InvoiceService.php'],
++                'labels' => ['CanonicalGraphNode'],
++                'edge' => ['id' => 'edge-1', 'source_id' => 'one', 'target_id' => 'two'],
++            ], [
++                'source_id' => 'one',
++                'node' => ['external_id' => 'three', 'label' => 'third'],
++                'labels' => ['CanonicalGraphNode'],
++                'edge' => ['id' => 'edge-2', 'source_id' => 'one', 'target_id' => 'three'],
+             ]];
+         }
+     };
+     $this->app->bind(CanonicalGraphQueryService::class, fn () => new CanonicalGraphQueryService($client));
+ 
+     $response = $this->getJson('/api/hades/v1/graph/traverse?'.http_build_query([
+         'project_id' => $agent['project_id'],
+         'workspace_binding_id' => $binding['workspace_binding_id'],
+         'start' => 'invoice',
+         'limit' => 2,
+     ]), hadesM3Headers($agent['agent_token']))->assertOk()->json();
+ 
+-    expect($client->commands)->toHaveCount(1)
+-        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.external_id, \'\')) CONTAINS $start_query')
+-        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.name, \'\')) CONTAINS $start_query')
+-        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.label, \'\')) CONTAINS $start_query')
+-        ->and($client->commands[0]['cypher'])->toContain('toLower(coalesce(start.path, \'\')) CONTAINS $start_query')
+-        ->and($client->commands[0]['params']['start_query'])->toBe('invoice')
+-        ->and($client->commands[0]['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
+-        ->and($client->commands[0]['cypher'])->toContain('LIMIT $path_fetch_limit')
+-        ->and($client->commands[0]['cypher'])->toContain('size(matchedPaths) > $path_limit AS pathTruncated')
++    expect($client->commands)->toHaveCount(3)
++        ->and($client->commands[1]['cypher'])->toContain('toLower(coalesce(start.external_id, \'\')) CONTAINS $start_query')
++        ->and($client->commands[1]['cypher'])->toContain('toLower(coalesce(start.name, \'\')) CONTAINS $start_query')
++        ->and($client->commands[1]['cypher'])->toContain('toLower(coalesce(start.label, \'\')) CONTAINS $start_query')
++        ->and($client->commands[1]['cypher'])->toContain('toLower(coalesce(start.path, \'\')) CONTAINS $start_query')
++        ->and($client->commands[1]['params']['start_query'])->toBe('invoice')
++        ->and($client->commands[2]['params']['per_frontier_fetch_limit'])->toBe(3)
++        ->and($client->commands[2]['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
++        ->and($client->commands[2]['cypher'])->not->toContain('[*')
+         ->and($response['count'])->toBe(2)
+         ->and(array_column($response['nodes'], 'id'))->toBe(['one', 'two'])
+         ->and($response['edge_count'])->toBe(1)
+         ->and(array_column($response['edges'], 'id'))->toBe(['edge-1'])
+         ->and($response['truncated'])->toBeTrue()
+         ->and($response['match_fields'])->toContain('name')
+-        ->and($response['match_fields'])->toContain('path');
++        ->and($response['match_fields'])->toContain('name');
+ });
+ 
+ it('quarantines raw chunk import bundle entries instead of creating memory proposals', function () {
+     $agent = hadesM3RegisteredAgent();
+     $binding = hadesM3WorkspaceBinding($agent);
+ 
+     $this->postJson('/api/hades/v1/memory/import-bundles', [
+         'project_id' => $agent['project_id'],
+         'workspace_binding_id' => $binding['workspace_binding_id'],
+         'source' => ['kind' => 'backend_wiki_import'],
+diff --git a/backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest.php b/backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest.php
+index 87f2890f..dde2ae85 100644
+--- a/backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest.php
++++ b/backend/tests/Feature/Hades/HadesNoCodebaseDiagnosisTest.php
+@@ -744,20 +744,23 @@ class HadesNoCodebaseNeo4jClient implements Neo4jClient
+ {
+     /** @var list<array{cypher: string, params: array<string, mixed>}> */
+     public array $commands = [];
+ 
+     /** @var array<string, array<string, array<string, mixed>>> */
+     private array $nodes = [];
+ 
+     /** @var array<string, list<array<string, mixed>>> */
+     private array $relationships = [];
+ 
++    /** @var array<string, int> */
++    private array $adjacencyCounts = [];
++
+     public function run(string $cypher, array $params = []): mixed
+     {
+         $this->commands[] = compact('cypher', 'params');
+         $version = (string) ($params['graph_version'] ?? '');
+ 
+         if (str_contains($cypher, 'UNWIND $nodes AS node')) {
+             foreach ($params['nodes'] as $node) {
+                 $this->nodes[$version][$node['id']] = [
+                     'external_id' => $node['id'],
+                     'labels' => $node['labels'],
+@@ -776,34 +779,108 @@ public function run(string $cypher, array $params = []): mixed
+                     'type' => $matches[1] ?? $relationship['type'],
+                     'source_id' => $relationship['source_id'],
+                     'target_id' => $relationship['target_id'],
+                     ...$relationship['properties'],
+                 ];
+             }
+ 
+             return [];
+         }
+ 
++        if (str_contains($cypher, 'UNWIND $adjacencies AS adjacency')) {
++            $this->adjacencyCounts[$version] = count($params['adjacencies']);
++
++            return [];
++        }
++
+         if (str_contains($cypher, 'RETURN nodes, count(r) AS relationships')) {
+             return [[
+                 'nodes' => count($this->nodes[$version] ?? []),
+                 'relationships' => count($this->relationships[$version] ?? []),
+             ]];
+         }
+ 
+-        if (str_contains($cypher, 'OPTIONAL MATCH p=(start)')) {
+-            return [$this->traverse($cypher, $params)];
++        if (str_contains($cypher, 'RETURN count(a) AS adjacencies')) {
++            return [['adjacencies' => $this->adjacencyCounts[$version] ?? 0]];
++        }
++
++        if (str_contains($cypher, 'traversal_schema_version')) {
++            return [['traversal_schema_version' => 1]];
++        }
++
++        if (str_contains($cypher, 'RETURN properties(start) AS node')) {
++            return $this->discoverStarts($params);
++        }
++
++        if (str_contains($cypher, 'UNWIND $frontier_ids')) {
++            return $this->expandFrontier($cypher, $params);
+         }
+ 
+         return [];
+     }
+ 
++    /** @return list<array<string, mixed>> */
++    private function discoverStarts(array $params): array
++    {
++        $version = (string) $params['graph_version'];
++        $query = strtolower((string) $params['start_query']);
++        $rows = [];
++        foreach ($this->nodes[$version] ?? [] as $node) {
++            $fields = [];
++            foreach (['external_id', 'name', 'label', 'path'] as $field) {
++                if ($query !== '' && str_contains(strtolower((string) ($node[$field] ?? '')), $query)) {
++                    $fields[] = $field;
++                }
++            }
++            if ($fields !== []) {
++                $rows[] = ['node' => $node, 'labels' => $node['labels'] ?? [], 'match_fields' => $fields];
++            }
++        }
++        usort($rows, fn (array $a, array $b): int => $a['node']['external_id'] <=> $b['node']['external_id']);
++
++        return array_slice($rows, 0, (int) $params['fetch_limit']);
++    }
++
++    /** @return list<array<string, mixed>> */
++    private function expandFrontier(string $cypher, array $params): array
++    {
++        $version = (string) $params['graph_version'];
++        $direction = (string) ($params['direction'] ?? 'any');
++        $rows = [];
++        foreach ($params['frontier_ids'] as $sourceId) {
++            $sourceRows = [];
++            foreach ($this->relationships[$version] ?? [] as $relationship) {
++                $targetId = match ($direction) {
++                    'out' => $relationship['source_id'] === $sourceId ? $relationship['target_id'] : null,
++                    'in' => $relationship['target_id'] === $sourceId ? $relationship['source_id'] : null,
++                    default => $relationship['source_id'] === $sourceId
++                        ? $relationship['target_id']
++                        : ($relationship['target_id'] === $sourceId ? $relationship['source_id'] : null),
++                };
++                if ($targetId === null || ! isset($this->nodes[$version][$targetId])) {
++                    continue;
++                }
++                $node = $this->nodes[$version][$targetId];
++                $sourceRows[] = [
++                    'source_id' => $sourceId,
++                    'node' => $node,
++                    'labels' => $node['labels'] ?? [],
++                    'edge' => $relationship,
++                ];
++            }
++            usort($sourceRows, fn (array $a, array $b): int => [$a['node']['external_id'], $a['edge']['external_id']] <=> [$b['node']['external_id'], $b['edge']['external_id']]);
++            array_push($rows, ...array_slice($sourceRows, 0, (int) $params['per_frontier_fetch_limit']));
++        }
++
++        return array_slice($rows, 0, (int) $params['hop_fetch_limit']);
++    }
++
+     /** @return array<string, mixed> */
+     private function traverse(string $cypher, array $params): array
+     {
+         $version = (string) $params['graph_version'];
+         $query = strtolower((string) $params['start_query']);
+         $nodes = $this->nodes[$version] ?? [];
+         $relationships = $this->relationships[$version] ?? [];
+         preg_match('/OPTIONAL MATCH p=\(start\)(.*?)\(node:/s', $cypher, $patternMatch);
+         $pattern = $patternMatch[1] ?? '';
+         preg_match('/\[:([A-Z0-9_|]+)\*1\.\.(\d+)\]/', $pattern, $typedMatch);
+diff --git a/backend/tests/Feature/Plugin/GraphQueryApiTest.php b/backend/tests/Feature/Plugin/GraphQueryApiTest.php
+index ca6bc5a7..fb8e5234 100644
+--- a/backend/tests/Feature/Plugin/GraphQueryApiTest.php
++++ b/backend/tests/Feature/Plugin/GraphQueryApiTest.php
+@@ -456,43 +456,59 @@ function graphQueryFakeClient(): FakeNeo4jClient
+     $result = $service->query($projectId, 'repository', $repo->id, 'callers', ['symbol_id' => 'TestSymbol']);
+     expect($result['metadata']['source_scope_type'])->toBe('repository')
+         ->and($result['metadata']['source_scope_id'])->toBe($repo->id)
+         ->and($result['metadata']['graph_version'])->toStartWith('graph-version-');
+ 
+     $otherProject = DB::table('projects')->where('id', '!=', $projectId)->value('id');
+     $isolated = $service->query($projectId, 'repository', (string) $otherProject, 'callers', ['symbol_id' => 'TestSymbol']);
+     expect($isolated['found'])->toBeFalse()->and($isolated['reason'])->toBe('graph_scope_not_found');
+ });
+ 
+-it('emits relationship-type agnostic version-isolated Cypher for every traversal direction', function (string $direction, string $pattern) {
+-    $fakeClient = new FakeNeo4jClient;
++it('emits one-hop relationship-type agnostic version-isolated Cypher for every traversal direction', function (string $direction, string $pattern) {
++    $fakeClient = new class implements Neo4jClient
++    {
++        public array $commands = [];
++
++        public function run(string $cypher, array $params = []): mixed
++        {
++            $this->commands[] = compact('cypher', 'params');
++
++            if (str_contains($cypher, 'traversal_schema_version')) {
++                return [['traversal_schema_version' => 1]];
++            }
++
++            return str_contains($cypher, 'RETURN properties(start) AS node')
++                ? [['node' => ['external_id' => 'start'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['external_id']]]
++                : [];
++        }
++    };
+     $service = new CanonicalGraphQueryService($fakeClient);
+     $projectId = graphQueryProjectId();
+     $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+     graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+ 
+     $service->query($projectId, 'repository', $repo->id, 'traverse', [
+         'start' => 'Start', 'direction' => $direction, 'max_depth' => 3, 'limit' => 10,
+     ]);
+ 
+-    $cypher = $fakeClient->commands[0]['cypher'];
++    $startCypher = $fakeClient->commands[1]['cypher'];
++    $cypher = $fakeClient->commands[2]['cypher'];
+     expect($cypher)->toContain($pattern)
+-        ->and($cypher)->toContain('start:CanonicalGraphNode {graph_version: $graph_version}')
+-        ->and($cypher)->toContain("toLower(coalesce(start.external_id, '')) CONTAINS \$start_query")
+-        ->and($cypher)->toContain('node:CanonicalGraphNode {graph_version: $graph_version}')
+-        ->and($cypher)->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
+-        ->and($cypher)->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
+-        ->and($fakeClient->commands[0]['params']['graph_version'])->toStartWith('graph-version-');
++        ->and($cypher)->toContain('target:CanonicalGraphNode {graph_version: $graph_version, external_id: adjacency.to_external_id}')
++        ->and($cypher)->toContain('LIMIT $per_frontier_fetch_limit')
++        ->and($cypher)->not->toContain('[*')
++        ->and($startCypher)->toContain("toLower(coalesce(start.external_id, '')) CONTAINS \$start_query")
++        ->and($fakeClient->commands[2]['params']['graph_version'])->toStartWith('graph-version-');
+ })->with([
+-    'out' => ['out', '-[*1..3]->'],
+-    'in' => ['in', '<-[*1..3]-'],
+-    'any' => ['any', '-[*1..3]-'],
++    'out' => ['out', 'direction: $direction}) WHERE adjacency.direction_rank < $per_frontier_fetch_limit'],
++    'in' => ['in', 'direction: $direction}) WHERE adjacency.direction_rank < $per_frontier_fetch_limit'],
++    'any' => ['any', 'WHERE adjacency.any_rank < $per_frontier_fetch_limit'],
+ ]);
+ 
+ it('returns path relationships and constrains every path node and edge to the graph version', function () {
+     $fakeClient = new FakeNeo4jClient;
+     $service = new CanonicalGraphQueryService($fakeClient);
+     $projectId = graphQueryProjectId();
+     $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+     graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+ 
+     $service->query($projectId, 'repository', $repo->id, 'path', [
+@@ -509,139 +525,126 @@ function graphQueryFakeClient(): FakeNeo4jClient
+ 
+ it('includes an isolated matching traversal start without weakening graph version isolation', function () {
+     $fakeClient = new class implements Neo4jClient
+     {
+         public array $commands = [];
+ 
+         public function run(string $cypher, array $params = []): mixed
+         {
+             $this->commands[] = compact('cypher', 'params');
+ 
+-            return [[
+-                'nodes' => [['node' => ['external_id' => 'isolated', 'name' => 'Isolated'], 'labels' => ['CanonicalGraphNode']]],
+-                'edges' => [],
+-                'truncated' => false,
+-                'match_fields' => ['name'],
+-            ]];
++            if (str_contains($cypher, 'traversal_schema_version')) {
++                return [['traversal_schema_version' => 1]];
++            }
++
++            return str_contains($cypher, 'RETURN properties(start) AS node')
++                ? [['node' => ['external_id' => 'isolated', 'name' => 'Isolated'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['name']]]
++                : [];
+         }
+     };
+     $service = new CanonicalGraphQueryService($fakeClient);
+     $projectId = graphQueryProjectId();
+     $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+     graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+ 
+     $result = $service->query($projectId, 'repository', $repo->id, 'traverse', [
+         'start' => 'Isolated', 'direction' => 'out', 'max_depth' => 2, 'limit' => 2,
+     ]);
+ 
+-    $command = $fakeClient->commands[0];
+-    expect($command['cypher'])
+-        ->toContain('WITH start ORDER BY start.external_id LIMIT $fetch_limit WITH collect(start) AS fetchedStarts')
+-        ->toContain('WITH fetchedStarts[0..$limit] AS starts, size(fetchedStarts) > $limit AS startTruncated UNWIND starts AS start')
+-        ->toContain('OPTIONAL MATCH p=(start)-[*1..2]->(node:CanonicalGraphNode {graph_version: $graph_version})')
+-        ->toContain('WITH starts, startTruncated, start, p ORDER BY start.external_id, length(p)')
+-        ->not->toContain('collect(DISTINCT start)')
+-        ->toContain('collect(p) AS matchedPaths')
+-        ->toContain('reduce(candidatePathNodes = [], matchedPath IN paths | candidatePathNodes + nodes(matchedPath))')
+-        ->toContain('reduce(candidateEdges = [], matchedPath IN paths | candidateEdges + relationships(matchedPath))')
+-        ->toContain('startNode(r) IN finalNodes AND endNode(r) IN finalNodes')
+-        ->toContain('r {.*, source_id: startNode(r).external_id, target_id: endNode(r).external_id}')
+-        ->not->toContain('collect({nodes:')
+-        ->not->toContain('path.nodes')
+-        ->not->toContain('path.edges')
+-        ->toContain('ALL(n IN nodes(p) WHERE n.graph_version = $graph_version)')
+-        ->toContain('ALL(r IN relationships(p) WHERE r.graph_version = $graph_version)')
+-        ->not->toMatch('/\\b(?:CREATE|MERGE|SET|DELETE|REMOVE|DROP)\\b/i')
+-        ->and($command['params']['graph_version'])->toStartWith('graph-version-')
+-        ->and($command['params']['path_fetch_limit'])->toBeLessThanOrEqual(201)
++    expect($fakeClient->commands)->toHaveCount(3)
++        ->and($fakeClient->commands[1]['cypher'])->toContain('LIMIT $fetch_limit')
++        ->and($fakeClient->commands[2]['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
++        ->and($fakeClient->commands[2]['cypher'])->not->toContain('[*')
++        ->and($fakeClient->commands[2]['cypher'])->not->toMatch('/\\b(?:CREATE|MERGE|SET|DELETE|REMOVE|DROP)\\b/i')
++        ->and($fakeClient->commands[2]['params']['graph_version'])->toStartWith('graph-version-')
+         ->and(array_column($result['results'], 'id'))->toBe(['isolated'])
+         ->and($result['edges'])->toBe([])
+         ->and($result['traversal_match_fields'])->toBe(['name']);
+ });
+ 
+ it('retains every bounded matching start before path nodes when the traversal cap is saturated', function () {
+     $client = new class implements Neo4jClient
+     {
+         public array $commands = [];
+ 
+         public function run(string $cypher, array $params = []): mixed
+         {
+             $this->commands[] = compact('cypher', 'params');
+ 
++            if (str_contains($cypher, 'traversal_schema_version')) {
++                return [['traversal_schema_version' => 1]];
++            }
++
++            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
++                return [
++                    ['node' => ['external_id' => 'partial-isolated', 'name' => 'Partial Isolated'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['external_id', 'name']],
++                    ['node' => ['external_id' => 'partial-connected', 'name' => 'Partial Connected'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['external_id', 'name']],
++                ];
++            }
++
+             return [[
+-                'nodes' => [
+-                    ['node' => ['external_id' => 'partial-isolated', 'name' => 'Partial Isolated'], 'labels' => ['CanonicalGraphNode']],
+-                    ['node' => ['external_id' => 'partial-connected', 'name' => 'Partial Connected'], 'labels' => ['CanonicalGraphNode']],
+-                    ['node' => ['external_id' => 'path-one', 'name' => 'Path One'], 'labels' => ['CanonicalGraphNode']],
+-                ],
+-                'edges' => [[
++                'source_id' => 'partial-connected',
++                'node' => ['external_id' => 'path-one', 'name' => 'Path One'],
++                'labels' => ['CanonicalGraphNode'],
++                'edge' => [
+                     'external_id' => 'kept-edge',
+                     'source_id' => 'partial-connected',
+                     'target_id' => 'path-one',
+-                ]],
+-                'truncated' => true,
+-                'match_fields' => ['external_id', 'name'],
++                ],
+             ]];
+         }
+     };
+     $service = new CanonicalGraphQueryService($client);
+     $projectId = graphQueryProjectId();
+     $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+     graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+ 
+     $result = $service->query($projectId, 'repository', $repo->id, 'traverse', [
+         'start' => 'partial', 'direction' => 'out', 'max_depth' => 3, 'limit' => 3,
+     ]);
+ 
+-    $command = $client->commands[0];
+-    expect($command['cypher'])
+-        ->toContain('WITH collect(start) AS fetchedStarts')
+-        ->toContain('fetchedStarts[0..$limit] AS starts')
+-        ->toContain('size(fetchedStarts) > $limit AS startTruncated')
+-        ->toContain('collect(DISTINCT candidate) AS uniqueStarts')
+-        ->toContain('collect(DISTINCT pathNode) AS uniquePathNodes')
+-        ->toContain('uniqueStarts + [n IN uniquePathNodes WHERE NOT n IN uniqueStarts] AS orderedNodes')
+-        ->toContain('orderedNodes[0..$limit] AS finalNodes')
+-        ->toContain('startNode(r) IN finalNodes AND endNode(r) IN finalNodes')
+-        ->toContain('startTruncated OR size(orderedNodes) > $limit OR pathTruncated AS truncated')
+-        ->and($command['params']['fetch_limit'])->toBe(4)
++    expect($client->commands)->toHaveCount(3)
++        ->and($client->commands[1]['params']['fetch_limit'])->toBe(4)
++        ->and($client->commands[2]['params']['frontier_ids'])->toBe(['partial-isolated', 'partial-connected'])
++        ->and($client->commands[2]['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
++        ->and($client->commands[2]['cypher'])->not->toContain('[*')
+         ->and(array_column($result['results'], 'id'))->toBe([
+             'partial-isolated',
+             'partial-connected',
+             'path-one',
+         ])
+         ->and(array_column($result['edges'], 'external_id'))->toBe(['kept-edge'])
+-        ->and($result['truncated'])->toBeTrue();
++        ->and($result['truncated'])->toBeFalse();
+ });
+ 
+ it('normalizes iterable rows returned by the real Neo4j driver', function () {
+     $client = new class implements Neo4jClient
+     {
+         public function run(string $cypher, array $params = []): mixed
+         {
++            if (str_contains($cypher, 'traversal_schema_version')) {
++                return new ArrayIterator([new ArrayIterator(['traversal_schema_version' => 1])]);
++            }
++            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
++                return new ArrayIterator([new ArrayIterator([
++                    'node' => new ArrayIterator(['external_id' => 'driver-start', 'name' => 'DriverStart']),
++                    'labels' => new ArrayIterator(['CanonicalGraphNode']),
++                    'match_fields' => new ArrayIterator(['name']),
++                ])]);
++            }
++
+             return new ArrayIterator([
+                 new ArrayIterator([
+-                    'nodes' => new ArrayIterator([
+-                        new ArrayIterator([
+-                            'node' => new ArrayIterator(['external_id' => 'driver-start', 'name' => 'DriverStart']),
+-                            'labels' => new ArrayIterator(['CanonicalGraphNode']),
+-                        ]),
+-                        new ArrayIterator([
+-                            'node' => new ArrayIterator(['external_id' => 'driver-target', 'name' => 'DriverTarget']),
+-                            'labels' => new ArrayIterator(['CanonicalGraphNode']),
+-                        ]),
+-                    ]),
+-                    'edges' => new ArrayIterator([
+-                        new ArrayIterator(['external_id' => 'driver-edge', 'source_id' => 'driver-start', 'target_id' => 'driver-target']),
+-                    ]),
+-                    'truncated' => false,
+-                    'match_fields' => new ArrayIterator(['name']),
++                    'source_id' => 'driver-start',
++                    'node' => new ArrayIterator(['external_id' => 'driver-target', 'name' => 'DriverTarget']),
++                    'labels' => new ArrayIterator(['CanonicalGraphNode']),
++                    'edge' => new ArrayIterator(['external_id' => 'driver-edge', 'source_id' => 'driver-start', 'target_id' => 'driver-target']),
+                 ]),
+             ]);
+         }
+     };
+     $service = new CanonicalGraphQueryService($client);
+     $projectId = graphQueryProjectId();
+     $repo = DB::table('repositories')->where('project_id', $projectId)->first();
+     graphQueryEnsureSnapshot($projectId, $repo->id, graphQueryUserId());
+ 
+     $result = $service->query($projectId, 'repository', $repo->id, 'traverse', [
+@@ -772,10 +775,107 @@ public function run(string $cypher, array $params = []): mixed
+     expect($fakeClient->commands)->toBe([]);
+ 
+     $bindingResponse = $this->postJson('/api/plugin/v1/projects/'.$projectId.'/graph/query', graphQueryBody([
+         'type' => 'callers', 'symbol_id' => 'Start', 'workspace_binding_id' => $bindingId,
+     ]), graphQueryHeaders($pluginToken['plain_token']))
+         ->assertOk()->assertJsonPath('reason', 'graph_scope_not_found');
+ 
+     expect($bindingResponse->json('results'))->toBe([]);
+     expect($fakeClient->commands)->toBe([]);
+ });
++
++it('requires a rebuilt projection instead of silently using an unbounded legacy traversal', function () {
++    $projectId = graphQueryProjectId();
++    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
++    graphQueryEnsureSnapshot($projectId, $repositoryId, graphQueryUserId());
++    $client = new class implements Neo4jClient
++    {
++        public array $commands = [];
++
++        public function run(string $cypher, array $params = []): mixed
++        {
++            $this->commands[] = compact('cypher', 'params');
++
++            return str_contains($cypher, 'traversal_schema_version')
++                ? [['traversal_schema_version' => 0]]
++                : throw new RuntimeException('Legacy traversal must stop at capability preflight.');
++        }
++    };
++
++    $result = (new CanonicalGraphQueryService($client))->query(
++        $projectId, 'repository', $repositoryId, 'traverse',
++        ['start' => 'legacy', 'direction' => 'any', 'max_depth' => 3, 'limit' => 10],
++    );
++
++    expect($result['found'])->toBeFalse()
++        ->and($result['reason'])->toBe('graph_projection_rebuild_required')
++        ->and($client->commands)->toHaveCount(1)
++        ->and($client->commands[0]['cypher'])->toContain('traversal_schema_version');
++});
++
++it('bounds every dense traversal frontier before advancing to the next hop', function () {
++    $projectId = graphQueryProjectId();
++    $repositoryId = DB::table('repositories')->where('slug', 'demo-repository')->value('id');
++    graphQueryEnsureSnapshot($projectId, $repositoryId, graphQueryUserId());
++
++    $client = new class implements Neo4jClient
++    {
++        public array $commands = [];
++
++        public function run(string $cypher, array $params = []): mixed
++        {
++            $this->commands[] = compact('cypher', 'params');
++            if (str_contains($cypher, 'traversal_schema_version')) {
++                return [['traversal_schema_version' => 1]];
++            }
++            if (str_contains($cypher, 'RETURN properties(start) AS node')) {
++                return [
++                    ['node' => ['external_id' => 'start-a', 'name' => 'Dense'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['name']],
++                    ['node' => ['external_id' => 'start-b', 'name' => 'Dense'], 'labels' => ['CanonicalGraphNode'], 'match_fields' => ['name']],
++                ];
++            }
++            if (str_contains($cypher, 'UNWIND $frontier_ids')) {
++                $rows = [];
++                foreach ($params['frontier_ids'] as $source) {
++                    for ($i = 0; $i < 11; $i++) {
++                        $target = sprintf('node-%02d', $i);
++                        $rows[] = [
++                            'source_id' => $source,
++                            'node' => ['external_id' => $target, 'name' => $target],
++                            'labels' => ['CanonicalGraphNode'],
++                            'edge' => ['external_id' => $source.'-'.$target, 'source_id' => $source, 'target_id' => $target],
++                        ];
++                    }
++                }
++
++                return $rows;
++            }
++
++            return [];
++        }
++    };
++
++    $result = (new CanonicalGraphQueryService($client))->query(
++        $projectId, 'repository', $repositoryId, 'traverse',
++        ['start' => 'dense', 'direction' => 'any', 'max_depth' => 3, 'limit' => 10],
++    );
++
++    expect($result['found'])->toBeTrue()
++        ->and(array_column($result['results'], 'id'))->toBe([
++            'start-a', 'start-b', 'node-00', 'node-01', 'node-02',
++            'node-03', 'node-04', 'node-05', 'node-06', 'node-07',
++        ])
++        ->and($result['truncated'])->toBeTrue()
++        ->and($client->commands)->toHaveCount(3);
++    foreach ($client->commands as $command) {
++        expect($command['cypher'])->not->toContain('[*');
++    }
++    $hop = $client->commands[2];
++    expect($hop['params']['frontier_ids'])->toBe(['start-a', 'start-b'])
++        ->and($hop['params']['per_frontier_fetch_limit'])->toBe(11)
++        ->and($hop['params']['hop_fetch_limit'])->toBe(22)
++        ->and($hop['cypher'])->toContain('CanonicalGraphAdjacency')
++        ->and($hop['cypher'])->toContain('adjacency.any_rank < $per_frontier_fetch_limit')
++        ->and($hop['cypher'])->not->toContain('(source)-[edge]')
++        ->and($hop['cypher'])->toContain('LIMIT $per_frontier_fetch_limit')
++        ->and($hop['cypher'])->toContain('LIMIT $hop_fetch_limit');
++});
+diff --git a/backend/tests/Unit/CanonicalGraphNormalizerTest.php b/backend/tests/Unit/CanonicalGraphNormalizerTest.php
+index 59e1a583..b39244fb 100644
+--- a/backend/tests/Unit/CanonicalGraphNormalizerTest.php
++++ b/backend/tests/Unit/CanonicalGraphNormalizerTest.php
+@@ -220,10 +220,82 @@ function unitCanonicalGraphContract(array $overrides = []): array
+     'missing fallback reason' => ['missing_fallback_reason', 'extractor'],
+     'invalid extractor mode' => ['invalid_mode', 'extractor.mode'],
+     'invalid extractor quality' => ['invalid_quality', 'extractor.quality'],
+     'invalid extractor name type' => ['invalid_name_type', 'extractor.name'],
+     'invalid coverage count type' => ['invalid_count_type', 'coverage.files_total'],
+     'invalid coverage language type' => ['invalid_language_type', 'coverage.languages'],
+     'missing source head commit' => ['missing_head_commit', 'source'],
+     'invalid source branch type' => ['invalid_branch_type', 'source.branch'],
+     'unexpected extractor key' => ['unexpected_extractor_key', 'extractor'],
+ ]);
++
++it('accepts bounded metadata emitted by current native and supported legacy producers', function (array $contract) {
++    $normalized = (new CanonicalGraphNormalizer)->normalize([
++        'graph_contract' => $contract,
++        'nodes' => [['id' => 'class:Compatible']],
++    ], []);
++
++    expect($normalized['contract'])->toBe($contract);
++})->with([
++    'native partial' => [[
++        'version' => 'hades.graph_artifact.v1',
++        'extractor' => ['name' => 'hades-native-typescript', 'version' => '1', 'mode' => 'native', 'quality' => 'partial', 'fallback_reason' => 'canonicalization_omissions'],
++        'coverage' => ['languages' => ['typescript'], 'files_total' => 12, 'files_analyzed' => 10, 'files_failed' => 2],
++        'source' => ['branch' => 'feature/canonical-graph', 'head_commit' => str_repeat('a', 40)],
++    ]],
++    'graphify failure' => [[
++        'version' => 'hades.graph_artifact.v1',
++        'extractor' => ['name' => 'graphify', 'version' => '1.0', 'mode' => 'fallback', 'quality' => 'inventory_only', 'fallback_reason' => 'graphify_failed:RuntimeError'],
++        'coverage' => ['languages' => ['python'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
++        'source' => ['branch' => null, 'head_commit' => null],
++    ]],
++    'legacy adapter' => [[
++        'version' => 'hades.graph_artifact.v1',
++        'extractor' => ['name' => 'hades-legacy-php', 'version' => '1', 'mode' => 'legacy_adapter', 'quality' => 'partial', 'fallback_reason' => 'missing_contract_metadata'],
++        'coverage' => ['languages' => ['php'], 'files_total' => 1, 'files_analyzed' => 1, 'files_failed' => 0],
++        'source' => ['branch' => 'main', 'head_commit' => 'abc123'],
++    ]],
++]);
++
++it('rejects unbounded, control-bearing, or grammatically invalid canonical metadata', function (Closure $mutate, string $field) {
++    $contract = unitCanonicalGraphContract();
++    $mutate($contract);
++
++    expect(fn () => (new CanonicalGraphNormalizer)->normalize([
++        'graph_contract' => $contract,
++        'nodes' => [['id' => 'class:ValidIdentity']],
++    ], []))->toThrow(InvalidArgumentException::class, "Canonical graph contract is malformed at {$field}.");
++})->with([
++    'oversized extractor name' => [fn (array &$c) => $c['extractor']['name'] = str_repeat('a', 65), 'extractor.name'],
++    'control in extractor version' => [fn (array &$c) => $c['extractor']['version'] = "1\nsecret", 'extractor.version'],
++    'too many languages' => [fn (array &$c) => $c['coverage']['languages'] = array_fill(0, 17, 'php'), 'coverage.languages'],
++    'oversized language' => [fn (array &$c) => $c['coverage']['languages'] = [str_repeat('p', 33)], 'coverage.languages'],
++    'invalid language grammar' => [fn (array &$c) => $c['coverage']['languages'] = ['../../private'], 'coverage.languages'],
++    'oversized branch' => [fn (array &$c) => $c['source']['branch'] = str_repeat('b', 256), 'source.branch'],
++    'control in branch' => [fn (array &$c) => $c['source']['branch'] = "main\n/private", 'source.branch'],
++    'invalid head commit' => [fn (array &$c) => $c['source']['head_commit'] = 'not-a-commit', 'source.head_commit'],
++    'oversized head commit' => [fn (array &$c) => $c['source']['head_commit'] = str_repeat('a', 81), 'source.head_commit'],
++    'free-form fallback text' => [fn (array &$c) => $c['extractor']['fallback_reason'] = 'failed at /Users/private/file.php', 'extractor.fallback_reason'],
++    'oversized graphify exception code' => [fn (array &$c) => $c['extractor']['fallback_reason'] = 'graphify_failed:'.str_repeat('E', 65), 'extractor.fallback_reason'],
++]);
++
++it('rejects impossible canonical coverage and quality combinations', function (Closure $mutate, string $field) {
++    $contract = unitCanonicalGraphContract();
++    $mutate($contract);
++
++    expect(fn () => (new CanonicalGraphNormalizer)->normalize([
++        'graph_contract' => $contract,
++        'nodes' => [['id' => 'class:ValidIdentity']],
++    ], []))->toThrow(InvalidArgumentException::class, "Canonical graph contract is malformed at {$field}.");
++})->with([
++    'analyzed exceeds total' => [fn (array &$c) => $c['coverage']['files_analyzed'] = 2, 'coverage'],
++    'failed exceeds total' => [fn (array &$c) => $c['coverage']['files_failed'] = 2, 'coverage'],
++    'counts do not partition total' => [function (array &$c) {
++        $c['coverage']['files_total'] = 3;
++        $c['coverage']['files_analyzed'] = 1;
++    }, 'coverage'],
++    'full quality has fallback reason' => [fn (array &$c) => $c['extractor']['fallback_reason'] = 'bounded_or_omitted_input', 'extractor'],
++    'partial quality lacks fallback reason' => [function (array &$c) {
++        $c['extractor']['quality'] = 'partial';
++        $c['extractor']['fallback_reason'] = null;
++    }, 'extractor'],
++]);
