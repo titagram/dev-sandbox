@@ -211,6 +211,40 @@ it('rejects common local roots and relative source paths while preserving dotted
         ->and($properties['route:dotted']['public_search_path'])->toBe('/.well-known/openid-configuration');
 });
 
+it('publishes trusted non-api multi-segment routes while hiding untrusted paths', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $projection = app(CanonicalGraphProjectionService::class)
+        ->queue(canonicalProjectionGraph($projectId, 'artifact-non-api-route', str_repeat('k', 64)));
+    $graph = [
+        'nodes' => [
+            [
+                'id' => 'route:trusted-wiki',
+                'labels' => ['Route'],
+                'properties' => ['kind' => 'route', 'path' => '/projects/{id}/wiki'],
+            ],
+            [
+                'id' => 'route:unproven-wiki',
+                'labels' => ['Route'],
+                'properties' => ['kind' => 'route', 'path' => '/projects/{id}/wiki'],
+            ],
+        ],
+        'relationships' => [],
+        'private_route_provenance' => [
+            'route:trusted-wiki' => true,
+        ],
+    ];
+    $client = new FakeNeo4jClient;
+
+    app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $client);
+    $nodeBatch = collect($client->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
+    );
+    $properties = collect($nodeBatch['params']['nodes'])->keyBy('id')->map(fn (array $node): array => $node['properties']);
+
+    expect($properties['route:trusted-wiki']['public_search_path'])->toBe('/projects/{id}/wiki')
+        ->and($properties['route:unproven-wiki']['public_search_path'])->toBeNull();
+});
+
 it('preserves valid PHP namespaces while rejecting Windows and source-path identities', function (): void {
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
     $projection = app(CanonicalGraphProjectionService::class)
@@ -218,6 +252,7 @@ it('preserves valid PHP namespaces while rejecting Windows and source-path ident
     $valid = [
         'App\\Services\\InvoiceService',
         'Domain\\Billing\\ChargeInvoice',
+        '\\App\\Services\\InvoiceService',
     ];
     $invalid = [
         'C:\\workspace\\Foo.php',

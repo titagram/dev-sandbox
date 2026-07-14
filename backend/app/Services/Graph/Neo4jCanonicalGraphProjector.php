@@ -46,12 +46,12 @@ class Neo4jCanonicalGraphProjector
             ])],
         );
 
-        $serverRouteProvenance = is_array($graph['private_route_provenance'] ?? null)
+        $trustedProducerRouteProvenance = is_array($graph['private_route_provenance'] ?? null)
             ? $graph['private_route_provenance']
             : [];
         foreach (array_chunk($graph['nodes'], self::BATCH_SIZE) as $batch) {
             $this->assertHeartbeat($heartbeat);
-            $client->run('UNWIND $nodes AS node MERGE (n:CanonicalGraphNode {graph_version: $graph_version, external_id: node.id}) SET n += node.properties, n.graph_version = $graph_version, n.external_id = node.id, n.labels = node.labels, n.project_id = $project_id, n.source_scope_type = $source_scope_type, n.source_scope_id = $source_scope_id, n.public_handle = node.properties.public_handle', $scope + ['nodes' => $this->withCanonicalNodeProperties($batch, $projection, $serverRouteProvenance)]);
+            $client->run('UNWIND $nodes AS node MERGE (n:CanonicalGraphNode {graph_version: $graph_version, external_id: node.id}) SET n += node.properties, n.graph_version = $graph_version, n.external_id = node.id, n.labels = node.labels, n.project_id = $project_id, n.source_scope_type = $source_scope_type, n.source_scope_id = $source_scope_id, n.public_handle = node.properties.public_handle', $scope + ['nodes' => $this->withCanonicalNodeProperties($batch, $projection, $trustedProducerRouteProvenance)]);
         }
         foreach ($this->relationshipsByType($graph['relationships']) as $type => $relationships) {
             foreach (array_chunk($relationships, self::BATCH_SIZE) as $batch) {
@@ -139,10 +139,10 @@ class Neo4jCanonicalGraphProjector
      * kept out of the FULLTEXT fields.
      *
      * @param list<array<string, mixed>> $rows
-     * @param array<string, true> $serverRouteProvenance
+     * @param array<string, true> $trustedProducerRouteProvenance
      * @return list<array<string, mixed>>
      */
-    private function withCanonicalNodeProperties(array $rows, object $projection, array $serverRouteProvenance = []): array
+    private function withCanonicalNodeProperties(array $rows, object $projection, array $trustedProducerRouteProvenance = []): array
     {
         foreach ($rows as &$row) {
             $externalId = (string) ($row['id'] ?? '');
@@ -153,7 +153,7 @@ class Neo4jCanonicalGraphProjector
                 'public_search_name' => $this->safeSearchValue($properties['name'] ?? null),
                 'public_search_label' => $this->safeSearchValue($properties['label'] ?? null),
                 'public_search_path' => $kind === 'route'
-                    ? $this->safeRoutePath($properties['path'] ?? $properties['uri'] ?? $properties['route'] ?? null, isset($serverRouteProvenance[$externalId]))
+                    ? $this->safeRoutePath($properties['path'] ?? $properties['uri'] ?? $properties['route'] ?? null, isset($trustedProducerRouteProvenance[$externalId]))
                     : null,
             ];
             unset($properties['__hades_server_route_provenance'], $properties['route_provenance']);
@@ -209,6 +209,9 @@ class Neo4jCanonicalGraphProjector
         if (preg_match('/\A(?:hades-public-|legacy[-_:]|(?:node|edge|internal)[-_:])/i', $value) === 1) {
             return true;
         }
+        if (str_contains($value, '\\') && $this->isValidPhpFqcn($value)) {
+            return false;
+        }
 
         $normalised = str_replace('\\', '/', $value);
         if (stripos($normalised, 'file://') !== false
@@ -242,12 +245,12 @@ class Neo4jCanonicalGraphProjector
 
     private function isValidPhpFqcn(string $value): bool
     {
-        return preg_match('/\A\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+\z/D', $value) === 1;
+        return preg_match('/\A\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)+\z/D', $value) === 1;
     }
 
-    private function safeRoutePath(mixed $value, bool $serverOwnedRoute): ?string
+    private function safeRoutePath(mixed $value, bool $trustedProducerRoute): ?string
     {
-        if (! is_string($value) || ! $serverOwnedRoute) {
+        if (! is_string($value) || ! $trustedProducerRoute) {
             return null;
         }
         $value = trim($value);
@@ -261,13 +264,7 @@ class Neo4jCanonicalGraphProjector
 
     private function isPublicRoutePath(string $value): bool
     {
-        if (preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) !== 1) {
-            return false;
-        }
-        $segments = array_values(array_filter(explode('/', trim($value, '/')), static fn (string $segment): bool => $segment !== ''));
-        $root = strtolower((string) ($segments[0] ?? ''));
-
-        return $root === 'api' || $root === '.well-known' || count($segments) === 1;
+        return preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) === 1;
     }
 
     private function assertHeartbeat(?Closure $heartbeat): void

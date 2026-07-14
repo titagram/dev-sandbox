@@ -239,7 +239,7 @@ it('keeps the canonical normalizer strict for legacy nodes without real identity
     app(CanonicalGraphRepository::class)->latestForScope($projectId, 'workspace_binding', $bindingId);
 })->throws(InvalidArgumentException::class, 'Legacy graph node identity is missing.');
 
-it('stamps server-owned route provenance across contracted and legacy route records', function (): void {
+it('stamps trusted route semantics across contracted and legacy route records', function (): void {
     $contract = [
         'version' => 'hades.graph_artifact.v1',
         'extractor' => ['name' => 'hades-native-php', 'version' => '1', 'mode' => 'native', 'quality' => 'full', 'fallback_reason' => null],
@@ -251,7 +251,7 @@ it('stamps server-owned route provenance across contracted and legacy route reco
         'graph_contract' => $contract,
         'nodes' => [
             ['id' => 'route:contracted', 'kind' => 'route', 'properties' => ['uri' => 'api/invoices/{id}']],
-            ['id' => 'route:spoofed', 'kind' => 'route', 'properties' => ['path' => '/api/spoofed', 'route_provenance' => 'route_registry']],
+            ['id' => 'node:spoofed', 'kind' => 'service', 'properties' => ['path' => '/api/spoofed', 'route_provenance' => 'route_registry']],
             ['id' => 'route:filesystem', 'kind' => 'route', 'properties' => ['path' => '/data/private/secret', 'route_provenance' => 'route_registry']],
         ],
         'relationships' => [],
@@ -275,11 +275,48 @@ it('stamps server-owned route provenance across contracted and legacy route reco
 
     expect($contractedNodes['route:contracted']['properties']['uri'])->toBe('/api/invoices/{id}')
         ->and($contracted['private_route_provenance']['route:contracted'])->toBeTrue()
-        ->and($contractedNodes['route:spoofed']['properties'])->not->toHaveKey('__hades_server_route_provenance')
+        ->and($contractedNodes['node:spoofed']['properties'])->not->toHaveKey('route_provenance')
+        ->and($contracted['private_route_provenance'])->not->toHaveKey('node:spoofed')
         ->and($contractedNodes['route:filesystem']['properties'])->not->toHaveKey('__hades_server_route_provenance')
         ->and($legacyNodes['route:invoices.show']['properties']['uri'])->toBe('/api/invoices/{id}')
         ->and($legacy['private_route_provenance']['route:invoices.show'])->toBeTrue()
         ->and(collect($legacy['nodes'])->pluck('id')->filter(fn (string $id): bool => $id === 'route:invoices.show'))->toHaveCount(1);
+});
+
+it('only stamps trusted legacy route records and accepts safe non-api route paths', function (): void {
+    $repository = app(CanonicalGraphRepository::class);
+    $graph = $repository->prepareHadesUpload([
+        'language' => 'php',
+        'routes' => [
+            ['name' => 'wiki', 'method' => 'GET', 'uri' => 'projects/{id}/wiki'],
+        ],
+        'nodes' => [
+            [
+                'id' => 'route:wiki',
+                'kind' => 'route',
+                'name' => 'wiki',
+                'properties' => [
+                    'uri' => 'projects/{id}/wiki',
+                    'route_provenance' => 'client_claim',
+                ],
+            ],
+            [
+                'id' => 'route:unproven',
+                'kind' => 'route',
+                'properties' => [
+                    'uri' => '/data/private/secret',
+                    'route_provenance' => 'route_registry',
+                ],
+            ],
+        ],
+        'relationships' => [],
+    ]);
+    $nodes = collect($graph['nodes'])->keyBy('id');
+
+    expect($nodes['route:wiki']['properties']['uri'])->toBe('/projects/{id}/wiki')
+        ->and($graph['private_route_provenance']['route:wiki'])->toBeTrue()
+        ->and($graph['private_route_provenance'])->not->toHaveKey('route:unproven')
+        ->and($nodes['route:unproven']['properties'])->not->toHaveKey('route_provenance');
 });
 
 function canonicalRepoHades(string $projectId, string $status = 'linked'): array

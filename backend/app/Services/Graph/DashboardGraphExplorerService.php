@@ -87,12 +87,19 @@ final class DashboardGraphExplorerService
             .' OR public_search_path:'.$this->luceneTerm($normalisedQuery).')';
         $publicRows = [];
         $hasMore = false;
+        $publicRowsHaveExtra = false;
         $scanScore = $cursorScore;
         $scanHandle = $cursorHandle;
         $scanned = 0;
         $scanCeiling = max(1000, $boundedLimit * 10);
+        $lastProcessedScore = null;
+        $lastProcessedHandle = null;
         while ($scanned < $scanCeiling) {
-            $fetchLimit = min($boundedLimit + 1, $scanCeiling - $scanned);
+            $remaining = $scanCeiling - $scanned;
+            $isFinalBatch = $remaining <= $boundedLimit + 1;
+            $fetchLimit = $isFinalBatch
+                ? $remaining + 1
+                : min($boundedLimit + 1, $remaining);
             $cursorPredicate = $scanScore === null
                 ? ''
                 : ' AND (score < $cursor_score OR (score = $cursor_score AND node.public_handle > $cursor_handle))';
@@ -145,8 +152,17 @@ final class DashboardGraphExplorerService
                 break;
             }
 
-            $scanned += count($rows);
-            foreach ($rows as $row) {
+            $hasRawLookahead = $isFinalBatch && count($rows) > $remaining;
+            $processedRows = $hasRawLookahead ? array_slice($rows, 0, $remaining) : $rows;
+            $boundaryAdvanced = false;
+            $scanned += count($processedRows);
+            foreach ($processedRows as $row) {
+                $rawHandle = $row['node']['public_handle'] ?? null;
+                if (is_string($rawHandle) && $this->publicHandles->isWellFormed($rawHandle)) {
+                    $lastProcessedScore = (float) ($row['score'] ?? 0);
+                    $lastProcessedHandle = $rawHandle;
+                    $boundaryAdvanced = true;
+                }
                 if (! is_array($row['node'] ?? null)) {
                     continue;
                 }
@@ -155,10 +171,17 @@ final class DashboardGraphExplorerService
                     $publicRows[] = ['item' => $item, 'row' => $row];
                 }
             }
-            $lastRow = $rows[array_key_last($rows)];
-            $scanScore = (float) ($lastRow['score'] ?? 0);
-            $scanHandle = (string) ($lastRow['node']['public_handle'] ?? '');
+            if (! $boundaryAdvanced) {
+                break;
+            }
+            $scanScore = $lastProcessedScore;
+            $scanHandle = $lastProcessedHandle;
             if (count($publicRows) > $boundedLimit) {
+                $hasMore = true;
+                $publicRowsHaveExtra = true;
+                break;
+            }
+            if ($hasRawLookahead) {
                 $hasMore = true;
                 break;
             }
@@ -166,23 +189,30 @@ final class DashboardGraphExplorerService
                 break;
             }
         }
-        if ($scanned >= $scanCeiling && $publicRows !== []) {
-            $hasMore = true;
-        }
         $pageRows = array_slice($publicRows, 0, $boundedLimit);
         $items = array_column($pageRows, 'item');
         $nextCursor = null;
-        if ($hasMore && $items !== []) {
-            $last = $items[array_key_last($items)];
-            $nextCursor = $this->cursors->encode(
-                $projectId,
-                $scopeType,
-                $scopeId,
-                $activeGraphVersion,
-                'search',
-                $normalisedQuery,
-                sprintf('%.17g|%s', (float) ($last['score'] ?? 0), $last['handle']),
-            );
+        if ($hasMore) {
+            $last = $publicRowsHaveExtra ? ($items[array_key_last($items)] ?? null) : null;
+            $nextScore = is_array($last) && is_numeric($last['score'] ?? null)
+                ? (float) $last['score']
+                : $lastProcessedScore;
+            $nextHandle = is_array($last) && is_string($last['handle'] ?? null)
+                ? $last['handle']
+                : $lastProcessedHandle;
+            if ($nextScore === null || ! is_string($nextHandle) || ! $this->publicHandles->isWellFormed($nextHandle)) {
+                $hasMore = false;
+            } else {
+                $nextCursor = $this->cursors->encode(
+                    $projectId,
+                    $scopeType,
+                    $scopeId,
+                    $activeGraphVersion,
+                    'search',
+                    $normalisedQuery,
+                    sprintf('%.17g|%s', $nextScore, $nextHandle),
+                );
+            }
         }
 
         return [
@@ -600,7 +630,7 @@ final class DashboardGraphExplorerService
             'reason' => null,
             'node' => [
                 'handle' => (string) ($node['public_handle'] ?? $handle),
-                'kind' => (string) ($node['kind'] ?? 'unknown'),
+                'kind' => $this->publicKind($node['kind'] ?? null),
                 'label' => is_string($node['public_search_label'] ?? null)
                     ? $this->safePublicSearchValue($node['public_search_label'])
                     : null,
@@ -724,7 +754,7 @@ final class DashboardGraphExplorerService
 
         return [
             'handle' => $handle,
-            'kind' => (string) ($node['kind'] ?? 'unknown'),
+            'kind' => $this->publicKind($node['kind'] ?? null),
             'label' => is_string($properties['public_search_label'] ?? null)
                 ? $this->safePublicSearchValue($properties['public_search_label'])
                 : null,
@@ -868,7 +898,7 @@ final class DashboardGraphExplorerService
 
         $item = [
             'handle' => $handle,
-            'kind' => (string) ($node['kind'] ?? 'unknown'),
+            'kind' => $this->publicKind($node['kind'] ?? null),
             'label' => $label,
         ];
         if (is_numeric($score)) {
@@ -876,6 +906,25 @@ final class DashboardGraphExplorerService
         }
 
         return $item;
+    }
+
+    private function publicKind(mixed $value): string
+    {
+        if (! is_string($value)) {
+            return 'unknown';
+        }
+
+        return match (strtolower(trim($value))) {
+            'route', 'http_endpoint', 'httpendpoint', 'endpoint' => 'route',
+            'file' => 'file',
+            'module', 'namespace', 'package' => 'module',
+            'class', 'interface', 'trait', 'enum' => 'class',
+            'function' => 'function',
+            'method' => 'method',
+            'model' => 'model',
+            'service' => 'service',
+            default => 'unknown',
+        };
     }
 
     private function safePublicSearchValue(string $value): ?string

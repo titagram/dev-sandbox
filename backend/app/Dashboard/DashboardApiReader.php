@@ -806,14 +806,14 @@ final class DashboardApiReader
         $nodes = array_values(array_filter($graph['nodes'] ?? [], 'is_array'));
         $relationships = $this->graphRelationships($graph['relationships'] ?? []);
         $degreeByNode = $this->graphDegrees($relationships);
-        $privateRouteProvenance = is_array($graph['private_route_provenance'] ?? null)
+        $trustedProducerRouteProvenance = is_array($graph['private_route_provenance'] ?? null)
             ? $graph['private_route_provenance']
             : [];
         $privateIdentityTokens = $this->graphPrivateIdentityTokenMap(
             $nodes,
             is_array($graph['private_identity_provenance'] ?? null) ? $graph['private_identity_provenance'] : [],
         );
-        $nodeStats = $this->graphNodeStats($nodes, $privateIdentityTokens, false, $privateRouteProvenance);
+        $nodeStats = $this->graphNodeStats($nodes, $privateIdentityTokens, false, $trustedProducerRouteProvenance);
         $previewNodes = $this->graphPreviewNodes($nodes, $relationships, null);
         $graphNodes = array_map(
             fn (array $node): array => $this->graphNode(
@@ -826,7 +826,7 @@ final class DashboardApiReader
                 (string) $scope['source_scope_id'],
                 $activeGraphVersion,
                 'canonical_graph',
-                isset($privateRouteProvenance[$this->graphNodeId($node)]),
+                isset($trustedProducerRouteProvenance[$this->graphNodeId($node)]),
             ),
             $previewNodes,
         );
@@ -2204,7 +2204,7 @@ final class DashboardApiReader
         ?string $scopeId = null,
         ?string $activeGraphVersion = null,
         string $sourceType = 'local_analyzer',
-        bool $serverOwnedRoute = false,
+        bool $trustedProducerRoute = false,
     ): array
     {
         $id = $this->graphNodeId($node);
@@ -2226,7 +2226,7 @@ final class DashboardApiReader
 
         $result = [
             'id' => $id,
-            'label' => $this->graphNodePublicLabel($node, $kind, $privateIdentityTokens, $serverOwnedRoute),
+            'label' => $this->graphNodePublicLabel($node, $kind, $privateIdentityTokens, $trustedProducerRoute),
             'kind' => $kind,
             'repository' => $repository,
             'degree' => $degreeByNode[$id] ?? 0,
@@ -2272,7 +2272,9 @@ final class DashboardApiReader
             }
             $node = $this->sanitizeGraphPreviewValue($node);
             if ($publicLabel !== null
-                && (($node['kind'] ?? null) !== 'route' || $this->isGraphRoutePath($publicLabel))) {
+                && (($node['kind'] ?? null) !== 'route'
+                    || $this->isGraphRoutePath($publicLabel)
+                    || $this->isGraphHttpRouteLabel($publicLabel))) {
                 $node['label'] = $publicLabel;
             } else {
                 unset($node['label']);
@@ -2569,7 +2571,7 @@ final class DashboardApiReader
      * @param  list<mixed>  $nodes
      * @return array{modules: int, routes: int}
      */
-    private function graphNodeStats(array $nodes, array $privateIdentityTokens = [], bool $serverOwnedRoutes = false, array $privateRouteProvenance = []): array
+    private function graphNodeStats(array $nodes, array $privateIdentityTokens = [], bool $trustedProducerRoutes = false, array $trustedProducerRouteProvenance = []): array
     {
         $stats = [
             'modules' => 0,
@@ -2602,7 +2604,7 @@ final class DashboardApiReader
                 $node,
                 $semanticKind,
                 $privateIdentityTokens[$this->graphNodeId($node)] ?? [],
-                $serverOwnedRoutes || isset($privateRouteProvenance[$this->graphNodeId($node)]),
+                $trustedProducerRoutes || isset($trustedProducerRouteProvenance[$this->graphNodeId($node)]),
             );
             if ($label === null) {
                 $stats['missing_label_count']++;
@@ -2701,7 +2703,7 @@ final class DashboardApiReader
      * @param  array<string, mixed>  $node
      * @param  array<string, true>  $privateIdentityTokens
      */
-    private function graphNodePublicLabel(array $node, string $kind, array $privateIdentityTokens, bool $serverOwnedRoute = false): ?string
+    private function graphNodePublicLabel(array $node, string $kind, array $privateIdentityTokens, bool $trustedProducerRoute = false): ?string
     {
         $policy = self::GRAPH_PREVIEW_NODE_POLICY[$kind] ?? null;
         if ($policy === null) {
@@ -2711,7 +2713,7 @@ final class DashboardApiReader
 
         $label = null;
         if ($kind === 'route') {
-            $label = $this->graphRouteLabel($properties, $policy['label_fields'], $serverOwnedRoute);
+            $label = $this->graphRouteLabel($properties, $policy['label_fields'], $trustedProducerRoute);
         } else {
             foreach ($policy['label_fields'] as $field) {
                 $value = $properties[$field] ?? null;
@@ -2898,9 +2900,9 @@ final class DashboardApiReader
      * @param  array<string, mixed>  $properties
      * @param  list<string>  $labelFields
      */
-    private function graphRouteLabel(array $properties, array $labelFields, bool $serverOwnedRoute = false): ?string
+    private function graphRouteLabel(array $properties, array $labelFields, bool $trustedProducerRoute = false): ?string
     {
-        if (! $serverOwnedRoute) {
+        if (! $trustedProducerRoute) {
             return null;
         }
         foreach ($labelFields as $field) {
@@ -2938,19 +2940,16 @@ final class DashboardApiReader
 
     private function isGraphRoutePath(string $value): bool
     {
-        if (strlen($value) > 512
-            || preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) !== 1) {
-            return false;
-        }
-        $segments = array_values(array_filter(explode('/', trim($value, '/')), static fn (string $segment): bool => $segment !== ''));
-        $root = strtolower((string) ($segments[0] ?? ''));
-
-        return $root === 'api' || $root === '.well-known' || count($segments) === 1;
+        return strlen($value) <= 512
+            && preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) === 1
+            && preg_match('/(?:\A|\/)[^\/{}?*]+\.(?:php|phar|inc|phtml|ts|tsx|js|jsx|mjs|cjs|py|rb|go|java|kt|kts|rs|c|cc|cpp|h|hpp|swift|dart|vue|svelte|sql|yaml|yml|json|xml|toml|ini|env)(?:\/|\z)/i', $value) !== 1
+            && ! str_contains($value, '\\')
+            && stripos($value, 'file://') === false;
     }
 
     private function isValidGraphFqcn(string $value): bool
     {
-        return preg_match('/\A\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+\z/D', $value) === 1;
+        return preg_match('/\A\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)+\z/D', $value) === 1;
     }
 
     private function graphFileLabel(string $value): ?string
@@ -2971,7 +2970,8 @@ final class DashboardApiReader
         $value = trim($value);
 
         return strlen($value) <= 200
-            && preg_match('/\A[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\\\\|::|\.)[A-Za-z_$][A-Za-z0-9_$]*)*\z/', $value) === 1
+            && ($this->isValidGraphFqcn($value)
+                || preg_match('/\A[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\\\\|::|\.)[A-Za-z_$][A-Za-z0-9_$]*)*\z/', $value) === 1)
                 ? $value
                 : null;
     }

@@ -602,7 +602,21 @@ it('does not restore unsafe canonical route labels after preview sanitization', 
         'labels' => ['Route'],
         'properties' => ['kind' => 'route', 'path' => '/.well-known/openid-configuration', 'route_provenance' => 'route_registry'],
     ];
-    createDashboardCanonicalHadesGraph($ids['project_id'], null, $nodes);
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    $artifactId = DB::table('hades_agent_artifacts')
+        ->where('workspace_binding_id', $canonical['binding_id'])
+        ->value('id');
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode([
+            'language' => 'php',
+            'routes' => [
+                ['name' => 'api', 'method' => 'GET', 'uri' => 'api/invoices/{id}'],
+                ['name' => 'well-known', 'method' => 'GET', 'uri' => '.well-known/openid-configuration'],
+            ],
+            'nodes' => $nodes,
+            'relationships' => [],
+        ], JSON_THROW_ON_ERROR),
+    ]);
 
     $response = $this->actingAs($admin)
         ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
@@ -618,6 +632,74 @@ it('does not restore unsafe canonical route labels after preview sanitization', 
         ->not->toContain('file:///srv/private/Foo.php')
         ->not->toContain('source=C:\\Foo.php')
         ->and($labels->intersect($unsafe))->toBeEmpty();
+});
+
+it('shows trusted non-api multi-segment routes and hides untrusted canonical paths', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    $artifactId = DB::table('hades_agent_artifacts')
+        ->where('workspace_binding_id', $canonical['binding_id'])
+        ->value('id');
+    $payload = [
+        'language' => 'php',
+        'routes' => [
+            ['name' => 'wiki', 'method' => 'GET', 'uri' => 'projects/{id}/wiki'],
+        ],
+        'nodes' => [
+            [
+                'id' => 'route:wiki',
+                'kind' => 'route',
+                'properties' => ['uri' => 'projects/{id}/wiki', 'route_provenance' => 'client_claim'],
+            ],
+            [
+                'id' => 'route:unproven-wiki',
+                'kind' => 'route',
+                'properties' => ['uri' => '/projects/{id}/wiki', 'route_provenance' => 'client_claim'],
+            ],
+        ],
+        'relationships' => [],
+    ];
+    DB::table('hades_agent_artifacts')->where('id', $artifactId)->update([
+        'artifact' => json_encode($payload, JSON_THROW_ON_ERROR),
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+    $labels = collect($response['nodes'])->pluck('label');
+
+    expect($labels)->toContain('/projects/{id}/wiki')
+        ->and($labels->filter(fn (mixed $label): bool => $label === '/projects/{id}/wiki'))->toHaveCount(1);
+});
+
+it('publishes a leading-root PHP FQCN in the canonical graph preview', function (): void {
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
+    createDashboardCanonicalHadesGraph($ids['project_id'], null, [
+        [
+            'id' => 'class:rooted-fqcn',
+            'labels' => ['Class'],
+            'properties' => ['kind' => 'class', 'name' => '\\App\\Services\\InvoiceService'],
+        ],
+        [
+            'id' => 'class:windows-path',
+            'labels' => ['Class'],
+            'properties' => ['kind' => 'class', 'name' => 'C:\\workspace\\Foo.php'],
+        ],
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->json();
+    $labels = collect($response['nodes'])->pluck('label');
+
+    expect($labels)->toContain('\\App\\Services\\InvoiceService')
+        ->and($labels)->not->toContain('C:\\workspace\\Foo.php');
 });
 
 it('fails closed for conflicting graph node semantics independent of producer label order', function () {

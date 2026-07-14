@@ -569,6 +569,235 @@ it('does not let invalid public rows consume a bounded search page', function ()
         ->and($nextPage['items'][0]['handle'])->not->toBe($page['items'][0]['handle']);
 });
 
+it('maps every explorer node output through a closed public kind vocabulary', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $maliciousKind = '/srv/private/Foo.php';
+    $technicalKind = 'hades-public-v1-node-secret';
+    $makeHandle = static fn (string $externalId): string => (new DashboardGraphPublicHandle)->forNode(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['active_graph_version'],
+        $externalId,
+    );
+
+    $fixture['client']->searchRows = [[
+        'node' => [
+            'external_id' => 'method:search-kind',
+            'public_handle' => $makeHandle('method:search-kind'),
+            'kind' => $maliciousKind,
+            'public_search_label' => 'Search kind',
+        ],
+        'labels' => ['Method'],
+        'score' => 1.0,
+    ]];
+    $search = $fixture['service']->search(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Search kind', 10,
+    );
+
+    $fixture['client']->directNodeKind = $technicalKind;
+    $detail = $fixture['service']->detail(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
+    );
+
+    $fixture['client']->neighborhoodRows = [[
+        'source_id' => 'method:InvoiceService::charge',
+        'node' => [
+            'external_id' => 'method:neighborhood-kind',
+            'public_handle' => $makeHandle('method:neighborhood-kind'),
+            'kind' => $maliciousKind,
+            'public_search_label' => 'Neighborhood kind',
+        ],
+        'labels' => ['Method'],
+    ]];
+    $neighborhood = $fixture['service']->neighborhood(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 'out', 2, 10,
+    );
+
+    $fixture['client']->pathRows = [[
+        'nodes' => [
+            ['node' => ['external_id' => 'method:InvoiceService::charge', 'public_handle' => $fixture['handle'], 'kind' => 'method', 'public_search_label' => 'Root'], 'labels' => ['Method']],
+            ['node' => ['external_id' => 'method:path-kind', 'public_handle' => $makeHandle('method:path-kind'), 'kind' => $technicalKind, 'public_search_label' => 'Path kind'], 'labels' => ['Method']],
+        ],
+        'edges' => [],
+    ]];
+    $path = $fixture['service']->path(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], $fixture['handle'], 2, 10,
+    );
+
+    $fixture['client']->impactRows = [[
+        'node' => [
+            'external_id' => 'method:impact-kind',
+            'public_handle' => $makeHandle('method:impact-kind'),
+            'kind' => $maliciousKind,
+            'public_search_label' => 'Impact kind',
+        ],
+        'labels' => ['Method'],
+        'distance' => 1,
+        'edge_types' => ['CALLS_METHOD'],
+    ]];
+    $impact = $fixture['service']->impact(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
+    );
+
+    $response = [$search, $detail, $neighborhood, $path, $impact];
+    expect($search['items'][0]['kind'])->toBe('unknown')
+        ->and($detail['node']['kind'])->toBe('unknown')
+        ->and($neighborhood['items'][0]['kind'])->toBe('unknown')
+        ->and($path['items'][1]['kind'])->toBe('unknown')
+        ->and($impact['items'][0]['kind'])->toBe('unknown')
+        ->and(json_encode($response, JSON_THROW_ON_ERROR))
+        ->not->toContain($maliciousKind)
+        ->not->toContain($technicalKind);
+});
+
+it('retains recognized method and service kinds in explorer responses', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $fixture['client']->searchRows = [[
+        'node' => [
+            'external_id' => 'service:known',
+            'public_handle' => (new DashboardGraphPublicHandle)->forNode(
+                $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['active_graph_version'], 'service:known',
+            ),
+            'kind' => 'service',
+            'public_search_label' => 'Known service',
+        ],
+        'labels' => ['Service'],
+        'score' => 1.0,
+    ]];
+    $search = $fixture['service']->search(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Known service', 10,
+    );
+    $fixture['client']->directNodeKind = 'method';
+    $detail = $fixture['service']->detail(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 10,
+    );
+
+    expect($search['items'][0]['kind'])->toBe('service')
+        ->and($detail['node']['kind'])->toBe('method');
+});
+
+it('proves exact exhaustion at the bounded raw search ceiling', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $makeInvalidRow = static function (int $index) use ($fixture): array {
+        $externalId = 'method:ceiling-invalid-'.$index;
+
+        return [
+            'node' => [
+                'external_id' => $externalId,
+                'public_handle' => (new DashboardGraphPublicHandle)->forNode(
+                    $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['active_graph_version'], $externalId,
+                ),
+                'kind' => 'method',
+                'public_search_label' => 'hades-public-v1-invalid',
+            ],
+            'labels' => ['Method'],
+            'score' => 1.0 - ($index / 100000),
+        ];
+    };
+    $fixture['client']->searchRowBatches = [];
+    for ($index = 0; $index < 500; $index++) {
+        $fixture['client']->searchRowBatches[] = [$makeInvalidRow($index * 2), $makeInvalidRow($index * 2 + 1)];
+    }
+
+    $response = $fixture['service']->search(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Invoice Service', 1,
+    );
+
+    expect($response['items'])->toBe([])
+        ->and($response['has_more'])->toBeFalse()
+        ->and($response['next_cursor'])->toBeNull();
+});
+
+it('continues past 1000 invalid raw rows with a one-row lookahead', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $makeRow = static function (string $externalId, string $label, float $score) use ($fixture): array {
+        return [
+            'node' => [
+                'external_id' => $externalId,
+                'public_handle' => (new DashboardGraphPublicHandle)->forNode(
+                    $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['active_graph_version'], $externalId,
+                ),
+                'kind' => 'method',
+                'public_search_label' => $label,
+            ],
+            'labels' => ['Method'],
+            'score' => $score,
+        ];
+    };
+    $fixture['client']->searchRowBatches = [];
+    for ($index = 0; $index < 499; $index++) {
+        $fixture['client']->searchRowBatches[] = [
+            $makeRow('method:ceiling-invalid-'.$index.'-a', 'hades-public-v1-invalid', 1.0 - (($index * 2) / 100000)),
+            $makeRow('method:ceiling-invalid-'.$index.'-b', 'hades-public-v1-invalid', 1.0 - (($index * 2 + 1) / 100000)),
+        ];
+    }
+    $lastInvalidA = $makeRow('method:ceiling-invalid-998', 'hades-public-v1-invalid', 0.001);
+    $lastInvalidB = $makeRow('method:ceiling-invalid-999', 'hades-public-v1-invalid', 0.0009);
+    $valid = $makeRow('method:beyond-ceiling', 'Beyond ceiling', 0.0008);
+    $fixture['client']->searchRowBatches[] = [$lastInvalidA, $lastInvalidB, $valid];
+    $fixture['client']->searchRowBatches[] = [$valid];
+
+    $firstPage = $fixture['service']->search(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Invoice Service', 1,
+    );
+    $secondPage = $fixture['service']->search(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Invoice Service', 1, $firstPage['next_cursor'],
+    );
+
+    expect($firstPage['items'])->toBe([])
+        ->and($firstPage['has_more'])->toBeTrue()
+        ->and($firstPage['next_cursor'])->not->toBeNull()
+        ->and($secondPage['items'][0]['label'])->toBe('Beyond ceiling')
+        ->and(json_encode([$firstPage, $secondPage], JSON_THROW_ON_ERROR))
+        ->not->toContain('method:beyond-ceiling');
+});
+
+it('uses the final processed raw boundary when a partial public page is truncated', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $makeRow = static function (string $externalId, string $label, float $score) use ($fixture): array {
+        return [
+            'node' => [
+                'external_id' => $externalId,
+                'public_handle' => (new DashboardGraphPublicHandle)->forNode(
+                    $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['active_graph_version'], $externalId,
+                ),
+                'kind' => 'method',
+                'public_search_label' => $label,
+            ],
+            'labels' => ['Method'],
+            'score' => $score,
+        ];
+    };
+    $fixture['client']->searchRowBatches = [];
+    for ($index = 0; $index < 499; $index++) {
+        $fixture['client']->searchRowBatches[] = [
+            $makeRow('method:partial-invalid-'.$index.'-a', 'hades-public-v1-invalid', 1.0 - (($index * 2) / 100000)),
+            $makeRow('method:partial-invalid-'.$index.'-b', 'hades-public-v1-invalid', 1.0 - (($index * 2 + 1) / 100000)),
+        ];
+    }
+    $public = $makeRow('method:partial-public', 'Partial public', 0.001);
+    $lastProcessedInvalid = $makeRow('method:partial-invalid-final', 'hades-public-v1-invalid', 0.0009);
+    $lookahead = $makeRow('method:partial-invalid-lookahead', 'hades-public-v1-invalid', 0.0008);
+    $next = $makeRow('method:partial-next', 'Partial next', 0.0007);
+    $fixture['client']->searchRowBatches[] = [$public, $lastProcessedInvalid, $lookahead];
+    $fixture['client']->searchRowBatches[] = [$next];
+
+    $firstPage = $fixture['service']->search(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Invoice Service', 1,
+    );
+    $cursor = (new DashboardGraphExplorerCursor)->decode($firstPage['next_cursor']);
+    $secondPage = $fixture['service']->search(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], 'Invoice Service', 1, $firstPage['next_cursor'],
+    );
+
+    [$cursorScore] = explode('|', $cursor['sort_key'], 2);
+    expect($firstPage['items'][0]['label'])->toBe('Partial public')
+        ->and((float) $cursorScore)->toBe(0.0009)
+        ->and($secondPage['items'][0]['label'])->toBe('Partial next')
+        ->and($secondPage['items'][0]['handle'])->not->toBe($firstPage['items'][0]['handle']);
+});
+
 it('lists project scopes in stable order with limit-plus-one cursors', function (): void {
     $fixture = dashboardGraphExplorerFixture();
     $repositoryId = (string) DB::table('repositories')->where('project_id', $fixture['project_id'])->value('id');
@@ -1096,6 +1325,7 @@ function dashboardGraphExplorerFixture(): array
         /** @var list<array{cypher:string,params:array<string,mixed>}> */
         public array $commands = [];
         public string $storedKeyFingerprint;
+        public string $directNodeKind = 'method';
         /** @var list<float> */
         public array $searchScores = [0.9, 0.9, 0.7];
         /** @var list<array<string,mixed>>|null */
@@ -1268,7 +1498,7 @@ function dashboardGraphExplorerFixture(): array
 
             if (str_contains($cypher, 'db.index.fulltext.queryNodes')) {
                 if ($this->searchRowBatches !== []) {
-                    return array_shift($this->searchRowBatches);
+                    return array_slice(array_shift($this->searchRowBatches), 0, (int) ($parameters['fetch_limit'] ?? PHP_INT_MAX));
                 }
                 if ($this->searchRows !== null) {
                     return $this->searchRows;
@@ -1315,7 +1545,7 @@ function dashboardGraphExplorerFixture(): array
                     'node' => [
                         'external_id' => 'method:InvoiceService::charge',
                         'public_handle' => $this->handle,
-                        'kind' => 'method',
+                        'kind' => $this->directNodeKind,
                         'public_search_label' => 'InvoiceService::charge',
                         'path' => '/srv/private/InvoiceService.php',
                     ],

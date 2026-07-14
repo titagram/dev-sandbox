@@ -2606,3 +2606,40 @@ Operational rule: before project writes, record intended paths here, then follow
 - Request: extend the private projector sanitizer to common absolute local roots `/root`, `/etc`, `/mnt`, `/Volumes`, `/app` and relative source paths such as `backend/app/Foo.php` and `src/Foo.ts`, while preserving `/api/invoices/{id}` and `/.well-known/openid-configuration`.
 - TDD evidence: the new focused RED failed on `/root/Secret.php`; the minimal guard extension then passed all requested absolute-root, relative-source, and route-preservation assertions.
 - Verification: follow-up focused graph gate passed 90 of 93 tests with 3 environment skips and 567 assertions. Broad Task 2 gate passed 117 of 119 tests with 2 existing Neo4j smoke skips and 1,119 assertions. PHP lint and `git diff --check` passed; Pest temporary results were restored. No commit or push was performed.
+
+### 2026-07-14 — Task 2 A34 final-review fixes
+
+- Scope: structural PHP FQCN/filesystem identity classification, canonical dashboard route-preview provenance, contracted/legacy repository route normalization, and bounded search pagination after public filtering. No commit, push, deploy, database, container, or live-graph mutation.
+- RED evidence before production edits: FQCN 1 test/1 assertion; preview route restoration 1/9; repository provenance 1/1; filtered search pagination 1/1.
+- GREEN evidence: focused A34 tests passed 4/4 with 46 assertions. Valid `App\\Services\\InvoiceService`, `Domain\\Billing\\ChargeInvoice`, and leading-root namespace values survive; Windows drive/UNC/device, dot/parent-relative, embedded, and source-tree path identities are rejected.
+- Route hardening: preview no longer restores a recursively redacted label. Repository normalization stamps private trusted-producer route provenance for contracted and legacy graphs, including pre-existing legacy route IDs, normalizes route URIs without a leading slash, and strips producer-supplied allowlist claims. Projector and canonical preview consume the private marker, not raw `source`/`route_provenance` strings.
+- Pagination hardening: search scans only capped `boundedLimit + 1` batches up to a hard ceiling, applies cursor boundaries to each batch, and counts only public rows toward the page/extra-row contract.
+- Final focused Task 2 gate: 284 tests, 281 passed, 3 skipped, 2,370 assertions. Isolated DeltaSync: 20/20 passed, 143 assertions. Broad backend: 958 tests, 942 passed, 8 skipped, 7 failures plus 1 error; remaining failures are known missing Neo4j credentials, two legacy Hades 404s, and the existing test-storage directory error. Live acceptance remained disabled/skipped without explicit fixture variables. PHP lint, `git diff --check`, and Pest temp-artifact restoration passed.
+
+### 2026-07-14 — A34 route provenance discriminator follow-up
+
+- Strict TDD added a repository RED for the inverted route policy: the untrusted legacy `/data/private/secret` route was stamped while the trusted non-API `/projects/{id}/wiki` route was rejected. RED evidence: 1 test, 1 assertion.
+- Renamed the policy state to `trustedProducerRoute`; `normalizedRouteUri()` now returns `null` without trusted producer-derived provenance and accepts any syntactically safe trusted route after normalization. Client-supplied `route_provenance` remains non-authoritative and is removed.
+- GREEN evidence: the new and existing route provenance tests passed 2 tests / 12 assertions; the full repository feature file passed 16 tests / 68 assertions; projection/dashboard consumers passed 63 tests / 746 assertions.
+- Final focused Task 2 graph gate passed 284 tests, 281 passed, 3 skipped, 2,370 assertions. No commit, push, deploy, database, container, or live-graph mutation was performed. PHP lint, `git diff --check`, and Pest temp-artifact restoration were completed.
+
+### 2026-07-14 — A34 trusted multi-segment route consumer follow-up
+
+- Strict TDD added projection and dashboard-preview REDs for trusted `/projects/{id}/wiki` versus an untrusted route with the same path. Both failed before the consumer changes: projector public path was null and preview omitted the trusted route (2 tests / 3 assertions).
+- Removed only the finite `api`/`.well-known`/single-segment restrictions. Projector structural filesystem checks and `private_route_provenance` authorization remain; dashboard retains route syntax, extension, backslash, and file-URI checks plus the trusted-producer gate.
+- Corrected the older dashboard fixture so ambiguous extensionless paths are legacy/unproven unless backend route records validate them; raw producer provenance claims remain insufficient.
+- GREEN evidence: new tests 2/2 with 5 assertions; projection/dashboard suites 65/65 with 751 assertions; focused Task 2 graph gate 286 tests, 283 passed, 3 skipped, 2,375 assertions. No commit, push, deploy, database, container, or live-graph mutation was performed.
+
+### 2026-07-14 — A35 final-review blockers
+
+- Public kind privacy: added RED coverage across Explorer search, detail, neighborhood, path, and impact for filesystem-shaped and `hades-public-*` kinds, with method/service controls. A single closed `publicKind()` mapper now emits only the preview vocabulary or `unknown`; raw producer kind text is not returned.
+- Pagination ceiling: search uses one raw lookahead row on the final bounded batch, tracks the last processed well-formed public handle/score, and signs that raw boundary when no extra public row exists. Exact exhaustion reports no continuation; rows beyond the ceiling remain reachable without exposing external IDs.
+- Leading-root FQCN: dashboard preview now accepts the same optional-leading-backslash PHP FQCN grammar as projector output while rejecting Windows/source-path forms.
+- Route trust terminology: local route state/comments now describe trusted producer-derived semantics. An accepted `graph_contract` is a producer trust boundary, not independent verification of every route; `private_route_provenance` compatibility and existing gates remain intact.
+- TDD/verification: A35 RED was 4 failing tests / 12 assertions; focused GREEN 6/6 with 24 assertions; Explorer 36/36 with 295 assertions; projection/repository/dashboard 82/82 with 822 assertions; complete Task 2 gate 292 tests, 289 passed, 3 skipped, 2,399 assertions. PHP lint, `git diff --check`, and parent-artifact restoration completed. No commit, push, deploy, database, container, destructive, or live-graph mutation.
+
+### 2026-07-14 — A35 terminology-only follow-up
+
+- Renamed downstream route locals/parameters and test titles from server-owned/server-verified wording to `trustedProducerRouteProvenance`, `trustedProducerRoute`, and trusted-route terminology. Compatibility keys `private_route_provenance` and `__hades_server_route_provenance` remain unchanged.
+- Clarified that accepted `graph_contract` semantics are trusted producer-derived, not independently route-verified. Fixed the mis-indented Explorer fake-client conditional; no behavior changes were made.
+- Focused Explorer/projection/dashboard gate: 102 tests, 102 passed, 1,049 assertions. Changed PHP lint, `git diff --check`, and restoration from parent `984a1ad4` passed; parent artifact diff is empty. No commit or push.
