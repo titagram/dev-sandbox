@@ -18,7 +18,9 @@ jest.mock("@/api/devboardApi", () => ({ api: {
 jest.mock("react-router-dom", () => {
   const state = { params: {}, search: new URLSearchParams() };
   const navigate = require("jest-mock").fn();
-  const setSearch = require("jest-mock").fn((next: URLSearchParams) => { state.search = next; });
+  const setSearch = require("jest-mock").fn((next: URLSearchParams | ((current: URLSearchParams) => URLSearchParams)) => {
+    state.search = typeof next === "function" ? next(state.search) : next;
+  });
   return {
     Link: ({ children }: any) => children,
     __state: state,
@@ -38,7 +40,15 @@ jest.mock("@/hooks/useApi", () => {
   } };
 }, { virtual: true });
 jest.mock("@/components/devboard/DataState", () => ({ DataState: ({ state, children }: any) => state.data ? children(state.data) : <div>Loading</div> }), { virtual: true });
-jest.mock("@/components/devboard/GraphExplorer", () => ({ onQueryParamsChange }: any) => <button onClick={() => onQueryParamsChange({ scope_type: "repository", scope_id: "repo-1", symbol: "opaque-symbol" })}>Explorer</button>, { virtual: true });
+jest.mock("@/components/devboard/GraphExplorer", () => {
+  const seen: any[] = [];
+  const Component = (props: any) => {
+    seen.push(props);
+    return <button onClick={() => props.onQueryParamsChange({ scope_type: "repository", scope_id: "repo-1", symbol: "opaque-symbol" })}>Explorer</button>;
+  };
+  (Component as any).__seen = seen;
+  return Component;
+}, { virtual: true });
 jest.mock("@/components/devboard/Badges", () => ({ SourceMetaInline: () => <span>Source</span> }), { virtual: true });
 jest.mock("@/components/devboard/Layout", () => ({
   PageHeader: ({ title }: any) => <header>{title}</header>,
@@ -57,6 +67,7 @@ const mockQueryProjectGraph = api.queryProjectGraph as any;
 const mockNavigate = require("react-router-dom").__navigate as any;
 const mockRouterState = require("react-router-dom").__state as any;
 const mockSetSearch = require("react-router-dom").__setSearch as any;
+const mockGraphExplorerSeen = require("@/components/devboard/GraphExplorer").__seen as any[];
 
 const project = {
   id: "project-1", key: "P1", name: "Project One", description: "", owner: "admin", repository_count: 1,
@@ -89,6 +100,7 @@ describe("GraphPage global project selection", () => {
     mockSetSearch.mockClear();
     mockRouterState.params = {};
     mockRouterState.search = new URLSearchParams();
+    mockGraphExplorerSeen.splice(0);
   });
   afterEach(() => { act(() => root.unmount()); container.remove(); });
 
@@ -120,10 +132,23 @@ describe("GraphPage global project selection", () => {
     await settle();
     const explorer = Array.from(container.querySelectorAll("button")).find((item) => item.textContent === "Explorer");
     await act(async () => { explorer?.click(); });
-    const next = mockSetSearch.mock.calls[0][0] as URLSearchParams;
+    const next = mockRouterState.search as URLSearchParams;
     expect(next.get("run_id")).toBe("run-7");
     expect(next.get("scope_type")).toBe("repository");
     expect(next.get("scope_id")).toBe("repo-1");
     expect(next.get("symbol")).toBe("opaque-symbol");
+  });
+
+  it("keeps GraphExplorer callbacks stable across a same-project URL rerender", async () => {
+    mockRouterState.params = { projectId: "project-1" };
+    mockRouterState.search = new URLSearchParams("run_id=run-7");
+    await act(async () => { root.render(<GraphPage />); });
+    await settle(); await settle();
+    const first = mockGraphExplorerSeen[mockGraphExplorerSeen.length - 1];
+    await act(async () => { root.render(<GraphPage />); });
+    await settle();
+    const second = mockGraphExplorerSeen[mockGraphExplorerSeen.length - 1];
+    expect(second.queryGraph).toBe(first.queryGraph);
+    expect(second.onQueryParamsChange).toBe(first.onQueryParamsChange);
   });
 });

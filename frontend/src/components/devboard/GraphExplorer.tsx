@@ -163,13 +163,14 @@ export default function GraphExplorer({
     return () => {
       alive.current = false;
       invalidateRequests();
+      initialLoadKey.current = null;
     };
   }, [invalidateRequests]);
 
   const desiredScopeKey = initialScope
     ? scopeKey(initialScope)
     : scopes.length === 1 ? scopeKey(scopes[0]) : "";
-  const contextKey = `${projectId}\u0000${scopes.map(scopeKey).join("\u0000")}`;
+  const contextKey = `${projectId}\u0000${scopes.map(scopeKey).join("\u0000")}\u0000${desiredScopeKey}`;
   const previousContextKey = useRef(contextKey);
 
   useEffect(() => {
@@ -340,6 +341,14 @@ export default function GraphExplorer({
     }
   };
 
+  const selectPathTarget = (handle: string) => {
+    pathGeneration.current += 1;
+    setPathTarget(handle);
+    setPath(null);
+    setPathLoading(false);
+    setPathError(null);
+  };
+
   const loading = searchLoading || detailLoading || pathLoading;
   const error = detailError ?? pathError ?? searchError;
 
@@ -409,7 +418,7 @@ export default function GraphExplorer({
           </div>
           <Panel title="Path">
             <div className="flex flex-wrap gap-2">
-              <select aria-label="Path target" value={pathTarget} onChange={(event) => setPathTarget(event.target.value)} className="rounded border border-input bg-background px-3 py-2">
+              <select aria-label="Path target" value={pathTarget} onChange={(event) => selectPathTarget(event.target.value)} className="rounded border border-input bg-background px-3 py-2">
                 <option value="">Choose target</option>
                 {(search?.items ?? []).filter((item) => item.handle !== selectedHandle).map((item) => <option key={item.handle} value={item.handle} label={item.label ?? item.handle} />)}
               </select>

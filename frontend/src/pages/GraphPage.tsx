@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Boxes } from "lucide-react";
 import { api } from "@/api/devboardApi";
@@ -60,14 +60,20 @@ function ProjectGraphPage({ projectId }: { projectId: string }) {
   const initialSymbol = params.get("symbol") || undefined;
   const graph = useApi(() => api.getGraph(projectId, { runId, snapshotId }), [projectId, runId, snapshotId]);
   const scopes = useApi(() => api.queryProjectGraph(projectId, { type: "scopes", limit: 100 }), [projectId]);
-  const updateQuery = (values: { scope_type?: DashboardGraphScopeType; scope_id?: string; symbol?: string }) => {
-    const next = new URLSearchParams(params);
-    (["scope_type", "scope_id", "symbol"] as const).forEach((key) => {
-      const value = values[key];
-      if (value) next.set(key, value); else next.delete(key);
-    });
-    setParams(next, { replace: true });
-  };
+  const queryGraph = useCallback(
+    (request: Parameters<typeof api.queryProjectGraph>[1]) => api.queryProjectGraph(projectId, request),
+    [projectId],
+  );
+  const updateQuery = useCallback((values: { scope_type?: DashboardGraphScopeType; scope_id?: string; symbol?: string }) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      (["scope_type", "scope_id", "symbol"] as const).forEach((key) => {
+        const value = values[key];
+        if (value) next.set(key, value); else next.delete(key);
+      });
+      return next;
+    }, { replace: true });
+  }, [setParams]);
   return <div className="space-y-5" data-testid="graph-page">
     <PageHeader title="Graph" subtitle="Explore bounded dependencies, callers, impact, and paths in the canonical project graph."
       meta={<Link to={`/projects/${encodeURIComponent(projectId)}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5" />Project {projectId}</Link>} />
@@ -81,7 +87,7 @@ function ProjectGraphPage({ projectId }: { projectId: string }) {
         {overview.quality && <span className="ml-2 text-[11px] text-muted-foreground">· quality {overview.quality}</span>}
       </div>
       <DataState state={scopes}>{(response) => response.query_type === "scopes" ? <GraphExplorer
-        projectId={projectId} scopes={response.items} queryGraph={(request) => api.queryProjectGraph(projectId, request)}
+        projectId={projectId} scopes={response.items} queryGraph={queryGraph}
         projectionUnavailable={overview.projection_status === "unavailable" || response.reason === "graph_projection_not_ready" || response.reason === "graph_scope_not_found"}
         initialScopeType={initialScopeType} initialScopeId={initialScopeId} initialSymbol={initialSymbol} onQueryParamsChange={updateQuery}
         onRetry={() => { graph.reload(); scopes.reload(); }}

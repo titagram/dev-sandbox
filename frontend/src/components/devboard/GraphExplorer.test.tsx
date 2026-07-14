@@ -151,6 +151,32 @@ describe("GraphExplorer", () => {
     await settle();
     expect(queryGraph).toHaveBeenCalledWith(expect.objectContaining({ type: "path", from_handle: handles.invoice, to_handle: handles.target, max_depth: 3, limit: 50 }));
     expect(container.textContent).toContain("Path");
+    const allDataCalls = queryGraph.mock.calls.map(([request]: [DashboardGraphQueryRequest]) => request)
+      .filter((request: DashboardGraphQueryRequest) => request.type !== "scopes");
+    allDataCalls.forEach((request: DashboardGraphQueryRequest) => {
+      expect(request.scope_type).toBe("workspace_binding");
+      expect(request.scope_id).toBe("binding-2");
+      expect(request).not.toHaveProperty("credential");
+      expect(request).not.toHaveProperty("plugin_token");
+      expect(request).not.toHaveProperty("internal");
+      if (request.type !== "search") expect(request).not.toHaveProperty("cursor");
+    });
+  });
+
+  it("loads an initial deep-link exactly once to completion under StrictMode effect replay", async () => {
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => {
+      if (request.type === "detail") return Promise.resolve(detailEnvelope("opaque-deep", "Deep linked symbol"));
+      return Promise.resolve(envelope(request.type));
+    });
+    await act(async () => {
+      root.render(<React.StrictMode><GraphExplorer projectId="project-1" scopes={[scopes[0]]}
+        initialScopeType="repository" initialScopeId="repo-1" initialSymbol="opaque-deep" queryGraph={queryGraph} /></React.StrictMode>);
+      await Promise.resolve();
+    });
+    await settle();
+    expect(container.textContent).toContain("Deep linked symbol");
+    expect(container.textContent).not.toContain("Loading graph");
+    expect(queryGraph.mock.calls.filter(([request]: [DashboardGraphQueryRequest]) => request.type === "detail")).toHaveLength(2);
   });
 
   it("keeps the newest selected symbol when an older detail bundle resolves last and starts neighborhoods in parallel", async () => {
@@ -241,6 +267,54 @@ describe("GraphExplorer", () => {
     await act(async () => { root.render(<GraphExplorer projectId="project-2" scopes={repoTwo} initialScopeType="repository" initialScopeId="repo-2" queryGraph={queryGraph} />); });
     await settle();
     expect(container.textContent).not.toContain("Label opaque-b");
+  });
+
+  it("reconciles a same-project back-forward scope and symbol change with an identical scope list", async () => {
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => request.type === "detail"
+      ? Promise.resolve(detailEnvelope(request.node_handle!, `Label ${request.node_handle}`))
+      : Promise.resolve(envelope(request.type)));
+    await act(async () => { root.render(<GraphExplorer projectId="project-1" scopes={scopes}
+      initialScopeType="repository" initialScopeId="repo-1" initialSymbol="opaque-repo" queryGraph={queryGraph} />); });
+    await settle();
+    expect(container.textContent).toContain("Label opaque-repo");
+    await act(async () => { root.render(<GraphExplorer projectId="project-1" scopes={scopes}
+      initialScopeType="workspace_binding" initialScopeId="binding-2" initialSymbol="opaque-workspace" queryGraph={queryGraph} />); });
+    await settle();
+    expect((container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement).value).toBe("workspace_binding:binding-2");
+    expect(container.textContent).toContain("Label opaque-workspace");
+    const workspaceCalls = queryGraph.mock.calls.map(([request]: [DashboardGraphQueryRequest]) => request)
+      .filter((request: DashboardGraphQueryRequest) => request.node_handle === "opaque-workspace");
+    workspaceCalls.forEach((request: DashboardGraphQueryRequest) => {
+      expect(request.scope_type).toBe("workspace_binding");
+      expect(request.scope_id).toBe("binding-2");
+    });
+  });
+
+  it("invalidates an in-flight path when the target changes", async () => {
+    const pendingPath = deferred<DashboardGraphResponse>();
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => {
+      if (request.type === "search") return Promise.resolve(envelope("search", { items: [
+        node(handles.invoice, "InvoiceService"), node("opaque-a", "Target A"), node("opaque-b", "Target B"),
+      ], returned: 3 }));
+      if (request.type === "path") return pendingPath.promise;
+      return successfulQuery(request);
+    });
+    await mount(queryGraph);
+    const scopeSelect = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { scopeSelect.value = "workspace_binding:binding-2"; scopeSelect.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "Target"); });
+    await settle(300);
+    await act(async () => { button("InvoiceService").click(); });
+    await settle();
+    const target = container.querySelector("select[aria-label='Path target']") as HTMLSelectElement;
+    await act(async () => { target.value = "opaque-a"; target.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { button("Find path").click(); });
+    await act(async () => { target.value = "opaque-b"; target.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { pendingPath.resolve(envelope("path", { items: [node(handles.invoice, "InvoiceService"), node("opaque-a", "Target A")], returned: 2 })); await Promise.resolve(); });
+    const pathPanel = Array.from(container.querySelectorAll("section")).find((section) => section.querySelector("h2")?.textContent === "Path");
+    expect(pathPanel?.textContent).not.toContain("Target A");
+    expect(pathPanel?.textContent).not.toContain("returned 2");
+    expect(pathPanel?.textContent).not.toContain("Loading graph");
   });
 
   it("shows provenance and projection metadata from the impact response itself", async () => {
