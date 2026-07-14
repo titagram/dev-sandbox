@@ -61,6 +61,18 @@ services:
       retries: 12
       start_period: 20s
 
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_USE_MOCK: "false"
+        REACT_APP_API_BASE_URL: ${DEVBOARD_PUBLIC_BASE_URL:-}
+    image: devboard-frontend
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+
   worker:
     build: *backend-build
     image: ${DEVBOARD_BACKEND_IMAGE:-devboard-backend:prod}

@@ -11,6 +11,7 @@ import {
   SecurityCheck, SystemStatus, TaskAttachment, TaskClarificationPayload, TaskCreateInput, TaskDetail, TaskMutationInput, TruthRegistryEntry, User, WikiPageDetail, WikiPageSummary, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
   HadesAdminSnapshot, HadesBootstrapTokenCreateInput, HadesBootstrapTokenCreateResponse, HadesJobCreateInput, HadesJobCreateResponse, HadesMemoryProposalReviewInput, HadesMemoryProposalReviewResponse,
 } from "@/types/devboard";
+import { API_BASE_URL } from "@/api/apiBaseUrl";
 
 /**
  * Single adapter contract for all DevBoard data access.
@@ -126,10 +127,7 @@ export interface DevboardApi {
   validateBackupBundle(file: File): Promise<BackupDryRunReport>;
 }
 
-export const API_BASE_URL =
-  process.env.REACT_APP_API_BASE_URL ||
-  (process.env as any).VITE_API_BASE_URL ||
-  "http://127.0.0.1:8000";
+export { API_BASE_URL };
 
 // Mock by default so the app is fully usable before Laravel exists.
 export const USE_MOCK = process.env.REACT_APP_USE_MOCK !== "false";

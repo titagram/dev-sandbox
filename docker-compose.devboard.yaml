@@ -42,6 +42,18 @@ services:
       neo4j:
         condition: service_healthy
 
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_USE_MOCK: "false"
+        REACT_APP_API_BASE_URL: ${DEVBOARD_PUBLIC_BASE_URL:-}
+    image: devboard-frontend
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_started
+
   worker:
     build:
       context: .
@@ -132,19 +144,6 @@ services:
       retries: 3
       start_period: 60s
 
-  node:
-    image: node:24.16.0-alpine@sha256:21f403ab171f2dc89bad4dd69d7721bfd15f084ccb46cdd225f31f2bc59b5c9a
-    working_dir: /workspace/backend
-    command: sh -lc "npm install && npm run dev -- --host 0.0.0.0"
-    environment:
-      VITE_DEV_SERVER_HOST: 0.0.0.0
-    ports:
-      - "${DEVBOARD_VITE_BIND:-127.0.0.1}:${DEVBOARD_VITE_PORT:-15173}:5173"
-    volumes:
-      - .:/workspace
-      - devboard-npm-cache:/root/.npm
-      - devboard-node-modules:/workspace/backend/node_modules
-
   postgres:
     image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
     environment:
@@ -185,8 +184,6 @@ services:
 
 volumes:
   devboard-composer-cache:
-  devboard-npm-cache:
-  devboard-node-modules:
   devboard-postgres-data:
   devboard-neo4j-data:
   devboard-neo4j-logs:
