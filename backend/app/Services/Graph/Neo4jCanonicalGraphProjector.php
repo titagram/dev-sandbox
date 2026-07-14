@@ -114,7 +114,7 @@ class Neo4jCanonicalGraphProjector
     private function assertHeartbeat(?Closure $heartbeat): void
     {
         if ($heartbeat !== null && $heartbeat() !== true) {
-            throw new RuntimeException('Canonical forced rebuild ownership was lost.');
+            throw new RuntimeException('Canonical publication ownership was lost.');
         }
     }
 

@@ -731,7 +731,10 @@ function hadesNoCodebaseProjectGraph(string $projectId, string $bindingId, strin
     expect($graph)->not->toBeNull()
         ->and($projections->claimForWorker($projection->id))->toBeTrue();
     $counts = app(Neo4jCanonicalGraphProjector::class)->project($graph, $projection, $neo4j);
-    expect($projections->markReady($projection->id, $counts['nodes'], $counts['relationships']))->toBeTrue();
+    expect($projections->markReady(
+        $projection->id, $counts['nodes'], $counts['relationships'],
+        fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, $neo4j),
+    ))->toBeTrue();
 }
 
 /**

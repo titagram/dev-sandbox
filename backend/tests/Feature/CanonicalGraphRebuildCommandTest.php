@@ -3,6 +3,8 @@
 use App\Jobs\ProjectCanonicalGraphToNeo4j;
 use App\Services\Graph\CanonicalGraphProjectionService;
 use App\Services\Graph\CanonicalGraphRepository;
+use App\Services\Graph\Neo4jCanonicalGraphProjector;
+use App\Services\Neo4j\FakeNeo4jClient;
 use App\Services\Neo4jClientFactory;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -147,7 +149,10 @@ it('reports and skips a ready exact artifact and checksum match', function () {
     $graph = app(CanonicalGraphRepository::class)->latestForScope($context['project_id'], 'workspace_binding', $context['scope_id']);
     $projection = app(CanonicalGraphProjectionService::class)->queue($graph);
     app(CanonicalGraphProjectionService::class)->markProjecting($projection->id);
-    app(CanonicalGraphProjectionService::class)->markReady($projection->id, 2, 1);
+    app(CanonicalGraphProjectionService::class)->markReady(
+        $projection->id, 2, 1,
+        fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, new FakeNeo4jClient),
+    );
     Bus::fake();
 
     Artisan::call('devboard:neo4j-rebuild', ['--reconcile' => true, '--project' => $context['project_id']]);

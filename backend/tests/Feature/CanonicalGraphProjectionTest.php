@@ -1,6 +1,8 @@
 <?php
 
 use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\Neo4jCanonicalGraphProjector;
+use App\Services\Neo4j\FakeNeo4jClient;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -16,11 +18,11 @@ it('keeps the previous projection ready until its replacement is ready', functio
     $service = app(CanonicalGraphProjectionService::class);
     $first = $service->queue(canonicalProjectionGraph($projectId, 'artifact-1', str_repeat('a', 64)));
     $service->markProjecting($first->id);
-    $service->markReady($first->id, 10, 5);
+    $service->markReady($first->id, 10, 5, canonicalProjectionMarker($first));
     $second = $service->queue(canonicalProjectionGraph($projectId, 'artifact-2', str_repeat('b', 64)));
     $service->markProjecting($second->id);
     expect($service->readyForScope($projectId, 'workspace_binding', 'binding-1')->id)->toBe($first->id);
-    $service->markReady($second->id, 12, 7);
+    $service->markReady($second->id, 12, 7, canonicalProjectionMarker($second));
     expect($service->readyForScope($projectId, 'workspace_binding', 'binding-1')->id)->toBe($second->id)
         ->and(DB::table('canonical_graph_projections')->where('id', $first->id)->value('status'))->toBe('stale')
         ->and(DB::table('canonical_graph_projections')
@@ -40,7 +42,7 @@ it('locks the stable project row before locking the projection candidate', funct
         $queries[] = strtolower($query->sql);
     });
 
-    $service->markReady($candidate->id, 10, 5);
+    $service->markReady($candidate->id, 10, 5, canonicalProjectionMarker($candidate));
 
     $projectLock = array_find_key($queries, fn (string $sql): bool => str_contains($sql, 'from "projects"'));
     $candidateLock = array_find_key($queries, fn (string $sql): bool => str_starts_with($sql, 'select *') && str_contains($sql, 'from "canonical_graph_projections"'));
@@ -200,7 +202,7 @@ it('refuses a stale ready transition without staling or publishing anything', fu
     $service = app(CanonicalGraphProjectionService::class);
     $current = $service->queue(canonicalProjectionGraph($projectId, 'artifact-current', str_repeat('e', 64)));
     $service->markProjecting($current->id);
-    expect($service->markReady($current->id, 10, 5))->toBeTrue();
+    expect($service->markReady($current->id, 10, 5, canonicalProjectionMarker($current)))->toBeTrue();
 
     $candidate = $service->queue(canonicalProjectionGraph($projectId, 'artifact-stale-worker', str_repeat('f', 64)));
     DB::table('canonical_graph_projections')->where('id', $candidate->id)->update([
@@ -212,7 +214,7 @@ it('refuses a stale ready transition without staling or publishing anything', fu
     $beforeCurrent = DB::table('canonical_graph_projections')->where('id', $current->id)->first();
     $beforeCandidate = DB::table('canonical_graph_projections')->where('id', $candidate->id)->first();
 
-    $published = $service->markReady($candidate->id, 99, 88);
+    $published = $service->markReady($candidate->id, 99, 88, canonicalProjectionMarker($candidate));
 
     $afterCurrent = DB::table('canonical_graph_projections')->where('id', $current->id)->first();
     $afterCandidate = DB::table('canonical_graph_projections')->where('id', $candidate->id)->first();
@@ -242,4 +244,9 @@ function canonicalProjectionGraph(string $projectId, string $artifactId, string 
             'source' => ['head_commit' => 'abc123'],
         ],
     ];
+}
+
+function canonicalProjectionMarker(object $projection): Closure
+{
+    return fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, new FakeNeo4jClient);
 }

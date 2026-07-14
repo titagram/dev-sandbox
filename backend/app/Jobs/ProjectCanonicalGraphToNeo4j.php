@@ -22,9 +22,11 @@ class ProjectCanonicalGraphToNeo4j implements ShouldQueue
     public function handle(CanonicalGraphRepository $repository, CanonicalGraphProjectionService $projections, Neo4jCanonicalGraphProjector $projector, Neo4jClientFactory $clients): void
     {
         $projection = $projections->findForWorker($this->projectionId);
-        if ($projection === null || ! $projections->claimForWorker($this->projectionId)) {
+        if ($projection === null || ! in_array($projection->status, ['queued', 'projecting'], true)) {
             return;
         }
+        $claim = null;
+        $client = null;
         try {
             $graph = $repository->findByIdentity($projection->project_id, $projection->source_scope_type, $projection->source_scope_id, $projection->artifact_type, $projection->artifact_id);
             if ($graph === null) {
@@ -33,12 +35,46 @@ class ProjectCanonicalGraphToNeo4j implements ShouldQueue
             if (! hash_equals($projection->checksum, $graph['identity']['checksum'])) {
                 throw new RuntimeException('artifact_changed');
             }
-            $counts = $projector->project($graph, $projection, $clients->client());
-            if (! $projections->markReady($projection->id, $counts['nodes'], $counts['relationships'])) {
+            $client = $clients->client();
+            $projections->recoverStalePublications($graph, $client, $projector);
+            $claim = $projections->acquireForWorkerPublication($projection->id, $graph);
+            if (! $claim['claimed']) {
+                if ($claim['retry_after'] !== null) {
+                    $this->release($claim['retry_after']);
+                }
+
                 return;
             }
+            $candidate = $claim['projection'];
+            $heartbeat = function () use ($projections, $claim): bool {
+                if (! $projections->heartbeatPublicationAttempt($claim['attempt_id'], $claim['owner_token'])) {
+                    throw new RuntimeException('ownership_lost');
+                }
+
+                return true;
+            };
+            $counts = $projector->project($graph, $candidate, $client, $heartbeat);
+            $ready = $projections->publishPublicationAttempt(
+                $claim['attempt_id'], $claim['owner_token'], $counts['nodes'], $counts['relationships'],
+                fn () => $projector->publishCurrent($candidate, $client),
+            );
+            if ($ready === null) {
+                throw new RuntimeException('ownership_lost');
+            }
         } catch (Throwable $exception) {
-            $projections->markRetryPending($projection->id, $this->failureCode($exception));
+            $failureCode = $this->failureCode($exception);
+            if ($claim !== null && $claim['claimed'] && $client !== null) {
+                $projections->markPublicationAttemptFailed($claim['attempt_id'], $claim['owner_token'], $failureCode);
+                try {
+                    $projections->cleanupPublicationAttempt(
+                        $claim['attempt_id'], $claim['owner_token'], $client, $projector,
+                    );
+                } catch (Throwable $cleanupException) {
+                    report($cleanupException);
+                }
+            } else {
+                $projections->markQueuedRetryPending($projection->id, $failureCode);
+            }
             throw $exception;
         }
     }
@@ -48,7 +84,7 @@ class ProjectCanonicalGraphToNeo4j implements ShouldQueue
      */
     public function failed(Throwable $exception): void
     {
-        app(CanonicalGraphProjectionService::class)->markFailedIfQueued(
+        app(CanonicalGraphProjectionService::class)->markFailedAfterAttemptExhaustion(
             $this->projectionId,
             $this->failureCode($exception),
         );

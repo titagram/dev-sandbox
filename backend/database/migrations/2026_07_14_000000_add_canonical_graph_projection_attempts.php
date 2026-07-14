@@ -21,6 +21,7 @@ return new class extends Migration
             $table->foreignUlid('projection_id')->constrained('canonical_graph_projections')->cascadeOnDelete();
             $table->string('candidate_graph_version', 64)->unique();
             $table->string('owner_token', 64);
+            $table->string('kind', 16);
             $table->ulid('expected_ready_projection_id')->nullable();
             $table->string('expected_active_graph_version', 64)->nullable();
             $table->string('status', 32);

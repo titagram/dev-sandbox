@@ -93,18 +93,37 @@ Projection rows move through `queued`, `projecting`, `ready`, `failed`, and
 identity and checksum. `active_graph_version` selects the verified physical
 Neo4j copy without changing that public artifact identity.
 
-Queue workers claim `queued` rows conditionally. Reconciliation inserts missing
-rows or retries final `failed` rows but does not steal `queued` or `projecting`
-work. A forced synchronous rebuild can claim only an inactive row with the same
-project, scope, artifact, checksum, and version. It creates a persistent,
-single-owner projection attempt with a distinct candidate physical version;
-the verified projection row remains `ready` and its active version remains
-queryable throughout the attempt. A failed attempt records only its bounded
-failure code and never demotes or rewrites the verified projection. A
-successful attempt switches `active_graph_version`, verified counts, and the
-attempt state in one PostgreSQL transaction after Neo4j count verification;
-only then can another ready row in the scope become `stale`.
-Persisted failure codes are bounded and never contain raw exception text.
+Queue workers and forced synchronous rebuilds use one durable publication
+protocol in `canonical_graph_projection_attempts`; `kind=ordinary` and
+`kind=forced` describe the caller, not separate state machines. Reconciliation
+inserts missing rows or retries final `failed` rows but does not steal healthy
+`queued` or `projecting` work. Every owner projects a distinct physical
+candidate, verifies node, relationship, and adjacency counts, persists
+`publication_stage=marker_pending`, publishes the Neo4j current/capability
+marker, and only then advances PostgreSQL to `ready` with the new
+`active_graph_version`. The stable project lock and compare-and-swap base
+pointer serialize ordinary/forced interleavings. A losing attempt is
+superseded and its candidate is cleaned; it cannot overwrite the winner.
+
+The publication lease is **900 seconds** and every acquisition, comparison,
+heartbeat, and expiry decision uses PostgreSQL `clock_timestamp()` rather than
+an application-host clock or transaction-fixed `CURRENT_TIMESTAMP`. Ownership
+is live strictly before `lease_expires_at`; at the exact timestamp it is
+expired. Projection heartbeats renew the full
+900-second lease after each bounded Neo4j phase. The longest declared Neo4j
+wait is `db.awaitIndexes(300)` and queue workers are killed at 600 seconds in
+both development and production Compose, leaving a 300-second reclaim margin.
+Do not increase either timeout beyond the lease or reduce the lease without
+re-running the just-before/at/after-expiry and wrong-owner heartbeat tests.
+
+If a process dies before the marker, recovery restores Neo4j to PostgreSQL's
+active pointer, deletes the partial candidate, and makes an ordinary delivery
+claimable again. If it dies after the marker but before the PostgreSQL pointer,
+the same recovery first restores the PostgreSQL source-of-truth marker, then
+cleans the abandoned candidate and retries. The verified projection remains
+queryable throughout a forced attempt. A failed attempt records only a bounded
+failure code; it never silently publishes PostgreSQL without the Neo4j marker.
+Persisted failure codes never contain raw exception text.
 
 ## Reconcile and rebuild
 

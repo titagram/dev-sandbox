@@ -259,7 +259,10 @@ it('treats an exact ready projection as idempotent success without another Neo4j
     $projections = app(CanonicalGraphProjectionService::class);
     $projection = $projections->queue($canonical);
     expect($projections->claimForWorker($projection->id))->toBeTrue()
-        ->and($projections->markReady($projection->id, 2, 1))->toBeTrue();
+        ->and($projections->markReady(
+            $projection->id, 2, 1,
+            fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($projection, new FakeNeo4jClient),
+        ))->toBeTrue();
     $client = new FakeNeo4jClient;
 
     app(GenesisGraphImportService::class)->importGenesis($context['import_id'], $client, 'fake', false);
@@ -489,7 +492,6 @@ it('rebuilds a Neo4j projection from stored graph artifacts', function () {
     $result = app(Neo4jRebuildService::class)->rebuild([
         'snapshot_id' => $context['snapshot_id'],
     ], $client, 'fake');
-
     expect($result)->toMatchArray([
         'scanned' => 1,
         'rebuilt' => 1,
@@ -587,7 +589,7 @@ it('keeps the verified graph queryable until a forced rebuild publishes atomical
     $after = canonicalGraphQueryProbe($context);
 
     expect($during['result']['found'])->toBeTrue()
-        ->and($during['params']['graph_version'])->toBe($published->graph_version)
+        ->and($during['params']['graph_version'])->toBe($published->active_graph_version)
         ->and($after['result']['found'])->toBeTrue()
         ->and($after['result']['graph_version'])->toBe($published->graph_version)
         ->and($after['params']['graph_version'])->not->toBe($during['params']['graph_version'])
@@ -628,7 +630,7 @@ it('keeps the verified graph queryable after a failed forced rebuild', function 
     expect($during['result']['found'])->toBeTrue()
         ->and($after['result']['found'])->toBeTrue()
         ->and($after['params']['graph_version'])->toBe($during['params']['graph_version'])
-        ->and($after['params']['graph_version'])->toBe($published->graph_version)
+        ->and($after['params']['graph_version'])->toBe($published->active_graph_version)
         ->and(DB::table('canonical_graph_projections')->where('id', $published->id)->value('status'))->toBe('ready');
 });
 
@@ -708,7 +710,7 @@ it('binds forced rebuild ownership to a renewable bounded lease', function () {
     expect($claim['owner_token'])->toBeString()->not->toBeEmpty()
         ->and($attempt->owner_token)->toBe($claim['owner_token'])
         ->and($attempt->expected_ready_projection_id)->toBe($claim['projection']->id)
-        ->and($attempt->expected_active_graph_version)->toBe($claim['projection']->logical_graph_version)
+        ->and($attempt->expected_active_graph_version)->toBe($claim['projection']->active_graph_version)
         ->and($attempt->lease_expires_at)->not->toBeNull()
         ->and($service->heartbeatForcedRebuild($claim['attempt_id'], 'wrong-owner'))->toBeFalse()
         ->and($service->heartbeatForcedRebuild($claim['attempt_id'], $claim['owner_token']))->toBeTrue();
@@ -726,7 +728,10 @@ it('does not let a superseded forced attempt overwrite a newer publication', fun
     $newerGraph['identity']['checksum'] = str_repeat('f', 64);
     $newer = $service->queue($newerGraph);
     expect($service->claimForWorker($newer->id))->toBeTrue()
-        ->and($service->markReady($newer->id, 3, 2))->toBeTrue();
+        ->and($service->markReady(
+            $newer->id, 3, 2,
+            fn () => app(Neo4jCanonicalGraphProjector::class)->publishCurrent($newer, new FakeNeo4jClient),
+        ))->toBeTrue();
 
     $published = $service->publishForcedRebuild(
         $claim['attempt_id'], $claim['owner_token'], 2, 1,
