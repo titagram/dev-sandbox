@@ -399,7 +399,7 @@ it('lets another registered device continue from memory written by the first dev
         ->toBe($secondToken['device_id']);
 });
 
-it('does not create a replacement lease when same-device reclaim loses the conditional update', function () {
+it('preserves a concurrent terminal transition when same-device reclaim loses the conditional update', function () {
     $token = pluginSharedMemoryTokenWithDevice();
     $projectId = pluginSharedMemoryProjectId();
     $repositoryId = pluginSharedMemoryRepositoryId();
@@ -439,7 +439,8 @@ it('does not create a replacement lease when same-device reclaim loses the condi
         ->assertConflict();
 
     expect($completedDuringClaim)->toBeTrue()
-        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('claimed')
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('status'))->toBe('completed')
+        ->and(DB::table('agent_work_items')->where('id', $workItemId)->value('completed_at'))->not->toBeNull()
         ->and(DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->count())->toBe($initialLeaseCount)
         ->and(DB::table('agent_work_item_leases')->where('agent_work_item_id', $workItemId)->whereNull('released_at')->count())->toBe(1)
         ->and(DB::table('agent_work_item_events')->where('agent_work_item_id', $workItemId)->where('event_type', 'claimed')->count())->toBe($initialClaimedEventCount);
