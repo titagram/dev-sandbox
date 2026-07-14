@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Dashboard\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
+use App\Services\Hades\HadesAgentJobPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,6 +15,8 @@ use Symfony\Component\HttpFoundation\Response;
 final class DashboardWikiRefreshController extends Controller
 {
     use ChecksDashboardRoles;
+
+    public function __construct(private readonly HadesAgentJobPolicy $jobPolicy) {}
 
     public function index(Request $request, string $project): JsonResponse
     {
@@ -61,6 +64,17 @@ final class DashboardWikiRefreshController extends Controller
             ->first();
 
         abort_unless($binding, 404);
+
+        $agent = DB::table('hades_agents')
+            ->where('id', $binding->hades_agent_id)
+            ->where('project_id', $project)
+            ->first();
+
+        if (! $agent
+            || $agent->status !== 'active'
+            || ! in_array('populate_project_wiki', $this->jobPolicy->effectiveCapabilities($agent), true)) {
+            return $this->capabilityError();
+        }
 
         $jobId = (string) Str::ulid();
         $now = now();
@@ -142,6 +156,17 @@ final class DashboardWikiRefreshController extends Controller
         $decoded = json_decode($value, true);
 
         return is_array($decoded) ? $decoded : [];
+    }
+
+    private function capabilityError(): JsonResponse
+    {
+        return response()->json([
+            'error' => [
+                'code' => 'agent_capability_not_enabled',
+                'message' => 'Enable populate_project_wiki for the bound active agent before requesting a wiki refresh.',
+                'details' => ['capability' => 'populate_project_wiki'],
+            ],
+        ], Response::HTTP_CONFLICT);
     }
 
     private function abortUnlessReader(Request $request): void

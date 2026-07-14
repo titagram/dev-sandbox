@@ -4,9 +4,9 @@ namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesCapabilityPolicy;
+use App\Services\Hades\HadesPluginCredentialIssuer;
 use App\Services\Hades\HadesTokenException;
 use App\Services\Hades\HadesTokenService;
-use App\Services\Hades\HadesPluginCredentialIssuer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -49,9 +49,12 @@ class AgentRegisterController extends Controller
         $now = now();
         $externalAgentId = $validated['agent_id'];
         $declaredCapabilities = $this->capabilities->normalizeNames($validated['capabilities'] ?? []);
-        $allowedCapabilities = $this->capabilities->normalizeNames(
-            json_decode($auth['token']->allowed_capabilities ?? '[]', true, 512, JSON_THROW_ON_ERROR) ?: [],
-        );
+        $storedAllowedCapabilities = $auth['token']->allowed_capabilities;
+        $allowedCapabilities = $storedAllowedCapabilities === null
+            ? $this->capabilities->supportedNames()
+            : $this->capabilities->normalizeNames(
+                json_decode($storedAllowedCapabilities, true, 512, JSON_THROW_ON_ERROR) ?: [],
+            );
         $effectiveCapabilities = $this->capabilities->intersect($declaredCapabilities, $allowedCapabilities);
 
         $agent = DB::transaction(function () use ($validated, $externalAgentId, $declaredCapabilities, $effectiveCapabilities, $now) {

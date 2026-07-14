@@ -44,6 +44,34 @@ it('queues a project wiki refresh request as a Hades job', function () {
         ->assertJsonPath('refresh_requests.0.capability', 'populate_project_wiki');
 });
 
+it('fails wiki refresh before enqueue when the bound active agent lacks the wiki capability', function () {
+    $admin = wikiRefreshDashboardUserWithRole('Admin');
+    $project = wikiRefreshProject('Wiki capability gate', 'wiki-capability-gate');
+    $agent = wikiRefreshHadesAgent($project['project_id'], false);
+    $bindingId = wikiRefreshWorkspaceBinding($agent);
+
+    $before = DB::table('hades_agent_jobs')
+        ->where('project_id', $project['project_id'])
+        ->where('workspace_binding_id', $bindingId)
+        ->where('capability', 'populate_project_wiki')
+        ->count();
+
+    $this->actingAs($admin)
+        ->postJson("/api/dashboard/projects/{$project['project_id']}/wiki/refresh-requests", [
+            'workspace_binding_id' => $bindingId,
+            'repository_id' => $project['repository_id'],
+        ])
+        ->assertStatus(409)
+        ->assertJsonPath('error.code', 'agent_capability_not_enabled')
+        ->assertJsonPath('error.details.capability', 'populate_project_wiki');
+
+    expect(DB::table('hades_agent_jobs')
+        ->where('project_id', $project['project_id'])
+        ->where('workspace_binding_id', $bindingId)
+        ->where('capability', 'populate_project_wiki')
+        ->count())->toBe($before);
+});
+
 it('queues a project scoped wiki refresh request without a repository id', function () {
     $developer = wikiRefreshDashboardUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
@@ -238,12 +266,17 @@ function wikiRefreshProject(string $name, string $slug): array
 /**
  * @return array{project_id: string, external_agent_id: string, backend_agent_id: string, agent_token: string}
  */
-function wikiRefreshHadesAgent(string $projectId): array
+function wikiRefreshHadesAgent(string $projectId, bool $includeWiki = true): array
 {
     $bootstrapId = (string) Str::ulid();
     $secret = 'wiki-refresh-bootstrap-secret-'.$bootstrapId;
     $prefix = 'hades_bootstrap_'.$bootstrapId;
     $now = now();
+
+    $capabilities = ['read_files'];
+    if ($includeWiki) {
+        $capabilities[] = 'populate_project_wiki';
+    }
 
     DB::table('hades_bootstrap_tokens')->insert([
         'id' => $bootstrapId,
@@ -252,7 +285,7 @@ function wikiRefreshHadesAgent(string $projectId): array
         'token_hash' => hash('sha256', $secret),
         'name' => 'Wiki Refresh Bootstrap Token',
         'scopes' => json_encode(['hades.bootstrap'], JSON_THROW_ON_ERROR),
-        'allowed_capabilities' => json_encode(['read_files', 'populate_project_wiki'], JSON_THROW_ON_ERROR),
+        'allowed_capabilities' => json_encode($capabilities, JSON_THROW_ON_ERROR),
         'expires_at' => now()->addMonth(),
         'revoked_at' => null,
         'last_used_at' => null,
@@ -267,7 +300,7 @@ function wikiRefreshHadesAgent(string $projectId): array
         'label' => 'Wiki Refresh Agent',
         'platform' => 'linux-x64',
         'version' => '0.6.0',
-        'capabilities' => ['read_files', 'populate_project_wiki'],
+        'capabilities' => $capabilities,
     ], wikiRefreshHeaders($prefix.'|'.$secret))->assertOk();
 
     return [

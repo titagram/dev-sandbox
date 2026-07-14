@@ -10,12 +10,21 @@ import {
   AiAgentProfile, AiAgentProfileInput, AiAgentsSnapshot, AiModelProfile, AiModelProfileCreateInput, AiModelProfileInput, AiModelProvider, AiModelProviderInput, AiModelProviderValidationResult,
   AssistantRun, AssistantSuggestion, AssistantSuggestionResponse, BacklogTriagePayload,
   DashboardOverview, IntakeNormalizationType, LoginPayload, Project, ProjectDetail, ProjectLifecycleInput,
-  ProjectMemoryDomain, ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryImportItem, ProjectMemoryQuery, ProjectStatusFilter, ProjectWorkspaceBinding, RepositoryDeclarationInput, Role, SourceStatus, TaskAttachment, TaskClarificationPayload, TaskColumn, TaskDetail, User, WikiEvidence, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
+  HadesCapability, ProjectMemoryDomain, ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryImportItem, ProjectMemoryQuery, ProjectStatusFilter, ProjectWorkspaceBinding, RepositoryDeclarationInput, Role, SourceStatus, TaskAttachment, TaskClarificationPayload, TaskColumn, TaskDetail, User, WikiEvidence, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
 } from "@/types/devboard";
 
 const SESSION_KEY = "devboard_session_role";
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const delay = (ms = 280) => new Promise((r) => setTimeout(r, ms + Math.random() * 180));
+
+const MOCK_HADES_SUPPORTED_CAPABILITIES: HadesCapability[] = [
+  "read_files",
+  "read_source_slice",
+  "project_inspection",
+  "sync_git_tree",
+  "populate_backend_ast",
+  "populate_project_wiki",
+];
 
 // Mutable copies so mock mutations persist for the session.
 let tokens = clone(PLUGIN_TOKENS);
@@ -2194,9 +2203,14 @@ export const mockApi: DevboardApi = {
   async getHadesAdmin() {
     await delay();
     return {
+      supported_capabilities: clone(MOCK_HADES_SUPPORTED_CAPABILITIES),
       projects: clone(projects.filter((project) => project.status === "active").map((project) => ({ id: project.id, name: project.name, slug: project.key }))),
       bootstrapTokens: clone(hadesBootstrapTokens),
-      workspaces: clone([...hadesWorkspaces, ...workspaceBindings]),
+      workspaces: clone([...hadesWorkspaces, ...workspaceBindings].map((workspace) => ({
+        ...workspace,
+        declared_capabilities: workspace.declared_capabilities ?? [],
+        effective_capabilities: workspace.effective_capabilities ?? [],
+      }))),
       jobs: clone(hadesJobs),
       memoryProposals: clone(hadesMemoryProposals),
     };
@@ -2214,7 +2228,9 @@ export const mockApi: DevboardApi = {
       project_name: project.name,
       token_prefix: `hades_bootstrap_${id}`,
       name: input.name,
-      allowed_capabilities: input.allowed_capabilities ?? ["read_files", "sync_git_tree", "populate_backend_ast"],
+      allowed_capabilities: input.allowed_capabilities === undefined || input.allowed_capabilities === null
+        ? clone(MOCK_HADES_SUPPORTED_CAPABILITIES)
+        : clone(input.allowed_capabilities),
       expires_at: null,
       revoked_at: null,
       last_used_at: null,

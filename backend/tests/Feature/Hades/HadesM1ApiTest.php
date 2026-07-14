@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Services\Hades\HadesTokenService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -14,6 +15,19 @@ it('reports public Hades M1 health', function () {
         ->assertJsonPath('service', 'hades-backend')
         ->assertJsonPath('status', 'ok')
         ->assertJsonStructure(['server_time', 'routes']);
+});
+
+it('normalizes an explicit bootstrap capability grant to the supported catalog', function () {
+    $project = createHadesM1Project();
+    $created = app(HadesTokenService::class)->createBootstrapToken(
+        $project['id'],
+        'Explicit capability grant',
+        90,
+        ['populate_project_wiki', 'not_supported', 'read_files', 'read_files'],
+    );
+
+    expect(json_decode($created['token']->allowed_capabilities, true, flags: JSON_THROW_ON_ERROR))
+        ->toBe(['read_files', 'populate_project_wiki']);
 });
 
 it('verifies a project scoped bootstrap token without creating an agent', function () {
@@ -96,6 +110,61 @@ it('registers an external Hades agent and intersects capabilities with backend p
 
     expect(DB::table('hades_agents')->where('id', $backendAgentId)->value('external_agent_id'))->toBe('local-agent-1');
     expect(DB::table('hades_agent_tokens')->where('hades_agent_id', $backendAgentId)->count())->toBe(1);
+});
+
+it('keeps an explicitly empty bootstrap grant empty during live registration', function () {
+    $token = createHadesM1BootstrapToken([
+        'allowed_capabilities' => json_encode([], JSON_THROW_ON_ERROR),
+    ]);
+    $all = [
+        'read_files',
+        'read_source_slice',
+        'project_inspection',
+        'sync_git_tree',
+        'populate_backend_ast',
+        'populate_project_wiki',
+    ];
+
+    $response = $this->postJson('/api/hades/v1/agents/register', [
+        'project_id' => $token['project_id'],
+        'agent_id' => 'empty-grant-agent',
+        'label' => 'Empty grant agent',
+        'platform' => 'linux-x64',
+        'version' => '0.1.0',
+        'capabilities' => $all,
+    ], hadesM1Headers($token['plain_token']))
+        ->assertOk();
+
+    expect($response->json('capability_names'))->toBe([])
+        ->and(json_decode(
+            DB::table('hades_agents')->where('id', $response->json('backend_agent_id'))->value('effective_capabilities'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        ))->toBe([]);
+});
+
+it('treats a legacy SQL NULL bootstrap grant as the complete supported catalog', function () {
+    $token = createHadesM1BootstrapToken(['allowed_capabilities' => null]);
+    $all = [
+        'read_files',
+        'read_source_slice',
+        'project_inspection',
+        'sync_git_tree',
+        'populate_backend_ast',
+        'populate_project_wiki',
+    ];
+
+    $response = $this->postJson('/api/hades/v1/agents/register', [
+        'project_id' => $token['project_id'],
+        'agent_id' => 'legacy-null-grant-agent',
+        'label' => 'Legacy null grant agent',
+        'platform' => 'linux-x64',
+        'version' => '0.1.0',
+        'capabilities' => $all,
+    ], hadesM1Headers($token['plain_token']))
+        ->assertOk();
+
+    expect($response->json('capability_names'))->toBe($all);
 });
 
 it('issues a project-scoped Plugin credential bundle during Hades agent registration', function () {

@@ -325,6 +325,7 @@ class HadesProjectAwareness
             return [
                 'status' => 'missing',
                 'count' => 0,
+                'pending_candidates' => 0,
                 'waiting_jobs' => 0,
                 'reason' => 'source_slice_candidate_store_missing',
             ];
@@ -334,13 +335,15 @@ class HadesProjectAwareness
             ->where('project_id', $projectId)
             ->where('workspace_binding_id', $bindingId)
             ->selectRaw('COUNT(*) as aggregate_count, MAX(updated_at) as updated_at')
+            ->selectRaw("SUM(CASE WHEN status = 'pending' AND job_id IS NULL THEN 1 ELSE 0 END) as pending_candidates")
             ->selectRaw("SUM(CASE WHEN status IN ('job_created', 'queued') THEN 1 ELSE 0 END) as waiting_jobs")
             ->first();
 
         $count = (int) ($rows->aggregate_count ?? 0);
+        $pendingCandidates = (int) ($rows->pending_candidates ?? 0);
         $waiting = (int) ($rows->waiting_jobs ?? 0);
         $status = 'none';
-        if ($waiting > 0) {
+        if ($pendingCandidates > 0 || $waiting > 0) {
             $status = 'pending';
         } elseif ($count > 0) {
             $status = 'present';
@@ -349,6 +352,7 @@ class HadesProjectAwareness
         return [
             'status' => $status,
             'count' => $count,
+            'pending_candidates' => $pendingCandidates,
             'waiting_jobs' => $waiting,
             'updated_at' => $this->toIsoString($rows->updated_at ?? null),
         ];
@@ -440,7 +444,11 @@ class HadesProjectAwareness
             $actions[] = 'Index a current code graph before claiming exact call paths or owner methods without source access.';
         }
 
-        if (($coverage['source_slice_candidates']['status'] ?? null) === 'pending') {
+        if ((int) ($coverage['source_slice_candidates']['pending_candidates'] ?? 0) > 0) {
+            $actions[] = 'Poll for pending source-slice candidates with an agent that has read_source_slice enabled.';
+        }
+
+        if ((int) ($coverage['source_slice_candidates']['waiting_jobs'] ?? 0) > 0) {
             $actions[] = 'Approve pending source-slice jobs before precise source-free diagnosis.';
         }
 

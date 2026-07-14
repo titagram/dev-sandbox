@@ -153,6 +153,31 @@ it('lets linked agents enqueue an idempotent project awareness wiki bootstrap jo
         ->count())->toBe(1);
 });
 
+it('fails project awareness before enqueue when the active agent lacks the wiki capability', function () {
+    $agent = hadesM4RegisteredAgent(false);
+    $binding = hadesM4WorkspaceBinding($agent);
+    $before = DB::table('hades_agent_jobs')
+        ->where('project_id', $agent['project_id'])
+        ->where('workspace_binding_id', $binding['workspace_binding_id'])
+        ->where('capability', 'populate_project_wiki')
+        ->count();
+
+    $this->postJson('/api/hades/v1/project-awareness/bootstrap', [
+        'project_id' => $agent['project_id'],
+        'agent_id' => $agent['external_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+    ], hadesM4Headers($agent['agent_token']))
+        ->assertStatus(409)
+        ->assertJsonPath('error.code', 'agent_capability_not_enabled')
+        ->assertJsonPath('error.details.capability', 'populate_project_wiki');
+
+    expect(DB::table('hades_agent_jobs')
+        ->where('project_id', $agent['project_id'])
+        ->where('workspace_binding_id', $binding['workspace_binding_id'])
+        ->where('capability', 'populate_project_wiki')
+        ->count())->toBe($before);
+});
+
 function hadesM4Headers(?string $token = null): array
 {
     return $token === null ? [] : ['Authorization' => 'Bearer '.$token];
@@ -200,7 +225,7 @@ function hadesM4BootstrapToken(?string $projectId = null): array
         'token_hash' => hash('sha256', $secret),
         'name' => 'Hades M4 Bootstrap Token',
         'scopes' => json_encode(['hades.bootstrap'], JSON_THROW_ON_ERROR),
-        'allowed_capabilities' => json_encode(['read_files', 'sync_git_tree', 'populate_backend_ast'], JSON_THROW_ON_ERROR),
+        'allowed_capabilities' => json_encode(['read_files', 'sync_git_tree', 'populate_backend_ast', 'populate_project_wiki'], JSON_THROW_ON_ERROR),
         'expires_at' => now()->addMonth(),
         'revoked_at' => null,
         'last_used_at' => null,
@@ -214,11 +239,16 @@ function hadesM4BootstrapToken(?string $projectId = null): array
 /**
  * @return array{project_id: string, external_agent_id: string, backend_agent_id: string, agent_token: string}
  */
-function hadesM4RegisteredAgent(): array
+function hadesM4RegisteredAgent(bool $includeWiki = true): array
 {
     $bootstrap = hadesM4BootstrapToken();
     $externalAgentId = 'local-agent-'.Str::lower(Str::random(8));
     $test = test();
+
+    $capabilities = ['read_files', 'sync_git_tree', 'populate_backend_ast'];
+    if ($includeWiki) {
+        $capabilities[] = 'populate_project_wiki';
+    }
 
     $registered = $test->postJson('/api/hades/v1/agents/register', [
         'project_id' => $bootstrap['project_id'],
@@ -226,7 +256,7 @@ function hadesM4RegisteredAgent(): array
         'label' => 'Hades M4 Agent',
         'platform' => 'linux-x64',
         'version' => '0.4.0',
-        'capabilities' => ['read_files', 'sync_git_tree', 'populate_backend_ast'],
+        'capabilities' => $capabilities,
     ], hadesM4Headers($bootstrap['plain_token']))->assertOk();
 
     return [

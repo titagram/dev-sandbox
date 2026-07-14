@@ -14,8 +14,6 @@ import { HadesAdminSnapshot, HadesBootstrapToken, HadesCapability, HadesMemoryPr
 import { relativeTime } from "@/lib/format";
 import { Check, Clipboard, KeyRound, Play, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 
-const CAPABILITIES: HadesCapability[] = ["read_files", "sync_git_tree", "populate_backend_ast"];
-
 function time(value?: string | null) {
   return value ? relativeTime(value) : "n/a";
 }
@@ -33,7 +31,8 @@ export default function HadesAdminPage() {
   const [projectId, setProjectId] = useState("");
   const [name, setName] = useState("Local Hades bootstrap");
   const [expiresInDays, setExpiresInDays] = useState("90");
-  const [capabilities, setCapabilities] = useState<HadesCapability[]>(CAPABILITIES);
+  const [capabilities, setCapabilities] = useState<HadesCapability[]>([]);
+  const [capabilitiesDirty, setCapabilitiesDirty] = useState(false);
   const [created, setCreated] = useState<any | null>(null);
   const [revoke, setRevoke] = useState<HadesBootstrapToken | null>(null);
   const [workspaceId, setWorkspaceId] = useState("");
@@ -47,6 +46,15 @@ export default function HadesAdminPage() {
   }, [projectId, state.data]);
 
   useEffect(() => {
+    const catalog = state.data?.supported_capabilities;
+    if (Array.isArray(catalog)) {
+      setCapabilities((current) => capabilitiesDirty
+        ? current.filter((capability) => catalog.includes(capability))
+        : catalog);
+    }
+  }, [capabilitiesDirty, state.data]);
+
+  useEffect(() => {
     const first = state.data?.workspaces.find((workspace) => workspace.project_id === projectId);
     setWorkspaceId(first?.id ?? "");
   }, [projectId, state.data]);
@@ -58,6 +66,7 @@ export default function HadesAdminPage() {
   );
 
   const toggleCapability = (capability: HadesCapability) => {
+    setCapabilitiesDirty(true);
     setCapabilities((current) => current.includes(capability)
       ? current.filter((item) => item !== capability)
       : [...current, capability]);
@@ -158,6 +167,7 @@ export default function HadesAdminPage() {
             setExpiresInDays={setExpiresInDays}
             capabilities={capabilities}
             toggleCapability={toggleCapability}
+            supportedCapabilities={Array.isArray(snapshot.supported_capabilities) ? snapshot.supported_capabilities : null}
             created={created}
             createBootstrap={createBootstrap}
             busy={busy}
@@ -191,7 +201,7 @@ export default function HadesAdminPage() {
 
 function HadesContent({
   snapshot, projectId, setProjectId, name, setName, expiresInDays, setExpiresInDays,
-  capabilities, toggleCapability, created, createBootstrap, busy, copied, copy,
+  capabilities, toggleCapability, supportedCapabilities, created, createBootstrap, busy, copied, copy,
   setRevoke, projectWorkspaces, workspaceId, setWorkspaceId, jobPayload, setJobPayload, createJob,
 }: {
   snapshot: HadesAdminSnapshot;
@@ -203,6 +213,7 @@ function HadesContent({
   setExpiresInDays: (value: string) => void;
   capabilities: HadesCapability[];
   toggleCapability: (capability: HadesCapability) => void;
+  supportedCapabilities: HadesCapability[] | null;
   created: any | null;
   createBootstrap: (event: React.FormEvent) => void;
   busy: boolean;
@@ -227,10 +238,14 @@ function HadesContent({
           <NativeSelect label="Project" value={projectId} onChange={setProjectId} options={snapshot.projects.map((project) => [project.id, project.name])} />
           <Field label="Token name" value={name} onChange={setName} />
           <Field label="Days" type="number" value={expiresInDays} onChange={setExpiresInDays} />
-          <Button className="mt-5" disabled={busy || !projectId} type="submit"><KeyRound className="mr-1.5 h-3.5 w-3.5" /> Create</Button>
+          <Button className="mt-5" disabled={busy || !projectId || supportedCapabilities === null} type="submit"><KeyRound className="mr-1.5 h-3.5 w-3.5" /> Create</Button>
         </form>
         <div className="mt-3 flex flex-wrap gap-2">
-          {CAPABILITIES.map((capability) => (
+          {supportedCapabilities === null ? (
+            <div role="status" className="text-sm text-amber-700 dark:text-amber-300">
+              Backend upgrade required before Hades capability grants can be managed.
+            </div>
+          ) : supportedCapabilities.map((capability) => (
             <button
               key={capability}
               type="button"
@@ -256,7 +271,7 @@ function HadesContent({
       </Panel>
 
       <TokensTable tokens={snapshot.bootstrapTokens} setRevoke={setRevoke} />
-      <SimpleTable title="Linked workspaces" rows={snapshot.workspaces} columns={["project_name", "display_path", "agent_label", "status", "updated_at"]} />
+      <SimpleTable title="Linked workspaces" rows={snapshot.workspaces} columns={["project_name", "display_path", "agent_label", "status", "declared_capabilities", "effective_capabilities", "updated_at"]} />
       <SimpleTable title="Jobs" rows={snapshot.jobs} columns={["id", "capability", "status", "policy", "created_at"]} />
       <MemoryProposalTable rows={snapshot.memoryProposals} />
     </div>
@@ -293,6 +308,7 @@ function TokensTable({ tokens, setRevoke }: { tokens: HadesBootstrapToken[]; set
               <th className="px-4 py-2 font-medium">Name</th>
               <th className="px-3 py-2 font-medium">Project</th>
               <th className="px-3 py-2 font-medium">Prefix</th>
+              <th className="px-3 py-2 font-medium">Allowed capabilities</th>
               <th className="px-3 py-2 font-medium">Last used</th>
               <th className="px-3 py-2 font-medium">Status</th>
               <th className="px-3 py-2 text-right font-medium">Actions</th>
@@ -303,6 +319,7 @@ function TokensTable({ tokens, setRevoke }: { tokens: HadesBootstrapToken[]; set
               <td className="px-4 py-2.5 font-medium">{token.name}</td>
               <td className="px-3 py-2.5 text-xs text-muted-foreground">{token.project_name || token.project_id}</td>
               <td className="px-3 py-2.5 font-mono text-xs">{token.token_prefix}<span className="text-muted-foreground">...hidden</span></td>
+              <td className="max-w-sm px-3 py-2.5 text-xs text-muted-foreground">{formatCapabilities(token.allowed_capabilities)}</td>
               <td className="px-3 py-2.5 text-xs text-muted-foreground">{time(token.last_used_at)}</td>
               <td className="px-3 py-2.5"><Pill tone={token.revoked_at ? "red" : "green"}>{token.revoked_at ? "Revoked" : "Active"}</Pill></td>
               <td className="px-3 py-2.5 text-right"><Button size="sm" variant="ghost" disabled={Boolean(token.revoked_at)} onClick={() => setRevoke(token)}><Trash2 className="h-3.5 w-3.5" /></Button></td>
@@ -349,7 +366,13 @@ function SimpleTable({ title, rows, columns }: { title: string; rows: any[]; col
             <tr key={row.id} className="border-b border-border/60 last:border-0 hover:bg-accent/30">
               {columns.map((column) => (
                 <td key={column} className="max-w-xs truncate px-4 py-2.5 font-mono text-xs">
-                  {column === "status" ? <Pill tone={statusTone(row[column])}>{String(row[column] ?? "n/a")}</Pill> : column.endsWith("_at") ? time(row[column]) : String(row[column] ?? "")}
+                  {column === "status"
+                    ? <Pill tone={statusTone(row[column])}>{String(row[column] ?? "n/a")}</Pill>
+                    : column.endsWith("_at")
+                      ? time(row[column])
+                      : column === "declared_capabilities" || column === "effective_capabilities"
+                        ? formatCapabilities(row[column])
+                        : String(row[column] ?? "")}
                 </td>
               ))}
             </tr>
@@ -359,6 +382,13 @@ function SimpleTable({ title, rows, columns }: { title: string; rows: any[]; col
       {rows.length === 0 ? <div className="px-4 py-8 text-center text-sm text-muted-foreground">No records yet.</div> : null}
     </Panel>
   );
+}
+
+function formatCapabilities(value: HadesCapability[] | null | undefined): string {
+  if (value === undefined) return "Not reported";
+  if (value === null) return "All supported (default)";
+  if (!Array.isArray(value) || value.length === 0) return "None";
+  return value.join(" · ");
 }
 
 function Field({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (value: string) => void; type?: string }) {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Hades;
 
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesAgentJobPolicy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -12,6 +13,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ProjectAwarenessBootstrapController extends Controller
 {
+    public function __construct(private readonly HadesAgentJobPolicy $jobPolicy) {}
+
     public function __invoke(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -29,6 +32,11 @@ class ProjectAwarenessBootstrapController extends Controller
 
         if ($binding instanceof JsonResponse) {
             return $binding;
+        }
+
+        if ($agent->status !== 'active'
+            || ! in_array('populate_project_wiki', $this->jobPolicy->effectiveCapabilities($agent), true)) {
+            return $this->capabilityError();
         }
 
         $active = DB::table('hades_agent_jobs')
@@ -155,5 +163,16 @@ class ProjectAwarenessBootstrapController extends Controller
     private function error(string $code, string $message, int $status): JsonResponse
     {
         return response()->json(['error' => ['code' => $code, 'message' => $message]], $status);
+    }
+
+    private function capabilityError(): JsonResponse
+    {
+        return response()->json([
+            'error' => [
+                'code' => 'agent_capability_not_enabled',
+                'message' => 'Enable populate_project_wiki for this active agent before requesting wiki awareness.',
+                'details' => ['capability' => 'populate_project_wiki'],
+            ],
+        ], Response::HTTP_CONFLICT);
     }
 }

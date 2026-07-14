@@ -1312,7 +1312,13 @@ export interface BackupDryRunReport {
 
 // ---------- Hades Admin ----------
 
-export type HadesCapability = "read_files" | "sync_git_tree" | "populate_backend_ast" | "populate_project_wiki";
+export type HadesCapability =
+  | "read_files"
+  | "read_source_slice"
+  | "project_inspection"
+  | "sync_git_tree"
+  | "populate_backend_ast"
+  | "populate_project_wiki";
 
 export interface HadesProjectSummary {
   id: string;
@@ -1341,6 +1347,8 @@ export interface HadesWorkspaceBinding {
   display_path: string;
   status: string;
   agent_label: string | null;
+  declared_capabilities?: HadesCapability[] | null;
+  effective_capabilities?: HadesCapability[] | null;
   updated_at?: string | null;
 }
 
@@ -1372,6 +1380,7 @@ export interface HadesMemoryProposal {
 }
 
 export interface HadesAdminSnapshot {
+  supported_capabilities?: HadesCapability[];
   projects: HadesProjectSummary[];
   bootstrapTokens: HadesBootstrapToken[];
   workspaces: HadesWorkspaceBinding[];
@@ -1383,7 +1392,7 @@ export interface HadesBootstrapTokenCreateInput {
   project_id: string;
   name: string;
   expires_in_days?: number;
-  allowed_capabilities?: HadesCapability[];
+  allowed_capabilities?: HadesCapability[] | null;
   base_url?: string;
   project_name?: string;
 }

@@ -9,6 +9,32 @@ jest.mock("@/api/mockData", () => require("./mockData"), { virtual: true });
 import { mockApi } from "./mockApi";
 
 describe("mockApi approved Hades Agent contracts", () => {
+  it("uses the complete backend capability catalog for defaults and preserves an explicit empty grant", async () => {
+    const expected = [
+      "read_files",
+      "read_source_slice",
+      "project_inspection",
+      "sync_git_tree",
+      "populate_backend_ast",
+      "populate_project_wiki",
+    ];
+    const snapshot = await mockApi.getHadesAdmin();
+    expect(snapshot.supported_capabilities).toEqual(expected);
+
+    const defaultToken = await mockApi.createHadesBootstrapToken({
+      project_id: "proj-core",
+      name: "Default catalog",
+    });
+    expect(defaultToken.token.allowed_capabilities).toEqual(expected);
+
+    const emptyToken = await mockApi.createHadesBootstrapToken({
+      project_id: "proj-core",
+      name: "Empty grant",
+      allowed_capabilities: [],
+    });
+    expect(emptyToken.token.allowed_capabilities).toEqual([]);
+  });
+
   it("creates manual project memory as user_inserted", async () => {
     await mockApi.login({ email: "pm@devboard.local", password: "demo", role: "pm" });
 

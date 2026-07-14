@@ -15,6 +15,14 @@ class HadesCapabilityPolicy
     ];
 
     /**
+     * @return list<string>
+     */
+    public function supportedNames(): array
+    {
+        return self::SUPPORTED_M1_CAPABILITIES;
+    }
+
+    /**
      * @param  array<mixed>  $capabilities
      * @return list<string>
      */
@@ -36,7 +44,10 @@ class HadesCapabilityPolicy
             }
         }
 
-        return array_values(array_unique($names));
+        return array_values(array_filter(
+            $this->supportedNames(),
+            fn (string $capability): bool => in_array($capability, $names, true),
+        ));
     }
 
     /**
@@ -46,10 +57,8 @@ class HadesCapabilityPolicy
      */
     public function intersect(array $declared, array $allowed): array
     {
-        $allowed = $allowed === [] ? self::SUPPORTED_M1_CAPABILITIES : $allowed;
-
         return array_values(array_filter(
-            self::SUPPORTED_M1_CAPABILITIES,
+            $this->supportedNames(),
             fn (string $capability): bool => in_array($capability, $declared, true)
                 && in_array($capability, $allowed, true),
         ));
@@ -84,7 +93,7 @@ class HadesCapabilityPolicy
     public function m1Limits(): array
     {
         return [
-            'max_capabilities_per_agent' => count(self::SUPPORTED_M1_CAPABILITIES),
+            'max_capabilities_per_agent' => count($this->supportedNames()),
         ];
     }
 }

@@ -15,6 +15,8 @@ class HadesTokenService
 
     private const AGENT_PREFIX = 'hades_agent_';
 
+    public function __construct(private readonly HadesCapabilityPolicy $capabilities) {}
+
     /**
      * @return array{token: object}
      *
@@ -127,14 +129,9 @@ class HadesTokenService
         $secret = Str::random(64);
         $prefix = self::BOOTSTRAP_PREFIX.$id;
         $now = now();
-        $allowed = array_values(array_filter($allowedCapabilities ?? [
-            'read_files',
-            'read_source_slice',
-            'project_inspection',
-            'sync_git_tree',
-            'populate_backend_ast',
-            'populate_project_wiki',
-        ], 'is_string'));
+        $allowed = $allowedCapabilities === null
+            ? $this->capabilities->supportedNames()
+            : $this->capabilities->normalizeNames($allowedCapabilities);
 
         DB::table('hades_bootstrap_tokens')->insert([
             'id' => $id,
