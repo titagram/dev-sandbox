@@ -1375,7 +1375,46 @@ function validGraphHandle(value: unknown): value is string {
   return typeof value === "string" && /^gh1_[A-Za-z0-9_-]{43}$/.test(value);
 }
 
+const DASHBOARD_GRAPH_QUERY_TYPES = new Set([
+  "scopes", "overview", "search", "detail", "neighborhood", "path", "impact",
+]);
+const DASHBOARD_GRAPH_SCOPE_TYPES = new Set(["repository", "workspace_binding"]);
+const DASHBOARD_GRAPH_DIRECTIONS = new Set(["in", "out", "any"]);
+const DASHBOARD_GRAPH_FAMILIES = new Set(["call", "dependency", "route", "test", "table"]);
+const DASHBOARD_GRAPH_ALLOWED_FIELDS = new Set([
+  "type", "scope_type", "scope_id", "query", "node_handle", "from_handle", "to_handle",
+  "direction", "families", "max_depth", "limit", "cursor",
+]);
+
 function validateDashboardGraphQuery(request: DashboardGraphQueryRequest): void {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    graphError("validation_failed", "422");
+  }
+  const runtimeRequest = request as unknown as Record<string, unknown>;
+  if (Object.keys(runtimeRequest).some((field) => !DASHBOARD_GRAPH_ALLOWED_FIELDS.has(field))
+    || !DASHBOARD_GRAPH_QUERY_TYPES.has(runtimeRequest.type as string)) {
+    graphError("validation_failed", "422");
+  }
+  if (runtimeRequest.scope_type !== undefined && runtimeRequest.scope_type !== null
+    && (typeof runtimeRequest.scope_type !== "string"
+      || !DASHBOARD_GRAPH_SCOPE_TYPES.has(runtimeRequest.scope_type))) {
+    graphError("validation_failed", "422");
+  }
+  if (runtimeRequest.scope_id !== undefined && runtimeRequest.scope_id !== null
+    && (typeof runtimeRequest.scope_id !== "string" || runtimeRequest.scope_id.length > 191)) {
+    graphError("validation_failed", "422");
+  }
+  if (runtimeRequest.direction !== undefined
+    && (typeof runtimeRequest.direction !== "string"
+      || !DASHBOARD_GRAPH_DIRECTIONS.has(runtimeRequest.direction))) {
+    graphError("validation_failed", "422");
+  }
+  if (runtimeRequest.families !== undefined
+    && (!Array.isArray(runtimeRequest.families)
+      || runtimeRequest.families.some((family) =>
+        typeof family !== "string" || !DASHBOARD_GRAPH_FAMILIES.has(family)))) {
+    graphError("validation_failed", "422");
+  }
   const maxLimit = request.type === "scopes" || request.type === "search" ? 100 : 50;
   if (request.limit !== undefined
     && (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > maxLimit)) {
@@ -1423,13 +1462,44 @@ function graphScopeError(request: DashboardGraphQueryRequest): void {
   if (!exists) graphError("scope_not_found", "404");
 }
 
-function cursorOffset(cursor: string | null | undefined, prefix: string): number {
+interface MockGraphCursorContext {
+  projectId: string;
+  queryType: "scopes" | "search";
+  scopeType: string | null;
+  scopeId: string | null;
+  query: string;
+  offset: number;
+}
+
+let mockGraphCursorSequence = 0;
+const mockGraphCursors = new Map<string, MockGraphCursorContext>();
+
+function normalizeGraphQuery(query: string): string {
+  return query.replace(/\s+/gu, " ").trim();
+}
+
+function createGraphCursor(context: MockGraphCursorContext): string {
+  mockGraphCursorSequence += 1;
+  const cursor = `mock-gc1_${mockGraphCursorSequence.toString(36).padStart(8, "0")}`;
+  mockGraphCursors.set(cursor, context);
+  return cursor;
+}
+
+function cursorOffset(
+  cursor: string | null | undefined,
+  expected: Omit<MockGraphCursorContext, "offset">,
+): number {
   if (cursor == null) return 0;
-  const match = cursor.match(/^mock-(scopes|search):(\d+)$/);
-  if (!match || match[1] !== prefix) graphError("invalid_cursor", "422");
-  const offset = Number(match[2]);
-  if (!Number.isSafeInteger(offset) || offset < 0) graphError("invalid_cursor", "422");
-  return offset;
+  const context = mockGraphCursors.get(cursor);
+  if (!context
+    || context.projectId !== expected.projectId
+    || context.queryType !== expected.queryType
+    || context.scopeType !== expected.scopeType
+    || context.scopeId !== expected.scopeId
+    || context.query !== expected.query) {
+    graphError("invalid_cursor", "422");
+  }
+  return context.offset;
 }
 
 function graphNode(handle: string | undefined): DashboardGraphNode | undefined {
@@ -1444,7 +1514,14 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
   validateDashboardGraphQuery(request);
 
   if (request.type === "scopes") {
-    const offset = cursorOffset(request.cursor, "scopes");
+    const cursorContext = {
+      projectId,
+      queryType: "scopes" as const,
+      scopeType: null,
+      scopeId: null,
+      query: "",
+    };
+    const offset = cursorOffset(request.cursor, cursorContext);
     const limit = request.limit ?? 50;
     const page = DASHBOARD_GRAPH_SCOPES.slice(offset, offset + limit);
     const hasMore = offset + page.length < DASHBOARD_GRAPH_SCOPES.length;
@@ -1452,9 +1529,11 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
       found: true,
       items: clone(page),
       returned: page.length,
-      next_cursor: hasMore ? `mock-scopes:${offset + page.length}` : null,
+      next_cursor: hasMore
+        ? createGraphCursor({ ...cursorContext, offset: offset + page.length })
+        : null,
       has_more: hasMore,
-      truncated: hasMore,
+      truncated: false,
     });
   }
 
@@ -1466,11 +1545,20 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
   }
 
   if (request.type === "search") {
-    const query = (request.query ?? "").trim().toLocaleLowerCase();
+    const normalizedQuery = normalizeGraphQuery(request.query ?? "");
+    if (normalizedQuery === "") graphError("invalid_query", "422");
+    const query = normalizedQuery.toLocaleLowerCase();
     const matches = DASHBOARD_GRAPH_NODES
       .filter((node) => node.label?.toLocaleLowerCase().includes(query))
       .map((node, index) => ({ ...node, score: 1 - index / 10 }));
-    const offset = cursorOffset(request.cursor, "search");
+    const cursorContext = {
+      projectId,
+      queryType: "search" as const,
+      scopeType: request.scope_type ?? null,
+      scopeId: request.scope_id ?? null,
+      query: normalizedQuery,
+    };
+    const offset = cursorOffset(request.cursor, cursorContext);
     const limit = request.limit ?? 50;
     const items = matches.slice(offset, offset + limit);
     const hasMore = offset + items.length < matches.length;
@@ -1478,9 +1566,11 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
       found: true,
       items: clone(items),
       returned: items.length,
-      next_cursor: hasMore ? `mock-search:${offset + items.length}` : null,
+      next_cursor: hasMore
+        ? createGraphCursor({ ...cursorContext, offset: offset + items.length })
+        : null,
       has_more: hasMore,
-      truncated: hasMore,
+      truncated: false,
     });
   }
 

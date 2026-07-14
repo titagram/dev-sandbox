@@ -21,6 +21,14 @@ function jsonResponse(payload: unknown): Response {
   } as Response;
 }
 
+function jsonErrorResponse(status: number, payload: unknown): Response {
+  return {
+    ok: false,
+    status,
+    text: async () => JSON.stringify(payload),
+  } as Response;
+}
+
 describe("httpApi multiproject dashboard endpoints", () => {
   const fetchMock = jest.fn();
 
@@ -141,6 +149,28 @@ describe("httpApi multiproject dashboard endpoints", () => {
     const [url, options] = fetchMock.mock.calls[0];
     expect(String(url)).not.toContain(forbiddenPluginNamespace);
     expect(JSON.parse(options.body)).toEqual(request);
+  });
+
+  it("surfaces the dashboard graph reason when an error envelope has no message", async () => {
+    Object.defineProperty(document, "cookie", {
+      configurable: true,
+      value: "XSRF-TOKEN=test-token",
+    });
+    fetchMock.mockResolvedValueOnce(jsonErrorResponse(422, {
+      protocol_version: "v1",
+      project_id: "proj-core",
+      query_type: "search",
+      found: false,
+      reason: "invalid_cursor",
+    }));
+
+    await expect(httpApi.queryProjectGraph("proj-core", {
+      type: "search",
+      scope_type: "repository",
+      scope_id: "repo-api",
+      query: "Import",
+      cursor: "invalid",
+    })).rejects.toEqual({ message: "invalid_cursor", code: "422" });
   });
 
   it("uses dashboard API endpoints for project wiki refresh requests", async () => {

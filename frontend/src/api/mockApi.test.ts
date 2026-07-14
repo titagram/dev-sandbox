@@ -26,7 +26,7 @@ describe("mockApi approved Hades Agent contracts", () => {
       returned: 1,
       limit: 1,
       has_more: true,
-      truncated: true,
+      truncated: false,
       next_cursor: expect.any(String),
     }));
     expect(scopes.items[0]).toEqual(expect.objectContaining({
@@ -49,6 +49,7 @@ describe("mockApi approved Hades Agent contracts", () => {
       score: expect.any(Number),
     });
     expect(search.next_cursor).toEqual(expect.any(String));
+    expect(search).toEqual(expect.objectContaining({ has_more: true, truncated: false }));
 
     const detail = await mockApi.queryProjectGraph("proj-core", {
       type: "detail", ...scope, node_handle: selected.handle,
@@ -109,6 +110,17 @@ describe("mockApi approved Hades Agent contracts", () => {
       .rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
     await expect(mockApi.queryProjectGraph("proj-core", { type: "search", ...scope, query: "" }))
       .rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", { type: "search", ...scope, query: "   " }))
+      .rejects.toEqual(expect.objectContaining({ message: "invalid_query", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "neighborhood", ...scope, node_handle: validHandle, direction: "sideways",
+    } as any)).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "neighborhood", ...scope, node_handle: validHandle, families: ["mystery"],
+    } as any)).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "overview", ...scope, internal_id: "must-not-cross-dashboard-boundary",
+    } as any)).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
     await expect(mockApi.queryProjectGraph("proj-core", {
       type: "detail", ...scope, node_handle: "preview-node-id",
     })).rejects.toEqual(expect.objectContaining({ message: "invalid_handle", code: "422" }));
@@ -121,6 +133,47 @@ describe("mockApi approved Hades Agent contracts", () => {
     await expect(mockApi.queryProjectGraph("proj-core", {
       type: "impact", ...scope, node_handle: validHandle, max_depth: 1,
     })).rejects.toEqual(expect.objectContaining({ message: "validation_failed", code: "422" }));
+  });
+
+  it("binds pagination cursors to their project, scope, normalized query, and query type", async () => {
+    const repositoryScope = { scope_type: "repository" as const, scope_id: "repo-api" };
+    const bindingScope = { scope_type: "workspace_binding" as const, scope_id: "binding-core-api" };
+    const firstSearchPage = await mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...repositoryScope, query: "Import", limit: 1,
+    });
+    if (firstSearchPage.query_type === "scopes" || !firstSearchPage.next_cursor) {
+      throw new Error("Expected a paginated search response.");
+    }
+
+    const normalizedContinuation = await mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...repositoryScope, query: "  Import  ", limit: 1,
+      cursor: firstSearchPage.next_cursor,
+    });
+    expect(normalizedContinuation.query_type).toBe("search");
+
+    await expect(mockApi.queryProjectGraph("proj-pay", {
+      type: "search", ...repositoryScope, query: "Import", limit: 1,
+      cursor: firstSearchPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...bindingScope, query: "Import", limit: 1,
+      cursor: firstSearchPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "search", ...repositoryScope, query: "Artifact", limit: 1,
+      cursor: firstSearchPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+    await expect(mockApi.queryProjectGraph("proj-core", {
+      type: "scopes", limit: 1, cursor: firstSearchPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
+
+    const firstScopesPage = await mockApi.queryProjectGraph("proj-core", { type: "scopes", limit: 1 });
+    if (firstScopesPage.query_type !== "scopes" || !firstScopesPage.next_cursor) {
+      throw new Error("Expected a paginated scopes response.");
+    }
+    await expect(mockApi.queryProjectGraph("proj-pay", {
+      type: "scopes", limit: 1, cursor: firstScopesPage.next_cursor,
+    })).rejects.toEqual(expect.objectContaining({ message: "invalid_cursor", code: "422" }));
   });
 
   it("returns coherent graph outcomes for empty searches and unknown well-formed handles", async () => {

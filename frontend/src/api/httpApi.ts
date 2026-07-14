@@ -138,7 +138,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   const text = await res.text();
   const data = parseJson(text);
   if (!res.ok) {
-    throw { message: data?.message || `Request failed (${res.status})`, code: String(res.status) };
+    throw { message: data?.message || data?.reason || `Request failed (${res.status})`, code: String(res.status) };
   }
   // Laravel resources commonly wrap payloads in { data: ... }
   return (data && typeof data === "object" && "data" in data ? data.data : data) as T;
