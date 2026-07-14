@@ -11,7 +11,7 @@ import { titleCase, relativeTime } from "@/lib/format";
 import { Boxes, PlayCircle } from "lucide-react";
 
 const KIND_COLOR: Record<GraphNodeKind, string> = {
-  module: "#0ea5a3", class: "#7c5cff", function: "#f59e0b", route: "#38bdf8", model: "#34d399", service: "#fb7185",
+  module: "#0ea5a3", file: "#64748b", class: "#7c5cff", function: "#f59e0b", route: "#38bdf8", model: "#34d399", service: "#fb7185", unknown: "#94a3b8",
 };
 
 function GraphCanvas({ g, selected, onSelect }: { g: GraphView; selected: string | null; onSelect: (id: string | null) => void }) {

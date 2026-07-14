@@ -129,46 +129,49 @@ docker info --format '{{.OSType}}/{{.Architecture}}'
 ### 1. Avvia lo stack
 
 ```bash
-docker compose -f docker-compose.devboard.yaml up -d app worker scheduler node postgres neo4j
+docker compose -f docker-compose.devboard.yaml up -d --build --wait
 ```
 
 Se hai collisioni di porte, cambia solo i binding host:
 
 ```bash
 DEVBOARD_APP_PORT=18000 \
-DEVBOARD_VITE_PORT=15173 \
 DEVBOARD_POSTGRES_PORT=15432 \
 DEVBOARD_NEO4J_HTTP_PORT=17474 \
 DEVBOARD_NEO4J_BOLT_PORT=17687 \
-docker compose -f docker-compose.devboard.yaml up -d app worker scheduler node postgres neo4j
+docker compose -f docker-compose.devboard.yaml up -d --build --wait
 ```
 
 Per validare la configurazione `amd64` target Ubuntu x64 da Apple Silicon:
 
 ```bash
 docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml config
-docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml up -d app worker scheduler node postgres neo4j
+docker compose -f docker-compose.devboard.yaml -f docker-compose.devboard.amd64.yaml up -d --build --wait
 ```
 
 Nota: questo verifica la configurazione Docker `amd64`, ma **non sostituisce** una vera validazione su host Ubuntu x64.
 
-### Esposizione Traefik
+### Server pubblico con Traefik separato
 
-Su host con Traefik gia` attivo sulla rete Docker esterna `traefik_default`, usa l'override esclusivamente sopra il compose production. Gli asset Inertia/Vite vengono compilati nell'immagine backend production:
+Traefik e` infrastruttura condivisa del server e **non** e` un servizio del progetto Hades. Il progetto possiede soltanto le proprie label Docker e il collegamento alla rete esterna `traefik_default`.
+
+Sul server ufficiale, `.env` imposta `COMPOSE_FILE=docker-compose.devboard.yaml:docker-compose.devboard.traefik.yaml`. Dalla root del repository il comando canonico e` quindi:
 
 ```bash
-docker compose \
-  -f docker-compose.devboard.prod.yaml \
-  -f docker-compose.devboard.traefik.yaml \
-  up -d app worker scheduler postgres neo4j
+docker compose up -d --build --wait
 ```
 
-Imposta dominio, rete, resolver e basic auth con le variabili documentate nel runbook production. Traefik inoltra al container `app` sulla porta `8000`; PostgreSQL e Neo4j non hanno router o porte host.
+Questo avvia `app`, il frontend React/Nginx, `worker`, `scheduler`, PostgreSQL e Neo4j, ma non crea, riavvia o rimuove Traefik. Non cancellare `COMPOSE_FILE` dal `.env` del server e non inserire il servizio `traefik` nei Compose del progetto.
+
+Dettagli, preflight, routing e recovery:
+
+- `docs/runbooks/traefik-integration.md`
+- `~/traefik-readme.md` sul server
 
 ### Profilo production
 
 Il profilo production separato e` `docker-compose.devboard.prod.yaml`.
-Builda Laravel e il frontend Inertia/Vite da `backend/` nella stessa immagine PHP-FPM + nginx, richiede segreti espliciti, include worker e scheduler e non espone PostgreSQL o Neo4j su porte host.
+Builda Laravel e il frontend React dedicato, richiede segreti espliciti, include worker e scheduler e non espone PostgreSQL o Neo4j su porte host.
 
 Runbook:
 
@@ -197,9 +200,9 @@ Questi valori sono quelli del `docker-compose.devboard.yaml`.
 - URL: [http://127.0.0.1:18000](http://127.0.0.1:18000)
 - login page: [http://127.0.0.1:18000/login](http://127.0.0.1:18000/login)
 
-### Vite dev server
+### Frontend React
 
-- URL: [http://127.0.0.1:15173](http://127.0.0.1:15173)
+Il frontend e` servito dal container `frontend` tramite Traefik sul server pubblico. Non esiste piu` un servizio Vite/Inertia attivo nel Compose canonico.
 
 ### PostgreSQL
 

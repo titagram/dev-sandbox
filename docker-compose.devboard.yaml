@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: docker/devboard/backend.Dockerfile
     working_dir: /workspace/backend
-    command: sh -lc "composer install && php artisan serve --host=0.0.0.0 --port=8000 --no-reload"
+    command: sh -lc "git config --global --add safe.directory /workspace && composer install && php artisan serve --host=0.0.0.0 --port=8000 --no-reload"
     environment:
       APP_ENV: local
       APP_KEY: "${APP_KEY:?APP_KEY is required}"
@@ -35,12 +35,23 @@ services:
       - "${DEVBOARD_APP_BIND:-127.0.0.1}:${DEVBOARD_APP_PORT:-18000}:8000"
     volumes:
       - .:/workspace
+      - devboard-backend-vendor:/workspace/backend/vendor
       - devboard-composer-cache:/tmp/composer-cache
     depends_on:
       postgres:
         condition: service_healthy
       neo4j:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "php -r 'exit(@file_get_contents(\"http://127.0.0.1:8000/api/hades/v1/health\") === false ? 1 : 0);'",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
 
   frontend:
     build:
@@ -52,14 +63,20 @@ services:
     restart: unless-stopped
     depends_on:
       app:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   worker:
     build:
       context: .
       dockerfile: docker/devboard/backend.Dockerfile
     working_dir: /workspace/backend
-    command: sh -lc "composer install && php artisan queue:work --queue=default --sleep=1 --tries=3 --timeout=600"
+    command: php artisan queue:work --queue=default --sleep=1 --tries=3 --timeout=600
     environment:
       APP_ENV: local
       APP_KEY: "${APP_KEY:?APP_KEY is required}"
@@ -86,8 +103,11 @@ services:
       NEO4J_PASSWORD: "${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}"
     volumes:
       - .:/workspace
+      - devboard-backend-vendor:/workspace/backend/vendor
       - devboard-composer-cache:/tmp/composer-cache
     depends_on:
+      app:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       neo4j:
@@ -104,7 +124,7 @@ services:
       context: .
       dockerfile: docker/devboard/backend.Dockerfile
     working_dir: /workspace/backend
-    command: sh -lc "composer install && php artisan schedule:work"
+    command: php artisan schedule:work
     environment:
       APP_ENV: local
       APP_KEY: "${APP_KEY:?APP_KEY is required}"
@@ -131,8 +151,11 @@ services:
       NEO4J_PASSWORD: "${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}"
     volumes:
       - .:/workspace
+      - devboard-backend-vendor:/workspace/backend/vendor
       - devboard-composer-cache:/tmp/composer-cache
     depends_on:
+      app:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       neo4j:
@@ -183,6 +206,7 @@ services:
       retries: 30
 
 volumes:
+  devboard-backend-vendor:
   devboard-composer-cache:
   devboard-postgres-data:
   devboard-neo4j-data:

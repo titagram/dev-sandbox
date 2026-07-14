@@ -9,7 +9,8 @@ export type SourceType =
   | "local_analyzer"
   | "server_history"
   | "user_manual"
-  | "ai_generated";
+  | "ai_generated"
+  | "canonical_graph";
 
 export type SourceStatus =
   | "verified_from_code"
@@ -980,11 +981,13 @@ export interface WikiRefreshRequest {
 
 export type GraphNodeKind =
   | "module"
+  | "file"
   | "class"
   | "function"
   | "route"
   | "model"
-  | "service";
+  | "service"
+  | "unknown";
 
 export interface GraphNode {
   id: string;
@@ -1003,11 +1006,31 @@ export interface GraphEdge {
   kind: "calls" | "imports" | "extends" | "routes_to" | "uses";
 }
 
+export interface GraphSourceScope {
+  type: string;
+  id: string;
+}
+
+export interface GraphScopeMetadata {
+  type: string;
+  id: string;
+  quality: string | null;
+  head_commit: string | null;
+  created_at: string | null;
+  projection_status: string;
+}
+
 export interface GraphView {
   snapshot_id: string | null;
   run_id: string | null;
   generated_at: string;
   source: SourceMeta;
+  source_scope?: GraphSourceScope | null;
+  graph_version?: string | null;
+  quality?: string | null;
+  projection_status?: string | null;
+  scopes?: GraphScopeMetadata[];
+  scopes_truncated?: boolean;
   stats: { nodes: number; edges: number; modules: number; routes: number };
   nodes: GraphNode[];
   edges: GraphEdge[];

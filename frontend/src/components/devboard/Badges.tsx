@@ -7,7 +7,7 @@ import {
 import { titleCase } from "@/lib/format";
 import {
   CircleDot, CircleCheck, CircleX, CircleAlert, Loader2, Clock, FileCheck2,
-  GitCommitHorizontal, ScanSearch, History, PenLine, Sparkles, ShieldAlert,
+  GitCommitHorizontal, ScanSearch, History, PenLine, Sparkles, ShieldAlert, Boxes,
 } from "lucide-react";
 
 type Tone = "green" | "amber" | "red" | "blue" | "violet" | "slate" | "teal";
@@ -79,6 +79,7 @@ export const SourceStatusBadge = ({ status, testId }: { status: SourceStatus; te
 const ST_ICON: Record<SourceType, any> = {
   local_plugin_snapshot: GitCommitHorizontal, local_plugin_diff: GitCommitHorizontal,
   local_analyzer: ScanSearch, server_history: History, user_manual: PenLine, ai_generated: Sparkles,
+  canonical_graph: Boxes,
 };
 const PIPE_TONE: Record<PipelineStatus, Tone> = {
   not_started: "slate", pending: "slate", in_progress: "blue",
@@ -109,7 +110,7 @@ export const SeverityBadge = ({ severity }: { severity: Severity }) => (
 
 /** Inline source provenance — every technical fact must show this. */
 export function SourceMetaInline({ source, className }: { source: SourceMeta; className?: string }) {
-  const Icon = ST_ICON[source.type];
+  const Icon = ST_ICON[source.type] ?? CircleDot;
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-[11px] text-muted-foreground", className)}>
       <Icon className="h-3 w-3 shrink-0" />

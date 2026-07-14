@@ -22,8 +22,9 @@ project:
     - "docs/ai-devboard/10_RUNTIME_SEQUENCES.md"
     - "docs/superpowers/plans/2026-07-14-react-frontend-repository-cutover.md"
     - "docs/runbooks/devboard-production-deploy.md"
+    - "docs/runbooks/traefik-integration.md"
   start_commands:
-    - "docker compose -f docker-compose.devboard.yaml up app frontend worker scheduler postgres neo4j"
+    - "docker compose up -d --build --wait (server .env selects base plus Traefik integration; Traefik itself remains external)"
   test_commands:
     - "cd backend && php artisan test"
     - "cd plugin && python -m pytest -q"
@@ -37,6 +38,7 @@ docker:
   compose_files:
     - "docker-compose.devboard.yaml"
     - "docker-compose.devboard.amd64.yaml"
+    - "docker-compose.devboard.traefik.yaml (routing overlay; does not define the shared Traefik service)"
   services:
     - "app"
     - "frontend"
