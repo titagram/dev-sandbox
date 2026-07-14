@@ -28,7 +28,7 @@ jest.mock("react-router-dom", () => {
     __setSearch: setSearch,
     useNavigate: () => navigate,
     useParams: () => state.params,
-    useSearchParams: () => [state.search, setSearch],
+    useSearchParams: () => [state.search, (next: any, options?: any) => setSearch(next, options)],
   };
 }, { virtual: true });
 jest.mock("@/hooks/useApi", () => {
@@ -145,6 +145,7 @@ describe("GraphPage global project selection", () => {
     await act(async () => { root.render(<GraphPage />); });
     await settle(); await settle();
     const first = mockGraphExplorerSeen[mockGraphExplorerSeen.length - 1];
+    await act(async () => { first.onQueryParamsChange({ scope_type: "repository", scope_id: "repo-1", symbol: "opaque-next" }); });
     await act(async () => { root.render(<GraphPage />); });
     await settle();
     const second = mockGraphExplorerSeen[mockGraphExplorerSeen.length - 1];

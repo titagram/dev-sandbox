@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useRef } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Boxes } from "lucide-react";
 import { api } from "@/api/devboardApi";
@@ -51,6 +51,8 @@ function GlobalGraphPage() {
 
 function ProjectGraphPage({ projectId }: { projectId: string }) {
   const [params, setParams] = useSearchParams();
+  const setParamsRef = useRef(setParams);
+  setParamsRef.current = setParams;
   const runId = params.get("run_id") || undefined;
   const snapshotId = params.get("snapshot_id") || undefined;
   const scopeTypeValue = params.get("scope_type");
@@ -65,7 +67,7 @@ function ProjectGraphPage({ projectId }: { projectId: string }) {
     [projectId],
   );
   const updateQuery = useCallback((values: { scope_type?: DashboardGraphScopeType; scope_id?: string; symbol?: string }) => {
-    setParams((current) => {
+    setParamsRef.current((current) => {
       const next = new URLSearchParams(current);
       (["scope_type", "scope_id", "symbol"] as const).forEach((key) => {
         const value = values[key];
@@ -73,7 +75,7 @@ function ProjectGraphPage({ projectId }: { projectId: string }) {
       });
       return next;
     }, { replace: true });
-  }, [setParams]);
+  }, []);
   return <div className="space-y-5" data-testid="graph-page">
     <PageHeader title="Graph" subtitle="Explore bounded dependencies, callers, impact, and paths in the canonical project graph."
       meta={<Link to={`/projects/${encodeURIComponent(projectId)}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5" />Project {projectId}</Link>} />

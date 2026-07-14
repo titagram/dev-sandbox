@@ -151,6 +151,8 @@ export default function GraphExplorer({
   const pathGeneration = useRef(0);
   const alive = useRef(true);
   const initialLoadKey = useRef<string | null>(null);
+  const onQueryParamsChangeRef = useRef(onQueryParamsChange);
+  onQueryParamsChangeRef.current = onQueryParamsChange;
 
   const invalidateRequests = useCallback(() => {
     searchGeneration.current += 1;
@@ -254,7 +256,7 @@ export default function GraphExplorer({
     setPathError(null);
     setDetails(null);
     setPath(null);
-    onQueryParamsChange?.({
+    onQueryParamsChangeRef.current?.({
       scope_type: selectedScope?.source_scope_type,
       scope_id: selectedScope?.source_scope_id,
       symbol: handle,
@@ -279,7 +281,7 @@ export default function GraphExplorer({
     } finally {
       if (alive.current && detailGeneration.current === generation) setDetailLoading(false);
     }
-  }, [onQueryParamsChange, queryGraph, scopedRequest, selectedScope]);
+  }, [queryGraph, scopedRequest, selectedScope]);
 
   useEffect(() => {
     if (!initialSymbol) {
@@ -321,7 +323,7 @@ export default function GraphExplorer({
     setDetailError(null);
     setPathError(null);
     const scope = scopes.find((candidate) => scopeKey(candidate) === key);
-    onQueryParamsChange?.({ scope_type: scope?.source_scope_type, scope_id: scope?.source_scope_id, symbol: undefined });
+    onQueryParamsChangeRef.current?.({ scope_type: scope?.source_scope_type, scope_id: scope?.source_scope_id, symbol: undefined });
   };
 
   const runPath = async () => {

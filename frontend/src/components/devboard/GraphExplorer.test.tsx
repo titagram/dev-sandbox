@@ -179,6 +179,25 @@ describe("GraphExplorer", () => {
     expect(queryGraph.mock.calls.filter(([request]: [DashboardGraphQueryRequest]) => request.type === "detail")).toHaveLength(2);
   });
 
+  it("does not reload an unchanged initial symbol when only the URL callback identity changes", async () => {
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => request.type === "detail"
+      ? Promise.resolve(detailEnvelope("opaque-stable", "Stable symbol"))
+      : Promise.resolve(envelope(request.type)));
+    const firstCallback = jest.fn();
+    const secondCallback = jest.fn();
+    await act(async () => { root.render(<GraphExplorer projectId="project-1" scopes={[scopes[0]]}
+      initialScopeType="repository" initialScopeId="repo-1" initialSymbol="opaque-stable"
+      queryGraph={queryGraph} onQueryParamsChange={firstCallback} />); });
+    await settle();
+    expect(queryGraph.mock.calls.filter(([request]: [DashboardGraphQueryRequest]) => request.type === "detail")).toHaveLength(1);
+    await act(async () => { root.render(<GraphExplorer projectId="project-1" scopes={[scopes[0]]}
+      initialScopeType="repository" initialScopeId="repo-1" initialSymbol="opaque-stable"
+      queryGraph={queryGraph} onQueryParamsChange={secondCallback} />); });
+    await settle();
+    expect(queryGraph.mock.calls.filter(([request]: [DashboardGraphQueryRequest]) => request.type === "detail")).toHaveLength(1);
+    expect(container.textContent).toContain("Stable symbol");
+  });
+
   it("keeps the newest selected symbol when an older detail bundle resolves last and starts neighborhoods in parallel", async () => {
     const pending = new Map<string, ReturnType<typeof deferred<DashboardGraphResponse>>[]>();
     const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => {
