@@ -10,7 +10,7 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Artisan::command('devboard:neo4j-rebuild {--reconcile} {--project=} {--scope-type=} {--scope-id=} {--dry-run} {--repository=} {--snapshot=} {--mode=}', function () {
+Artisan::command('devboard:neo4j-rebuild {--reconcile} {--force} {--project=} {--scope-type=} {--scope-id=} {--dry-run} {--repository=} {--snapshot=} {--mode=}', function () {
     $project = is_string($this->option('project')) && trim($this->option('project')) !== '' ? trim($this->option('project')) : null;
     $scopeType = is_string($this->option('scope-type')) && trim($this->option('scope-type')) !== '' ? trim($this->option('scope-type')) : null;
     $scopeId = is_string($this->option('scope-id')) && trim($this->option('scope-id')) !== '' ? trim($this->option('scope-id')) : null;
@@ -18,7 +18,8 @@ Artisan::command('devboard:neo4j-rebuild {--reconcile} {--project=} {--scope-typ
     $repository = $this->option('repository') ?: null;
     $snapshot = $this->option('snapshot') ?: null;
     $reconcile = (bool) $this->option('reconcile');
-    $canonicalOptions = $scopeType !== null || $scopeId !== null || (bool) $this->option('dry-run');
+    $force = (bool) $this->option('force');
+    $canonicalOptions = $force || $scopeType !== null || $scopeId !== null || (bool) $this->option('dry-run');
 
     if (! $reconcile) {
         if ($canonicalOptions) {
@@ -73,12 +74,18 @@ Artisan::command('devboard:neo4j-rebuild {--reconcile} {--project=} {--scope-typ
 
         return 1;
     }
+    if ($force && $scopeType === null) {
+        $this->error('Forced reconcile requires exact --scope-type and --scope-id.');
+
+        return 1;
+    }
 
     $summary = app(Neo4jRebuildService::class)->reconcile([
         'project_id' => $project,
         'scope_type' => $scopeType,
         'scope_id' => $scopeId,
         'dry_run' => (bool) $this->option('dry-run'),
+        'force' => $force,
     ]);
     $this->line(json_encode($summary, JSON_THROW_ON_ERROR));
 

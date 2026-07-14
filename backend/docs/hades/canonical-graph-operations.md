@@ -147,11 +147,28 @@ The non-dry syntax is intentionally not executable in this pre-gate section:
 --scope-id ID]`. Its real invocation appears only in the authorized procedure
 below.
 
-The JSON summary contains `scanned`, `queued`, `ready`, `failed`, `skipped`,
-and `dry_run`. Dry run performs bounded reads only: it neither creates
+The JSON summary contains `scanned`, `queued`, `forced`, `ready`, `failed`,
+`skipped`, and `dry_run`; the JSON field `"forced"` counts completed forced
+rebuilds, or the exact rebuild that a forced dry run would perform. Dry run performs bounded reads only: it neither creates
 projection rows nor dispatches jobs nor writes Neo4j. A real reconciliation
 queues the latest canonical artifact for each selected source; process the
 Laravel queue before expecting it to become `ready`.
+
+`--force` is synchronous and deliberately narrower than ordinary
+reconciliation. It requires `--reconcile`, one exact project, and one exact
+scope; there is no project-wide/global forced mode. Preview the exact forced
+operation before the human gate:
+
+```bash
+php artisan devboard:neo4j-rebuild --reconcile --force \
+  --project=<project_uuid> \
+  --scope-type=workspace_binding --scope-id=<binding_uuid> --dry-run
+```
+
+For repository scope, replace the final line with
+`--scope-type=repository --scope-id=<repository_uuid>`. A forced dry run does
+not acquire an attempt, connect to Neo4j, dispatch a job, or mutate either
+database.
 
 ### Bounded traversal rollout
 
@@ -300,19 +317,22 @@ all marker/count and HTTP smoke checks pass.
    Preserve `traefik_default`, router priorities, redirect and Basic Auth
    middleware, and the distinct frontend/API/Hades/plugin routes.
 
-8. **Run exactly one authorized graph mutation.** Use canonical reconciliation
-   for canonical sources:
+8. **Run exactly one authorized graph mutation.** For traversal/adjacency
+   upgrades, force exactly the scope named in the authorization:
 
    ```bash
    docker compose -f docker-compose.devboard.yaml exec -T app \
-     php artisan devboard:neo4j-rebuild --reconcile \
-       --project=<project_uuid>
+     php artisan devboard:neo4j-rebuild --reconcile --force \
+       --project=<project_uuid> \
+       --scope-type=workspace_binding --scope-id=<binding_uuid>
    ```
 
-   To restrict it, append both `--scope-type=workspace_binding
-   --scope-id=<binding_uuid>` or both `--scope-type=repository
-   --scope-id=<repository_uuid>`. For an explicitly authorized legacy rebuild,
-   use the historical forceful path instead:
+   For a repository, use `--scope-type=repository
+   --scope-id=<repository_uuid>`. Repeat only as separately authorized for each
+   additional exact scope. Omitting `--force` keeps ordinary reconciliation's
+   idempotent behavior: an exact `ready` projection is a no-op. For an
+   explicitly authorized legacy rebuild, use the historical forceful path
+   instead:
 
    ```bash
    docker compose -f docker-compose.devboard.yaml exec -T app \

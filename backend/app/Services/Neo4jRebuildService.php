@@ -26,8 +26,8 @@ class Neo4jRebuildService
     /**
      * Reconcile persisted canonical artifacts with their rebuildable Neo4j projections.
      *
-     * @param  array{project_id?: string|null, scope_type?: string|null, scope_id?: string|null, dry_run?: bool}  $filters
-     * @return array{scanned: int, queued: int, ready: int, failed: int, skipped: int, dry_run: bool}
+     * @param  array{project_id?: string|null, scope_type?: string|null, scope_id?: string|null, dry_run?: bool, force?: bool}  $filters
+     * @return array{scanned: int, queued: int, forced: int, ready: int, failed: int, skipped: int, dry_run: bool}
      */
     public function reconcile(array $filters = []): array
     {
@@ -35,11 +35,13 @@ class Neo4jRebuildService
         $scopeType = $this->optionalString($filters['scope_type'] ?? null);
         $scopeId = $this->optionalString($filters['scope_id'] ?? null);
         $dryRun = (bool) ($filters['dry_run'] ?? false);
-        $this->assertCanonicalFilters($projectId, $scopeType, $scopeId);
+        $force = (bool) ($filters['force'] ?? false);
+        $this->assertCanonicalFilters($projectId, $scopeType, $scopeId, $force);
 
         $summary = [
             'scanned' => 0,
             'queued' => 0,
+            'forced' => 0,
             'ready' => 0,
             'failed' => 0,
             'skipped' => 0,
@@ -58,7 +60,7 @@ class Neo4jRebuildService
             $this->processCanonicalItems([[
                 'graph' => $graph,
                 'failed' => false,
-            ]], $dryRun, $summary);
+            ]], $dryRun, $force, $summary);
 
             return $summary;
         }
@@ -73,7 +75,7 @@ class Neo4jRebuildService
                     self::RECONCILE_BATCH_SIZE,
                 );
                 $summary['scanned'] += count($batch['items']);
-                $this->processCanonicalItems($batch['items'], $dryRun, $summary);
+                $this->processCanonicalItems($batch['items'], $dryRun, $force, $summary);
                 $cursor = $batch['next_cursor'];
             } while ($cursor !== null);
         }
@@ -83,9 +85,9 @@ class Neo4jRebuildService
 
     /**
      * @param  list<array{graph: array|null, failed: bool}>  $items
-     * @param  array{scanned: int, queued: int, ready: int, failed: int, skipped: int, dry_run: bool}  $summary
+     * @param  array{scanned: int, queued: int, forced: int, ready: int, failed: int, skipped: int, dry_run: bool}  $summary
      */
-    private function processCanonicalItems(array $items, bool $dryRun, array &$summary): void
+    private function processCanonicalItems(array $items, bool $dryRun, bool $force, array &$summary): void
     {
         $graphs = [];
         foreach ($items as $item) {
@@ -112,12 +114,27 @@ class Neo4jRebuildService
                 $projection = $projections[$key] ?? null;
                 if ($projection !== null && ! $this->canonicalProjections->matchesGraph($projection, $graph)) {
                     $summary['failed']++;
+                } elseif ($force && ($projection === null || in_array($projection->status, ['ready', 'stale', 'failed'], true))) {
+                    $summary['forced']++;
                 } elseif ($projection === null || $projection->status === 'failed') {
                     $summary['queued']++;
                 } elseif ($projection->status === 'ready') {
                     $summary['ready']++;
                 } else {
                     $summary['skipped']++;
+                }
+            }
+
+            return;
+        }
+
+        if ($force) {
+            foreach ($graphs as $graph) {
+                try {
+                    $this->graphs->forceCanonicalGraphProjection($graph);
+                    $summary['forced']++;
+                } catch (\Throwable) {
+                    $summary['failed']++;
                 }
             }
 
@@ -269,7 +286,7 @@ class Neo4jRebuildService
         return trim($value);
     }
 
-    private function assertCanonicalFilters(?string $projectId, ?string $scopeType, ?string $scopeId): void
+    private function assertCanonicalFilters(?string $projectId, ?string $scopeType, ?string $scopeId, bool $force = false): void
     {
         if (($scopeType === null) !== ($scopeId === null)) {
             throw new InvalidArgumentException('Both --scope-type and --scope-id are required together.');
@@ -279,6 +296,9 @@ class Neo4jRebuildService
         }
         if ($scopeType !== null && ! in_array($scopeType, ['workspace_binding', 'repository'], true)) {
             throw new InvalidArgumentException('Invalid --scope-type. Use workspace_binding or repository.');
+        }
+        if ($force && $scopeType === null) {
+            throw new InvalidArgumentException('Forced reconcile requires exact --scope-type and --scope-id.');
         }
     }
 }

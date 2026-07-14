@@ -8,6 +8,7 @@ use App\Services\Graph\CanonicalGraphProjectionService;
 use App\Services\Graph\CanonicalGraphRepository;
 use App\Services\Graph\Neo4jCanonicalGraphProjector;
 use App\Services\Neo4j\Neo4jClient;
+use Closure;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -428,45 +429,19 @@ class GenesisGraphImportService
             $canonical = $this->canonicalNormalizer->normalize($payload, $canonical['identity']);
         }
 
-        $this->canonicalProjections->recoverStalePublications($canonical, $client, $this->canonicalProjector);
-        $publicationClaim = $force
-            ? $this->canonicalProjections->acquireForForcedRebuild($canonical)
-            : $this->canonicalProjections->acquireForWorkerPublication(
-                (string) $this->canonicalProjections->queue($canonical)->id,
-                $canonical,
-            );
-        $projection = $publicationClaim['projection'];
-        if ($publicationClaim['conflict'] || ! $this->canonicalProjections->matchesGraph($projection, $canonical)) {
-            throw new CanonicalGraphProjectionException((string) $projection->id, 'projection_conflict');
-        }
-        if (! $publicationClaim['claimed']) {
-            $current = $this->canonicalProjections->findForWorker((string) $projection->id);
-            if (! $force
-                && $current !== null
-                && $this->canonicalProjections->matchesGraph($current, $canonical)
-                && $current->status === 'ready'
-                && is_numeric($current->node_count)
-                && is_numeric($current->relationship_count)) {
-                $this->publishImportSuccess($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $current, $force);
-
-                return;
-            }
-
-            $failureCode = $force && $current !== null && $this->canonicalProjections->forcedRebuildActive((string) $current->id)
-                ? 'projection_busy'
-                : match ($current?->status) {
-                    'queued', 'projecting' => 'projection_busy',
-                    'ready' => 'projection_ready_unverified',
-                    'failed' => 'projection_failed',
-                    'stale' => 'projection_stale',
-                    default => 'projection_missing',
-                };
-
-            throw new CanonicalGraphProjectionException((string) $projection->id, $failureCode);
-        }
-
-        $projection->snapshot_id = $snapshotId;
-        try {
+        $prepareLegacyGraph = function () use (
+            $client,
+            $force,
+            $snapshotId,
+            $graphMode,
+            $baseSnapshotId,
+            $repositoryId,
+            $runId,
+            $deltaId,
+            $graph,
+            $nodes,
+            $relationships,
+        ): void {
             if ($force) {
                 $this->purgeLegacySnapshot($client, $snapshotId);
             }
@@ -512,10 +487,78 @@ class GenesisGraphImportService
                     }
                 }
             }
+        };
+        $ready = $this->publishCanonicalGraphProjection(
+            $canonical, $client, $force, $prepareLegacyGraph, $snapshotId,
+        );
+        $this->publishImportSuccess($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $ready, $force);
+    }
 
-            $heartbeat = function () use ($publicationClaim, $projection): bool {
+    /**
+     * Force-project one persisted canonical graph through the durable
+     * acquire/project/publish state machine. The existing ready projection
+     * remains authoritative until publishPublicationAttempt() succeeds.
+     */
+    public function forceCanonicalGraphProjection(array $canonical, ?Neo4jClient $client = null): object
+    {
+        $client ??= app(Neo4jClientFactory::class)->client();
+
+        return $this->publishCanonicalGraphProjection($canonical, $client, true);
+    }
+
+    private function publishCanonicalGraphProjection(
+        array $canonical,
+        Neo4jClient $client,
+        bool $force,
+        ?Closure $beforeProject = null,
+        ?string $snapshotId = null,
+    ): object {
+        $this->canonicalProjections->recoverStalePublications($canonical, $client, $this->canonicalProjector);
+        $claim = $force
+            ? $this->canonicalProjections->acquireForForcedRebuild($canonical)
+            : $this->canonicalProjections->acquireForWorkerPublication(
+                (string) $this->canonicalProjections->queue($canonical)->id,
+                $canonical,
+            );
+        $projection = $claim['projection'];
+
+        if ($claim['conflict'] || ! $this->canonicalProjections->matchesGraph($projection, $canonical)) {
+            throw new CanonicalGraphProjectionException((string) $projection->id, 'projection_conflict');
+        }
+        if (! $claim['claimed']) {
+            $current = $this->canonicalProjections->findForWorker((string) $projection->id);
+            if (! $force
+                && $current !== null
+                && $this->canonicalProjections->matchesGraph($current, $canonical)
+                && $current->status === 'ready'
+                && is_numeric($current->node_count)
+                && is_numeric($current->relationship_count)) {
+                return $current;
+            }
+
+            $failureCode = $force && $current !== null && $this->canonicalProjections->forcedRebuildActive((string) $current->id)
+                ? 'projection_busy'
+                : match ($current?->status) {
+                    'queued', 'projecting' => 'projection_busy',
+                    'ready' => 'projection_ready_unverified',
+                    'failed' => 'projection_failed',
+                    'stale' => 'projection_stale',
+                    default => 'projection_missing',
+                };
+
+            throw new CanonicalGraphProjectionException((string) $projection->id, $failureCode);
+        }
+
+        if ($snapshotId !== null) {
+            $projection->snapshot_id = $snapshotId;
+        }
+        try {
+            if ($beforeProject !== null) {
+                $beforeProject();
+            }
+            $heartbeat = function () use ($claim, $projection): bool {
                 if (! $this->canonicalProjections->heartbeatPublicationAttempt(
-                    (string) $publicationClaim['attempt_id'], (string) $publicationClaim['owner_token'],
+                    (string) $claim['attempt_id'], (string) $claim['owner_token'],
                 )) {
                     throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
                 }
@@ -524,24 +567,30 @@ class GenesisGraphImportService
             };
             $counts = $this->canonicalProjector->project($canonical, $projection, $client, $heartbeat);
             $ready = $this->canonicalProjections->publishPublicationAttempt(
-                (string) $publicationClaim['attempt_id'], (string) $publicationClaim['owner_token'],
-                $counts['nodes'], $counts['relationships'],
+                (string) $claim['attempt_id'],
+                (string) $claim['owner_token'],
+                $counts['nodes'],
+                $counts['relationships'],
                 fn () => $this->canonicalProjector->publishCurrent($projection, $client),
             );
             if ($ready === null) {
                 throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
             }
+
+            return $ready;
         } catch (Throwable $exception) {
             $failureCode = $exception instanceof CanonicalGraphProjectionException
                 ? $exception->failureCode
                 : 'neo4j_query_failed';
             $this->canonicalProjections->markPublicationAttemptFailed(
-                (string) $publicationClaim['attempt_id'], (string) $publicationClaim['owner_token'], $failureCode,
+                (string) $claim['attempt_id'], (string) $claim['owner_token'], $failureCode,
             );
             try {
                 $this->canonicalProjections->cleanupPublicationAttempt(
-                    (string) $publicationClaim['attempt_id'], (string) $publicationClaim['owner_token'],
-                    $client, $this->canonicalProjector,
+                    (string) $claim['attempt_id'],
+                    (string) $claim['owner_token'],
+                    $client,
+                    $this->canonicalProjector,
                 );
             } catch (Throwable $cleanupException) {
                 report($cleanupException);
@@ -551,12 +600,6 @@ class GenesisGraphImportService
                 ? $exception
                 : new CanonicalGraphProjectionException((string) $projection->id, $failureCode, $exception);
         }
-
-        $ready ??= $this->canonicalProjections->findForWorker((string) $projection->id);
-        if ($ready === null || $ready->status !== 'ready') {
-            throw new CanonicalGraphProjectionException((string) $projection->id, 'ownership_lost');
-        }
-        $this->publishImportSuccess($artifactId, $runId, $snapshotId, $mode, $fakeMessage, $neo4jMessage, $ready, $force);
     }
 
     private function publishImportSuccess(string $artifactId, string $runId, string $snapshotId, string $mode, string $fakeMessage, string $neo4jMessage, object $projection, bool $allowExistingEvent): void
