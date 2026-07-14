@@ -1,6 +1,6 @@
 <?php
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\PostgresTestCase;
 use Tests\TestCase;
 
 /*
@@ -14,9 +14,13 @@ use Tests\TestCase;
 |
 */
 
-pest()->extend(TestCase::class)
- // ->use(RefreshDatabase::class)
-    ->in('Feature');
+$defaultFeatureTargets = array_values(array_filter(
+    glob(__DIR__.'/Feature/*') ?: [],
+    static fn (string $path): bool => basename($path) !== 'Postgres',
+));
+
+pest()->extend(TestCase::class)->in(...$defaultFeatureTargets);
+pest()->extend(PostgresTestCase::class)->in('Feature/Postgres');
 
 /*
 |--------------------------------------------------------------------------

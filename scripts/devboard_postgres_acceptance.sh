@@ -89,5 +89,5 @@ YAML
 
 docker compose -p "$project" -f "$compose_file" --project-directory "$workspace_root" up -d postgres
 docker compose -p "$project" -f "$compose_file" --project-directory "$workspace_root" run --rm app sh -lc \
-  'if [ ! -f vendor/autoload.php ]; then composer install --no-interaction --prefer-dist --no-progress; fi && php artisan config:clear --ansi && php artisan migrate:fresh --force --ansi && vendor/bin/pest --configuration=phpunit.postgres.xml --display-warnings "$@"' \
+  'if [ ! -f vendor/autoload.php ]; then composer install --no-interaction --prefer-dist --no-progress; fi && bash scripts/run_postgres_acceptance.sh "$@"' \
   sh "${phpunit_args[@]}"
