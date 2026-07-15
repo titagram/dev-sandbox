@@ -12,7 +12,7 @@ class WikiRevisionService
 
     /**
      * @param  array<string, mixed>  $payload
-     * @return array{wiki_page_id: string, wiki_revision_id: string, source_status: string}
+     * @return array{wiki_page_id: string, wiki_revision_id: string, source_status: string, created: bool}
      */
     public function write(array $payload, ?int $authorUserId = null, ?string $authorDeviceId = null): array
     {
@@ -21,13 +21,18 @@ class WikiRevisionService
             throw new WikiRevisionException('schema_validation_failed', 'verified_from_code wiki revisions require evidence.');
         }
 
-        $now = now();
-        $pageId = $this->findPageId($payload);
-
         $revisionId = (string) Str::ulid();
+        $write = DB::transaction(function () use ($payload, $evidence, $revisionId, $authorUserId, $authorDeviceId): array {
+            DB::table('projects')
+                ->where('id', $payload['project_id'])
+                ->lockForUpdate()
+                ->first();
 
-        DB::transaction(function () use (&$pageId, $payload, $evidence, $revisionId, $authorUserId, $authorDeviceId, $now): void {
-            if (! $pageId) {
+            $pageId = $this->findPageId($payload);
+            $created = $pageId === null;
+            $now = now();
+
+            if ($created) {
                 $pageId = (string) Str::ulid();
                 DB::table('wiki_pages')->insert([
                     'id' => $pageId,
@@ -71,19 +76,22 @@ class WikiRevisionService
                 'user_id' => $authorUserId,
                 'device_id' => $authorDeviceId,
             ]);
-        });
 
-        $page = DB::table('wiki_pages')->where('id', $pageId)->first();
+            return [
+                'wiki_page_id' => $pageId,
+                'wiki_revision_id' => $revisionId,
+                'source_status' => $payload['source_status'],
+                'created' => $created,
+            ];
+        }, 3);
+
+        $page = DB::table('wiki_pages')->where('id', $write['wiki_page_id'])->first();
         $revision = DB::table('wiki_revisions')->where('id', $revisionId)->first();
         if ($page && $revision) {
             $this->searchIndexer->indexWikiRevision($page, $revision);
         }
 
-        return [
-            'wiki_page_id' => $pageId,
-            'wiki_revision_id' => $revisionId,
-            'source_status' => $payload['source_status'],
-        ];
+        return $write;
     }
 
     /**

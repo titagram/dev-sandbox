@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\GenesisFinalizeService;
+use App\Services\WikiRevisionService;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -66,6 +67,18 @@ it('accepts needs_verification revisions without evidence', function () {
     ]), wikiHeaders($context))
         ->assertOk()
         ->assertJsonPath('source_status', 'needs_verification');
+});
+
+it('reports whether a wiki revision write created its page', function () {
+    $context = createWikiRevisionContext();
+    $wiki = app(WikiRevisionService::class);
+
+    $first = $wiki->write(wikiPayload($context));
+    $second = $wiki->write(wikiPayload($context, ['content_markdown' => '# Routes v2']));
+
+    expect($first['created'])->toBeTrue()
+        ->and($second['created'])->toBeFalse()
+        ->and($second['wiki_page_id'])->toBe($first['wiki_page_id']);
 });
 
 it('rejects wiki project and repository references that do not match the run', function () {

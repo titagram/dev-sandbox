@@ -117,7 +117,15 @@ class WikiPageController extends Controller
             'title' => ['required', 'string', 'max:255'],
             'page_type' => ['required', 'string', Rule::in(self::PAGE_TYPES)],
             'content_markdown' => ['required', 'string', 'min:1', 'max:'.self::MAX_MARKDOWN_CHARACTERS],
-            'evidence_refs' => ['sometimes', 'array', 'max:'.self::MAX_EVIDENCE_REFS],
+            'evidence_refs' => ['sometimes', 'array', 'list', 'max:'.self::MAX_EVIDENCE_REFS],
+            'evidence_refs.*' => ['required', 'array:kind,schema,sha256,hash,path,bytes,raw_source_included'],
+            'evidence_refs.*.kind' => ['required', 'string', 'max:64'],
+            'evidence_refs.*.schema' => ['sometimes', 'string', 'max:191'],
+            'evidence_refs.*.sha256' => ['sometimes', 'string', 'size:64'],
+            'evidence_refs.*.hash' => ['sometimes', 'string', 'size:64'],
+            'evidence_refs.*.path' => ['sometimes', 'string', 'max:2048'],
+            'evidence_refs.*.bytes' => ['sometimes', 'integer', 'min:0'],
+            'evidence_refs.*.raw_source_included' => ['sometimes', 'boolean'],
             'source_status' => ['prohibited'],
         ]);
 
@@ -139,12 +147,6 @@ class WikiPageController extends Controller
             return $exception->toResponse();
         }
 
-        $pageExists = DB::table('wiki_pages')
-            ->where('project_id', $validated['project_id'])
-            ->whereNull('repository_id')
-            ->where('slug', $validated['slug'])
-            ->exists();
-
         $result = $this->wiki->write([
             'project_id' => $validated['project_id'],
             'repository_id' => null,
@@ -160,7 +162,7 @@ class WikiPageController extends Controller
 
         return response()->json(
             $result,
-            $pageExists ? Response::HTTP_OK : Response::HTTP_CREATED,
+            $result['created'] ? Response::HTTP_CREATED : Response::HTTP_OK,
         );
     }
 

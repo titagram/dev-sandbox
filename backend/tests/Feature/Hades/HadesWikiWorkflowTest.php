@@ -336,9 +336,29 @@ it('validates bounded agent-authored wiki draft input', function () {
     foreach ([
         'empty markdown' => [['content_markdown' => ''], 'content_markdown'],
         'overlong markdown' => [['content_markdown' => str_repeat('à', 24001)], 'content_markdown'],
+        'associative evidence map' => [[
+            'evidence_refs' => [
+                'primary' => ['kind' => 'file_ref', 'path' => 'app/Primary.php'],
+            ],
+        ], 'evidence_refs'],
+        'malformed evidence item' => [[
+            'evidence_refs' => ['not-an-object'],
+        ], 'evidence_refs.0'],
+        'nested evidence field' => [[
+            'evidence_refs' => [[
+                'kind' => 'file_ref',
+                'path' => ['nested' => 'app/Nested.php'],
+            ]],
+        ], 'evidence_refs.0.path'],
+        'unknown evidence key' => [[
+            'evidence_refs' => [[
+                'kind' => 'file_ref',
+                'url' => 'https://example.test/source',
+            ]],
+        ], 'evidence_refs.0'],
         'too many evidence refs' => [[
             'evidence_refs' => array_map(
-                fn (int $index): array => ['type' => 'file_ref', 'path' => "app/File{$index}.php"],
+                fn (int $index): array => ['kind' => 'file_ref', 'path' => "app/File{$index}.php"],
                 range(1, 81),
             ),
         ], 'evidence_refs'],
@@ -365,6 +385,7 @@ it('creates a safe wiki draft then appends an immutable revision for the same pr
     $first = $this->withToken($agent['agent_token'])
         ->postJson('/api/hades/v1/wiki/pages', $payload)
         ->assertCreated()
+        ->assertJsonPath('created', true)
         ->assertJsonPath('source_status', 'needs_verification')
         ->assertJsonStructure(['wiki_page_id', 'wiki_revision_id']);
 
@@ -374,6 +395,7 @@ it('creates a safe wiki draft then appends an immutable revision for the same pr
             'content_markdown' => '# Architecture v2',
         ]))
         ->assertOk()
+        ->assertJsonPath('created', false)
         ->assertJsonPath('wiki_page_id', $first->json('wiki_page_id'))
         ->assertJsonPath('source_status', 'needs_verification');
 
@@ -390,6 +412,34 @@ it('creates a safe wiki draft then appends an immutable revision for the same pr
         ->and($revisions->pluck('source_status')->unique()->all())->toBe(['needs_verification'])
         ->and(DB::table('wiki_pages')->where('id', $first->json('wiki_page_id'))->value('current_revision_id'))
         ->toBe($second->json('wiki_revision_id'));
+});
+
+it('resolves wiki draft page identity inside the write transaction without a controller preflight query', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $lookupTransactionLevels = [];
+    $lookupSql = [];
+    $outerTransactionLevel = DB::transactionLevel();
+
+    DB::listen(function (QueryExecuted $query) use (&$lookupTransactionLevels, &$lookupSql): void {
+        $sql = strtolower($query->sql);
+        if (str_starts_with(ltrim($sql), 'select')
+            && str_contains($sql, 'wiki_pages')
+            && str_contains($sql, 'project_id')
+            && str_contains($sql, 'slug')) {
+            $lookupTransactionLevels[] = $query->connection->transactionLevel();
+            $lookupSql[] = $sql;
+        }
+    });
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages', wikiWorkflowDraftPayload($agent, $binding))
+        ->assertCreated();
+
+    expect($lookupTransactionLevels)->toBe([$outerTransactionLevel + 1])
+        ->and(collect($lookupSql)->contains(
+            fn (string $sql): bool => str_contains($sql, 'exists'),
+        ))->toBeFalse();
 });
 
 /**
@@ -457,7 +507,15 @@ function wikiWorkflowDraftPayload(array $agent, object $binding): array
         'page_type' => 'technical',
         'content_markdown' => '# Architecture v1',
         'evidence_refs' => [
-            ['type' => 'file_ref', 'path' => 'app/Architecture.php'],
+            [
+                'kind' => 'file_ref',
+                'schema' => 'hades.file_ref.v1',
+                'sha256' => str_repeat('a', 64),
+                'hash' => str_repeat('b', 64),
+                'path' => 'app/Architecture.php',
+                'bytes' => 4096,
+                'raw_source_included' => false,
+            ],
         ],
     ];
 }
