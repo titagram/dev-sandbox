@@ -52,3 +52,34 @@ it('builds lucene only from bounded alphanumeric tokens', function (): void {
             'public_search_terms:invoice* AND public_search_terms:service* AND public_search_terms:secret*',
         );
 });
+
+it('derives safe public source evidence without leaking absolute paths', function (): void {
+    $terms = new DashboardGraphSearchTerms;
+
+    $safe = $terms->forNode([
+        'name' => 'AdminControllerBulkDeleteBehavior',
+        'file_path' => 'app/Http/Controllers/AdminController.php',
+        'line_start' => 42,
+        'line_end' => 88,
+        'namespace' => 'App\\Http\\Controllers',
+    ], 'class', false);
+    $unsafe = $terms->forNode([
+        'name' => 'Secret',
+        'file_path' => '/srv/private/app/Secret.php',
+        'line_start' => 1,
+        'namespace' => '../private',
+    ], 'class', false);
+
+    expect($safe)->toMatchArray([
+        'public_source_file' => 'app/Http/Controllers/AdminController.php',
+        'public_line_start' => 42,
+        'public_line_end' => 88,
+        'public_namespace' => 'App\\Http\\Controllers',
+    ])->and($unsafe)
+        ->toMatchArray([
+            'public_source_file' => null,
+            'public_line_start' => 1,
+            'public_line_end' => null,
+            'public_namespace' => null,
+        ]);
+});

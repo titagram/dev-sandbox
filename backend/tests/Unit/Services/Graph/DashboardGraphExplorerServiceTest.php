@@ -444,6 +444,164 @@ it('searches normalized route uri tokens through the versioned canonical index',
         ->and($search['params']['normalized_query'])->toBe('/generale/soggetti-attivi/');
 });
 
+it('ranks exact route and symbol names before unrelated fuzzy results', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $routeHandle = (new DashboardGraphPublicHandle)->forNode(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['active_graph_version'],
+        'route:/generale/soggetti-attivi/',
+    );
+    $workerHandle = (new DashboardGraphPublicHandle)->forNode(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['active_graph_version'],
+        'route:contact_flock_roles_worker',
+    );
+    $fixture['client']->searchRows = [
+        [
+            'node' => [
+                'public_handle' => $workerHandle,
+                'kind' => 'route',
+                'public_search_name' => 'contact_flock_roles_worker',
+                'public_search_path_normalized' => '/generale/other/',
+                'public_search_label' => 'contact_flock_roles_worker',
+            ],
+            'labels' => ['Route'],
+            'score' => 8.0,
+        ],
+        [
+            'node' => [
+                'public_handle' => $routeHandle,
+                'kind' => 'route',
+                'public_search_name' => 'contact_flock_roles_soggetti_attivi',
+                'public_search_path_normalized' => '/generale/soggetti-attivi/',
+                'public_source_file' => 'routes/web.php',
+                'public_line_start' => 42,
+                'public_namespace' => 'App\\Routing',
+                'public_search_label' => '/generale/soggetti-attivi/',
+            ],
+            'labels' => ['Route'],
+            'score' => 0.1,
+        ],
+    ];
+
+    $response = $fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        '/generale/soggetti-attivi/',
+        10,
+    );
+
+    expect($response['items'][0])->toMatchArray([
+        'handle' => $routeHandle,
+        'match_type' => 'exact_route_path',
+        'source_file' => 'routes/web.php',
+        'line_start' => 42,
+        'namespace' => 'App\\Routing',
+    ])->and($response['items'][0]['match_reason'])->toContain('Exact route')
+        ->and($response['items'][1]['handle'])->toBe($workerHandle);
+});
+
+it('does not return a fuzzy answer when capacity may have omitted an exact symbol', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    DB::table('canonical_graph_projections')
+        ->where('id', $fixture['projection_id'])
+        ->update([
+            'quality' => 'partial',
+            'coverage' => json_encode([
+                'languages' => ['php'],
+                'files_total' => 10,
+                'files_analyzed' => 10,
+                'files_failed' => 0,
+                'nodes_capacity_omitted' => 3,
+            ], JSON_THROW_ON_ERROR),
+        ]);
+    $fixture['client']->searchRows = [[
+        'node' => [
+            'public_handle' => $fixture['handle'],
+            'kind' => 'class',
+            'public_search_name' => 'AdminControllerBulkDeleteBehaviorTest',
+            'public_search_label' => 'AdminControllerBulkDeleteBehaviorTest',
+        ],
+        'labels' => ['Class'],
+        'score' => 9.0,
+    ]];
+
+    $response = $fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        'AdminControllerBulkDeleteBehavior',
+        10,
+    );
+
+    expect($response)->toMatchArray([
+        'found' => true,
+        'reason' => 'exact_match_not_indexed_capacity',
+        'items' => [],
+        'completeness' => 'partial',
+    ]);
+});
+
+it('ranks an exact class above its similarly named test class', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $exactHandle = (new DashboardGraphPublicHandle)->forNode(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['active_graph_version'],
+        'class:AdminControllerBulkDeleteBehavior',
+    );
+    $testHandle = (new DashboardGraphPublicHandle)->forNode(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['active_graph_version'],
+        'test:AdminControllerBulkDeleteBehaviorTest',
+    );
+    $fixture['client']->searchRows = [
+        [
+            'node' => [
+                'public_handle' => $testHandle,
+                'kind' => 'test',
+                'public_search_name' => 'AdminControllerBulkDeleteBehaviorTest',
+                'public_search_name_normalized' => 'admincontrollerbulkdeletebehaviortest',
+                'public_search_label' => 'AdminControllerBulkDeleteBehaviorTest',
+            ],
+            'labels' => ['Test'],
+            'score' => 9.0,
+        ],
+        [
+            'node' => [
+                'public_handle' => $exactHandle,
+                'kind' => 'class',
+                'public_search_name' => 'AdminControllerBulkDeleteBehavior',
+                'public_search_name_normalized' => 'admincontrollerbulkdeletebehavior',
+                'public_search_label' => 'AdminControllerBulkDeleteBehavior',
+            ],
+            'labels' => ['Class'],
+            'score' => 0.1,
+        ],
+    ];
+
+    $response = $fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        'AdminControllerBulkDeleteBehavior',
+        10,
+    );
+
+    expect($response['items'][0])->toMatchArray([
+        'handle' => $exactHandle,
+        'match_type' => 'exact_symbol_name',
+    ])->and($response['items'][1]['handle'])->toBe($testHandle);
+});
+
 it('bounds search limits and preserves cursor scores without lossy rounding', function (): void {
     $fixture = dashboardGraphExplorerFixture();
     $fixture['client']->searchScores = [0.123456789, 0.1, 0.05];

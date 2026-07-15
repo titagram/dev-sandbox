@@ -65,6 +65,7 @@ final class DashboardGraphExplorerController extends Controller
         'invalid_direction',
         'validation_failed',
         'query_error',
+        'exact_match_not_indexed_capacity',
     ];
 
     private const ALLOWED_FIELDS = [
@@ -376,6 +377,7 @@ final class DashboardGraphExplorerController extends Controller
             'query_type' => $type,
             'found' => (bool) ($result['found'] ?? false),
             'reason' => $this->publicReason($result['reason'] ?? null),
+            'completeness' => $this->publicCompleteness($result['completeness'] ?? null),
             'scope' => $scope,
             'projection' => $projection,
             'node' => $this->publicNode($result['node'] ?? null),
@@ -478,6 +480,7 @@ final class DashboardGraphExplorerController extends Controller
         if (($why = $this->publicText($item['why'] ?? null)) !== null) {
             $public['why'] = $why;
         }
+        $this->appendPublicEvidence($public, $item);
 
         return $public;
     }
@@ -644,8 +647,53 @@ final class DashboardGraphExplorerController extends Controller
             'kind' => $this->publicKinds->map($node['kind'] ?? null),
         ];
         $public['label'] = $this->publicText($node['label'] ?? null);
+        $this->appendPublicEvidence($public, $node);
 
         return $public;
+    }
+
+    /** @param array<string,mixed> $public @param array<string,mixed> $source */
+    private function appendPublicEvidence(array &$public, array $source): void
+    {
+        if (($sourceFile = $this->publicSourceFile($source['source_file'] ?? null)) !== null) {
+            $public['source_file'] = $sourceFile;
+        }
+        foreach (['line_start', 'line_end'] as $field) {
+            if (is_int($source[$field] ?? null) && $source[$field] >= 1 && $source[$field] <= 10_000_000) {
+                $public[$field] = $source[$field];
+            }
+        }
+        if (($namespace = $this->publicNamespace($source['namespace'] ?? null)) !== null) {
+            $public['namespace'] = $namespace;
+        }
+        if (is_string($source['match_type'] ?? null)
+            && in_array($source['match_type'], ['exact_symbol_name', 'exact_route_path', 'token_match', 'fuzzy', 'direct_lookup', 'relationship'], true)) {
+            $public['match_type'] = $source['match_type'];
+        }
+        if (($reason = $this->publicText($source['match_reason'] ?? null, 160)) !== null) {
+            $public['match_reason'] = $reason;
+        }
+    }
+
+    private function publicSourceFile(mixed $value): ?string
+    {
+        if (! is_string($value) || $value === '' || strlen($value) > 512
+            || str_starts_with($value, '/') || str_contains($value, '\\')
+            || str_contains($value, '://')
+            || preg_match('/\A[A-Za-z]:[\\\\\/]/', $value) === 1
+            || preg_match('~(?:\A|/)\.\.(?:/|\z)~', $value) === 1) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    private function publicNamespace(mixed $value): ?string
+    {
+        return is_string($value)
+            && preg_match('/\A\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*\z/D', $value) === 1
+            ? $value
+            : null;
     }
 
     private function publicText(mixed $value, int $maxLength = 512): ?string
@@ -667,5 +715,13 @@ final class DashboardGraphExplorerController extends Controller
         return is_string($reason) && in_array($reason, self::REASONS, true)
             ? $reason
             : 'query_error';
+    }
+
+    private function publicCompleteness(mixed $completeness): string
+    {
+        return is_string($completeness)
+            && in_array($completeness, ['complete', 'verified_none', 'partial', 'not_indexed'], true)
+            ? $completeness
+            : 'not_indexed';
     }
 }

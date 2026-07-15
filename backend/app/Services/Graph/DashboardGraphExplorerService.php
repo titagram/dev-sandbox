@@ -57,7 +57,7 @@ final class DashboardGraphExplorerService
 
         [$projection, $projectionReason] = $this->projectionForRead($projectId, $scopeType, $scopeId);
         if ($projectionReason !== null) {
-            return ['found' => false, 'reason' => $projectionReason];
+            return ['found' => false, 'reason' => $projectionReason, 'completeness' => 'not_indexed'];
         }
         $activeGraphVersion = (string) $projection->active_graph_version;
         $boundedLimit = max(1, min(100, $limit));
@@ -104,20 +104,26 @@ final class DashboardGraphExplorerService
                 'MATCH (version:CanonicalGraphVersion {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version}) '
                 .'CALL { '
                 .'WITH version '
+                .'OPTIONAL MATCH (exact:CanonicalGraphNode {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version}) '
+                .'/* exact node.public_search_name_normalized = $normalized_query */ '
+                .'WHERE exact.public_search_name_normalized = $normalized_query '
+                .'OR exact.public_search_path_normalized = $normalized_query '
+                .'WITH collect(CASE WHEN exact IS NULL THEN null ELSE {node: properties(exact), labels: labels(exact), score: CASE '
+                .'WHEN exact.public_search_name_normalized = $normalized_query THEN 10000.0 ELSE 9000.0 END} END) AS exact_hits '
                 ."CALL db.index.fulltext.queryNodes('canonical_node_search_v2', \$lucene_query) YIELD node, score "
                 .'WHERE node.graph_version = $active_graph_version AND node.project_id = $project_id '
                 .'AND node.source_scope_type = $source_scope_type AND node.source_scope_id = $source_scope_id '
-                .'WITH node, score + CASE '
-                .'WHEN node.public_search_name_normalized = $normalized_query THEN 100.0 '
-                .'WHEN node.public_search_path_normalized = $normalized_query THEN 90.0 ELSE 0.0 END AS score '
-                .$cursorPredicate
-                .'WITH node, score ORDER BY score DESC, node.public_handle ASC LIMIT $fetch_limit '
-                .'RETURN collect({node: properties(node), labels: labels(node), score: score}) AS hits '
+                .'WITH collect({node: properties(node), labels: labels(node), score: score}) AS fuzzy_hits '
+                .'RETURN exact_hits + fuzzy_hits AS hits '
                 .'} '
-                .'UNWIND CASE WHEN size(hits) = 0 THEN [null] ELSE hits END AS hit '
+                .'UNWIND hits AS hit '
+                .'WITH hit WHERE hit.node IS NOT NULL '
+                .'WITH hit.node AS node, hit.labels AS labels, hit.score AS score '
+                .$cursorPredicate
+                .'WITH node, labels, score ORDER BY score DESC, node.public_handle ASC LIMIT $fetch_limit '
                 .'RETURN version.public_handle_key_version AS version_project_key, '
                 .'version.public_handle_key_fingerprint AS version_source_fingerprint, '
-                .'hit.node AS node, hit.labels AS labels, hit.score AS score',
+                .'node, labels, score',
                 [
                     'project_id' => $projectId,
                     'source_scope_type' => $scopeType,
@@ -148,7 +154,13 @@ final class DashboardGraphExplorerService
                     return $score < $scanScore || ($score === $scanScore && strcmp($handle, $scanHandle) > 0);
                 }));
             }
-            usort($rows, function (array $left, array $right): int {
+            usort($rows, function (array $left, array $right) use ($normalisedQuery): int {
+                $leftPriority = $this->matchPriority($left['node'], $normalisedQuery);
+                $rightPriority = $this->matchPriority($right['node'], $normalisedQuery);
+                if ($leftPriority !== $rightPriority) {
+                    return $rightPriority <=> $leftPriority;
+                }
+
                 $scoreComparison = (float) ($right['score'] ?? 0) <=> (float) ($left['score'] ?? 0);
                 if ($scoreComparison !== 0) {
                     return $scoreComparison;
@@ -177,6 +189,8 @@ final class DashboardGraphExplorerService
                 if (! is_array($row['node'] ?? null)) {
                     continue;
                 }
+                $row['node']['public_match_type'] = $this->matchType($row['node'], $normalisedQuery);
+                $row['node']['public_match_reason'] = $this->matchReason($row['node']['public_match_type']);
                 $item = $this->publicNode($row['node'], $row['score'] ?? null);
                 if ($item !== null) {
                     $publicRows[] = ['item' => $item, 'row' => $row];
@@ -202,6 +216,29 @@ final class DashboardGraphExplorerService
         }
         $pageRows = array_slice($publicRows, 0, $boundedLimit);
         $items = array_column($pageRows, 'item');
+        $hasExactMatch = array_reduce(
+            $publicRows,
+            fn (bool $found, array $row): bool => $found || in_array(
+                $row['item']['match_type'] ?? null,
+                ['exact_symbol_name', 'exact_route_path'],
+                true,
+            ),
+            false,
+        );
+        if ($this->isExactLookingQuery($query) && ! $hasExactMatch && $this->capacityOmitted($projection) > 0) {
+            return [
+                'found' => true,
+                'reason' => 'exact_match_not_indexed_capacity',
+                'projection' => $this->projectionEnvelope($projection),
+                'items' => [],
+                'edges' => [],
+                'returned' => 0,
+                'limit' => $boundedLimit,
+                'next_cursor' => null,
+                'has_more' => false,
+                'completeness' => 'partial',
+            ];
+        }
         $nextCursor = null;
         if ($hasMore) {
             $last = $publicRowsHaveExtra ? ($items[array_key_last($items)] ?? null) : null;
@@ -236,6 +273,9 @@ final class DashboardGraphExplorerService
             'limit' => $boundedLimit,
             'next_cursor' => $nextCursor,
             'has_more' => $hasMore,
+            'completeness' => $items === []
+                ? $this->emptyCompleteness($projection)
+                : $this->completeness($projection),
         ];
     }
 
@@ -426,6 +466,9 @@ final class DashboardGraphExplorerService
             'returned' => count($items),
             'limit' => $boundedLimit,
             'truncated' => $truncated,
+            'completeness' => $items === []
+                ? $this->emptyCompleteness($resolved['projection'])
+                : $this->completeness($resolved['projection']),
         ];
     }
 
@@ -494,6 +537,9 @@ final class DashboardGraphExplorerService
             'returned' => count($items),
             'limit' => $boundedLimit,
             'truncated' => $truncated,
+            'completeness' => $items === []
+                ? $this->emptyCompleteness($from['projection'])
+                : $this->completeness($from['projection']),
         ];
     }
 
@@ -606,6 +652,9 @@ final class DashboardGraphExplorerService
             'returned' => count($items),
             'limit' => $boundedLimit,
             'truncated' => $truncated,
+            'completeness' => $items === []
+                ? $this->emptyCompleteness($projection)
+                : $this->completeness($projection),
         ];
     }
 
@@ -626,14 +675,11 @@ final class DashboardGraphExplorerService
             'found' => true,
             'reason' => null,
             'projection' => $this->projectionEnvelope($resolved['projection']),
-            'node' => [
-                'handle' => (string) ($node['public_handle'] ?? $handle),
-                'kind' => $this->publicKinds->map($node['kind'] ?? null),
-                'label' => $this->publicSearchLabel($node),
-            ],
+            'node' => $this->publicNode($node),
             'items' => [],
             'edges' => [],
             'limit' => max(1, $limit),
+            'completeness' => 'complete',
         ];
     }
 
@@ -807,6 +853,12 @@ final class DashboardGraphExplorerService
             'handle' => $handle,
             'kind' => $this->publicKinds->map($node['kind'] ?? null),
             'label' => $this->publicSearchLabel($properties),
+            'source_file' => $this->safePublicSourceFile($properties['public_source_file'] ?? null),
+            'line_start' => $this->safePublicLine($properties['public_line_start'] ?? null),
+            'line_end' => $this->safePublicLine($properties['public_line_end'] ?? null),
+            'namespace' => $this->safePublicNamespace($properties['public_namespace'] ?? null),
+            'match_type' => 'relationship',
+            'match_reason' => 'Related canonical symbol',
         ];
     }
 
@@ -989,6 +1041,77 @@ final class DashboardGraphExplorerService
     }
 
     /** @param array<string,mixed> $node */
+    private function matchPriority(array $node, string $query): int
+    {
+        return match ($this->matchType($node, $query)) {
+            'exact_symbol_name' => 4,
+            'exact_route_path' => 3,
+            'token_match' => 2,
+            default => 1,
+        };
+    }
+
+    private function matchType(array $node, ?string $query = null): string
+    {
+        if ($query !== null && ($node['public_search_name_normalized'] ?? null) === $query) {
+            return 'exact_symbol_name';
+        }
+        if ($query !== null && ($node['public_search_path_normalized'] ?? null) === $query) {
+            return 'exact_route_path';
+        }
+
+        return $query === null ? 'direct_lookup' : 'fuzzy';
+    }
+
+    private function matchReason(string $matchType): string
+    {
+        return match ($matchType) {
+            'exact_symbol_name' => 'Exact symbol-name match',
+            'exact_route_path' => 'Exact route path match',
+            'token_match' => 'Token match',
+            'direct_lookup' => 'Selected canonical symbol',
+            default => 'Fuzzy match',
+        };
+    }
+
+    private function isExactLookingQuery(string $query): bool
+    {
+        $trimmed = trim($query);
+
+        return str_starts_with($trimmed, '/')
+            || preg_match('/[A-Z]/', $trimmed) === 1
+            || str_contains($trimmed, '::');
+    }
+
+    private function capacityOmitted(object $projection): int
+    {
+        $coverage = $projection->coverage ?? null;
+        if (is_string($coverage)) {
+            try {
+                $coverage = json_decode($coverage, true, flags: JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                return 0;
+            }
+        }
+
+        return is_array($coverage) && is_int($coverage['nodes_capacity_omitted'] ?? null)
+            ? max(0, $coverage['nodes_capacity_omitted'])
+            : 0;
+    }
+
+    private function completeness(object $projection): string
+    {
+        return $this->capacityOmitted($projection) > 0
+            || in_array((string) ($projection->quality ?? ''), ['partial', 'unknown'], true)
+            ? 'partial'
+            : 'complete';
+    }
+
+    private function emptyCompleteness(object $projection): string
+    {
+        return $this->completeness($projection) === 'complete' ? 'verified_none' : 'partial';
+    }
+
     private function publicNode(array $node, mixed $score = null): ?array
     {
         $handle = (string) ($node['public_handle'] ?? '');
@@ -1020,8 +1143,40 @@ final class DashboardGraphExplorerService
         if (is_numeric($score)) {
             $item['score'] = (float) $score;
         }
+        $item['source_file'] = $this->safePublicSourceFile($node['public_source_file'] ?? null);
+        $item['line_start'] = $this->safePublicLine($node['public_line_start'] ?? null);
+        $item['line_end'] = $this->safePublicLine($node['public_line_end'] ?? null);
+        $item['namespace'] = $this->safePublicNamespace($node['public_namespace'] ?? null);
+        $item['match_type'] = $node['public_match_type'] ?? 'direct_lookup';
+        $item['match_reason'] = $this->matchReason((string) $item['match_type']);
 
         return $item;
+    }
+
+    private function safePublicSourceFile(mixed $value): ?string
+    {
+        if (! is_string($value) || $value === '' || strlen($value) > 512
+            || str_starts_with($value, '/') || str_contains($value, '\\')
+            || str_contains($value, '://')
+            || preg_match('/\A[A-Za-z]:[\\\\\/]/', $value) === 1
+            || preg_match('~(?:\A|/)\.\.(?:/|\z)~', $value) === 1) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    private function safePublicLine(mixed $value): ?int
+    {
+        return is_int($value) && $value >= 1 && $value <= 10_000_000 ? $value : null;
+    }
+
+    private function safePublicNamespace(mixed $value): ?string
+    {
+        return is_string($value)
+            && preg_match('/\A\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*\z/D', $value) === 1
+            ? $value
+            : null;
     }
 
     private function safePublicSearchValue(string $value): ?string

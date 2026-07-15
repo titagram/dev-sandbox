@@ -33,12 +33,21 @@ final class DashboardGraphSearchTerms
 
     /**
      * @param  array<string, mixed>  $properties
-     * @return array{public_search_name:?string,public_search_label:?string,public_search_path:?string,public_search_name_normalized:?string,public_search_path_normalized:?string,public_search_terms:list<string>}
+     * @return array<string, mixed>
      */
     public function forNode(array $properties, string $kind, bool $trustedProducerRoute): array
     {
         $name = $this->safeSearchValue($properties['name'] ?? null);
         $label = $this->safeSearchValue($properties['label'] ?? null);
+        $sourceFile = $this->safeSourceFile(
+            $properties['source_file']
+                ?? $properties['file_path']
+                ?? $properties['source_path']
+                ?? ($kind === 'file' ? ($properties['path'] ?? null) : null),
+        );
+        $lineStart = $this->safeLine($properties['line_start'] ?? null);
+        $lineEnd = $this->safeLine($properties['line_end'] ?? null);
+        $namespace = $this->safeNamespace($properties['namespace'] ?? null);
         $path = strtolower(trim($kind)) === 'route'
             ? $this->safeRoutePath(
                 $properties['path'] ?? $properties['uri'] ?? $properties['route'] ?? null,
@@ -58,6 +67,10 @@ final class DashboardGraphSearchTerms
             'public_search_name_normalized' => $name === null ? null : mb_strtolower($name),
             'public_search_path_normalized' => $path === null ? null : mb_strtolower($path),
             'public_search_terms' => $this->tokens($aliases, self::MAX_NODE_TOKENS, true),
+            'public_source_file' => $sourceFile,
+            'public_line_start' => $lineStart,
+            'public_line_end' => $lineEnd,
+            'public_namespace' => $namespace,
         ];
     }
 
@@ -170,5 +183,45 @@ final class DashboardGraphSearchTerms
             && preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) === 1
                 ? $value
                 : null;
+    }
+
+    private function safeSourceFile(mixed $value): ?string
+    {
+        if (! is_string($value) || ! mb_check_encoding($value, 'UTF-8')) {
+            return null;
+        }
+        $value = trim($value);
+
+        if ($value === '' || strlen($value) > 512 || str_contains($value, '\\')
+            || str_contains($value, '://') || str_starts_with($value, '/')
+            || preg_match('/\A[A-Za-z]:[\\\\\/]/', $value) === 1
+            || preg_match('~(?:\A|/)\.\.(?:/|\z)~', $value) === 1
+            || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    private function safeLine(mixed $value): ?int
+    {
+        if (is_int($value) && $value >= 1 && $value <= 10_000_000) {
+            return $value;
+        }
+        if (is_string($value) && preg_match('/\A[1-9][0-9]{0,7}\z/', $value) === 1) {
+            return (int) $value;
+        }
+
+        return null;
+    }
+
+    private function safeNamespace(mixed $value): ?string
+    {
+        if (! is_string($value) || strlen($value) > 255
+            || preg_match('/\A\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)*\z/D', $value) !== 1) {
+            return null;
+        }
+
+        return $value;
     }
 }
