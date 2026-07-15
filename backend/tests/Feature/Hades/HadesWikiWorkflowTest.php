@@ -1,0 +1,299 @@
+<?php
+
+use App\Models\User;
+use App\Services\Hades\HadesTokenService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+
+uses(RefreshDatabase::class);
+
+it('lists only filtered current wiki pages for the authenticated project with a stable cursor', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $otherAgent = wikiWorkflowAgent();
+    $updatedAt = now()->subMinute();
+
+    $matchingPages = [
+        wikiWorkflowPage($agent['project_id'], 'pending-one', 'needs_verification', updatedAt: $updatedAt),
+        wikiWorkflowPage($agent['project_id'], 'pending-two', 'needs_verification', updatedAt: $updatedAt),
+        wikiWorkflowPage($agent['project_id'], 'pending-three', 'needs_verification', updatedAt: $updatedAt),
+    ];
+    wikiWorkflowPage($agent['project_id'], 'verified', 'verified_from_code', updatedAt: $updatedAt);
+    $foreignPage = wikiWorkflowPage($otherAgent['project_id'], 'foreign', 'needs_verification', updatedAt: $updatedAt);
+
+    $query = [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding->id,
+        'source_status' => 'needs_verification',
+        'limit' => 2,
+    ];
+
+    $first = $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages?'.http_build_query($query))
+        ->assertOk()
+        ->assertJsonCount(2, 'items')
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('project_id', $agent['project_id'])
+        ->assertJsonPath('workspace_binding_id', $binding->id)
+        ->assertJsonPath('items.0.source_status', 'needs_verification')
+        ->assertJsonMissing(['project_id' => $otherAgent['project_id']])
+        ->assertJsonMissing(['id' => $foreignPage['page_id']]);
+
+    $nextCursor = $first->json('next_cursor');
+    expect($nextCursor)->toBeString()->not->toBeEmpty();
+
+    $second = $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages?'.http_build_query(array_merge($query, ['cursor' => $nextCursor])))
+        ->assertOk()
+        ->assertJsonCount(1, 'items')
+        ->assertJsonPath('next_cursor', null);
+
+    $returnedIds = array_merge(
+        array_column($first->json('items'), 'id'),
+        array_column($second->json('items'), 'id'),
+    );
+    $expectedIds = array_column($matchingPages, 'page_id');
+    rsort($expectedIds, SORT_STRING);
+
+    expect($returnedIds)->toBe($expectedIds)
+        ->and(array_unique($returnedIds))->toHaveCount(3);
+});
+
+it('validates list bounds and rejects bindings outside the authenticated linked scope', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $otherAgent = wikiWorkflowAgent($agent['project_id']);
+    $otherBinding = wikiWorkflowBinding($otherAgent);
+
+    $this->withToken($agent['agent_token'])->getJson('/api/hades/v1/wiki/pages?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding->id,
+        'limit' => 51,
+    ]))->assertUnprocessable()->assertJsonValidationErrors('limit');
+
+    $this->withToken($agent['agent_token'])->getJson('/api/hades/v1/wiki/pages?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $otherBinding->id,
+    ]))
+        ->assertNotFound()
+        ->assertJsonPath('error.code', 'workspace_binding_not_found');
+
+    DB::table('hades_workspace_bindings')->where('id', $binding->id)->update([
+        'status' => 'unlinked',
+        'unlinked_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $this->withToken($agent['agent_token'])->getJson('/api/hades/v1/wiki/pages?'.http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding->id,
+    ]))
+        ->assertConflict()
+        ->assertJsonPath('error.code', 'workspace_binding_unlinked');
+});
+
+it('returns a bounded current wiki revision detail with normalized evidence and an explicit shape', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $markdown = str_repeat('à', 24010);
+    $evidenceRefs = [];
+    for ($index = 0; $index < 82; $index++) {
+        $evidenceRefs[($index * 2) + 1] = [
+            'type' => $index === 0 ? 'artifact_ref' : 'file_ref',
+            'path' => 'app/File'.$index.'.php',
+            'sha256' => str_repeat(dechex($index % 16), 64),
+        ];
+    }
+    $page = wikiWorkflowPage(
+        $agent['project_id'],
+        'bounded-detail',
+        'needs_verification',
+        $markdown,
+        $evidenceRefs,
+        producer: 'hades',
+        sourceType: 'hades_agent_draft',
+    );
+
+    $response = $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'?'.http_build_query([
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding->id,
+        ]))
+        ->assertOk()
+        ->assertJsonPath('protocol_version', 'v1')
+        ->assertJsonPath('project_id', $agent['project_id'])
+        ->assertJsonPath('workspace_binding_id', $binding->id)
+        ->assertJsonPath('wiki_page.current_revision_id', $page['revision_id'])
+        ->assertJsonPath('wiki_page.revision_id', $page['revision_id'])
+        ->assertJsonPath('wiki_page.producer', 'hades')
+        ->assertJsonPath('wiki_page.source_type', 'hades_agent_draft')
+        ->assertJsonPath('wiki_page.content_truncated', true)
+        ->assertJsonCount(80, 'wiki_page.evidence_refs');
+
+    $detail = $response->json('wiki_page');
+
+    expect(mb_strlen($detail['content_markdown']))->toBe(24000)
+        ->and($detail['content_markdown'])->toBe(mb_substr($markdown, 0, 24000))
+        ->and(array_is_list($detail['evidence_refs']))->toBeTrue()
+        ->and(array_keys($detail))->toBe([
+            'id',
+            'project_id',
+            'repository_id',
+            'slug',
+            'title',
+            'page_type',
+            'current_revision_id',
+            'revision_id',
+            'producer',
+            'source_type',
+            'source_status',
+            'content_markdown',
+            'content_truncated',
+            'evidence_refs',
+            'updated_at',
+            'revision_created_at',
+        ]);
+});
+
+it('advertises the wiki list detail draft and verification routes', function () {
+    $agent = wikiWorkflowAgent();
+
+    $this->withToken($agent['agent_token'])->getJson('/api/hades/v1/capabilities')
+        ->assertOk()
+        ->assertJsonPath('routes.wiki_pages', '/api/hades/v1/wiki/pages')
+        ->assertJsonPath('routes.wiki_page', '/api/hades/v1/wiki/pages/{page}')
+        ->assertJsonPath('routes.wiki_page_draft', '/api/hades/v1/wiki/pages')
+        ->assertJsonPath('routes.wiki_page_verify', '/api/hades/v1/wiki/pages/{page}/verify');
+});
+
+/**
+ * @return array{project_id: string, agent_id: string, agent_token: string}
+ */
+function wikiWorkflowAgent(?string $projectId = null): array
+{
+    if ($projectId === null) {
+        $user = User::factory()->create(['status' => 'active']);
+        $projectId = (string) Str::ulid();
+        $now = now();
+
+        DB::table('projects')->insert([
+            'id' => $projectId,
+            'name' => 'Wiki workflow project',
+            'slug' => 'wiki-workflow-'.Str::lower(Str::random(10)),
+            'description' => null,
+            'status' => 'active',
+            'default_code_exposure_policy' => 'full_code_artifacts',
+            'created_by_user_id' => $user->id,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
+    $agentId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('hades_agents')->insert([
+        'id' => $agentId,
+        'project_id' => $projectId,
+        'external_agent_id' => 'wiki-agent-'.Str::lower(Str::random(8)),
+        'label' => 'Wiki workflow agent',
+        'platform' => 'linux-x64',
+        'version' => '0.1.0',
+        'declared_capabilities' => json_encode(['populate_project_wiki'], JSON_THROW_ON_ERROR),
+        'effective_capabilities' => json_encode(['populate_project_wiki'], JSON_THROW_ON_ERROR),
+        'last_seen_at' => $now,
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $agent = DB::table('hades_agents')->where('id', $agentId)->first();
+    $token = app(HadesTokenService::class)->createAgentToken($agent);
+
+    return [
+        'project_id' => $projectId,
+        'agent_id' => $agentId,
+        'agent_token' => $token['plain_token'],
+    ];
+}
+
+/**
+ * @param  array{project_id: string, agent_id: string, agent_token: string}  $agent
+ */
+function wikiWorkflowBinding(array $agent): object
+{
+    $id = (string) Str::ulid();
+    $now = now();
+
+    DB::table('hades_workspace_bindings')->insert([
+        'id' => $id,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['agent_id'],
+        'external_agent_id' => 'wiki-agent',
+        'local_project_id' => 'wiki-project',
+        'workspace_fingerprint' => 'wiki-'.Str::lower(Str::random(12)),
+        'display_path' => '~/Code/wiki-project',
+        'git_remote_display' => null,
+        'git_remote_hash' => null,
+        'head_commit' => str_repeat('c', 40),
+        'platform' => 'linux-x64',
+        'status' => 'linked',
+        'linked_at' => $now,
+        'unlinked_at' => null,
+        'last_seen_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    return DB::table('hades_workspace_bindings')->where('id', $id)->first();
+}
+
+/**
+ * @param  array<mixed>  $evidenceRefs
+ * @return array{page_id: string, revision_id: string}
+ */
+function wikiWorkflowPage(
+    string $projectId,
+    string $slug,
+    string $sourceStatus,
+    string $markdown = '# Wiki page',
+    array $evidenceRefs = [],
+    ?DateTimeInterface $updatedAt = null,
+    string $producer = 'plugin',
+    string $sourceType = 'local_analyzer',
+): array {
+    $pageId = (string) Str::ulid();
+    $revisionId = (string) Str::ulid();
+    $updatedAt ??= now();
+
+    DB::table('wiki_pages')->insert([
+        'id' => $pageId,
+        'project_id' => $projectId,
+        'repository_id' => null,
+        'slug' => $slug,
+        'title' => Str::headline($slug),
+        'page_type' => 'technical',
+        'current_revision_id' => null,
+        'source_status' => $sourceStatus,
+        'created_at' => $updatedAt,
+        'updated_at' => $updatedAt,
+    ]);
+
+    DB::table('wiki_revisions')->insert([
+        'id' => $revisionId,
+        'wiki_page_id' => $pageId,
+        'author_user_id' => null,
+        'author_device_id' => null,
+        'producer' => $producer,
+        'source_type' => $sourceType,
+        'source_status' => $sourceStatus,
+        'content_markdown' => $markdown,
+        'evidence_refs' => json_encode($evidenceRefs, JSON_THROW_ON_ERROR),
+        'created_at' => $updatedAt,
+    ]);
+
+    DB::table('wiki_pages')->where('id', $pageId)->update(['current_revision_id' => $revisionId]);
+
+    return ['page_id' => $pageId, 'revision_id' => $revisionId];
+}
