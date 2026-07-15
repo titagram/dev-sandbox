@@ -31,6 +31,16 @@ function normalizePageType(value: string): WikiPageWriteInput["page_type"] {
   return PAGE_TYPES.includes(value as WikiPageWriteInput["page_type"]) ? value as WikiPageWriteInput["page_type"] : "technical";
 }
 
+function inlineMarkdown(src: string, strongClassName?: string): React.ReactNode[] {
+  return src.split(/(\*\*.+?\*\*)/g).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index} className={strongClassName}>{part.slice(2, -2)}</strong>;
+    }
+
+    return part;
+  });
+}
+
 function Markdown({ src }: { src: string }) {
   const lines = src.split("\n");
   return (
@@ -39,8 +49,8 @@ function Markdown({ src }: { src: string }) {
         if (!ln.trim()) return <div key={i} className="h-1" />;
         if (ln.startsWith("## ")) return <h3 key={i} className="text-base font-semibold">{ln.slice(3)}</h3>;
         if (ln.startsWith("> ")) return <blockquote key={i} className="border-l-2 border-amber-500/50 bg-amber-500/5 py-1.5 pl-3 text-amber-700 dark:text-amber-300">{ln.slice(2)}</blockquote>;
-        if (ln.startsWith("- ")) return <p key={i} className="flex gap-2 pl-1 text-muted-foreground"><span className="text-primary">•</span><span dangerouslySetInnerHTML={{ __html: ln.slice(2).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") }} /></p>;
-        return <p key={i} className="text-muted-foreground" dangerouslySetInnerHTML={{ __html: ln.replace(/\*\*(.+?)\*\*/g, "<strong class='text-foreground'>$1</strong>") }} />;
+        if (ln.startsWith("- ")) return <p key={i} className="flex gap-2 pl-1 text-muted-foreground"><span className="text-primary">•</span><span>{inlineMarkdown(ln.slice(2))}</span></p>;
+        return <p key={i} className="text-muted-foreground">{inlineMarkdown(ln, "text-foreground")}</p>;
       })}
     </div>
   );
