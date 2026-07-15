@@ -1,7 +1,7 @@
 <?php
 
-use App\Models\User;
 use App\Http\Controllers\Dashboard\Api\DashboardGraphExplorerController;
+use App\Models\User;
 use App\Services\Graph\CanonicalGraphQueryService;
 use App\Services\Graph\DashboardGraphExplorerService;
 use App\Services\Graph\DashboardGraphPublicHandle;
@@ -66,6 +66,7 @@ it('uses the exact shared public kind vocabulary at the endpoint boundary', func
                 'node_handle' => $fixture['source_handle'],
             ])
             ->assertOk()
+            ->assertJsonPath('projection.status', 'ready')
             ->assertJsonPath('node.kind', $kind);
     }
 
@@ -1149,6 +1150,7 @@ final class Task3ApiNeo4jClient implements Neo4jClient
         }
         if (str_contains($cypher, 'MATCH (node:CanonicalGraphNode')) {
             $handle = (string) ($parameters['public_handle'] ?? '');
+
             return [[
                 'version_project_key' => 'gh1',
                 'version_source_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', (string) config('app.key')),

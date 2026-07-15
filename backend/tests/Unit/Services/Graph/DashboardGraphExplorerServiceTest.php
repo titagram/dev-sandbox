@@ -11,8 +11,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Laudis\Neo4j\Types\CypherList;
 use Laudis\Neo4j\Types\CypherMap;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class, RefreshDatabase::class);
+uses(TestCase::class, RefreshDatabase::class);
 
 beforeEach(function (): void {
     config(['app.key' => 'unit-test-app-key']);
@@ -51,6 +52,45 @@ it('resolves a detail node with one direct indexed project-scope-version-handle 
             'public_handle_key_version' => 'gh1',
             'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'unit-test-app-key'),
         ]);
+});
+
+it('uses the safe public name when Hades nodes do not provide a label', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $fixture['client']->directNodeUsesNameOnly = true;
+    $fixture['client']->neighborhoodRows = [[
+        'source_id' => 'method:InvoiceService::charge',
+        'node' => [
+            'external_id' => 'method:NamedDependency',
+            'public_handle' => (new DashboardGraphPublicHandle)->forNode(
+                $fixture['project_id'],
+                'workspace_binding',
+                $fixture['scope_id'],
+                $fixture['active_graph_version'],
+                'method:NamedDependency',
+            ),
+            'kind' => 'method',
+            'public_search_name' => 'NamedDependency',
+        ],
+        'labels' => ['Method'],
+        'edge' => [
+            'edge_json' => json_encode([
+                'external_id' => 'edge-named-dependency',
+                'type' => 'CALLS_METHOD',
+                'source_id' => 'method:InvoiceService::charge',
+                'target_id' => 'method:NamedDependency',
+            ], JSON_THROW_ON_ERROR),
+        ],
+    ]];
+
+    $detail = $fixture['service']->detail(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'],
+    );
+    $neighborhood = $fixture['service']->neighborhood(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'], 'out', 1, 10,
+    );
+
+    expect($detail['node']['label'])->toBe('InvoiceService::charge')
+        ->and($neighborhood['items'][0]['label'])->toBe('NamedDependency');
 });
 
 it('keeps the newest ready winner when a newer queued candidate has no active version', function (): void {
@@ -252,7 +292,7 @@ it('does not query Neo4j for malformed handles and never resolves tampered or cr
     $crossContextHandle = (new DashboardGraphPublicHandle)->forNode(
         $fixture['project_id'],
         'workspace_binding',
-        (string) \Illuminate\Support\Str::ulid(),
+        (string) Str::ulid(),
         $fixture['active_graph_version'],
         'method:InvoiceService::charge',
     );
@@ -288,7 +328,7 @@ it('rejects a cursor from another project as invalid_cursor', function (): void 
         'invoice service',
         10,
         $cursor,
-    ))->toThrow(\InvalidArgumentException::class, 'invalid_cursor');
+    ))->toThrow(InvalidArgumentException::class, 'invalid_cursor');
 });
 
 it('rejects every remaining cursor context mismatch as invalid_cursor', function (): void {
@@ -341,7 +381,7 @@ it('rejects every remaining cursor context mismatch as invalid_cursor', function
             'invoice service',
             10,
             $cursor,
-        ))->toThrow(\InvalidArgumentException::class, 'invalid_cursor');
+        ))->toThrow(InvalidArgumentException::class, 'invalid_cursor');
     }
 
     expect($fixture['client']->commands)->toBe([]);
@@ -528,13 +568,13 @@ it('rejects empty or invalid normalized searches before querying the index', fun
         'workspace_binding',
         $fixture['scope_id'],
         " \t\n ",
-    ))->toThrow(\InvalidArgumentException::class, 'invalid_query');
+    ))->toThrow(InvalidArgumentException::class, 'invalid_query');
     expect(fn () => $fixture['service']->search(
         $fixture['project_id'],
         'workspace_binding',
         $fixture['scope_id'],
         "\xFF",
-    ))->toThrow(\InvalidArgumentException::class, 'invalid_query');
+    ))->toThrow(InvalidArgumentException::class, 'invalid_query');
     expect($fixture['client']->commands)->toBe([]);
 });
 
@@ -1179,7 +1219,7 @@ it('validates neighborhood direction and routes bounded depth through exact trav
         'sideways',
         2,
         10,
-    ))->toThrow(\InvalidArgumentException::class, 'invalid_direction');
+    ))->toThrow(InvalidArgumentException::class, 'invalid_direction');
 
     $response = $fixture['service']->neighborhood(
         $fixture['project_id'],
@@ -1193,10 +1233,17 @@ it('validates neighborhood direction and routes bounded depth through exact trav
     $traverse = collect($fixture['client']->commands)->last(
         fn (array $command): bool => str_contains($command['cypher'], 'start_external_id'),
     );
+    $hop = collect($fixture['client']->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'CanonicalGraphAdjacency'),
+    );
 
     expect($response['found'])->toBeTrue()
         ->and($traverse)->not->toBeNull()
+        ->and($hop)->not->toBeNull()
         ->and($traverse['cypher'])->toContain('start.external_id = $start_external_id')
+        ->and($traverse['cypher'])->toContain('start.source_scope_id = $source_scope_id WITH start')
+        ->and($hop['cypher'])->toContain('WHERE target.project_id = $project_id')
+        ->and($hop['cypher'])->toContain('target.source_scope_id = $source_scope_id RETURN frontier_id')
         ->not->toContain('CONTAINS')
         ->and($traverse['params'])->toMatchArray([
             'start_external_id' => 'method:InvoiceService::charge',
@@ -1218,7 +1265,7 @@ it('rejects unknown neighborhood families without broadening the edge predicate'
         2,
         10,
         ['call', 'not-a-family'],
-    ))->toThrow(\InvalidArgumentException::class, 'invalid_family');
+    ))->toThrow(InvalidArgumentException::class, 'invalid_family');
     expect($fixture['client']->commands)->toBe([]);
 });
 
@@ -1549,20 +1596,31 @@ function dashboardGraphExplorerFixture(): array
     {
         /** @var list<array{cypher:string,params:array<string,mixed>}> */
         public array $commands = [];
+
         public string $storedKeyFingerprint;
+
         public string $directNodeKind = 'method';
+
+        public bool $directNodeUsesNameOnly = false;
+
         /** @var list<float> */
         public array $searchScores = [0.9, 0.9, 0.7];
+
         /** @var list<array<string,mixed>>|null */
         public ?array $searchRows = null;
+
         /** @var list<list<array<string,mixed>>> */
         public array $searchRowBatches = [];
+
         /** @var list<array<string,mixed>>|null */
         public ?array $impactRows = null;
+
         /** @var list<array<string,mixed>>|null */
         public ?array $neighborhoodRows = null;
+
         /** @var list<array<string,mixed>>|null */
         public ?array $pathRows = null;
+
         public string $storedHandle;
 
         public function __construct(
@@ -1785,7 +1843,9 @@ function dashboardGraphExplorerFixture(): array
                     'external_id' => 'method:InvoiceService::charge',
                     'public_handle' => $this->storedHandle,
                     'kind' => $this->directNodeKind,
-                    'public_search_label' => 'InvoiceService::charge',
+                    ...($this->directNodeUsesNameOnly
+                        ? ['public_search_name' => 'InvoiceService::charge']
+                        : ['public_search_label' => 'InvoiceService::charge']),
                     'path' => '/srv/private/InvoiceService.php',
                 ] : null;
 

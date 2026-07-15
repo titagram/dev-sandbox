@@ -76,8 +76,10 @@ services:
       context: .
       dockerfile: docker/devboard/backend.Dockerfile
     working_dir: /workspace/backend
-    command: php artisan queue:work --queue=default --sleep=1 --tries=3 --timeout=600
+    command: php artisan queue:work --queue=default --sleep=1 --tries=3 --timeout=1800
+    restart: unless-stopped
     environment:
+      DB_QUEUE_RETRY_AFTER: "1900"
       APP_ENV: local
       APP_KEY: "${APP_KEY:?APP_KEY is required}"
       APP_DEBUG: "true"

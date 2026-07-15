@@ -167,10 +167,10 @@ class CanonicalGraphQueryService
         $graphVersion = $this->activeGraphVersion($projection);
         $semanticEdgeTypes = $this->edgeTypes($params['families'] ?? []);
         $scopePredicate = isset($projection->project_id)
-            ? ' AND start.project_id = $project_id AND start.source_scope_type = $source_scope_type AND start.source_scope_id = $source_scope_id'
+            ? ' AND start.project_id = $project_id AND start.source_scope_type = $source_scope_type AND start.source_scope_id = $source_scope_id '
             : '';
         $targetScopePredicate = isset($projection->project_id)
-            ? ' AND target.project_id = $project_id AND target.source_scope_type = $source_scope_type AND target.source_scope_id = $source_scope_id'
+            ? ' WHERE target.project_id = $project_id AND target.source_scope_type = $source_scope_type AND target.source_scope_id = $source_scope_id '
             : '';
         $capabilityRows = $this->materialiseSequences($client->run(
             'MATCH (version:CanonicalGraphVersion {graph_version: $graph_version}) RETURN coalesce(version.traversal_schema_version, 0) AS traversal_schema_version',
@@ -371,8 +371,7 @@ class CanonicalGraphQueryService
         ?string $scopeType = null,
         ?string $scopeId = null,
         ?string $activeGraphVersion = null,
-    ): array
-    {
+    ): array {
         $result = $this->materialiseSequences($result);
         if (! is_array($result)) {
             return [[], [], false, []];
@@ -478,8 +477,7 @@ class CanonicalGraphQueryService
         ?string $scopeType = null,
         ?string $scopeId = null,
         ?string $activeGraphVersion = null,
-    ): array
-    {
+    ): array {
         $props = is_array($row['node'] ?? null) ? $row['node'] : $row;
         $id = (string) ($props['external_id'] ?? $props['symbol_id'] ?? $props['id'] ?? 'node-'.md5(json_encode($props)));
         $handle = (string) ($props['public_handle'] ?? '');
@@ -506,8 +504,7 @@ class CanonicalGraphQueryService
         ?string $scopeType = null,
         ?string $scopeId = null,
         ?string $activeGraphVersion = null,
-    ): array
-    {
+    ): array {
         $edgeType = strtoupper((string) ($edge['edge_type'] ?? $edge['type'] ?? 'RELATED'));
         $sourceId = (string) ($edge['source_id'] ?? $edge['from'] ?? $edge['from_external_id'] ?? '');
         $targetId = (string) ($edge['target_id'] ?? $edge['to'] ?? $edge['to_external_id'] ?? '');
@@ -564,7 +561,6 @@ class CanonicalGraphQueryService
         return 'other';
     }
 
-    /** @param mixed $families */
     private function edgeTypes(mixed $families): array
     {
         $this->assertFamilies($families);

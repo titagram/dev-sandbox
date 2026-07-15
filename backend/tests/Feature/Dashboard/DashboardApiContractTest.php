@@ -16,10 +16,12 @@ uses(RefreshDatabase::class);
 beforeEach(function () {
     Storage::fake('local');
     $this->seed(DevBoardSeeder::class);
-    $this->app->instance(Neo4jClientFactory::class, new class extends Neo4jClientFactory {
+    $this->app->instance(Neo4jClientFactory::class, new class extends Neo4jClientFactory
+    {
         public function client(): Neo4jClient
         {
-            return new class implements Neo4jClient {
+            return new class implements Neo4jClient
+            {
                 public function run(string $cypher, array $parameters = []): mixed
                 {
                     return [[
@@ -313,13 +315,14 @@ it('withholds canonical preview handles when the stored projection key is rotate
     $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
     $currentKey = '0123456789abcdef0123456789abcdef';
     config(['app.key' => $currentKey]);
-    $this->app->bind(Neo4jClient::class, fn (): Neo4jClient => new class implements Neo4jClient {
+    $this->app->bind(Neo4jClient::class, fn (): Neo4jClient => new class implements Neo4jClient
+    {
         public function run(string $cypher, array $parameters = []): mixed
         {
             if (str_contains($cypher, 'CanonicalGraphVersion')) {
                 return [[
                     'public_handle_key_version' => 'gh1',
-            'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'previous-app-key'),
+                    'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'previous-app-key'),
                 ]];
             }
 
@@ -344,7 +347,8 @@ it('uses the Neo4j factory fallback and fails closed when the stored key is rota
     createDashboardCanonicalHadesGraph($ids['project_id']);
     $currentKey = '0123456789abcdef0123456789abcdef';
     config(['app.key' => $currentKey]);
-    $client = new class implements Neo4jClient {
+    $client = new class implements Neo4jClient
+    {
         /** @var list<array{cypher: string, parameters: array<string, mixed>}> */
         public array $commands = [];
 
@@ -355,12 +359,13 @@ it('uses the Neo4j factory fallback and fails closed when the stored key is rota
             return new CypherList([
                 new CypherMap([
                     'public_handle_key_version' => 'gh1',
-            'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'previous-app-key'),
+                    'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', 'previous-app-key'),
                 ]),
             ]);
         }
     };
-    $this->app->instance(Neo4jClientFactory::class, new class($client) extends Neo4jClientFactory {
+    $this->app->instance(Neo4jClientFactory::class, new class($client) extends Neo4jClientFactory
+    {
         public function __construct(private readonly Neo4jClient $client) {}
 
         public function client(): Neo4jClient
@@ -398,13 +403,15 @@ it('fails closed when the Neo4j factory query is unavailable', function (): void
     $ids = createDashboardApiContractScenario();
     DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
     createDashboardCanonicalHadesGraph($ids['project_id']);
-    $this->app->instance(Neo4jClientFactory::class, new class extends Neo4jClientFactory {
+    $this->app->instance(Neo4jClientFactory::class, new class extends Neo4jClientFactory
+    {
         public function client(): Neo4jClient
         {
-            return new class implements Neo4jClient {
+            return new class implements Neo4jClient
+            {
                 public function run(string $cypher, array $parameters = []): mixed
                 {
-                    throw new \RuntimeException('neo4j unavailable');
+                    throw new RuntimeException('neo4j unavailable');
                 }
             };
         }
@@ -418,9 +425,47 @@ it('fails closed when the Neo4j factory query is unavailable', function (): void
         ->assertJsonCount(0, 'edges');
 });
 
-it('requires an explicit scope when multiple canonical graph scopes exist', function () {
+it('selects the only ready canonical scope when configured repositories have no projection', function (): void {
     $admin = dashboardApiContractUserWithRole('Admin');
     $ids = createDashboardApiContractScenario();
+    $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    $currentKey = '0123456789abcdef0123456789abcdef';
+    config(['app.key' => $currentKey]);
+    $this->app->instance(Neo4jClientFactory::class, new class($currentKey) extends Neo4jClientFactory
+    {
+        public function __construct(private readonly string $key) {}
+
+        public function client(): Neo4jClient
+        {
+            return new class($this->key) implements Neo4jClient
+            {
+                public function __construct(private readonly string $key) {}
+
+                public function run(string $cypher, array $parameters = []): mixed
+                {
+                    return [[
+                        'public_handle_key_version' => 'gh1',
+                        'public_handle_key_fingerprint' => hash_hmac('sha256', 'hades.graph.handle.v1', $this->key),
+                    ]];
+                }
+            };
+        }
+    });
+
+    $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$ids['project_id']}/graph")
+        ->assertOk()
+        ->assertJsonPath('projection_status', 'ready')
+        ->assertJsonPath('source_scope.type', 'workspace_binding')
+        ->assertJsonPath('source_scope.id', $canonical['binding_id'])
+        ->assertJsonPath('stats.nodes', 1);
+});
+
+it('requires an explicit scope when multiple canonical graph scopes exist', function () {
+    config(['app.key' => '0123456789abcdef0123456789abcdef']);
+    $admin = dashboardApiContractUserWithRole('Admin');
+    $ids = createDashboardApiContractScenario();
+    createDashboardCanonicalHadesGraph($ids['project_id']);
     createDashboardCanonicalHadesGraph($ids['project_id']);
 
     $response = $this->actingAs($admin)
@@ -429,7 +474,7 @@ it('requires an explicit scope when multiple canonical graph scopes exist', func
         ->assertJsonPath('projection_status', 'scope_required')
         ->assertJsonPath('graph_version', null)
         ->assertJsonPath('stats.nodes', 0)
-        ->assertJsonCount(2, 'scopes');
+        ->assertJsonCount(3, 'scopes');
 
     expect($response->json('nodes'))->toBe([])
         ->and($response->json('edges'))->toBe([])
@@ -441,6 +486,7 @@ it('bounds multi-scope metadata without loading graph artifact payloads', functi
     $ids = createDashboardApiContractScenario();
     DB::table('repositories')->where('project_id', $ids['project_id'])->delete();
     $canonical = createDashboardCanonicalHadesGraph($ids['project_id']);
+    createDashboardCanonicalHadesGraph($ids['project_id']);
     $now = now();
 
     for ($index = 0; $index < 75; $index++) {

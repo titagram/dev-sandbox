@@ -3,8 +3,8 @@
 namespace App\Dashboard;
 
 use App\Services\Graph\CanonicalGraphRepository;
-use App\Services\Graph\DashboardGraphPublicKind;
 use App\Services\Graph\DashboardGraphPublicHandle;
+use App\Services\Graph\DashboardGraphPublicKind;
 use App\Services\Neo4j\Neo4jClient;
 use App\Services\Neo4j\Neo4jResultMaterializer;
 use App\Services\Neo4jClientFactory;
@@ -778,17 +778,23 @@ final class DashboardApiReader
     {
         $scopeMetadata = $this->canonicalGraphs->listScopeMetadata($projectId, self::CANONICAL_SCOPE_LIMIT);
         $scopes = $scopeMetadata['scopes'];
+        $readyScopes = array_values(array_filter(
+            $scopes,
+            static fn (array $scope): bool => ($scope['projection_status'] ?? null) === 'ready',
+        ));
 
-        if (count($scopes) !== 1) {
+        if (count($readyScopes) === 1) {
+            $scope = $readyScopes[0];
+        } elseif (count($scopes) !== 1) {
             return $this->canonicalGraphSelection(
                 $projectId,
                 $scopes === [] ? 'unavailable' : 'scope_required',
                 array_map(fn (array $scope): array => $this->canonicalScopeMetadata($scope), $scopes),
                 $scopeMetadata['truncated'],
             );
+        } else {
+            $scope = $scopes[0];
         }
-
-        $scope = $scopes[0];
         $scopeType = (string) $scope['source_scope_type'];
         $scopeId = (string) $scope['source_scope_id'];
         $projection = $this->canonicalGraphProjectionWinner($projectId, $scopeType, $scopeId);
@@ -2264,8 +2270,7 @@ final class DashboardApiReader
         ?string $activeGraphVersion = null,
         string $sourceType = 'local_analyzer',
         bool $trustedProducerRoute = false,
-    ): array
-    {
+    ): array {
         $id = $this->graphNodeId($node);
         $kind = $this->graphNodeSemanticKind($node);
         $handle = null;

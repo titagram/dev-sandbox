@@ -5,6 +5,7 @@ namespace App\Services\Graph;
 use App\Services\Neo4j\Neo4jClient;
 use App\Services\Neo4j\Neo4jResultMaterializer;
 use App\Services\Neo4jClientFactory;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 
 final class DashboardGraphExplorerService
@@ -18,7 +19,9 @@ final class DashboardGraphExplorerService
     ];
 
     private readonly DashboardGraphPublicHandle $publicHandles;
+
     private readonly DashboardGraphExplorerCursor $cursors;
+
     private readonly DashboardGraphPublicKind $publicKinds;
 
     public function __construct(
@@ -220,6 +223,7 @@ final class DashboardGraphExplorerService
         return [
             'found' => true,
             'reason' => null,
+            'projection' => $this->projectionEnvelope($projection),
             'items' => $items,
             'edges' => [],
             'returned' => count($items),
@@ -246,17 +250,7 @@ final class DashboardGraphExplorerService
             'reason' => null,
             'project_id' => $projectId,
             'scope' => ['type' => $scopeType, 'id' => $scopeId],
-            'projection' => [
-                'status' => (string) $projection->status,
-                'quality' => $projection->quality,
-                'generated_at' => $projection->projected_at,
-                'active_graph_version' => $activeGraphVersion,
-                'node_count' => (int) ($projection->node_count ?? 0),
-                'relationship_count' => (int) ($projection->relationship_count ?? 0),
-                'unknown_kind_count' => 0,
-                'missing_label_count' => 0,
-                'excluded_node_count' => 0,
-            ],
+            'projection' => $this->projectionEnvelope($projection),
             'source' => ['type' => 'canonical', 'verified' => true],
         ];
     }
@@ -406,7 +400,7 @@ final class DashboardGraphExplorerService
         $visibleHandles = array_fill_keys(array_filter([
             is_array($root) ? ($root['handle'] ?? null) : null,
             ...array_column($items, 'handle'),
-]), true);
+        ]), true);
         $edges = array_values(array_filter(array_map(
             fn (mixed $edge): ?array => is_array($edge) ? $this->publicCanonicalEdge($edge) : null,
             is_array($result['edges'] ?? null) ? $result['edges'] : [],
@@ -419,6 +413,7 @@ final class DashboardGraphExplorerService
         return [
             'found' => true,
             'reason' => null,
+            'projection' => $this->projectionEnvelope($resolved['projection']),
             'node' => $this->publicNode($resolved['node']),
             'items' => $items,
             'edges' => $edges,
@@ -487,6 +482,7 @@ final class DashboardGraphExplorerService
         return [
             'found' => true,
             'reason' => null,
+            'projection' => $this->projectionEnvelope($from['projection']),
             'items' => $items,
             'edges' => $edges,
             'returned' => count($items),
@@ -598,6 +594,7 @@ final class DashboardGraphExplorerService
         return [
             'found' => true,
             'reason' => null,
+            'projection' => $this->projectionEnvelope($projection),
             'items' => $items,
             'edges' => [],
             'returned' => count($items),
@@ -622,12 +619,11 @@ final class DashboardGraphExplorerService
         return [
             'found' => true,
             'reason' => null,
+            'projection' => $this->projectionEnvelope($resolved['projection']),
             'node' => [
                 'handle' => (string) ($node['public_handle'] ?? $handle),
                 'kind' => $this->publicKinds->map($node['kind'] ?? null),
-                'label' => is_string($node['public_search_label'] ?? null)
-                    ? $this->safePublicSearchValue($node['public_search_label'])
-                    : null,
+                'label' => $this->publicSearchLabel($node),
             ],
             'items' => [],
             'edges' => [],
@@ -638,6 +634,22 @@ final class DashboardGraphExplorerService
     private function client(): Neo4jClient
     {
         return $this->client ?? app(Neo4jClientFactory::class)->client();
+    }
+
+    /** @return array<string,mixed> */
+    private function projectionEnvelope(object $projection): array
+    {
+        return [
+            'status' => (string) $projection->status,
+            'quality' => $projection->quality,
+            'generated_at' => $projection->projected_at,
+            'active_graph_version' => (string) $projection->active_graph_version,
+            'node_count' => (int) ($projection->node_count ?? 0),
+            'relationship_count' => (int) ($projection->relationship_count ?? 0),
+            'unknown_kind_count' => 0,
+            'missing_label_count' => 0,
+            'excluded_node_count' => 0,
+        ];
     }
 
     private function projectionKeyIsCurrent(
@@ -755,10 +767,24 @@ final class DashboardGraphExplorerService
         return [
             'handle' => $handle,
             'kind' => $this->publicKinds->map($node['kind'] ?? null),
-            'label' => is_string($properties['public_search_label'] ?? null)
-                ? $this->safePublicSearchValue($properties['public_search_label'])
-                : null,
+            'label' => $this->publicSearchLabel($properties),
         ];
+    }
+
+    /** @param array<string,mixed> $node */
+    private function publicSearchLabel(array $node): ?string
+    {
+        foreach ([$node['public_search_label'] ?? null, $node['public_search_name'] ?? null] as $candidate) {
+            if (! is_string($candidate)) {
+                continue;
+            }
+            $label = $this->safePublicSearchValue($candidate);
+            if ($label !== null) {
+                return $label;
+            }
+        }
+
+        return null;
     }
 
     /** @param array<string,mixed> $edge */
@@ -842,7 +868,7 @@ final class DashboardGraphExplorerService
         return [$projection, null];
     }
 
-    private function latestReadyScopeQuery(string $projectId): \Illuminate\Database\Query\Builder
+    private function latestReadyScopeQuery(string $projectId): Builder
     {
         $ranked = DB::table('canonical_graph_projections')
             ->select([

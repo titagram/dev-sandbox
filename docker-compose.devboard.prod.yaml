@@ -20,6 +20,7 @@ x-backend-env: &backend-env
   DB_DATABASE: ${DEVBOARD_DB_DATABASE:-devboard}
   DB_USERNAME: ${DEVBOARD_DB_USERNAME:-devboard}
   DB_PASSWORD: ${DEVBOARD_DB_PASSWORD:-}
+  DB_QUEUE_RETRY_AFTER: ${DEVBOARD_DB_QUEUE_RETRY_AFTER:-1900}
   CACHE_STORE: database
   QUEUE_CONNECTION: database
   SESSION_DRIVER: database
@@ -87,7 +88,7 @@ services:
         "--queue=default",
         "--sleep=1",
         "--tries=3",
-        "--timeout=600",
+        "--timeout=1800",
       ]
     environment: *backend-env
     volumes:
