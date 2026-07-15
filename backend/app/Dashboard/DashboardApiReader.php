@@ -2549,6 +2549,20 @@ final class DashboardApiReader
         return preg_match('~'.$boundary.'(?:[A-Za-z0-9_.-]+)[\\\\/][^\s]+~', $value) === 1;
     }
 
+    private function isGraphWebRouteRoot(string $root): bool
+    {
+        return in_array(strtolower($root), [
+            'api', 'admin', 'auth', 'dashboard', 'docs', 'graph', 'health', 'login', 'projects', 'wiki',
+        ], true);
+    }
+
+    private function isSensitiveFilesystemRoot(string $root): bool
+    {
+        return in_array(strtolower($root), [
+            'etc', 'home', 'media', 'mnt', 'opt', 'private', 'root', 'srv', 'tmp', 'users', 'var', 'workspace', 'workspaces',
+        ], true);
+    }
+
     /**
      * @param  list<array<string, mixed>>  $nodes
      * @param  list<array{from: string, to: string}>  $relationships
