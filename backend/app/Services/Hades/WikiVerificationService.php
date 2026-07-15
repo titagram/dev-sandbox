@@ -28,6 +28,7 @@ class WikiVerificationService
         string $expectedCurrentRevisionId,
         array $evidenceRefs,
         object $agent,
+        ?string $verificationNote = null,
     ): array {
         return DB::transaction(function () use (
             $projectId,
@@ -36,6 +37,7 @@ class WikiVerificationService
             $expectedCurrentRevisionId,
             $evidenceRefs,
             $agent,
+            $verificationNote,
         ): array {
             DB::table('projects')
                 ->where('id', $projectId)
@@ -99,6 +101,7 @@ class WikiVerificationService
                 'prior_revision_id' => $currentRevision->id,
                 'new_revision_id' => $result['wiki_revision_id'],
                 'workspace_binding_id' => $workspaceBindingId,
+                'verification_note' => $verificationNote,
                 'actor' => [
                     'hades_agent_id' => $agent->id,
                     'external_agent_id' => $agent->external_agent_id,

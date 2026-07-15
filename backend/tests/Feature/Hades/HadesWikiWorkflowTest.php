@@ -837,14 +837,20 @@ it('emits wiki.verified with actor and prior/new revision ids', function () {
         ],
     );
 
+    $verificationPayload = wikiWorkflowVerificationPayload(
+        $agent,
+        $binding,
+        $page['revision_id'],
+        [['kind' => 'artifact_ref', 'sha256' => $artifact->sha256]],
+    );
+    $verificationPayload['verification_note'] = 'Checked against the current indexed tree.';
+
     $response = $this->withToken($agent['agent_token'])
-        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
-            $agent,
-            $binding,
-            $page['revision_id'],
-            [['kind' => 'artifact_ref', 'sha256' => $artifact->sha256]],
-        ))
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', $verificationPayload)
         ->assertOk();
+
+    $newRevision = DB::table('wiki_revisions')->where('id', $response->json('wiki_revision_id'))->first();
+    $revisionEvidence = json_decode($newRevision->evidence_refs, true, flags: JSON_THROW_ON_ERROR);
 
     $audit = DB::table('audit_logs')
         ->where('action', 'wiki.verified')
@@ -858,10 +864,50 @@ it('emits wiki.verified with actor and prior/new revision ids', function () {
         ->and($audit->actor_device_id)->toBeNull()
         ->and($payload['prior_revision_id'])->toBe($page['revision_id'])
         ->and($payload['new_revision_id'])->toBe($response->json('wiki_revision_id'))
+        ->and($payload['verification_note'])->toBe('Checked against the current indexed tree.')
         ->and($payload['actor'])->toBe([
             'hades_agent_id' => $agent['agent_id'],
             'external_agent_id' => $agent['external_agent_id'],
-        ]);
+        ])
+        ->and($newRevision->content_markdown)->toBe('# Wiki page')
+        ->and($revisionEvidence)->toHaveCount(1)
+        ->and($revisionEvidence[0])->not->toHaveKey('verification_note');
+});
+
+it('rejects an overlong wiki verification note without writes', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'overlong-verification-note', 'needs_verification');
+    $artifact = wikiWorkflowArtifact(
+        $agent,
+        $binding,
+        'hades.symbols.v1',
+        [
+            'schema' => 'hades.symbols.v1',
+            'workspace_state' => ['head_commit' => $binding->head_commit],
+            'symbols' => [],
+        ],
+    );
+    $payload = wikiWorkflowVerificationPayload(
+        $agent,
+        $binding,
+        $page['revision_id'],
+        [['kind' => 'artifact_ref', 'sha256' => $artifact->sha256]],
+    );
+    $payload['verification_note'] = str_repeat('n', 2001);
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', $payload)
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+
+    expect(DB::table('wiki_revisions')->where('wiki_page_id', $page['page_id'])->count())->toBe(1)
+        ->and(DB::table('wiki_pages')->where('id', $page['page_id'])->value('current_revision_id'))
+        ->toBe($page['revision_id'])
+        ->and(DB::table('audit_logs')
+            ->where('action', 'wiki.verified')
+            ->where('target_id', $page['page_id'])
+            ->exists())->toBeFalse();
 });
 
 /**

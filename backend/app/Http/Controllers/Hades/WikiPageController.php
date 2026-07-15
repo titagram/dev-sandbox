@@ -182,6 +182,7 @@ class WikiPageController extends Controller
             'evidence_refs.*.sha256' => ['sometimes', 'string', 'max:64'],
             'evidence_refs.*.hash' => ['sometimes', 'string', 'max:64'],
             'evidence_refs.*.path' => ['sometimes', 'string', 'max:2048'],
+            'verification_note' => ['nullable', 'string', 'max:2000'],
         ]);
 
         if ($validator->fails()) {
@@ -215,6 +216,7 @@ class WikiPageController extends Controller
                 $validated['expected_current_revision_id'],
                 $validated['evidence_refs'],
                 $agent,
+                $validated['verification_note'] ?? null,
             );
         } catch (HadesTokenException $exception) {
             return $exception->toResponse();
