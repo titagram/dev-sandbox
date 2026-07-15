@@ -14,9 +14,14 @@ class Neo4jCanonicalGraphProjector
 
     private readonly DashboardGraphPublicHandle $publicHandles;
 
-    public function __construct(?DashboardGraphPublicHandle $publicHandles = null)
-    {
+    private readonly DashboardGraphSearchTerms $searchTerms;
+
+    public function __construct(
+        ?DashboardGraphPublicHandle $publicHandles = null,
+        ?DashboardGraphSearchTerms $searchTerms = null,
+    ) {
         $this->publicHandles = $publicHandles ?? new DashboardGraphPublicHandle;
+        $this->searchTerms = $searchTerms ?? new DashboardGraphSearchTerms;
     }
 
     /** @return array{nodes:int, relationships:int} */
@@ -34,6 +39,7 @@ class Neo4jCanonicalGraphProjector
         $client->run('CREATE INDEX canonical_adjacency_any_edge_type_rank_v2 IF NOT EXISTS FOR (a:CanonicalGraphAdjacency) ON (a.graph_version, a.from_external_id, a.edge_type, a.any_rank)');
         $client->run('CALL db.awaitIndexes(300)');
         $client->run('CREATE INDEX canonical_node_public_lookup IF NOT EXISTS FOR (n:CanonicalGraphNode) ON (n.project_id, n.source_scope_type, n.source_scope_id, n.graph_version, n.public_handle)');
+        $client->run('CREATE FULLTEXT INDEX canonical_node_search_v2 IF NOT EXISTS FOR (n:CanonicalGraphNode) ON EACH [n.graph_version, n.public_search_name, n.public_search_label, n.public_search_path, n.public_search_terms]');
         $client->run('CREATE FULLTEXT INDEX canonical_node_search IF NOT EXISTS FOR (n:CanonicalGraphNode) ON EACH [n.graph_version, n.public_search_name, n.public_search_label, n.public_search_path]');
         $client->run('CALL db.awaitIndexes(300)');
         $this->assertHeartbeat($heartbeat);
@@ -138,8 +144,8 @@ class Neo4jCanonicalGraphProjector
      * properties. Raw external ids and local filesystem paths are deliberately
      * kept out of the FULLTEXT fields.
      *
-     * @param list<array<string, mixed>> $rows
-     * @param array<string, true> $trustedProducerRouteProvenance
+     * @param  list<array<string, mixed>>  $rows
+     * @param  array<string, true>  $trustedProducerRouteProvenance
      * @return list<array<string, mixed>>
      */
     private function withCanonicalNodeProperties(array $rows, object $projection, array $trustedProducerRouteProvenance = []): array
@@ -148,14 +154,8 @@ class Neo4jCanonicalGraphProjector
             $externalId = (string) ($row['id'] ?? '');
             $properties = is_array($row['properties'] ?? null) ? $row['properties'] : [];
             $kind = $this->nodeKind($row, $properties);
-            $publicProperties = [
-                'public_handle' => $this->safePublicHandle($projection, $externalId),
-                'public_search_name' => $this->safeSearchValue($properties['name'] ?? null),
-                'public_search_label' => $this->safeSearchValue($properties['label'] ?? null),
-                'public_search_path' => $kind === 'route'
-                    ? $this->safeRoutePath($properties['path'] ?? $properties['uri'] ?? $properties['route'] ?? null, isset($trustedProducerRouteProvenance[$externalId]))
-                    : null,
-            ];
+            $publicProperties = ['public_handle' => $this->safePublicHandle($projection, $externalId)]
+                + $this->searchTerms->forNode($properties, $kind, isset($trustedProducerRouteProvenance[$externalId]));
             unset($properties['__hades_server_route_provenance'], $properties['route_provenance']);
             $row['properties'] = $this->boltPropertyMap(array_merge($properties, $publicProperties));
         }
@@ -190,81 +190,6 @@ class Neo4jCanonicalGraphProjector
         }
 
         return 'unknown';
-    }
-
-    private function safeSearchValue(mixed $value): ?string
-    {
-        if (! is_string($value)) {
-            return null;
-        }
-        $value = trim(preg_replace('/[\x00-\x1F\x7F]+/', ' ', $value) ?? '');
-
-        return $value === '' || $this->isTechnicalIdentity($value)
-            ? null
-            : mb_substr($value, 0, 200);
-    }
-
-    private function isTechnicalIdentity(string $value, bool $allowPublicRouteSyntax = false): bool
-    {
-        if (preg_match('/\A(?:hades-public-|legacy[-_:]|(?:node|edge|internal)[-_:])/i', $value) === 1) {
-            return true;
-        }
-        if (str_contains($value, '\\') && $this->isValidPhpFqcn($value)) {
-            return false;
-        }
-
-        $normalised = str_replace('\\', '/', $value);
-        if (stripos($normalised, 'file://') !== false
-            || preg_match('~(?:\A|[^A-Za-z0-9_])([A-Za-z]):(?:[\\/]|[A-Za-z0-9_.-]*[\\/])~', $value) === 1
-            || preg_match('~(?:\A|[\s:=\[\(,|])(?:\\\\\?\\\\|\\\\\\\\|//)~', $value) === 1
-            || preg_match('~(?:\A|[\s:=\[\(,|])\.\.?[\\/]~', $value) === 1
-            || (str_contains($value, '\\') && ! $this->isValidPhpFqcn($value))) {
-            return true;
-        }
-
-        if (! $allowPublicRouteSyntax && preg_match('~(?:\A|[\s:=\[\(,|])/~', $normalised) === 1) {
-            return true;
-        }
-
-        if (! $allowPublicRouteSyntax
-            && preg_match('~(?:\A|[\s:=\[\(,|])(?:[^\s:=\[\(,|/]+/)+[^\s/]+~', $normalised) === 1) {
-            return true;
-        }
-
-        if (! $allowPublicRouteSyntax
-            && preg_match('/(?:\A|[\s:=\[\(,|])(?:\.\.?|[A-Za-z0-9_.-]+)[\\/][^\s]+/D', $value) === 1) {
-            return true;
-        }
-
-        if ($allowPublicRouteSyntax && preg_match('/(?:\A|\/)[^\/{}?*]+\.(?:php|phar|inc|phtml|ts|tsx|js|jsx|mjs|cjs|py|rb|go|java|kt|kts|rs|c|cc|cpp|h|hpp|swift|dart|vue|svelte|sql|yaml|yml|json|xml|toml|ini|env)(?:\/|\z)/i', $normalised) === 1) {
-            return true;
-        }
-
-        return false;
-    }
-
-    private function isValidPhpFqcn(string $value): bool
-    {
-        return preg_match('/\A\\\\?[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*)+\z/D', $value) === 1;
-    }
-
-    private function safeRoutePath(mixed $value, bool $trustedProducerRoute): ?string
-    {
-        if (! is_string($value) || ! $trustedProducerRoute) {
-            return null;
-        }
-        $value = trim($value);
-
-        return strlen($value) <= 512
-            && ! $this->isTechnicalIdentity($value, true)
-            && $this->isPublicRoutePath($value)
-                ? $value
-                : null;
-    }
-
-    private function isPublicRoutePath(string $value): bool
-    {
-        return preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $value) === 1;
     }
 
     private function assertHeartbeat(?Closure $heartbeat): void

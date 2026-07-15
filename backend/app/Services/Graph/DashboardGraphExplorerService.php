@@ -24,16 +24,20 @@ final class DashboardGraphExplorerService
 
     private readonly DashboardGraphPublicKind $publicKinds;
 
+    private readonly DashboardGraphSearchTerms $searchTerms;
+
     public function __construct(
         private readonly CanonicalGraphQueryService $canonicalQueries,
         private readonly ?Neo4jClient $client = null,
         ?DashboardGraphPublicHandle $publicHandles = null,
         ?DashboardGraphExplorerCursor $cursors = null,
         ?DashboardGraphPublicKind $publicKinds = null,
+        ?DashboardGraphSearchTerms $searchTerms = null,
     ) {
         $this->publicHandles = $publicHandles ?? new DashboardGraphPublicHandle;
         $this->cursors = $cursors ?? new DashboardGraphExplorerCursor;
         $this->publicKinds = $publicKinds ?? new DashboardGraphPublicKind;
+        $this->searchTerms = $searchTerms ?? new DashboardGraphSearchTerms;
     }
 
     /** @return array<string,mixed> */
@@ -45,8 +49,9 @@ final class DashboardGraphExplorerService
         int $limit = 50,
         ?string $cursor = null,
     ): array {
-        $normalisedQuery = $this->normaliseQuery($query);
-        if ($normalisedQuery === '' || mb_strlen($normalisedQuery) > 160) {
+        $searchQuery = $this->searchTerms->forQuery($query);
+        $normalisedQuery = $searchQuery['normalized'];
+        if ($normalisedQuery === '' || mb_strlen($normalisedQuery) > 160 || $searchQuery['tokens'] === []) {
             throw new \InvalidArgumentException('invalid_query');
         }
 
@@ -76,10 +81,7 @@ final class DashboardGraphExplorerService
             $cursorScore = (float) $cursorScoreText;
         }
 
-        $fullTextQuery = 'graph_version:"'.$this->luceneTerm($activeGraphVersion).'" AND ('
-            .'public_search_name:'.$this->luceneTerm($normalisedQuery)
-            .' OR public_search_label:'.$this->luceneTerm($normalisedQuery)
-            .' OR public_search_path:'.$this->luceneTerm($normalisedQuery).')';
+        $fullTextQuery = 'graph_version:"'.$this->luceneTerm($activeGraphVersion).'" AND ('.$searchQuery['lucene'].')';
         $publicRows = [];
         $hasMore = false;
         $publicRowsHaveExtra = false;
@@ -97,15 +99,18 @@ final class DashboardGraphExplorerService
                 : min($boundedLimit + 1, $remaining);
             $cursorPredicate = $scanScore === null
                 ? ''
-                : ' AND (score < $cursor_score OR (score = $cursor_score AND node.public_handle > $cursor_handle))';
+                : 'WHERE (score < $cursor_score OR (score = $cursor_score AND node.public_handle > $cursor_handle)) ';
             $rows = $this->client()->run(
                 'MATCH (version:CanonicalGraphVersion {project_id: $project_id, source_scope_type: $source_scope_type, source_scope_id: $source_scope_id, graph_version: $active_graph_version}) '
                 .'CALL { '
                 .'WITH version '
-                ."CALL db.index.fulltext.queryNodes('canonical_node_search', \$lucene_query) YIELD node, score "
+                ."CALL db.index.fulltext.queryNodes('canonical_node_search_v2', \$lucene_query) YIELD node, score "
                 .'WHERE node.graph_version = $active_graph_version AND node.project_id = $project_id '
                 .'AND node.source_scope_type = $source_scope_type AND node.source_scope_id = $source_scope_id '
-                .$cursorPredicate.' '
+                .'WITH node, score + CASE '
+                .'WHEN node.public_search_name_normalized = $normalized_query THEN 100.0 '
+                .'WHEN node.public_search_path_normalized = $normalized_query THEN 90.0 ELSE 0.0 END AS score '
+                .$cursorPredicate
                 .'WITH node, score ORDER BY score DESC, node.public_handle ASC LIMIT $fetch_limit '
                 .'RETURN collect({node: properties(node), labels: labels(node), score: score}) AS hits '
                 .'} '
@@ -119,6 +124,7 @@ final class DashboardGraphExplorerService
                     'source_scope_id' => $scopeId,
                     'active_graph_version' => $activeGraphVersion,
                     'lucene_query' => $fullTextQuery,
+                    'normalized_query' => $normalisedQuery,
                     'fetch_limit' => $fetchLimit,
                     ...($scanScore === null ? [] : [
                         'cursor_score' => $scanScore,
