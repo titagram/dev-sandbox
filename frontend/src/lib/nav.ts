@@ -6,14 +6,26 @@ import { Project, Role } from "@/types/devboard";
 
 export const PROJECT_SCOPE_STORAGE_KEY = "devboard.selectedProjectScope.v1";
 
+export type ProjectScopeCandidate = Pick<Project, "id" | "key" | "name">;
+
+function normalizedProjectScopeValue(value: string): string {
+  return value.trim().toLocaleLowerCase().replace(/[\s_]+/gu, "-");
+}
+
+function isDemoPlaceholder(project: ProjectScopeCandidate): boolean {
+  return [project.name, project.key].some((value) => normalizedProjectScopeValue(value) === "demo-project");
+}
+
 export function chooseProjectScope(
   routeProjectId: string | undefined,
   storedProjectId: string | undefined,
-  projects: readonly Pick<Project, "id">[],
+  projects: readonly ProjectScopeCandidate[],
 ): string | undefined {
   if (routeProjectId) return routeProjectId;
-  if (storedProjectId && projects.some((project) => project.id === storedProjectId)) return storedProjectId;
-  return projects[0]?.id;
+  const realProjects = projects.filter((project) => !isDemoPlaceholder(project));
+  const storedProject = projects.find((project) => project.id === storedProjectId);
+  if (storedProject && (!isDemoPlaceholder(storedProject) || realProjects.length === 0)) return storedProject.id;
+  return realProjects[0]?.id ?? projects[0]?.id;
 }
 
 export interface NavItem {

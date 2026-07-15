@@ -60,10 +60,43 @@ describe("workspace primary navigation", () => {
   });
 
   it("prefers the project encoded by the current route over stale stored scope", () => {
-    expect(chooseProjectScope("real-project", "demo-project", [{ id: "demo-project" }, { id: "real-project" }])).toBe("real-project");
+    expect(chooseProjectScope("real-project", "demo-project", [
+      { id: "demo-project", key: "demo-project", name: "Demo Project" },
+      { id: "real-project", key: "real-project", name: "Real Project" },
+    ])).toBe("real-project");
   });
 
   it("falls back to the first active project when stored scope is stale", () => {
-    expect(chooseProjectScope(undefined, "demo-project", [{ id: "real-project" }, { id: "another-project" }])).toBe("real-project");
+    expect(chooseProjectScope(undefined, "demo-project", [
+      { id: "real-project", key: "real-project", name: "Real Project" },
+      { id: "another-project", key: "another-project", name: "Another Project" },
+    ])).toBe("real-project");
+  });
+
+  it("does not retain a persisted Demo Project when a real project exists", () => {
+    expect(chooseProjectScope(undefined, "demo-project", [
+      { id: "demo-project", key: "demo-project", name: "Demo Project" },
+      { id: "real-project", key: "real-project", name: "Real Project" },
+    ])).toBe("real-project");
+  });
+
+  it("retains a persisted non-demo project", () => {
+    expect(chooseProjectScope(undefined, "real-project", [
+      { id: "demo-project", key: "demo-project", name: "Demo Project" },
+      { id: "real-project", key: "real-project", name: "Real Project" },
+    ])).toBe("real-project");
+  });
+
+  it("honors an explicit Demo Project route scope", () => {
+    expect(chooseProjectScope("demo-project", "real-project", [
+      { id: "demo-project", key: "demo-project", name: "Demo Project" },
+      { id: "real-project", key: "real-project", name: "Real Project" },
+    ])).toBe("demo-project");
+  });
+
+  it("keeps Demo Project when it is the only available project", () => {
+    expect(chooseProjectScope(undefined, "demo-project", [
+      { id: "demo-project", key: "DEMO_PROJECT", name: "  Demo Project  " },
+    ])).toBe("demo-project");
   });
 });
