@@ -29,7 +29,7 @@ it('lets a developer create a manual project wiki page', function () {
         ->assertJsonPath('title', 'Manual Handoff')
         ->assertJsonPath('project_id', $projectId)
         ->assertJsonPath('category', 'runbook')
-        ->assertJsonPath('source_status', 'developer_provided')
+        ->assertJsonPath('source_status', 'needs_verification')
         ->assertJsonPath('body_markdown', "## Manual Handoff\n\nDashboard user supplied runbook.")
         ->json();
 
@@ -65,14 +65,41 @@ it('updates a manual wiki page by appending a new revision', function () {
         ])
         ->assertOk()
         ->assertJsonPath('title', 'Manual Overview Updated')
-        ->assertJsonPath('source_status', 'developer_provided')
+        ->assertJsonPath('source_status', 'needs_verification')
         ->assertJsonPath('body_markdown', 'Updated wiki body from the dashboard.');
 
     expect(DB::table('wiki_revisions')->where('wiki_page_id', $created['id'])->count())->toBe(2)
         ->and(DB::table('wiki_pages')->where('id', $created['id'])->value('slug'))->toBe('architecture/manual-overview');
 });
 
-it('rejects verified from code manual wiki pages without evidence', function () {
+it('cannot self-assign a manual wiki verification status', function (string $sourceStatus) {
+    $developer = wikiManualDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $slug = 'verification/'.str_replace('_', '-', $sourceStatus);
+
+    $response = $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/wiki/pages", [
+            'slug' => $slug,
+            'title' => 'Manual Verification Boundary',
+            'page_type' => 'technical',
+            'source_status' => $sourceStatus,
+            'content_markdown' => 'A manually supplied page remains unverified.',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('source_status', 'needs_verification')
+        ->json();
+
+    expect(DB::table('wiki_revisions')->where('wiki_page_id', $response['id'])->latest('created_at')->value('source_status'))
+        ->toBe('needs_verification');
+})->with([
+    'developer_provided',
+    'verified_from_code',
+    'ai_generated',
+    'stale',
+    'conflict_with_code',
+]);
+
+it('keeps a manually submitted verified status in the verification queue', function () {
     $developer = wikiManualDashboardApiUserWithRole('Developer');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
 
@@ -84,8 +111,8 @@ it('rejects verified from code manual wiki pages without evidence', function () 
             'source_status' => 'verified_from_code',
             'content_markdown' => 'This claim needs evidence.',
         ])
-        ->assertUnprocessable()
-        ->assertJsonPath('error.code', 'schema_validation_failed');
+        ->assertCreated()
+        ->assertJsonPath('source_status', 'needs_verification');
 });
 
 it('blocks sysadmin from manually writing wiki pages', function () {

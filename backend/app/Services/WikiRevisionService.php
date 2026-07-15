@@ -16,6 +16,10 @@ class WikiRevisionService
      */
     public function write(array $payload, ?int $authorUserId = null, ?string $authorDeviceId = null, ?array $auditActor = null): array
     {
+        if (($payload['producer'] ?? null) === 'dashboard_user' || ($payload['source_type'] ?? null) === 'user_manual') {
+            $payload['source_status'] = 'needs_verification';
+        }
+
         $evidence = $payload['evidence_refs'] ?? [];
         if (($payload['source_status'] ?? null) === 'verified_from_code' && $evidence === []) {
             throw new WikiRevisionException('schema_validation_failed', 'verified_from_code wiki revisions require evidence.');
