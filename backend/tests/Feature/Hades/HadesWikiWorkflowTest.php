@@ -442,8 +442,253 @@ it('resolves wiki draft page identity inside the write transaction without a con
         ))->toBeFalse();
 });
 
+it('rejects a made-up artifact hash as invalid evidence', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'fake-artifact', 'needs_verification');
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'artifact_ref', 'sha256' => str_repeat('f', 64)]],
+        ))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+
+    expect(DB::table('wiki_revisions')->where('wiki_page_id', $page['page_id'])->count())->toBe(1)
+        ->and(DB::table('wiki_pages')->where('id', $page['page_id'])->value('current_revision_id'))
+        ->toBe($page['revision_id']);
+});
+
+it('rejects an artifact from another project or workspace', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $otherProjectAgent = wikiWorkflowAgent();
+    $otherProjectBinding = wikiWorkflowBinding($otherProjectAgent);
+    $otherWorkspaceAgent = wikiWorkflowAgent($agent['project_id']);
+    $otherWorkspaceBinding = wikiWorkflowBinding($otherWorkspaceAgent);
+    $page = wikiWorkflowPage($agent['project_id'], 'cross-scope-artifact', 'needs_verification');
+    $otherProjectArtifact = wikiWorkflowArtifact(
+        $otherProjectAgent,
+        $otherProjectBinding,
+        'hades.symbols.v1',
+        ['schema' => 'hades.symbols.v1', 'symbols' => []],
+    );
+    $otherWorkspaceArtifact = wikiWorkflowArtifact(
+        $otherWorkspaceAgent,
+        $otherWorkspaceBinding,
+        'hades.symbols.v1',
+        ['schema' => 'hades.symbols.v1', 'symbols' => []],
+    );
+
+    foreach ([$otherProjectArtifact, $otherWorkspaceArtifact] as $artifact) {
+        $this->withToken($agent['agent_token'])
+            ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+                $agent,
+                $binding,
+                $page['revision_id'],
+                [['kind' => 'artifact_ref', 'schema' => $artifact->schema, 'sha256' => $artifact->sha256]],
+            ))
+            ->assertUnprocessable()
+            ->assertJsonPath('error.code', 'evidence_invalid');
+    }
+
+    expect(DB::table('wiki_revisions')->where('wiki_page_id', $page['page_id'])->count())->toBe(1);
+});
+
+it('rejects a file path or hash absent from the latest git tree', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'stale-file', 'needs_verification');
+    $oldHash = str_repeat('1', 64);
+    $latestHash = str_repeat('2', 64);
+
+    wikiWorkflowArtifact($agent, $binding, 'hades.git_tree.v1', [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => str_repeat('b', 40),
+        'files' => [['path' => 'app/Removed.php', 'sha256' => $oldHash]],
+    ], createdAt: now()->subMinute());
+    wikiWorkflowArtifact($agent, $binding, 'hades.git_tree.v1', [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => $binding->head_commit,
+        'files' => [['path' => 'app/Current.php', 'sha256' => $latestHash]],
+    ], createdAt: now());
+
+    foreach ([
+        ['path' => 'app/Removed.php', 'sha256' => $oldHash],
+        ['path' => 'app/Current.php', 'hash' => str_repeat('3', 64)],
+    ] as $fileRef) {
+        $this->withToken($agent['agent_token'])
+            ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+                $agent,
+                $binding,
+                $page['revision_id'],
+                [array_merge(['kind' => 'file_ref'], $fileRef)],
+            ))
+            ->assertConflict()
+            ->assertJsonPath('error.code', 'evidence_stale');
+    }
+
+    expect(DB::table('wiki_revisions')->where('wiki_page_id', $page['page_id'])->count())->toBe(1);
+});
+
+it('rejects a stale expected current revision', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'stale-revision', 'needs_verification');
+    $artifact = wikiWorkflowArtifact(
+        $agent,
+        $binding,
+        'hades.symbols.v1',
+        ['schema' => 'hades.symbols.v1', 'symbols' => []],
+    );
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            (string) Str::ulid(),
+            [['kind' => 'artifact_ref', 'sha256' => $artifact->sha256]],
+        ))
+        ->assertConflict()
+        ->assertJsonPath('error.code', 'revision_conflict');
+
+    expect(DB::table('wiki_revisions')->where('wiki_page_id', $page['page_id'])->count())->toBe(1)
+        ->and(DB::table('audit_logs')->where('action', 'wiki.verified')->count())->toBe(0);
+});
+
+it('keeps needs_verification when no code-derived evidence exists', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'no-code-evidence', 'needs_verification');
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [],
+        ))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+
+    expect(DB::table('wiki_pages')->where('id', $page['page_id'])->value('source_status'))
+        ->toBe('needs_verification')
+        ->and(DB::table('wiki_pages')->where('id', $page['page_id'])->value('current_revision_id'))
+        ->toBe($page['revision_id']);
+});
+
+it('appends a verified revision from a current artifact and file ref', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage(
+        $agent['project_id'],
+        'verified-evidence',
+        'needs_verification',
+        '# Preserve this exact Markdown',
+    );
+    $artifact = wikiWorkflowArtifact(
+        $agent,
+        $binding,
+        'hades.symbols.v1',
+        ['schema' => 'hades.symbols.v1', 'symbols' => []],
+    );
+    $fileHash = str_repeat('4', 64);
+    $gitTree = wikiWorkflowArtifact($agent, $binding, 'hades.git_tree.v1', [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => $binding->head_commit,
+        'files' => [['path' => 'app/Current.php', 'sha256' => $fileHash]],
+    ]);
+
+    $response = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [
+                ['kind' => 'artifact_ref', 'schema' => 'hades.symbols.v1', 'sha256' => $artifact->sha256],
+                ['kind' => 'file_ref', 'path' => 'app/Current.php', 'hash' => $fileHash],
+            ],
+        ))
+        ->assertOk()
+        ->assertJsonPath('created', false)
+        ->assertJsonPath('wiki_page_id', $page['page_id'])
+        ->assertJsonPath('source_status', 'verified_from_code');
+
+    $newRevisionId = $response->json('wiki_revision_id');
+    $newRevision = DB::table('wiki_revisions')->where('id', $newRevisionId)->first();
+    $evidence = json_decode($newRevision->evidence_refs, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($newRevisionId)->not->toBe($page['revision_id'])
+        ->and($newRevision->content_markdown)->toBe('# Preserve this exact Markdown')
+        ->and($newRevision->author_user_id)->toBeNull()
+        ->and($newRevision->author_device_id)->toBeNull()
+        ->and($evidence)->toBe([
+            [
+                'kind' => 'artifact_ref',
+                'artifact_id' => $artifact->id,
+                'schema' => 'hades.symbols.v1',
+                'sha256' => $artifact->sha256,
+                'workspace_binding_id' => $binding->id,
+                'head_commit' => $binding->head_commit,
+            ],
+            [
+                'kind' => 'file_ref',
+                'artifact_id' => $gitTree->id,
+                'schema' => 'hades.git_tree.v1',
+                'path' => 'app/Current.php',
+                'sha256' => $fileHash,
+                'workspace_binding_id' => $binding->id,
+                'head_commit' => $binding->head_commit,
+            ],
+        ])
+        ->and(DB::table('wiki_pages')->where('id', $page['page_id'])->value('current_revision_id'))->toBe($newRevisionId)
+        ->and(DB::table('wiki_pages')->where('id', $page['page_id'])->value('source_status'))->toBe('verified_from_code')
+        ->and(DB::table('hades_search_documents')->where('source_table', 'wiki_revisions')->where('source_id', $newRevisionId)->exists())->toBeTrue();
+});
+
+it('emits wiki.verified with actor and prior/new revision ids', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'verified-audit', 'needs_verification');
+    $artifact = wikiWorkflowArtifact(
+        $agent,
+        $binding,
+        'hades.symbols.v1',
+        ['schema' => 'hades.symbols.v1', 'symbols' => []],
+    );
+
+    $response = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'artifact_ref', 'sha256' => $artifact->sha256]],
+        ))
+        ->assertOk();
+
+    $audit = DB::table('audit_logs')
+        ->where('action', 'wiki.verified')
+        ->where('target_type', 'wiki_page')
+        ->where('target_id', $page['page_id'])
+        ->first();
+    $payload = json_decode($audit->payload, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($audit->actor_type)->toBe('hades_agent')
+        ->and($audit->actor_user_id)->toBeNull()
+        ->and($audit->actor_device_id)->toBeNull()
+        ->and($payload['prior_revision_id'])->toBe($page['revision_id'])
+        ->and($payload['new_revision_id'])->toBe($response->json('wiki_revision_id'))
+        ->and($payload['actor'])->toBe([
+            'hades_agent_id' => $agent['agent_id'],
+            'external_agent_id' => $agent['external_agent_id'],
+        ]);
+});
+
 /**
- * @return array{project_id: string, agent_id: string, agent_token: string}
+ * @return array{project_id: string, agent_id: string, external_agent_id: string, agent_token: string}
  */
 function wikiWorkflowAgent(?string $projectId = null, array $effectiveCapabilities = ['populate_project_wiki']): array
 {
@@ -468,10 +713,12 @@ function wikiWorkflowAgent(?string $projectId = null, array $effectiveCapabiliti
     $agentId = (string) Str::ulid();
     $now = now();
 
+    $externalAgentId = 'wiki-agent-'.Str::lower(Str::random(8));
+
     DB::table('hades_agents')->insert([
         'id' => $agentId,
         'project_id' => $projectId,
-        'external_agent_id' => 'wiki-agent-'.Str::lower(Str::random(8)),
+        'external_agent_id' => $externalAgentId,
         'label' => 'Wiki workflow agent',
         'platform' => 'linux-x64',
         'version' => '0.1.0',
@@ -489,12 +736,13 @@ function wikiWorkflowAgent(?string $projectId = null, array $effectiveCapabiliti
     return [
         'project_id' => $projectId,
         'agent_id' => $agentId,
+        'external_agent_id' => $externalAgentId,
         'agent_token' => $token['plain_token'],
     ];
 }
 
 /**
- * @param  array{project_id: string, agent_id: string, agent_token: string}  $agent
+ * @param  array{project_id: string, agent_id: string, external_agent_id: string, agent_token: string}  $agent
  * @return array<string, mixed>
  */
 function wikiWorkflowDraftPayload(array $agent, object $binding): array
@@ -521,7 +769,7 @@ function wikiWorkflowDraftPayload(array $agent, object $binding): array
 }
 
 /**
- * @param  array{project_id: string, agent_id: string, agent_token: string}  $agent
+ * @param  array{project_id: string, agent_id: string, external_agent_id: string, agent_token: string}  $agent
  */
 function wikiWorkflowBinding(array $agent): object
 {
@@ -549,6 +797,55 @@ function wikiWorkflowBinding(array $agent): object
     ]);
 
     return DB::table('hades_workspace_bindings')->where('id', $id)->first();
+}
+
+/**
+ * @param  array{project_id: string, agent_id: string, external_agent_id: string, agent_token: string}  $agent
+ * @param  list<array<string, mixed>>  $evidenceRefs
+ * @return array<string, mixed>
+ */
+function wikiWorkflowVerificationPayload(array $agent, object $binding, string $expectedRevisionId, array $evidenceRefs): array
+{
+    return [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding->id,
+        'expected_current_revision_id' => $expectedRevisionId,
+        'evidence_refs' => $evidenceRefs,
+    ];
+}
+
+/**
+ * @param  array{project_id: string, agent_id: string, external_agent_id: string, agent_token: string}  $agent
+ * @param  array<string, mixed>  $payload
+ */
+function wikiWorkflowArtifact(
+    array $agent,
+    object $binding,
+    string $schema,
+    array $payload,
+    ?string $sha256 = null,
+    ?DateTimeInterface $createdAt = null,
+): object {
+    $id = (string) Str::ulid();
+    $createdAt ??= now();
+    $artifactJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+    DB::table('hades_agent_artifacts')->insert([
+        'id' => $id,
+        'project_id' => $agent['project_id'],
+        'hades_agent_id' => $agent['agent_id'],
+        'workspace_binding_id' => $binding->id,
+        'job_id' => null,
+        'schema' => $schema,
+        'artifact' => $artifactJson,
+        'sha256' => $sha256 ?? hash('sha256', $artifactJson),
+        'truncated' => false,
+        'redactions' => 0,
+        'created_at' => $createdAt,
+        'updated_at' => $createdAt,
+    ]);
+
+    return DB::table('hades_agent_artifacts')->where('id', $id)->first();
 }
 
 /**

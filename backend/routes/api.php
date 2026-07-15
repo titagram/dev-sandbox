@@ -207,6 +207,9 @@ Route::prefix('hades/v1')->middleware(HadesProjectWritable::class)->group(functi
     Route::get('/wiki/pages/{page}', [HadesWikiPageController::class, 'show'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
+    Route::post('/wiki/pages/{page}/verify', [HadesWikiPageController::class, 'verify'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
     Route::post('/bug-reports', [HadesBugReportController::class, 'store'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 

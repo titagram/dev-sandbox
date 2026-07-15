@@ -6,6 +6,7 @@ use App\Enums\SourceStatus;
 use App\Http\Controllers\Controller;
 use App\Services\Hades\HadesTokenException;
 use App\Services\Hades\HadesWikiCapability;
+use App\Services\Hades\WikiVerificationService;
 use App\Services\WikiRevisionService;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
@@ -28,6 +29,7 @@ class WikiPageController extends Controller
     public function __construct(
         private readonly WikiRevisionService $wiki,
         private readonly HadesWikiCapability $capability,
+        private readonly WikiVerificationService $verification,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -164,6 +166,50 @@ class WikiPageController extends Controller
             $result,
             $result['created'] ? Response::HTTP_CREATED : Response::HTTP_OK,
         );
+    }
+
+    public function verify(Request $request, string $page): JsonResponse
+    {
+        $validated = $request->validate([
+            'project_id' => ['required', 'string'],
+            'workspace_binding_id' => ['required', 'string'],
+            'expected_current_revision_id' => ['required', 'string'],
+            'evidence_refs' => ['present', 'array', 'list', 'max:'.self::MAX_EVIDENCE_REFS],
+            'evidence_refs.*' => ['required', 'array:kind,schema,sha256,hash,path'],
+            'evidence_refs.*.kind' => ['required', 'string', 'max:64'],
+            'evidence_refs.*.schema' => ['sometimes', 'string', 'max:191'],
+            'evidence_refs.*.sha256' => ['sometimes', 'string', 'max:64'],
+            'evidence_refs.*.hash' => ['sometimes', 'string', 'max:64'],
+            'evidence_refs.*.path' => ['sometimes', 'string', 'max:2048'],
+        ]);
+
+        $auth = $request->attributes->get('hades_auth');
+        $agent = $auth['agent'];
+        $binding = $this->linkedBinding(
+            $agent,
+            $validated['project_id'],
+            $validated['workspace_binding_id'],
+        );
+
+        if ($binding instanceof JsonResponse) {
+            return $binding;
+        }
+
+        try {
+            $this->capability->assertCanWrite($agent);
+            $result = $this->verification->verify(
+                $validated['project_id'],
+                $binding->id,
+                $page,
+                $validated['expected_current_revision_id'],
+                $validated['evidence_refs'],
+                $agent,
+            );
+        } catch (HadesTokenException $exception) {
+            return $exception->toResponse();
+        }
+
+        return response()->json($result, Response::HTTP_OK);
     }
 
     private function currentRevisionListQuery(string $projectId): Builder
