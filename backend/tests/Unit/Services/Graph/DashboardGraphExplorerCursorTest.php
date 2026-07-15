@@ -1,8 +1,9 @@
 <?php
 
 use App\Services\Graph\DashboardGraphExplorerCursor;
+use Tests\TestCase;
 
-uses(Tests\TestCase::class);
+uses(TestCase::class);
 
 beforeEach(function (): void {
     config(['app.key' => 'unit-test-app-key']);
@@ -95,6 +96,27 @@ it('normalizes query text before signing and preserves nullable scopes', functio
     ]);
 });
 
+it('round trips a fully scoped route-search cursor with production-sized identities', function (): void {
+    $cursor = new DashboardGraphExplorerCursor;
+    $encoded = $cursor->encode(
+        '01KXJD0SV73EBGWKNE2EK3M4KD',
+        'workspace_binding',
+        '01KXJD1BDMQ2TFABMVJV6EFE8Q',
+        str_repeat('a', 64),
+        'search',
+        '/generale/soggetti-attivi/',
+        '100.12345678901234|gh1_'.str_repeat('b', 86),
+    );
+
+    expect($cursor->decode($encoded))->toMatchArray([
+        'project_id' => '01KXJD0SV73EBGWKNE2EK3M4KD',
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => '01KXJD1BDMQ2TFABMVJV6EFE8Q',
+        'active_graph_version' => str_repeat('a', 64),
+        'query' => '/generale/soggetti-attivi/',
+    ]);
+});
+
 it('rejects tampered, malformed, and oversized cursor values as invalid_cursor', function (): void {
     $cursor = new DashboardGraphExplorerCursor;
     $encoded = $cursor->encode('project-1', 'repository', 'repo-1', 'v1', 'search', 'invoice', 'gh1_node');
@@ -102,7 +124,7 @@ it('rejects tampered, malformed, and oversized cursor values as invalid_cursor',
     foreach ([
         substr_replace($encoded, $encoded[-1] === 'a' ? 'b' : 'a', -1),
         'gc1_not-a-cursor',
-        str_repeat('x', 513),
+        str_repeat('x', 4097),
     ] as $invalid) {
         expect(fn (): array => $cursor->decode($invalid))
             ->toThrow(InvalidArgumentException::class, 'invalid_cursor');

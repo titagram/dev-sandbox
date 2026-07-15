@@ -671,6 +671,24 @@ it('never rewrites an ordinary symbol that merely shares a route name', function
         ->and($graph['private_route_provenance'])->not->toHaveKey('function:health');
 });
 
+it('fails closed when an explicitly non-route node occupies a route identity', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'] = [[
+        'id' => 'route:health',
+        'kind' => 'function',
+        'name' => 'health',
+    ]];
+    $payload['relationships'] = [];
+    $payload['routes'] = [[
+        'name' => 'health',
+        'method' => 'GET',
+        'uri' => '/health',
+    ]];
+
+    expect(fn () => app(CanonicalGraphRepository::class)->prepareHadesUpload($payload))
+        ->toThrow(InvalidArgumentException::class, 'Graph route inventory identity conflicts with a non-route node.');
+});
+
 it('keeps artifact upload runtime responses aligned with the documented 422 contracts', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();

@@ -528,9 +528,18 @@ class CanonicalGraphRepository
         $nodes = is_array($payload[$nodeKey] ?? null) ? array_values($payload[$nodeKey]) : [];
         $routeRecordIds = [];
         $routeNodeIndexesByAlias = [];
+        $nonRouteNodeIds = [];
         foreach ($nodes as $index => $candidate) {
             if (! is_array($candidate)) {
                 continue;
+            }
+            $kind = $this->routeNodeKind($candidate);
+            if ($kind !== '' && ! in_array($kind, ['route', 'endpoint', 'http_endpoint'], true)) {
+                foreach ([$candidate['id'] ?? null, $candidate['symbol_id'] ?? null] as $value) {
+                    if (is_string($value) && trim($value) !== '') {
+                        $nonRouteNodeIds[trim($value)] = true;
+                    }
+                }
             }
             foreach ($this->routeNodeAliases($candidate) as $alias) {
                 $routeNodeIndexesByAlias[$alias][$index] = true;
@@ -552,6 +561,9 @@ class CanonicalGraphRepository
                 continue;
             }
             $nodeId = 'route:'.$routeReference;
+            if (isset($nonRouteNodeIds[$nodeId])) {
+                throw new InvalidArgumentException('Graph route inventory identity conflicts with a non-route node.');
+            }
             $matchingIndexes = [];
             foreach (array_unique(array_filter([$nodeId, $routeReference, $name])) as $alias) {
                 foreach (array_keys($routeNodeIndexesByAlias[$alias] ?? []) as $index) {
@@ -619,11 +631,11 @@ class CanonicalGraphRepository
     private function routeNodeAliases(array $node): array
     {
         $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
-        $kind = strtolower($this->boundedRouteString(
-            $node['kind'] ?? $node['type'] ?? $properties['kind'] ?? $properties['type'] ?? null,
-            64,
-        ));
+        $kind = $this->routeNodeKind($node);
         $routeLike = in_array($kind, ['route', 'endpoint', 'http_endpoint'], true);
+        if ($kind !== '' && ! $routeLike) {
+            return [];
+        }
         $aliases = [];
         foreach ([$node['id'] ?? null, $node['symbol_id'] ?? null, $node['name'] ?? null, $properties['name'] ?? null] as $value) {
             if (! is_string($value) || trim($value) === '') {
@@ -639,6 +651,16 @@ class CanonicalGraphRepository
         }
 
         return array_values(array_unique(array_filter($aliases)));
+    }
+
+    private function routeNodeKind(array $node): string
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+
+        return strtolower($this->boundedRouteString(
+            $node['kind'] ?? $node['type'] ?? $properties['kind'] ?? $properties['type'] ?? null,
+            64,
+        ));
     }
 
     private function routeRecordUri(array $route): string
