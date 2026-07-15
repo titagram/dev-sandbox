@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\Graph\CanonicalGraphProjectionService;
+use App\Services\Graph\DashboardGraphPublicHandle;
 use App\Services\Graph\Neo4jCanonicalGraphProjector;
 use App\Services\Neo4j\FakeNeo4jClient;
 use Database\Seeders\DevBoardSeeder;
@@ -16,6 +17,29 @@ beforeEach(function () {
 
 afterEach(function (): void {
     config(['app.key' => 'unit-test-app-key']);
+});
+
+it('persists bounded graph coverage with each projection candidate', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $graph = canonicalProjectionGraph($projectId, 'artifact-coverage', str_repeat('9', 64));
+    $graph['contract']['extractor']['quality'] = 'partial';
+    $graph['contract']['coverage'] = [
+        'languages' => ['php', 'typescript'],
+        'files_total' => 12,
+        'files_analyzed' => 9,
+        'files_failed' => 3,
+        'files_budget_omitted' => 2,
+        'routes_promoted' => 4,
+        'routes_omitted' => 1,
+        'tests_promoted' => 3,
+        'tests_omitted' => 1,
+        'nodes_capacity_omitted' => 5,
+    ];
+
+    $projection = app(CanonicalGraphProjectionService::class)->queue($graph);
+
+    expect(json_decode((string) $projection->coverage, true, flags: JSON_THROW_ON_ERROR))
+        ->toBe($graph['contract']['coverage']);
 });
 
 it('keeps the previous projection ready until its replacement is ready', function () {
@@ -73,11 +97,14 @@ it('materializes opaque handles and only sanitized fulltext fields', function ()
         ->toContain('n.public_search_name')
         ->toContain('n.public_search_label')
         ->toContain('n.public_search_path')
+        ->toContain('n.public_search_terms')
         ->not->toContain('n.external_id')
         ->not->toContain('n.path')
         ->and($lookup['cypher'])->toContain('project_id, n.source_scope_type, n.source_scope_id, n.graph_version, n.public_handle')
         ->and($nodeBatch['params']['nodes'][0]['properties']['public_handle'])->toStartWith('gh1_')
         ->and($nodeBatch['params']['nodes'][0]['properties']['public_search_name'])->toBe('InvoiceService::charge')
+        ->and($nodeBatch['params']['nodes'][0]['properties']['public_search_terms'])->toContain('invoice')
+        ->toContain('service')
         ->and($nodeBatch['params']['nodes'][0]['properties']['public_search_path'])->toBeNull();
 });
 
@@ -388,7 +415,7 @@ it('stamps the public handle key identity and binds handles to the physical cand
         ->and($version['params']['metadata']['public_handle_key_fingerprint'])
         ->toBe(hash_hmac('sha256', 'hades.graph.handle.v1', 'unit-test-app-key'))
         ->and($nodeBatch['params']['nodes'][0]['properties']['public_handle'])
-        ->toBe(app(\App\Services\Graph\DashboardGraphPublicHandle::class)->forNode(
+        ->toBe(app(DashboardGraphPublicHandle::class)->forNode(
             $projectId,
             'workspace_binding',
             'binding-1',
@@ -449,7 +476,7 @@ it('rotates public handles through a forced candidate and atomic publication', f
     $service->markProjecting($initial->id);
     $service->markReady($initial->id, 1, 0, function (): void {});
     $publishedBefore = DB::table('canonical_graph_projections')->where('id', $initial->id)->firstOrFail();
-    $oldHandle = app(\App\Services\Graph\DashboardGraphPublicHandle::class)->forNode(
+    $oldHandle = app(DashboardGraphPublicHandle::class)->forNode(
         $projectId,
         'workspace_binding',
         'binding-1',
@@ -482,7 +509,7 @@ it('rotates public handles through a forced candidate and atomic publication', f
     $nodeCommand = collect($client->commands)->first(
         fn (array $command): bool => str_contains($command['cypher'], 'UNWIND $nodes AS node'),
     );
-    $candidateHandle = app(\App\Services\Graph\DashboardGraphPublicHandle::class)->forNode(
+    $candidateHandle = app(DashboardGraphPublicHandle::class)->forNode(
         $projectId,
         'workspace_binding',
         'binding-1',

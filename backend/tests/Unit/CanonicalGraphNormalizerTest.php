@@ -23,6 +23,29 @@ function unitCanonicalGraphContract(array $overrides = []): array
     ], $overrides);
 }
 
+it('accepts the bounded additive coverage inventory', function (): void {
+    $coverage = [
+        'languages' => ['php', 'typescript'],
+        'files_total' => 12,
+        'files_analyzed' => 9,
+        'files_failed' => 3,
+        'files_budget_omitted' => 2,
+        'routes_promoted' => 4,
+        'routes_omitted' => 1,
+        'tests_promoted' => 3,
+        'tests_omitted' => 1,
+        'nodes_capacity_omitted' => 5,
+    ];
+
+    $normalized = (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => unitCanonicalGraphContract(['coverage' => $coverage]),
+        'nodes' => [],
+        'relationships' => [],
+    ], ['project_id' => 'project-1']);
+
+    expect($normalized['contract']['coverage'])->toBe($coverage);
+});
+
 it('normalizes legacy graph nodes and relationships while preserving graphify data', function () {
     $payload = [
         'graph_contract' => unitCanonicalGraphContract([
@@ -209,6 +232,10 @@ it('rejects malformed explicit canonical graph contracts before graph normalizat
         $contract['source']['branch'] = ['main'];
     } elseif ($mutation === 'unexpected_extractor_key') {
         $contract['extractor']['producer'] = 'shadow';
+    } elseif ($mutation === 'unexpected_coverage_key') {
+        $contract['coverage']['raw_paths'] = ['/private/source.php'];
+    } elseif ($mutation === 'invalid_optional_count') {
+        $contract['coverage']['routes_promoted'] = -1;
     }
 
     expect(fn () => (new CanonicalGraphNormalizer)->normalize([
@@ -226,6 +253,8 @@ it('rejects malformed explicit canonical graph contracts before graph normalizat
     'missing source head commit' => ['missing_head_commit', 'source'],
     'invalid source branch type' => ['invalid_branch_type', 'source.branch'],
     'unexpected extractor key' => ['unexpected_extractor_key', 'extractor'],
+    'unexpected coverage key' => ['unexpected_coverage_key', 'coverage'],
+    'invalid optional coverage count' => ['invalid_optional_count', 'coverage.routes_promoted'],
 ]);
 
 it('accepts bounded metadata emitted by current native and supported legacy producers', function (array $contract) {
@@ -302,6 +331,11 @@ it('rejects impossible canonical coverage and quality combinations', function (C
         $c['coverage']['files_total'] = 3;
         $c['coverage']['files_analyzed'] = 1;
     }, 'coverage'],
+    'budget omissions exceed failed files' => [function (array &$c) {
+        $c['coverage']['files_failed'] = 1;
+        $c['coverage']['files_analyzed'] = 0;
+        $c['coverage']['files_budget_omitted'] = 2;
+    }, 'coverage.files_budget_omitted'],
     'full quality has fallback reason' => [fn (array &$c) => $c['extractor']['fallback_reason'] = 'bounded_or_omitted_input', 'extractor'],
     'partial quality lacks fallback reason' => [function (array &$c) {
         $c['extractor']['quality'] = 'partial';

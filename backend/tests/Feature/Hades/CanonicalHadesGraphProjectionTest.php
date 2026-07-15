@@ -580,6 +580,162 @@ it('stops an integrated normalization and projection path before Neo4j client co
         ->and($client->commands)->toBe([]);
 });
 
+it('hydrates contracted route inventories into existing canonical route nodes', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'] = [
+        ['id' => 'route:contact_flock_roles_worker', 'kind' => 'route', 'name' => 'route:contact_flock_roles_worker'],
+        ['id' => 'method:AdminController.index', 'kind' => 'method', 'name' => 'AdminController@index'],
+    ];
+    $payload['relationships'] = [[
+        'id' => 'handles:worker-index',
+        'kind' => 'route_handler',
+        'source_id' => 'route:contact_flock_roles_worker',
+        'target_id' => 'method:AdminController.index',
+    ]];
+    $payload['routes'] = [[
+        'framework' => 'symfony',
+        'name' => 'contact_flock_roles_worker',
+        'method' => 'GET',
+        'uri' => '/generale/soggetti-attivi/',
+        'handler' => 'WorkerController@index',
+        'defined_handler' => 'AdminController@index',
+        'path' => 'src/Controller/WorkerController.php',
+    ]];
+
+    $graph = app(CanonicalGraphRepository::class)->prepareHadesUpload($payload);
+    $routeNodes = collect($graph['nodes'])->filter(
+        fn (array $node): bool => ($node['properties']['kind'] ?? null) === 'route',
+    )->values();
+
+    expect($routeNodes)->toHaveCount(1)
+        ->and($routeNodes[0]['id'])->toBe('route:contact_flock_roles_worker')
+        ->and($routeNodes[0]['properties'])->toMatchArray([
+            'name' => 'contact_flock_roles_worker',
+            'method' => 'GET',
+            'uri' => '/generale/soggetti-attivi/',
+            'handler' => 'WorkerController@index',
+            'defined_handler' => 'AdminController@index',
+        ])
+        ->and($routeNodes[0]['properties'])->not->toHaveKey('path')
+        ->and($graph['private_route_provenance'])->toHaveKey('route:contact_flock_roles_worker');
+});
+
+it('hydrates contracted route inventories idempotently and never promotes source paths as route uris', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'] = [];
+    $payload['relationships'] = [];
+    $payload['routes'] = [
+        ['name' => 'health', 'method' => 'GET', 'path' => '/health', 'source_path' => 'server/api.ts'],
+        ['name' => 'health', 'method' => 'GET', 'path' => '/health', 'source_path' => 'server/api.ts'],
+        ['name' => 'unsafe-source-only', 'method' => 'GET', 'path' => 'src/Controller.php'],
+    ];
+
+    $graph = app(CanonicalGraphRepository::class)->prepareHadesUpload($payload);
+    $routes = collect($graph['nodes'])->filter(
+        fn (array $node): bool => ($node['properties']['kind'] ?? null) === 'route',
+    )->keyBy('id');
+
+    expect($routes)->toHaveCount(2)
+        ->and($routes['route:health']['properties']['uri'])->toBe('/health')
+        ->and($graph['private_route_provenance'])->toHaveKey('route:health')
+        ->and($routes['route:unsafe-source-only']['properties'])->not->toHaveKeys(['uri', 'path'])
+        ->and($graph['private_route_provenance'])->not->toHaveKey('route:unsafe-source-only');
+});
+
+it('never rewrites an ordinary symbol that merely shares a route name', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'] = [[
+        'id' => 'function:health',
+        'kind' => 'function',
+        'name' => 'health',
+    ]];
+    $payload['relationships'] = [];
+    $payload['routes'] = [[
+        'name' => 'health',
+        'method' => 'GET',
+        'uri' => '/health',
+    ]];
+
+    $graph = app(CanonicalGraphRepository::class)->prepareHadesUpload($payload);
+    $nodes = collect($graph['nodes'])->keyBy('id');
+
+    expect($nodes)->toHaveCount(2)
+        ->and($nodes['function:health']['properties']['kind'])->toBe('function')
+        ->and($nodes['route:health']['properties'])->toMatchArray([
+            'kind' => 'route',
+            'name' => 'health',
+            'method' => 'GET',
+            'uri' => '/health',
+        ])
+        ->and($graph['private_route_provenance'])->toHaveKey('route:health')
+        ->and($graph['private_route_provenance'])->not->toHaveKey('function:health');
+});
+
+it('fails closed when an explicitly non-route node occupies a route identity', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'] = [[
+        'id' => 'route:health',
+        'kind' => 'function',
+        'name' => 'health',
+    ]];
+    $payload['relationships'] = [];
+    $payload['routes'] = [[
+        'name' => 'health',
+        'method' => 'GET',
+        'uri' => '/health',
+    ]];
+
+    expect(fn () => app(CanonicalGraphRepository::class)->prepareHadesUpload($payload))
+        ->toThrow(InvalidArgumentException::class, 'Graph route inventory identity conflicts with a non-route node.');
+});
+
+it('fails closed when an invalid explicit kind occupies a route identity', function () {
+    foreach ([str_repeat('function', 10), 123] as $invalidKind) {
+        $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+        $payload['nodes'] = [[
+            'id' => 'route:health',
+            'kind' => $invalidKind,
+            'name' => 'health',
+        ]];
+        $payload['relationships'] = [];
+        $payload['routes'] = [[
+            'name' => 'health',
+            'method' => 'GET',
+            'uri' => '/health',
+        ]];
+
+        expect(fn () => app(CanonicalGraphRepository::class)->prepareHadesUpload($payload))
+            ->toThrow(InvalidArgumentException::class, 'Graph route inventory identity conflicts with a non-route node.');
+    }
+});
+
+it('hydrates a legacy route-prefixed placeholder whose kind is absent', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'] = [[
+        'id' => 'route:health',
+        'name' => 'route:health',
+    ]];
+    $payload['relationships'] = [];
+    $payload['routes'] = [[
+        'name' => 'health',
+        'method' => 'GET',
+        'uri' => '/health',
+    ]];
+
+    $graph = app(CanonicalGraphRepository::class)->prepareHadesUpload($payload);
+    $routes = collect($graph['nodes'])->filter(
+        fn (array $node): bool => ($node['properties']['kind'] ?? null) === 'route',
+    )->values();
+
+    expect($routes)->toHaveCount(1)
+        ->and($routes[0]['id'])->toBe('route:health')
+        ->and($routes[0]['properties'])->toMatchArray([
+            'name' => 'health',
+            'method' => 'GET',
+            'uri' => '/health',
+        ]);
+});
+
 it('keeps artifact upload runtime responses aligned with the documented 422 contracts', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();

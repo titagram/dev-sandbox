@@ -125,6 +125,42 @@ it('defaults a non-scopes query when the project has exactly one selectable scop
         ->toMatch('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/');
 });
 
+it('returns only bounded canonical coverage counters in the projection envelope', function (): void {
+    $user = task3ApiUser('Admin');
+    $projectId = task3ApiProject();
+    $scope = task3ApiRepositoryScope($projectId);
+    $fixture = task3ApiBindExplorer($this, $projectId, $scope['id'], $scope['graph_version']);
+    $coverage = [
+        'languages' => ['php', 'typescript'],
+        'files_total' => 10,
+        'files_analyzed' => 8,
+        'files_failed' => 2,
+        'files_budget_omitted' => 1,
+        'routes_promoted' => 3,
+        'routes_omitted' => 1,
+        'tests_promoted' => 2,
+        'tests_omitted' => 0,
+        'nodes_capacity_omitted' => 4,
+    ];
+    DB::table('canonical_graph_projections')
+        ->where('project_id', $projectId)
+        ->where('source_scope_id', $scope['id'])
+        ->update(['coverage' => json_encode($coverage, JSON_THROW_ON_ERROR)]);
+
+    $this->actingAs($user)
+        ->postJson("/api/dashboard/projects/{$projectId}/graph/query", [
+            'type' => 'overview',
+            'scope_type' => 'repository',
+            'scope_id' => $scope['id'],
+        ])
+        ->assertOk()
+        ->assertJsonPath('projection.coverage', $coverage)
+        ->assertJsonMissingPath('projection.coverage.source_path')
+        ->assertJsonMissingPath('projection.coverage.raw');
+
+    expect($fixture['source_handle'])->toStartWith('gh1_');
+});
+
 it('returns scopes and requires an explicit scope when multiple project scopes are selectable', function (): void {
     $user = task3ApiUser('Admin');
     $projectId = task3ApiProject();

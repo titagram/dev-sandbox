@@ -408,7 +408,7 @@ it('searches sanitized fields with stable limit-plus-one pagination', function (
         ->and($response['items'][0]['handle'])->toBeLessThan($response['items'][1]['handle'])
         ->and($search)->not->toBeNull()
         ->and($search['cypher'])->toContain(
-            'CALL db.index.fulltext.queryNodes(\'canonical_node_search\', $lucene_query)',
+            'CALL db.index.fulltext.queryNodes(\'canonical_node_search_v2\', $lucene_query)',
         )
         ->not->toContain('active-v2')
         ->toContain('WHERE node.graph_version = $active_graph_version')
@@ -419,6 +419,29 @@ it('searches sanitized fields with stable limit-plus-one pagination', function (
         ->and(json_encode($response, JSON_THROW_ON_ERROR))
         ->not->toContain('node:internal')
         ->not->toContain('/srv/private');
+});
+
+it('searches normalized route uri tokens through the versioned canonical index', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+
+    $fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        '/generale/soggetti-attivi/',
+        10,
+    );
+    $search = collect($fixture['client']->commands)->first(
+        fn (array $command): bool => str_contains($command['cypher'], 'db.index.fulltext.queryNodes'),
+    );
+
+    expect($search['cypher'])
+        ->toContain("db.index.fulltext.queryNodes('canonical_node_search_v2', \$lucene_query)")
+        ->toContain('node.public_search_name_normalized = $normalized_query')
+        ->and($search['params']['lucene_query'])
+        ->toContain('public_search_terms:soggetti*')
+        ->toContain('public_search_terms:attivi*')
+        ->and($search['params']['normalized_query'])->toBe('/generale/soggetti-attivi/');
 });
 
 it('bounds search limits and preserves cursor scores without lossy rounding', function (): void {
@@ -548,16 +571,16 @@ it('binds an escaped Lucene query instead of interpolating apostrophes or operat
     );
 
     expect($search['cypher'])
-        ->toContain('CALL db.index.fulltext.queryNodes(\'canonical_node_search\', $lucene_query)')
+        ->toContain('CALL db.index.fulltext.queryNodes(\'canonical_node_search_v2\', $lucene_query)')
         ->not->toContain($rawQuery)
         ->not->toContain('active-v2')
         ->and($search['params']['lucene_query'])
-        ->toContain("Invoice'")
-        ->toContain('\\+')
-        ->toContain('\\(')
-        ->toContain('\\)')
-        ->toContain('\\&\\&')
-        ->toContain('\\|\\|');
+        ->toContain('public_search_terms:invoice*')
+        ->toContain('public_search_terms:service*')
+        ->not->toContain("'")
+        ->not->toContain('+')
+        ->not->toContain('&')
+        ->not->toContain('|');
 });
 
 it('rejects empty or invalid normalized searches before querying the index', function (): void {
@@ -574,6 +597,12 @@ it('rejects empty or invalid normalized searches before querying the index', fun
         'workspace_binding',
         $fixture['scope_id'],
         "\xFF",
+    ))->toThrow(InvalidArgumentException::class, 'invalid_query');
+    expect(fn () => $fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        str_repeat('a', 161),
     ))->toThrow(InvalidArgumentException::class, 'invalid_query');
     expect($fixture['client']->commands)->toBe([]);
 });

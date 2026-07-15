@@ -339,6 +339,7 @@ class CanonicalGraphRepository
     {
         $language = (string) ($payload['language'] ?? ($schema === 'hades.php_graph.v1' ? 'php' : 'unknown'));
         $hasGraphContract = array_key_exists('graph_contract', $payload);
+        $payload = $this->hydrateRouteInventory($payload);
         $payload = $this->adaptLegacy($payload, 'hades-legacy-'.$language, $language);
         $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
         $legacyRouteIds = is_array($payload['__hades_route_record_ids'] ?? null)
@@ -359,6 +360,7 @@ class CanonicalGraphRepository
         $payload = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
         $language = (string) ($payload['language'] ?? 'unknown');
         $hasGraphContract = array_key_exists('graph_contract', $payload);
+        $payload = $this->hydrateRouteInventory($payload);
         $payload = $this->adaptLegacy($payload, 'legacy-analyzer', $language);
         $privateIdentityProvenance = $this->privateNodeIdentityProvenance($payload);
         $legacyRouteIds = is_array($payload['__hades_route_record_ids'] ?? null)
@@ -377,8 +379,8 @@ class CanonicalGraphRepository
      * The marker stays outside the public property bag so producer-supplied
      * allowlist strings cannot authorize a route in projection.
      *
-     * @param array<string, mixed> $graph
-     * @param array<string, true> $legacyRouteIds
+     * @param  array<string, mixed>  $graph
+     * @param  array<string, true>  $legacyRouteIds
      * @return array<string, true>
      */
     private function stampRouteProvenance(array &$graph, bool $hasGraphContract, array $legacyRouteIds): array
@@ -497,7 +499,7 @@ class CanonicalGraphRepository
         if (array_key_exists('graph_contract', $payload)) {
             return $payload;
         }
-        $payload = $this->adaptLegacyNodeIdentities($this->adaptLegacyRoutes($payload));
+        $payload = $this->adaptLegacyNodeIdentities($payload);
         $filesTotal = is_array($payload['files'] ?? null) ? count($payload['files']) : (int) ($payload['files_total'] ?? 0);
         $payload['graph_contract'] = [
             'version' => 'hades.graph_artifact.v1',
@@ -515,7 +517,7 @@ class CanonicalGraphRepository
      * needs those endpoints as real nodes; otherwise Neo4j correctly drops
      * every route-to-handler relationship because its source does not exist.
      */
-    private function adaptLegacyRoutes(array $payload): array
+    private function hydrateRouteInventory(array $payload): array
     {
         $routes = is_array($payload['routes'] ?? null) ? $payload['routes'] : [];
         if ($routes === []) {
@@ -524,20 +526,32 @@ class CanonicalGraphRepository
 
         $nodeKey = is_array($payload['nodes'] ?? null) ? 'nodes' : 'symbols';
         $nodes = is_array($payload[$nodeKey] ?? null) ? array_values($payload[$nodeKey]) : [];
-        $knownIds = [];
         $routeRecordIds = [];
-        foreach (array_filter($nodes, 'is_array') as $node) {
-            $nodeId = $node['id'] ?? $node['symbol_id'] ?? null;
-            if (is_string($nodeId) && trim($nodeId) !== '') {
-                $knownIds[trim($nodeId)] = true;
+        $routeNodeIndexesByAlias = [];
+        $nonRouteNodeIds = [];
+        foreach ($nodes as $index => $candidate) {
+            if (! is_array($candidate)) {
+                continue;
+            }
+            $kind = $this->routeNodeKind($candidate);
+            if ($kind !== '' && ! in_array($kind, ['route', 'endpoint', 'http_endpoint'], true)) {
+                foreach ([$candidate['id'] ?? null, $candidate['symbol_id'] ?? null] as $value) {
+                    if (is_string($value) && trim($value) !== '') {
+                        $nonRouteNodeIds[trim($value)] = true;
+                    }
+                }
+            }
+            foreach ($this->routeNodeAliases($candidate) as $alias) {
+                $routeNodeIndexesByAlias[$alias][$index] = true;
             }
         }
 
         foreach (array_filter($routes, 'is_array') as $route) {
-            $name = is_string($route['name'] ?? null) ? trim($route['name']) : '';
-            $method = is_string($route['method'] ?? null) ? trim($route['method']) : '';
-            $uri = is_string($route['uri'] ?? null) ? trim($route['uri']) : '';
-            $handler = is_string($route['handler'] ?? null) ? trim($route['handler']) : '';
+            $name = $this->boundedRouteString($route['name'] ?? null);
+            $method = strtoupper($this->boundedRouteString($route['method'] ?? $route['http_method'] ?? $route['verb'] ?? null, 32));
+            $uri = $this->routeRecordUri($route);
+            $handler = $this->boundedRouteString($route['handler'] ?? null);
+            $definedHandler = $this->boundedRouteString($route['defined_handler'] ?? null);
             if ($name === '' && $method === '' && $uri === '' && $handler === '') {
                 continue;
             }
@@ -547,27 +561,63 @@ class CanonicalGraphRepository
                 continue;
             }
             $nodeId = 'route:'.$routeReference;
-            if (isset($knownIds[$nodeId])) {
-                $routeRecordIds[] = $nodeId;
-                continue;
+            if (isset($nonRouteNodeIds[$nodeId])) {
+                throw new InvalidArgumentException('Graph route inventory identity conflicts with a non-route node.');
+            }
+            $matchingIndexes = [];
+            foreach (array_unique(array_filter([$nodeId, $routeReference, $name])) as $alias) {
+                foreach (array_keys($routeNodeIndexesByAlias[$alias] ?? []) as $index) {
+                    $matchingIndexes[$index] = true;
+                }
+            }
+            $matchingIndexes = array_keys($matchingIndexes);
+            if (count($matchingIndexes) > 1) {
+                throw new InvalidArgumentException('Graph route inventory identity is ambiguous.');
             }
 
             $properties = array_filter([
                 'method' => $method,
                 'uri' => $uri,
                 'handler' => $handler,
-            ], static fn (string $value): bool => $value !== '');
+                'defined_handler' => $definedHandler,
+                'framework' => $this->boundedRouteString($route['framework'] ?? null, 64),
+                'inherited' => is_bool($route['inherited'] ?? null) ? $route['inherited'] : null,
+            ], static fn ($value): bool => $value !== '' && $value !== null);
+            $presentationName = $name !== '' ? $name : trim($method.' '.$uri);
+            if ($matchingIndexes !== []) {
+                $index = $matchingIndexes[0];
+                $node = $nodes[$index];
+                $actualNodeId = trim((string) ($node['id'] ?? $node['symbol_id'] ?? $nodeId));
+                $existingProperties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+                foreach ($properties as $field => $value) {
+                    if (! array_key_exists($field, $existingProperties) || $existingProperties[$field] === '' || $existingProperties[$field] === null) {
+                        $existingProperties[$field] = $value;
+                    }
+                }
+                $node['kind'] = 'route';
+                $existingName = is_string($node['name'] ?? null) ? trim($node['name']) : '';
+                if ($presentationName !== '' && ($existingName === '' || $existingName === $nodeId)) {
+                    $node['name'] = $presentationName;
+                }
+                unset($node['path'], $existingProperties['path'], $existingProperties['source_path'], $existingProperties['file']);
+                $node['properties'] = $existingProperties;
+                $nodes[$index] = $node;
+                $routeRecordIds[] = $actualNodeId;
+
+                continue;
+            }
+
             $node = [
                 'id' => $nodeId,
                 'kind' => 'route',
-                'name' => $name !== '' ? $name : trim($method.' '.$uri),
-                'properties' => $properties + ['route_provenance' => 'legacy_route_record'],
+                'name' => $presentationName,
+                'properties' => $properties,
             ];
-            if (is_string($route['path'] ?? null) && trim($route['path']) !== '') {
-                $node['path'] = trim($route['path']);
-            }
             $nodes[] = $node;
-            $knownIds[$nodeId] = true;
+            $newIndex = array_key_last($nodes);
+            foreach ($this->routeNodeAliases($node) as $alias) {
+                $routeNodeIndexesByAlias[$alias][$newIndex] = true;
+            }
             $routeRecordIds[] = $nodeId;
         }
 
@@ -575,6 +625,76 @@ class CanonicalGraphRepository
         $payload['__hades_route_record_ids'] = array_values(array_unique($routeRecordIds));
 
         return $payload;
+    }
+
+    /** @return list<string> */
+    private function routeNodeAliases(array $node): array
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        $kind = $this->routeNodeKind($node);
+        $routeLike = in_array($kind, ['route', 'endpoint', 'http_endpoint'], true);
+        if ($kind !== '' && ! $routeLike) {
+            return [];
+        }
+        $aliases = [];
+        foreach ([$node['id'] ?? null, $node['symbol_id'] ?? null, $node['name'] ?? null, $properties['name'] ?? null] as $value) {
+            if (! is_string($value) || trim($value) === '') {
+                continue;
+            }
+            $clean = trim($value);
+            if (str_starts_with(strtolower($clean), 'route:')) {
+                $aliases[] = $clean;
+                $aliases[] = substr($clean, 6);
+            } elseif ($routeLike) {
+                $aliases[] = $clean;
+            }
+        }
+
+        return array_values(array_unique(array_filter($aliases)));
+    }
+
+    private function routeNodeKind(array $node): ?string
+    {
+        $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        foreach ([[$node, 'kind'], [$node, 'type'], [$properties, 'kind'], [$properties, 'type']] as [$source, $key]) {
+            if (! array_key_exists($key, $source)) {
+                continue;
+            }
+            $value = $source[$key];
+            if (is_string($value) && trim($value) === '') {
+                continue;
+            }
+            $kind = $this->boundedRouteString($value, 64);
+
+            return $kind === '' ? null : strtolower($kind);
+        }
+
+        return '';
+    }
+
+    private function routeRecordUri(array $route): string
+    {
+        foreach (['uri', 'route', 'route_path', 'url'] as $field) {
+            $candidate = $this->boundedRouteString($route[$field] ?? null);
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+        $path = $this->boundedRouteString($route['path'] ?? null);
+
+        return str_starts_with($path, '/') ? $path : '';
+    }
+
+    private function boundedRouteString(mixed $value, int $maxLength = 512): string
+    {
+        if (! is_string($value)) {
+            return '';
+        }
+        $value = trim($value);
+
+        return $value !== '' && strlen($value) <= $maxLength && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1
+            ? $value
+            : '';
     }
 
     private function adaptLegacyNodeIdentities(array $payload): array

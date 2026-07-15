@@ -76,6 +76,43 @@ function responseStatus(response: DashboardGraphDataResponse | null): React.Reac
   );
 }
 
+function hasPartialCoverage(response: DashboardGraphDataResponse): boolean {
+  const coverage = response.projection.coverage;
+  if (!coverage) return false;
+  return response.projection.quality === "partial"
+    || response.projection.quality === "inventory_only"
+    || coverage.files_analyzed < coverage.files_total
+    || (coverage.files_budget_omitted ?? 0) > 0
+    || (coverage.routes_omitted ?? 0) > 0
+    || (coverage.tests_omitted ?? 0) > 0
+    || (coverage.nodes_capacity_omitted ?? 0) > 0;
+}
+
+function CoverageNotice({ response }: { response: DashboardGraphDataResponse }) {
+  const coverage = response.projection.coverage;
+  if (!coverage || !hasPartialCoverage(response)) return null;
+  const details = [
+    `${coverage.files_analyzed}/${coverage.files_total} files`,
+  ];
+  if (typeof coverage.routes_promoted === "number") {
+    details.push(`${coverage.routes_promoted} routes`);
+  }
+  if (typeof coverage.tests_promoted === "number") {
+    details.push(`${coverage.tests_promoted} tests`);
+  }
+  if ((coverage.nodes_capacity_omitted ?? 0) > 0) {
+    details.push(`${coverage.nodes_capacity_omitted} capacity omissions`);
+  }
+
+  return (
+    <div role="note" className="mb-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+      <span className="font-medium">Indexed subset</span>
+      {` · ${details.join(" · ")}`}
+      {coverage.languages.length > 0 && ` · ${coverage.languages.join(", ")}`}
+    </div>
+  );
+}
+
 function keyedGraphItems(items: readonly DashboardGraphNode[]) {
   const occurrences = new Map<string, number>();
   return items.map((item) => {
@@ -437,7 +474,8 @@ function GraphExplorerSession({
 
       {search && (
         <Panel title="Search results">
-          {search.items.length === 0 ? <p>No matching symbols</p> : (
+          <CoverageNotice response={search} />
+          {search.items.length === 0 ? <p>{hasPartialCoverage(search) ? "No match in the indexed subset" : "No matching symbols"}</p> : (
             <div className="flex flex-wrap gap-2">
               {search.items.map((item) => <Button key={item.handle} variant="outline" onClick={() => void loadDetails(item.handle)}>{nodeDisplayLabel(item)}</Button>)}
             </div>
