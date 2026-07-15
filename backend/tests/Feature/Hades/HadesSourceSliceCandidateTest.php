@@ -32,7 +32,6 @@ it('creates deduped read source slice jobs from artifact candidates', function (
         'workspace_binding_id' => $workspaceBindingId,
         'schema' => 'hades.php_graph.v1',
         'artifact' => ['schema' => 'hades.php_graph.v1', 'source_slice_candidates' => [$candidate]],
-        'sha256' => hash('sha256', json_encode(['source_slice_candidates' => [$candidate], 'routes' => []], JSON_THROW_ON_ERROR)),
     ];
 
     $this
@@ -180,7 +179,6 @@ it('reports pending source slice candidates in project awareness', function () {
             'workspace_binding_id' => $workspaceBindingId,
             'schema' => 'hades.php_graph.v1',
             'artifact' => ['schema' => 'hades.php_graph.v1', 'source_slice_candidates' => [$candidate]],
-            'sha256' => hash('sha256', json_encode(['source_slice_candidates' => [$candidate], 'routes' => []], JSON_THROW_ON_ERROR)),
         ], hadesSourceCandidateHeaders($token))
         ->assertCreated();
 
@@ -218,7 +216,6 @@ it('keeps a source slice candidate pending without creating a job when the agent
         'workspace_binding_id' => $workspaceBindingId,
         'schema' => 'hades.php_graph.v1',
         'artifact' => ['schema' => 'hades.php_graph.v1', 'source_slice_candidates' => [$candidate]],
-        'sha256' => hash('sha256', json_encode(['source_slice_candidates' => [$candidate], 'routes' => []], JSON_THROW_ON_ERROR)),
     ], hadesSourceCandidateHeaders($token))->assertCreated();
 
     $stored = DB::table('hades_source_slice_candidates')
@@ -260,7 +257,6 @@ it('does not create a source slice job during re-registration', function () {
         'workspace_binding_id' => $workspaceBindingId,
         'schema' => 'hades.php_graph.v1',
         'artifact' => ['schema' => 'hades.php_graph.v1', 'source_slice_candidates' => [$candidate]],
-        'sha256' => hash('sha256', json_encode(['source_slice_candidates' => [$candidate], 'routes' => []], JSON_THROW_ON_ERROR)),
     ], hadesSourceCandidateHeaders($token))->assertCreated();
 
     $this->postJson('/api/hades/v1/agents/register', [
@@ -306,7 +302,6 @@ it('reconciles pending candidates on a bounded job poll and does not duplicate o
         'workspace_binding_id' => $workspaceBindingId,
         'schema' => 'hades.php_graph.v1',
         'artifact' => ['schema' => 'hades.php_graph.v1', 'source_slice_candidates' => [$candidate]],
-        'sha256' => hash('sha256', json_encode(['source_slice_candidates' => [$candidate], 'routes' => []], JSON_THROW_ON_ERROR)),
     ], hadesSourceCandidateHeaders($token))->assertCreated();
 
     $registered = $this->postJson('/api/hades/v1/agents/register', [
@@ -362,7 +357,6 @@ it('does not link unrelated jobs with the same candidate idempotency key', funct
         'workspace_binding_id' => $workspaceBindingId,
         'schema' => 'hades.php_graph.v1',
         'artifact' => ['schema' => 'hades.php_graph.v1', 'source_slice_candidates' => [$candidate]],
-        'sha256' => hash('sha256', json_encode(['source_slice_candidates' => [$candidate], 'routes' => []], JSON_THROW_ON_ERROR)),
     ], hadesSourceCandidateHeaders($token))->assertCreated();
 
     $registered = $this->postJson('/api/hades/v1/agents/register', [
@@ -439,7 +433,6 @@ it('makes bounded progress across pending source slice candidates per job poll l
         'workspace_binding_id' => $workspaceBindingId,
         'schema' => 'hades.php_graph.v1',
         'artifact' => ['schema' => 'hades.php_graph.v1', 'source_slice_candidates' => $candidates],
-        'sha256' => hash('sha256', json_encode(['source_slice_candidates' => $candidates, 'routes' => []], JSON_THROW_ON_ERROR)),
     ], hadesSourceCandidateHeaders($token))->assertCreated();
 
     $registered = $this->postJson('/api/hades/v1/agents/register', [

@@ -122,7 +122,7 @@ class AgentJobResultController extends Controller
                     $updates['error_message'] = $validated['error'] ?? ($result['summary'] ?? null);
                 }
 
-                if ($status === 'completed' && $this->shouldApplyWikiRefreshResult($record, $result)) {
+                if ($status === 'completed' && $this->shouldApplyWikiRefreshResult($record)) {
                     $result['applied'] = $wikiResults->apply($record, $result);
                     $updates['result'] = json_encode($result, JSON_THROW_ON_ERROR);
                     $updates['result_applied_at'] = $now;
@@ -240,10 +240,10 @@ class AgentJobResultController extends Controller
         ];
     }
 
-    private function shouldApplyWikiRefreshResult(object $job, array $result): bool
+    private function shouldApplyWikiRefreshResult(object $job): bool
     {
         return $job->capability === 'populate_project_wiki'
-            || ($result['schema'] ?? null) === 'devboard.wiki_refresh_result.v1';
+            && ($job->job_type ?? null) === 'wiki_refresh';
     }
 
     private function decode(mixed $value): array

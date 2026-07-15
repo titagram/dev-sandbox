@@ -23,11 +23,11 @@ it('normalizes an explicit bootstrap capability grant to the supported catalog',
         $project['id'],
         'Explicit capability grant',
         90,
-        ['populate_project_wiki', 'not_supported', 'read_files', 'read_files'],
+        ['populate_project_wiki', 'verify_project_wiki', 'not_supported', 'read_files', 'read_files'],
     );
 
     expect(json_decode($created['token']->allowed_capabilities, true, flags: JSON_THROW_ON_ERROR))
-        ->toBe(['read_files', 'populate_project_wiki']);
+        ->toBe(['read_files', 'populate_project_wiki', 'verify_project_wiki']);
 });
 
 it('verifies a project scoped bootstrap token without creating an agent', function () {
@@ -123,6 +123,7 @@ it('keeps an explicitly empty bootstrap grant empty during live registration', f
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',
+        'verify_project_wiki',
     ];
 
     $response = $this->postJson('/api/hades/v1/agents/register', [
@@ -143,15 +144,19 @@ it('keeps an explicitly empty bootstrap grant empty during live registration', f
         ))->toBe([]);
 });
 
-it('treats a legacy SQL NULL bootstrap grant as the complete supported catalog', function () {
+it('does not add newly introduced capabilities to a legacy SQL NULL bootstrap grant', function () {
     $token = createHadesM1BootstrapToken(['allowed_capabilities' => null]);
-    $all = [
+    $legacyCatalog = [
         'read_files',
         'read_source_slice',
         'project_inspection',
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',
+    ];
+    $currentCatalog = [
+        ...$legacyCatalog,
+        'verify_project_wiki',
     ];
 
     $response = $this->postJson('/api/hades/v1/agents/register', [
@@ -160,11 +165,11 @@ it('treats a legacy SQL NULL bootstrap grant as the complete supported catalog',
         'label' => 'Legacy null grant agent',
         'platform' => 'linux-x64',
         'version' => '0.1.0',
-        'capabilities' => $all,
+        'capabilities' => $currentCatalog,
     ], hadesM1Headers($token['plain_token']))
         ->assertOk();
 
-    expect($response->json('capability_names'))->toBe($all);
+    expect($response->json('capability_names'))->toBe($legacyCatalog);
 });
 
 it('issues a project-scoped Plugin credential bundle during Hades agent registration', function () {

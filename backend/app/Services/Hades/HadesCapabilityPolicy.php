@@ -5,7 +5,7 @@ namespace App\Services\Hades;
 class HadesCapabilityPolicy
 {
     /** @var list<string> */
-    private const SUPPORTED_M1_CAPABILITIES = [
+    private const LEGACY_NULL_GRANT_CAPABILITIES = [
         'read_files',
         'read_source_slice',
         'project_inspection',
@@ -14,12 +14,34 @@ class HadesCapabilityPolicy
         'populate_project_wiki',
     ];
 
+    /** @var list<string> */
+    private const SUPPORTED_M1_CAPABILITIES = [
+        'read_files',
+        'read_source_slice',
+        'project_inspection',
+        'sync_git_tree',
+        'populate_backend_ast',
+        'populate_project_wiki',
+        'verify_project_wiki',
+    ];
+
     /**
      * @return list<string>
      */
     public function supportedNames(): array
     {
         return self::SUPPORTED_M1_CAPABILITIES;
+    }
+
+    /**
+     * Capabilities implicitly granted by bootstrap tokens created before
+     * explicit capability catalogs were persisted.
+     *
+     * @return list<string>
+     */
+    public function legacyNullGrantNames(): array
+    {
+        return self::LEGACY_NULL_GRANT_CAPABILITIES;
     }
 
     /**

@@ -24,6 +24,7 @@ use App\Http\Controllers\Hades\ProjectAwarenessBootstrapController as HadesProje
 use App\Http\Controllers\Hades\ProjectAwarenessStatusController as HadesProjectAwarenessStatusController;
 use App\Http\Controllers\Hades\SourceSliceController as HadesSourceSliceController;
 use App\Http\Controllers\Hades\TokenVerifyController as HadesTokenVerifyController;
+use App\Http\Controllers\Hades\WikiPageController as HadesWikiPageController;
 use App\Http\Controllers\Hades\WorkspaceBindController as HadesWorkspaceBindController;
 use App\Http\Controllers\Hades\WorkspaceUnlinkController as HadesWorkspaceUnlinkController;
 use App\Http\Controllers\Plugin\AgentWorkItemController;
@@ -195,6 +196,18 @@ Route::prefix('hades/v1')->middleware(HadesProjectWritable::class)->group(functi
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/project-awareness/bootstrap', HadesProjectAwarenessBootstrapController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/wiki/pages', [HadesWikiPageController::class, 'index'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/wiki/pages', [HadesWikiPageController::class, 'store'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/wiki/pages/{page}', [HadesWikiPageController::class, 'show'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/wiki/pages/{page}/verify', [HadesWikiPageController::class, 'verify'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/bug-reports', [HadesBugReportController::class, 'store'])

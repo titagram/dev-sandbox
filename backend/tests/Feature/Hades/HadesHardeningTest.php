@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Services\Hades\HadesArtifactIntegrity;
 use App\Services\Hades\HadesTokenService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +24,7 @@ it('keeps default bootstrap capabilities aligned with the current Hephaistos cli
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',
+        'verify_project_wiki',
     ]);
 });
 
@@ -178,6 +180,121 @@ it('bounds compressed artifact decompression and validates declared bytes', func
         ]]);
 
     expect(DB::table('hades_agent_artifacts')->count())->toBe(0);
+});
+
+it('rejects a caller supplied hash that does not match a canonical raw artifact', function () {
+    $agent = hadesHardeningAgent(['read_files']);
+    $binding = hadesHardeningBinding($agent);
+    $artifact = [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => str_repeat('a', 40),
+        'files' => [['sha256' => str_repeat('1', 64), 'path' => 'README.md']],
+    ];
+
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.git_tree.v1',
+        'artifact' => $artifact,
+        'sha256' => str_repeat('f', 64),
+    ], hadesHardeningHeaders($agent['agent_token']))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'artifact_hash_mismatch');
+
+    expect(DB::table('hades_agent_artifacts')->count())->toBe(0);
+});
+
+it('rejects a caller supplied hash that does not match a canonical compressed artifact', function () {
+    $agent = hadesHardeningAgent(['read_files']);
+    $binding = hadesHardeningBinding($agent);
+    $artifact = [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => str_repeat('a', 40),
+        'files' => [['sha256' => str_repeat('1', 64), 'path' => 'README.md']],
+    ];
+
+    $json = json_encode($artifact, JSON_THROW_ON_ERROR);
+    $compressed = gzencode($json);
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.git_tree.v1',
+        'artifact_encoding' => 'gzip+base64',
+        'artifact_compressed' => base64_encode($compressed),
+        'artifact_uncompressed_sha256' => hash('sha256', $json),
+        'artifact_uncompressed_bytes' => strlen($json),
+        'artifact_compressed_bytes' => strlen($compressed),
+        'sha256' => str_repeat('e', 64),
+    ], hadesHardeningHeaders($agent['agent_token']))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'artifact_hash_mismatch');
+
+    expect(DB::table('hades_agent_artifacts')->count())->toBe(0);
+});
+
+it('accepts Hades canonical hashes for deliberately unsorted raw and compressed artifacts', function () {
+    $agent = hadesHardeningAgent(['read_files']);
+    $binding = hadesHardeningBinding($agent);
+    $fileHash = str_repeat('1', 64);
+    $headCommit = str_repeat('a', 40);
+    $rawArtifact = [
+        'schema' => 'hades.git_tree.v1',
+        'metadata' => [
+            'ratio' => 1.0,
+            'labels' => ['β', 'a/b'],
+            'nested' => ['z' => 'last', 'a' => 'first'],
+        ],
+        'head_commit' => $headCommit,
+        'files' => [['sha256' => $fileHash, 'path' => 'src/Foo.php']],
+    ];
+    $pythonCanonicalHash = 'b8454008f3c25265974e8f97e2a24279af1e9fcdc959503e4621134472897be9';
+
+    expect(app(HadesArtifactIntegrity::class)->sha256($rawArtifact))
+        ->toBe($pythonCanonicalHash);
+
+    $rawRequest = [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.git_tree.v1',
+        'artifact' => $rawArtifact,
+        'sha256' => $pythonCanonicalHash,
+    ];
+    $rawRequestJson = json_encode(
+        $rawRequest,
+        JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION,
+    );
+
+    $this->call('POST', '/api/hades/v1/artifacts', server: [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_ACCEPT' => 'application/json',
+        'HTTP_AUTHORIZATION' => 'Bearer '.$agent['agent_token'],
+    ], content: $rawRequestJson)
+        ->assertCreated()
+        ->assertJsonPath('artifact.sha256', $pythonCanonicalHash);
+
+    $compressedArtifact = [
+        'workspace_state' => ['head_commit' => $headCommit],
+        'symbols' => [['path' => 'src/Foo.php', 'name' => 'Foo']],
+        'schema' => 'hades.symbols.v1',
+    ];
+    $compressedJson = json_encode($compressedArtifact, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    $compressed = gzencode($compressedJson);
+    $compressedCanonical = '{"schema":"hades.symbols.v1","symbols":[{"name":"Foo","path":"src/Foo.php"}],"workspace_state":{"head_commit":"'.$headCommit.'"}}';
+    $compressedCanonicalHash = hash('sha256', $compressedCanonical);
+
+    $this->postJson('/api/hades/v1/artifacts', [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'schema' => 'hades.symbols.v1',
+        'artifact_encoding' => 'gzip+base64',
+        'artifact_compressed' => base64_encode($compressed),
+        'artifact_uncompressed_sha256' => hash('sha256', $compressedJson),
+        'artifact_uncompressed_bytes' => strlen($compressedJson),
+        'artifact_compressed_bytes' => strlen($compressed),
+        'sha256' => $compressedCanonicalHash,
+    ], hadesHardeningHeaders($agent['agent_token']))
+        ->assertCreated()
+        ->assertJsonPath('artifact.sha256', $compressedCanonicalHash);
 });
 
 it('blocks Hades mutations for archived and deleted projects while retaining reads and privacy deletion', function () {

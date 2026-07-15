@@ -75,6 +75,25 @@ class HadesProjectAwareness
         return $this->freshness($binding, $artifacts, $bugEvidence);
     }
 
+    public function artifactHeadCommit(mixed $payload): ?string
+    {
+        $payload = $this->decode($payload);
+
+        foreach ([
+            data_get($payload, 'workspace_state.head_commit'),
+            $payload['workspace_head_commit'] ?? null,
+            $payload['head_commit'] ?? null,
+            data_get($payload, 'graph_contract.source.head_commit'),
+        ] as $candidate) {
+            $head = $this->blankToNull($candidate);
+            if ($head !== null) {
+                return $head;
+            }
+        }
+
+        return null;
+    }
+
     private function memoryCoverage(string $projectId): array
     {
         $row = DB::table('project_memory_entries')
@@ -478,6 +497,11 @@ class HadesProjectAwareness
      */
     private function extractHeadCommit(array $payload): ?string
     {
+        $canonicalHead = $this->artifactHeadCommit($payload);
+        if ($canonicalHead !== null) {
+            return $canonicalHead;
+        }
+
         $queue = [[$payload, 0]];
         while ($queue !== []) {
             [$current, $depth] = array_shift($queue);

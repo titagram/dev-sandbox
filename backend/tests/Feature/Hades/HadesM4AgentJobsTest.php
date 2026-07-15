@@ -89,6 +89,39 @@ it('records job status transitions and bounded job results', function () {
     expect(DB::table('hades_agent_job_events')->where('job_id', $jobId)->count())->toBe(3);
 });
 
+it('does not apply a typed wiki result for a non wiki refresh job', function () {
+    $agent = hadesM4RegisteredAgent();
+    $binding = hadesM4WorkspaceBinding($agent);
+    $jobId = hadesM4CreateJob($agent, $binding, [
+        'capability' => 'populate_project_wiki',
+        'status' => 'started',
+        'payload' => ['schema' => 'devboard.generic_population_request.v1'],
+    ]);
+
+    $this->postJson('/api/hades/v1/agent/jobs/'.$jobId.'/result', [
+        'project_id' => $agent['project_id'],
+        'agent_id' => $agent['external_agent_id'],
+        'workspace_binding_id' => $binding['workspace_binding_id'],
+        'status' => 'completed',
+        'result' => [
+            'schema' => 'devboard.wiki_refresh_result.v1',
+            'pages' => [[
+                'slug' => 'non-wiki-job-result',
+                'title' => 'Non-wiki Job Result',
+                'content_markdown' => '# Must not be applied',
+                'evidence_refs' => [['kind' => 'untrusted']],
+                'source_status' => 'verified_from_code',
+            ]],
+        ],
+    ], hadesM4Headers($agent['agent_token']))
+        ->assertOk()
+        ->assertJsonPath('job.status', 'completed')
+        ->assertJsonMissingPath('job.result.applied');
+
+    expect(DB::table('wiki_pages')->where('project_id', $agent['project_id'])->count())->toBe(0)
+        ->and(DB::table('hades_agent_jobs')->where('id', $jobId)->value('result_applied_at'))->toBeNull();
+});
+
 it('marks non terminal jobs unlinked when the workspace binding is unlinked', function () {
     $agent = hadesM4RegisteredAgent();
     $binding = hadesM4WorkspaceBinding($agent);
