@@ -146,6 +146,8 @@ function ProjectScopeSwitcher({
           <button
             className="flex h-9 w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 text-left text-xs font-medium text-foreground hover:bg-accent"
             type="button"
+            aria-label={`Project scope: ${label}`}
+            title={label}
           >
             <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -228,6 +230,15 @@ export default function AppShell() {
     writeStoredProjectScope(activeProjectId);
   }, [activeProjectId, selectedProjectId]);
 
+  useEffect(() => {
+    if (!projectState.data || projectState.loading) return;
+    const knownProject = effectiveProjectId && projectState.data.some((project) => project.id === effectiveProjectId);
+    if (knownProject || projectState.data.length === 0) return;
+    const nextProjectId = projectState.data[0].id;
+    setSelectedProjectId(nextProjectId);
+    writeStoredProjectScope(nextProjectId);
+  }, [effectiveProjectId, projectState.data, projectState.loading]);
+
   if (!user) return null;
 
   const activeProject = effectiveProjectId ? projectState.data?.find((project) => project.id === effectiveProjectId) : undefined;
@@ -270,7 +281,7 @@ export default function AppShell() {
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/40 px-3 sm:px-5">
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="lg:hidden" data-testid="mobile-nav-toggle">
+              <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" data-testid="mobile-nav-toggle">
                 <Menu className="h-5 w-5" />
               </Button>
             </SheetTrigger>
@@ -289,18 +300,19 @@ export default function AppShell() {
           </Sheet>
 
           <span
-            className="inline-flex h-7 max-w-[42vw] shrink-0 items-center truncate rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground sm:max-w-[180px]"
+            className="inline-flex h-7 min-w-0 max-w-[42vw] shrink-0 items-center truncate rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground sm:max-w-[180px]"
             data-testid="scope-label"
+            title={scopeLabel}
           >
             {scopeLabel}
           </span>
 
-          <div className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground" data-testid="breadcrumb">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 overflow-hidden text-sm text-muted-foreground" data-testid="breadcrumb">
             {crumbs.length === 0 && <span>dashboard</span>}
             {crumbs.map((c, i) => (
               <React.Fragment key={i}>
                 {i > 0 && <ChevronRight className="h-3.5 w-3.5 opacity-50" />}
-                <span className={cn("truncate font-mono text-xs", i === crumbs.length - 1 && "text-foreground")}>{c}</span>
+                <span className={cn("min-w-0 max-w-[30vw] break-all font-mono text-xs sm:max-w-[220px]", i === crumbs.length - 1 && "text-foreground")} title={i === 1 && activeProject?.name ? activeProject.name : c}>{i === 1 && activeProject?.name ? activeProject.name : c}</span>
               </React.Fragment>
             ))}
           </div>
@@ -315,7 +327,7 @@ export default function AppShell() {
             >
               <CommandIcon className="h-3 w-3" /> K
             </button>
-            <Button variant="ghost" size="icon" onClick={toggle} data-testid="theme-toggle" title="Toggle theme">
+            <Button variant="ghost" size="icon" onClick={toggle} aria-label="Toggle theme" data-testid="theme-toggle" title="Toggle theme">
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
 

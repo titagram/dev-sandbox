@@ -1325,6 +1325,7 @@ function dashboardGraphEnvelope(
     query_type: queryType,
     found: false,
     reason: null,
+    completeness: projection.quality === "complete" ? "complete" : "partial",
     scope: request.scope_type && request.scope_id
       ? { type: request.scope_type, id: request.scope_id }
       : null,
@@ -1734,7 +1735,19 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
     const query = normalizedQuery.toLocaleLowerCase();
     const matches = scopeNodes
       .filter((node) => node.label?.toLocaleLowerCase().includes(query))
-      .map((node, index) => ({ ...node, score: 1 - index / 10 }));
+      .map((node) => {
+        const label = node.label?.toLocaleLowerCase() || "";
+        const exactName = label === query;
+        const exactRoute = node.kind === "route" && label.replace(/^\w+\s+/u, "") === query;
+        const priority = exactName ? 3 : exactRoute ? 2 : 1;
+        return {
+          ...node,
+          score: priority,
+          match_type: exactName ? "exact_symbol_name" : exactRoute ? "exact_route_path" : "fuzzy",
+          match_reason: exactName ? "Exact symbol name" : exactRoute ? "Exact route path" : "Fuzzy label match",
+        };
+      })
+      .sort((a, b) => b.score - a.score || (a.label || "").localeCompare(b.label || ""));
     const cursorContext = {
       projectId,
       queryType: "search" as const,
@@ -1748,6 +1761,7 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
     const hasMore = offset + items.length < matches.length;
     return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
       found: true,
+      completeness: matches.length === 0 ? (fixture.projection.quality === "complete" ? "verified_none" : "partial") : fixture.projection.quality === "complete" ? "complete" : "partial",
       items: clone(items),
       returned: items.length,
       next_cursor: hasMore
@@ -2399,6 +2413,13 @@ export const mockApi: DevboardApi = {
       graph_status: "not_started" as const,
       updated_at: now,
       status: "active" as const,
+      operational_status: {
+        source: "mock_project_operational_records",
+        graph: { status: "not_indexed" as const, canonical: false, scope_type: null, scope_id: null, quality: null, node_count: 0, relationship_count: 0, reason: "No ready canonical graph projection is indexed yet." },
+        workspace: { status: "missing" as const, linked_count: 0, repository_count: 0, reason: "No workspace is linked to this project yet." },
+        genesis: { status: "not_started" as const, reason: "Genesis analysis has not completed yet." },
+        artifacts: { status: "empty" as const, legacy_count: 0, reason: "No graph artifacts are available yet." },
+      },
       archived_at: null,
       deleted_at: null,
       restored_at: null,
@@ -2406,7 +2427,7 @@ export const mockApi: DevboardApi = {
     const detail = {
       ...project,
       repositories: [],
-      kickstart: buildKickstart("awaiting_repository_declaration"),
+      kickstart: { ...buildKickstart("awaiting_repository_declaration"), operational_status: project.operational_status },
       policy: {
         code_write_allowed: true,
         destructive_scans_allowed: false,
@@ -2464,11 +2485,22 @@ export const mockApi: DevboardApi = {
       },
     };
     const repositories = [...detail.repositories, repository];
+    const operationalStatus = detail.operational_status
+      ? {
+          ...detail.operational_status,
+          workspace: {
+            ...detail.operational_status.workspace,
+            repository_count: repositories.length,
+            reason: "No workspace is linked to this project yet.",
+          },
+        }
+      : undefined;
     const nextDetail = {
       ...detail,
       repositories,
       repository_count: repositories.length,
-      kickstart: buildKickstart("awaiting_local_workspace_link"),
+      operational_status: operationalStatus,
+      kickstart: { ...buildKickstart("awaiting_local_workspace_link"), operational_status: operationalStatus },
       updated_at: now,
     };
 
@@ -2480,6 +2512,7 @@ export const mockApi: DevboardApi = {
           genesis_status: "not_started" as const,
           delta_status: "not_started" as const,
           graph_status: "not_started" as const,
+          operational_status: operationalStatus,
           updated_at: now,
         }
       : project);
@@ -2574,23 +2607,21 @@ export const mockApi: DevboardApi = {
     await delay(240);
     requireProject(projectId);
     if (!input.slug) throw { message: "Slug is required." };
-    if (input.source_status === "verified_from_code" && (!input.evidence_refs || input.evidence_refs.length === 0)) {
-      throw { message: "verified_from_code wiki pages require evidence." };
-    }
     const existing = Object.values(WIKI).find((page) => page.project_id === projectId && page.id === input.slug);
     if (existing) throw { message: "Wiki page already exists." };
 
     const id = `wiki-${slugify(input.slug)}-${Date.now()}`;
-    const evidence = evidenceFromRefs(input.evidence_refs, input.source_status);
+    const sourceStatus = "needs_verification" as const;
+    const evidence = evidenceFromRefs(input.evidence_refs, sourceStatus);
     const page: WikiPageDetail = {
       id,
       title: input.title,
       project_id: projectId,
       category: input.page_type,
-      source_status: input.source_status,
+      source_status: sourceStatus,
       has_evidence: evidence.length > 0,
       updated_at: new Date().toISOString(),
-      source: wikiSource(input.source_status, id),
+      source: wikiSource(sourceStatus, id),
       body_markdown: input.content_markdown,
       evidence,
       related_run_ids: [],
@@ -2606,18 +2637,16 @@ export const mockApi: DevboardApi = {
     const page = WIKI[pageId];
     if (!page) throw { message: "Wiki page not found." };
     if (projectId && page.project_id !== projectId) throw { message: "Wiki page not found." };
-    if (input.source_status === "verified_from_code" && (!input.evidence_refs || input.evidence_refs.length === 0) && page.evidence.length === 0) {
-      throw { message: "verified_from_code wiki pages require evidence." };
-    }
-    const evidence = input.evidence_refs ? evidenceFromRefs(input.evidence_refs, input.source_status) : page.evidence;
+    const sourceStatus = "needs_verification" as const;
+    const evidence = input.evidence_refs ? evidenceFromRefs(input.evidence_refs, sourceStatus) : page.evidence;
     const next: WikiPageDetail = {
       ...page,
       title: input.title,
       category: input.page_type,
-      source_status: input.source_status,
+      source_status: sourceStatus,
       has_evidence: evidence.length > 0,
       updated_at: new Date().toISOString(),
-      source: wikiSource(input.source_status, pageId),
+      source: wikiSource(sourceStatus, pageId),
       body_markdown: input.content_markdown,
       evidence,
     };

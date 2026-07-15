@@ -232,7 +232,7 @@ describe("GraphExplorer", () => {
     });
     const symbolPanel = () => Array.from(container.querySelectorAll("section")).find((section) => section.querySelector("h2")?.textContent === "Symbol");
     expect(symbolPanel()?.textContent).toContain("Symbol B");
-    expect(symbolPanel()?.textContent).toContain("opaque handle: opaque-b");
+    expect(symbolPanel()?.textContent).toContain("Symbol B");
     await act(async () => {
       pending.get("opaque-a")?.forEach((operation, index) => operation.resolve(index === 0
         ? detailEnvelope("opaque-a", "Symbol A")
@@ -240,8 +240,8 @@ describe("GraphExplorer", () => {
       await Promise.resolve();
     });
     expect(symbolPanel()?.textContent).toContain("Symbol B");
-    expect(symbolPanel()?.textContent).toContain("opaque handle: opaque-b");
-    expect(symbolPanel()?.textContent).not.toContain("opaque handle: opaque-a");
+    expect(symbolPanel()?.textContent).toContain("Symbol B");
+    expect(symbolPanel()?.textContent).not.toContain("Symbol A");
   });
 
   it("ignores stale search completion after a newer query", async () => {
@@ -358,6 +358,42 @@ describe("GraphExplorer", () => {
     expect(container.textContent).toContain("impact projection");
     expect(container.textContent).toContain("impact-ready");
     expect(container.textContent).toContain("impact-partial");
+  });
+
+  it("shows safe public evidence and truthful completeness for symbol details", async () => {
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => {
+      if (request.type === "search") return Promise.resolve(envelope("search", {
+        items: [node(handles.invoice, "InvoiceService", {
+          match_type: "exact_symbol_name",
+          match_reason: "Exact symbol name",
+          source_file: "app/Services/InvoiceService.php",
+          line_start: 42,
+          namespace: "App\\Services",
+        })], returned: 1,
+      }));
+      if (request.type === "detail") return Promise.resolve(detailEnvelope(handles.invoice, "InvoiceService", {
+        node: node(handles.invoice, "InvoiceService", {
+          source_file: "app/Services/InvoiceService.php", line_start: 42, line_end: 88, namespace: "App\\Services",
+        }),
+      }));
+      if (request.type === "neighborhood" && request.direction === "in") return Promise.resolve(envelope("neighborhood", { items: [], completeness: "verified_none" }));
+      if (request.type === "neighborhood") return Promise.resolve(envelope("neighborhood", { items: [], completeness: "partial", reason: null }));
+      if (request.type === "impact") return Promise.resolve(envelope("impact", { items: [], completeness: "partial" }));
+      return Promise.resolve(envelope(request.type));
+    });
+    await mount(queryGraph);
+    const select = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { select.value = "workspace_binding:binding-2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "InvoiceService"); });
+    await settle(300);
+    expect(container.textContent).toContain("Exact symbol name");
+    expect(container.textContent).toContain("app/Services/InvoiceService.php:42");
+    await act(async () => { button("InvoiceService").click(); });
+    await settle();
+    expect(container.textContent).toContain("App\\Services");
+    expect(container.textContent).toContain("verified none");
+    expect(container.textContent).toContain("partial");
+    expect(container.textContent).not.toContain("/home/");
   });
 
   it("renders multi-family impact rows with the same handle without duplicate-key warnings", async () => {

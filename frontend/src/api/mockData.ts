@@ -269,6 +269,35 @@ export const PROJECTS: Project[] = [
   },
 ];
 
+PROJECTS.forEach((project) => {
+  const linkedCount = REPOSITORIES
+    .filter((repository) => repository.project_id === project.id)
+    .filter((repository) => repository.local_workspace?.status === "linked")
+    .length;
+  const graphReady = project.graph_status === "complete";
+  project.operational_status = {
+    source: "mock_canonical_graph_projection",
+    graph: {
+      status: graphReady ? "ready" : project.graph_status === "stale" ? "partial" : "not_ready",
+      canonical: graphReady,
+      scope_type: "workspace_binding",
+      scope_id: `mock-scope-${project.id}`,
+      quality: graphReady ? "complete" : "partial",
+      node_count: graphReady ? 10 : 0,
+      relationship_count: graphReady ? 12 : 0,
+      reason: graphReady ? "Canonical graph projection is ready." : "The canonical graph projection is not ready for this project.",
+    },
+    workspace: {
+      status: linkedCount === 0 ? "missing" : linkedCount < project.repository_count ? "partial" : "linked",
+      linked_count: linkedCount,
+      repository_count: project.repository_count,
+      reason: linkedCount === 0 ? "No workspace is linked to this project yet." : "A workspace is linked to this project.",
+    },
+    genesis: { status: project.genesis_status, reason: project.genesis_status === "complete" ? "Genesis analysis is complete." : "Genesis analysis has not completed yet." },
+    artifacts: { status: project.genesis_status === "complete" ? "available" : "empty", legacy_count: 0, reason: project.genesis_status === "complete" ? "Canonical graph artifacts are available." : "No graph artifacts are available yet." },
+  };
+});
+
 export const PROJECT_DETAILS: Record<string, ProjectDetail> = {
   "proj-core": {
     ...PROJECTS[0],
@@ -304,6 +333,12 @@ export const PROJECT_DETAILS: Record<string, ProjectDetail> = {
     latest_artifact_ids: ["art-5006"],
   },
 };
+
+Object.values(PROJECT_DETAILS).forEach((detail) => {
+  if (detail.kickstart && detail.operational_status) {
+    detail.kickstart.operational_status = detail.operational_status;
+  }
+});
 
 // ---------------- Kanban ----------------
 
@@ -700,7 +735,16 @@ WIKI_BASE.forEach((w) => { WIKI[w.id] = w; });
 export function wikiSummaries(): WikiPageSummary[] {
   return Object.values(WIKI).map((w) => {
     const { body_markdown, evidence, related_run_ids, related_node_ids, ...s } = w;
-    return s;
+    return {
+      ...s,
+      page_type: w.category.toLocaleLowerCase(),
+      audience: w.category.toLocaleLowerCase() === "technical"
+        ? "engineering"
+        : w.category.toLocaleLowerCase() === "runbook"
+          ? "operations"
+          : "mixed",
+      source_type: w.source.type,
+    };
   });
 }
 

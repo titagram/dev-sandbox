@@ -185,6 +185,7 @@ export interface ProjectKickstart {
   state: ProjectKickstartState;
   steps: ProjectKickstartStep[];
   pairing: ProjectKickstartPairing;
+  operational_status?: ProjectOperationalStatus;
 }
 
 export type AssistantSuggestionStatus =
@@ -417,6 +418,29 @@ export interface Project {
   archived_at: string | null;
   deleted_at: string | null;
   restored_at: string | null;
+  operational_status?: ProjectOperationalStatus;
+}
+
+export interface ProjectOperationalStatus {
+  source: string;
+  graph: {
+    status: "ready" | "not_ready" | "partial" | "not_indexed";
+    canonical: boolean;
+    scope_type?: string | null;
+    scope_id?: string | null;
+    quality?: string | null;
+    node_count?: number | null;
+    relationship_count?: number | null;
+    reason: string;
+  };
+  workspace: {
+    status: "linked" | "partial" | "missing";
+    linked_count: number;
+    repository_count: number;
+    reason: string;
+  };
+  genesis: { status: PipelineStatus; reason: string };
+  artifacts: { status: "available" | "empty"; legacy_count: number; reason: string };
 }
 
 export interface ProjectDetail extends Project {
@@ -528,7 +552,7 @@ export interface TaskCard {
   wiki_page_id: string | null;
   attachment_count: number;
   image_attachment_count: number;
-  source_status: SourceStatus;
+  source_status?: SourceStatus;
   blocked: boolean;
   blocked_reason?: string;
   updated_at: string;
@@ -914,10 +938,15 @@ export interface WikiPageSummary {
   title: string;
   project_id: string;
   category: string;
+  /** Canonical page type returned by the dashboard API; category remains for compatibility. */
+  page_type?: string;
+  /** Server-derived audience facet for index filtering. */
+  audience?: "business" | "engineering" | "operations" | "mixed" | string;
   source_status: SourceStatus;
   has_evidence: boolean;
   updated_at: string;
   source: SourceMeta;
+  source_type?: SourceType;
 }
 
 export interface WikiEvidence {
@@ -940,7 +969,7 @@ export interface WikiPageWriteInput {
   slug?: string;
   title: string;
   page_type: "business" | "technical" | "runbook" | "audit";
-  source_status: SourceStatus;
+  source_status?: SourceStatus;
   content_markdown: string;
   evidence_refs?: Record<string, unknown>[];
 }
@@ -1085,6 +1114,12 @@ export interface DashboardGraphNode {
   family?: DashboardGraphFamily;
   edge_types?: string[];
   why?: string;
+  source_file?: string;
+  line_start?: number;
+  line_end?: number;
+  namespace?: string;
+  match_type?: "exact_symbol_name" | "exact_route_path" | "token_match" | "fuzzy" | "direct_lookup" | "relationship" | string;
+  match_reason?: string;
 }
 
 export interface DashboardGraphEdge {
@@ -1145,6 +1180,7 @@ export interface DashboardGraphResponseEnvelope<
   query_type: TQueryType;
   found: boolean;
   reason: string | null;
+  completeness?: "complete" | "verified_none" | "partial" | "not_indexed";
   scope: GraphSourceScope | null;
   projection: DashboardGraphProjection;
   node: DashboardGraphNode | null;

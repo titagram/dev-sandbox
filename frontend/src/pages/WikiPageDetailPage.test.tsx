@@ -97,6 +97,7 @@ const hostileMarkdown = [
   "- A **safe bold item**",
   "Normal **safe bold text**.",
   "> Safe quote",
+  "",
   "<img src=x onerror=\"globalThis.__wikiXss = true\">",
   "<svg onload=\"globalThis.__wikiXss = true\"><circle /></svg>",
   "<scr<script>ipt>globalThis.__wikiXss = true</scr</script>ipt>",
@@ -166,7 +167,7 @@ describe("WikiPageDetailPage Markdown rendering", () => {
     await settle();
 
     expect(container.querySelector("h3")?.textContent).toBe("Safe heading");
-    expect(container.querySelector("blockquote")?.textContent).toBe("Safe quote");
+    expect(container.querySelector("blockquote")?.textContent?.trim()).toBe("Safe quote");
     expect(Array.from(container.querySelectorAll("strong")).map((node) => node.textContent)).toEqual([
       "safe bold item",
       "safe bold text",
@@ -178,5 +179,51 @@ describe("WikiPageDetailPage Markdown rendering", () => {
 
     const textarea = container.querySelector("[data-testid='wiki-edit-markdown']") as HTMLTextAreaElement;
     expect(textarea.value).toBe(hostileMarkdown);
+    expect(container.querySelector("[data-testid='wiki-edit-source-status']")).toBeNull();
+  });
+
+  it("renders GFM blocks, sanitizes unsafe URLs, and avoids duplicating the page heading", async () => {
+    const gfmPage = {
+      ...page,
+      title: "Security notes",
+      body_markdown: [
+        "# Security notes",
+        "",
+        "- one",
+        "- two",
+        "",
+        "> quoted",
+        "",
+        "\`inline()\`",
+        "",
+        "\`\`\`ts",
+        "const safe = true;",
+        "\`\`\`",
+        "",
+        "| Field | Value |",
+        "| --- | --- |",
+        "| status | safe |",
+        "",
+        "[safe link](https://example.com)",
+        "[unsafe link](javascript:alert(1))",
+      ].join("\n"),
+    };
+    (api.getWikiPage as any).mockResolvedValue(gfmPage);
+
+    await act(async () => { root.render(<WikiPageDetailPage />); });
+    await settle();
+    await settle();
+
+    const content = Array.from(container.querySelectorAll("section"))
+      .find((section) => section.querySelector("h2")?.textContent === "Content");
+    expect(content?.querySelectorAll("h1")).toHaveLength(0);
+    expect(container.querySelectorAll("h1")).toHaveLength(1);
+    expect(content?.querySelector("ul li")?.textContent).toBe("one");
+    expect(content?.querySelector("blockquote")?.textContent?.trim()).toBe("quoted");
+    expect(content?.querySelector("code")?.textContent).toContain("inline()");
+    expect(content?.querySelector("pre code")?.textContent).toContain("const safe = true;");
+    expect(content?.querySelector("table tbody tr td")?.textContent).toBe("status");
+    expect(content?.querySelector("a[href='https://example.com']")?.textContent).toBe("safe link");
+    expect(content?.querySelector("a[href^='javascript:']")).toBeNull();
   });
 });

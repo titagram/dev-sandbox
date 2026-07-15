@@ -13,9 +13,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { relativeTime, titleCase, formatBytes } from "@/lib/format";
 import {
   BookText, Bot, CheckCircle2, ChevronLeft, CircleAlert, CircleDot, GitBranch, HardDrive, KanbanSquare,
-  Loader2, Package, PlayCircle, Plus, ShieldCheck, ShieldOff,
+  Loader2, Network, Package, PlayCircle, Plus, ShieldCheck, ShieldOff,
 } from "lucide-react";
-import { AssistantSuggestion, BacklogTriagePayload, LocalWorkspace, ProjectDetail, ProjectKickstart, ProjectKickstartStepStatus, RepositoryDeclarationInput } from "@/types/devboard";
+import { AssistantSuggestion, BacklogTriagePayload, LocalWorkspace, ProjectDetail, ProjectKickstartStepStatus, RepositoryDeclarationInput } from "@/types/devboard";
 import { toast } from "sonner";
 
 const PolicyRow = ({ label, value, good }: { label: string; value: string; good?: boolean }) => (
@@ -28,8 +28,8 @@ const PolicyRow = ({ label, value, good }: { label: string; value: string; good?
 const KICKSTART_STEP_LABELS: Record<string, string> = {
   project_intake: "Project intake",
   repository_declaration: "Repository declaration",
-  local_workspace_link: "Local workspace link",
-  genesis: "Genesis",
+  local_workspace_link: "Workspace link",
+  genesis: "Genesis analysis",
   knowledge_review: "Knowledge review",
 };
 
@@ -93,49 +93,19 @@ const listFromText = (value: string): string[] =>
     .map((item) => item.trim())
     .filter(Boolean);
 
-function kickstartForState(state: ProjectKickstart["state"]): ProjectKickstart {
-  const currentIndexByState: Record<ProjectKickstart["state"], number> = {
-    draft: 0,
-    awaiting_project_intake: 0,
-    awaiting_repository_declaration: 1,
-    awaiting_local_workspace_link: 2,
-    awaiting_genesis: 3,
-    analyzing: 3,
-    knowledge_review: 4,
-    active: KICKSTART_STEPS.length,
-  };
-  const currentIndex = currentIndexByState[state];
-
-  return {
-    state,
-    pairing: { api_base: "" },
-    steps: KICKSTART_STEPS.map((key, index) => ({
-      key,
-      status: index < currentIndex ? "complete" : index === currentIndex ? "current" : "pending",
-    })),
-  };
-}
-
-function resolveKickstart(project: ProjectDetail): ProjectKickstart {
-  if (project.kickstart) return project.kickstart;
-  if (project.repository_count === 0) return kickstartForState("awaiting_repository_declaration");
-  if (project.repositories.some((repository) => (repository.local_workspace?.status || "missing") !== "linked")) {
-    return kickstartForState("awaiting_local_workspace_link");
-  }
-  if (project.genesis_status !== "complete") return kickstartForState("awaiting_genesis");
-  return kickstartForState("active");
-}
-
 function workspaceForRepository(repository: ProjectDetail["repositories"][number]): LocalWorkspace {
-  return repository.local_workspace || {
-    status: repository.last_local_snapshot ? "linked" : "missing",
-    last_seen_at: repository.last_local_snapshot,
-  };
+  return repository.local_workspace || { status: "unknown" };
 }
 
 function KickstartPanel({ project }: { project: ProjectDetail }) {
-  const kickstart = resolveKickstart(project);
-  const linked = project.repositories.filter((repository) => workspaceForRepository(repository).status === "linked").length;
+  const kickstart = project.kickstart;
+  const operational = project.operational_status;
+
+  if (!kickstart || !operational) {
+    return <Panel title="Kickstart" action={<Pill tone="slate">Status unavailable</Pill>}>
+      <p className="text-sm text-muted-foreground">The backend has not supplied the project operational status yet.</p>
+    </Panel>;
+  }
 
   return (
     <Panel
@@ -156,8 +126,9 @@ function KickstartPanel({ project }: { project: ProjectDetail }) {
         })}
       </div>
       <div className="mt-3 grid gap-x-6 divide-y divide-border/60 sm:grid-cols-2 sm:divide-y-0">
-        <PolicyRow label="Repositories linked" value={`${linked} / ${project.repositories.length}`} />
-        <PolicyRow label="Pairing API base" value={kickstart.pairing?.api_base || "—"} />
+        <PolicyRow label="Workspace links" value={`${operational.workspace.linked_count} / ${operational.workspace.repository_count}`} />
+        <PolicyRow label="Workspace link" value={operational.workspace.reason} />
+        <PolicyRow label="Genesis analysis" value={operational.genesis.reason} />
       </div>
     </Panel>
   );
@@ -170,7 +141,7 @@ function WorkspaceSummary({ workspace }: { workspace: LocalWorkspace }) {
   return (
     <div className="min-w-0 space-y-1">
       <Pill tone={tone as any} icon={HardDrive}>{titleCase(status)}</Pill>
-      {status !== "missing" && (
+      {status !== "missing" && status !== "unknown" && (
         <div className="space-y-0.5 text-[11px] text-muted-foreground">
           <div className="max-w-[260px] truncate font-mono">{workspace.display_path || "—"}</div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -400,8 +371,8 @@ export default function ProjectDetailPage() {
       <DataState state={state}>
         {(p) => (
           <>
-            <PageHeader
-              title={<span className="flex items-center gap-2"><span className="font-mono text-sm text-muted-foreground">{p.key}</span>{p.name}</span>}
+              <PageHeader
+              title={<span className="flex min-w-0 flex-wrap items-center gap-2"><span className="max-w-full break-all font-mono text-sm text-muted-foreground" title={p.key}>{p.key}</span><span className="min-w-0">{p.name}</span></span>}
               subtitle={p.description}
               meta={<div className="flex flex-wrap items-center gap-1.5"><RiskBadge level={p.risk_level} /><Pill tone="slate">Owner: {p.owner}</Pill><span className="text-xs text-muted-foreground">Updated {relativeTime(p.updated_at)}</span></div>}
               actions={
@@ -409,6 +380,7 @@ export default function ProjectDetailPage() {
                   <Button size="sm" variant="outline" asChild><Link to={`/projects/${p.id}/kanban`} data-testid="project-open-kanban"><KanbanSquare className="mr-1.5 h-3.5 w-3.5" />Kanban</Link></Button>
                   <Button size="sm" variant="outline" asChild><Link to={`/projects/${p.id}/runs`} data-testid="project-open-runs"><PlayCircle className="mr-1.5 h-3.5 w-3.5" />Runs</Link></Button>
                   <Button size="sm" variant="outline" asChild><Link to={`/projects/${p.id}/wiki`} data-testid="project-open-wiki"><BookText className="mr-1.5 h-3.5 w-3.5" />Wiki</Link></Button>
+                  <Button size="sm" variant="outline" asChild><Link to={`/projects/${encodeURIComponent(p.id)}/graph`} data-testid="project-open-graph"><Network className="mr-1.5 h-3.5 w-3.5" />Graph</Link></Button>
                   <Button size="sm" variant="outline" asChild><Link to={`/projects/${p.id}/artifacts`} data-testid="project-open-artifacts"><Package className="mr-1.5 h-3.5 w-3.5" />Artifacts</Link></Button>
                 </>
               }
@@ -417,8 +389,8 @@ export default function ProjectDetailPage() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
               <MetricCard label="Repositories" value={p.repository_count} />
               <MetricCard label="Open tasks" value={p.open_tasks} />
-              <div className="rounded-md border border-border bg-card px-3.5 py-3"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Genesis</p><div className="mt-1.5"><PipelineBadge status={p.genesis_status} /></div></div>
-              <div className="rounded-md border border-border bg-card px-3.5 py-3"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Graph import</p><div className="mt-1.5"><PipelineBadge status={p.graph_status} /></div></div>
+              <div className="rounded-md border border-border bg-card px-3.5 py-3"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Genesis analysis</p><div className="mt-1.5"><PipelineBadge status={p.operational_status?.genesis.status || "not_started"} /></div></div>
+              <div className="rounded-md border border-border bg-card px-3.5 py-3"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Canonical graph</p><div className="mt-1.5"><Pill tone={p.operational_status?.graph.status === "ready" ? "green" : p.operational_status?.graph.status === "partial" ? "amber" : "slate"}>{titleCase(p.operational_status?.graph.status || "status unavailable")}</Pill></div></div>
               <div className="rounded-md border border-border bg-card px-3.5 py-3"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Wiki freshness</p><div className="mt-1.5"><PipelineBadge status={p.wiki_freshness} /></div></div>
             </div>
 
@@ -512,7 +484,10 @@ export default function ProjectDetailPage() {
                 <DataState state={artifactsState} loadingRows={3}>
                   {(arts) => {
                     const list = arts.slice(0, 5);
-                    if (!list.length) return <p className="text-sm text-muted-foreground">No artifacts.</p>;
+                    if (!list.length) return <div className="space-y-1 text-sm text-muted-foreground">
+                      <p>{p.operational_status?.artifacts.status === "available" ? "Canonical graph artifacts are available; no legacy artifact rows were returned." : "No artifacts are available yet."}</p>
+                      {p.operational_status?.artifacts.reason && <p className="text-xs">{p.operational_status.artifacts.reason}</p>}
+                    </div>;
                     return (
                       <ul className="space-y-2">
                         {list.map((a) => (

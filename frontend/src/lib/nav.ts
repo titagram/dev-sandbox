@@ -33,7 +33,7 @@ export const NAV_ITEMS: NavItem[] = [
 
   { key: "overview", label: "Overview", path: "/overview", icon: LayoutDashboard, roles: ["admin", "pm", "developer", "sysadmin"], hidden: true },
   { key: "runs", label: "Runs", path: "/runs", icon: PlayCircle, roles: ["admin", "pm", "developer", "sysadmin"], hidden: true },
-  { key: "graph", label: "Graph", path: "/graph", icon: Network, roles: ["admin", "pm", "developer"], hidden: true },
+  { key: "graph", label: "Graph", path: "/graph", icon: Network, roles: ["admin", "pm", "developer"] },
   { key: "artifacts", label: "Artifacts", path: "/artifacts", icon: Package, roles: ["admin", "pm", "developer", "sysadmin"], hidden: true },
   { key: "quality", label: "Quality", path: "/quality", icon: ShieldCheck, roles: ["admin", "sysadmin"], readOnlyRoles: ["developer"], hidden: true },
   { key: "agent-work", label: "Agent Work", path: "/agent-work", icon: Workflow, roles: ["admin", "pm", "developer"], readOnlyRoles: ["sysadmin"], hidden: true },

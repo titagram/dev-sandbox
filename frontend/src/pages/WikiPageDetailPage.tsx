@@ -15,13 +15,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { relativeTime, titleCase } from "@/lib/format";
+import { relativeTime } from "@/lib/format";
 import { ChevronLeft, Code2, Edit3, Loader2, PlayCircle, Package, PenLine, Network } from "lucide-react";
-import { Role, SourceStatus, WikiPageDetail, WikiPageWriteInput } from "@/types/devboard";
+import ReactMarkdown from "react-markdown";
+import rehypeSanitize from "rehype-sanitize";
+import remarkGfm from "remark-gfm";
+import { Role, WikiPageDetail, WikiPageWriteInput } from "@/types/devboard";
 
 const EV_ICON = { code_ref: Code2, run_ref: PlayCircle, artifact_ref: Package, manual_note: PenLine } as const;
 const PAGE_TYPES: WikiPageWriteInput["page_type"][] = ["business", "technical", "runbook", "audit"];
-const EDITABLE_SOURCE_STATUSES: SourceStatus[] = ["developer_provided", "needs_verification", "ai_generated", "stale", "conflict_with_code"];
 
 function canMutateRole(role: Role | null | undefined): boolean {
   return role === "admin" || role === "pm" || role === "developer";
@@ -31,27 +33,42 @@ function normalizePageType(value: string): WikiPageWriteInput["page_type"] {
   return PAGE_TYPES.includes(value as WikiPageWriteInput["page_type"]) ? value as WikiPageWriteInput["page_type"] : "technical";
 }
 
-function inlineMarkdown(src: string, strongClassName?: string): React.ReactNode[] {
-  return src.split(/(\*\*.+?\*\*)/g).map((part, index) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={index} className={strongClassName}>{part.slice(2, -2)}</strong>;
-    }
-
-    return part;
-  });
+function headingText(children: React.ReactNode): string {
+  return React.Children.toArray(children)
+    .map((child) => typeof child === "string" || typeof child === "number" ? String(child) : "")
+    .join("");
 }
 
-function Markdown({ src }: { src: string }) {
-  const lines = src.split("\n");
+function escapeRawHtml(src: string): string {
+  return src.replace(/<\/?[A-Za-z][^>]*>/g, (tag) => tag.replaceAll("<", "&lt;").replaceAll(">", "&gt;"));
+}
+
+function Markdown({ src, title }: { src: string; title: string }) {
+  let firstHeadingSeen = false;
+  const normalizedTitle = title.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+
   return (
-    <div className="space-y-2 text-sm leading-relaxed">
-      {lines.map((ln, i) => {
-        if (!ln.trim()) return <div key={i} className="h-1" />;
-        if (ln.startsWith("## ")) return <h3 key={i} className="text-base font-semibold">{ln.slice(3)}</h3>;
-        if (ln.startsWith("> ")) return <blockquote key={i} className="border-l-2 border-amber-500/50 bg-amber-500/5 py-1.5 pl-3 text-amber-700 dark:text-amber-300">{ln.slice(2)}</blockquote>;
-        if (ln.startsWith("- ")) return <p key={i} className="flex gap-2 pl-1 text-muted-foreground"><span className="text-primary">•</span><span>{inlineMarkdown(ln.slice(2))}</span></p>;
-        return <p key={i} className="text-muted-foreground">{inlineMarkdown(ln, "text-foreground")}</p>;
-      })}
+    <div className="space-y-3 text-sm leading-relaxed text-muted-foreground">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[[rehypeSanitize, { protocols: { href: ["http", "https", "mailto"], src: [] } }]]}
+        components={{
+          h1: ({ children }) => {
+            const text = headingText(children).trim().replace(/\s+/g, " ").toLocaleLowerCase();
+            const duplicate = !firstHeadingSeen && text === normalizedTitle;
+            firstHeadingSeen = true;
+            return duplicate ? null : <h1 className="text-xl font-semibold text-foreground">{children}</h1>;
+          },
+          h2: ({ children }) => <h3 className="text-lg font-semibold text-foreground">{children}</h3>,
+          h3: ({ children }) => <h4 className="text-base font-semibold text-foreground">{children}</h4>,
+          blockquote: ({ children }) => <blockquote className="border-l-2 border-amber-500/50 bg-amber-500/5 py-1.5 pl-3 text-amber-700 dark:text-amber-300">{children}</blockquote>,
+          code: ({ className, children, ...props }) => <code className={className || "rounded bg-muted px-1 py-0.5 text-xs text-foreground"} {...props}>{children}</code>,
+          pre: ({ children }) => <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs text-foreground">{children}</pre>,
+          a: ({ children, ...props }) => <a className="text-primary underline underline-offset-2" rel="noreferrer" target="_blank" {...props}>{children}</a>,
+        }}
+      >
+        {escapeRawHtml(src)}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -68,7 +85,6 @@ function EditWikiPageDialog({
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(page.title);
   const [pageType, setPageType] = useState<WikiPageWriteInput["page_type"]>(normalizePageType(page.category));
-  const [sourceStatus, setSourceStatus] = useState<SourceStatus>(page.source_status === "verified_from_code" ? "developer_provided" : page.source_status);
   const [content, setContent] = useState(page.body_markdown);
   const [saving, setSaving] = useState(false);
 
@@ -76,7 +92,6 @@ function EditWikiPageDialog({
     if (!open) return;
     setTitle(page.title);
     setPageType(normalizePageType(page.category));
-    setSourceStatus(page.source_status === "verified_from_code" ? "developer_provided" : page.source_status);
     setContent(page.body_markdown);
   }, [open, page]);
 
@@ -104,7 +119,6 @@ function EditWikiPageDialog({
       await api.updateWikiPage(page.id, {
         title: nextTitle,
         page_type: pageType,
-        source_status: sourceStatus,
         content_markdown: nextContent,
       }, projectId);
       toast.success("Wiki page updated");
@@ -127,7 +141,7 @@ function EditWikiPageDialog({
         <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
             <DialogTitle>Edit wiki page</DialogTitle>
-            <DialogDescription>Update the title, status, and Markdown body.</DialogDescription>
+            <DialogDescription>Update the title, page type, and raw Markdown body. Manual edits enter the verification queue.</DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-3 md:grid-cols-2">
@@ -142,16 +156,6 @@ function EditWikiPageDialog({
                 <SelectContent>{PAGE_TYPES.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label className="text-xs">Source status</Label>
-            <Select value={sourceStatus} onValueChange={(value) => setSourceStatus(value as SourceStatus)} disabled={saving}>
-              <SelectTrigger data-testid="wiki-edit-source-status"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {EDITABLE_SOURCE_STATUSES.map((value) => <SelectItem key={value} value={value}>{value.replace(/_/g, " ")}</SelectItem>)}
-              </SelectContent>
-            </Select>
           </div>
 
           <div className="space-y-1.5">
@@ -212,7 +216,7 @@ export default function WikiPageDetailPage() {
             )}
 
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              <Panel title="Content" className="lg:col-span-2"><Markdown src={p.body_markdown} /></Panel>
+              <Panel title="Content" className="lg:col-span-2"><Markdown src={p.body_markdown} title={p.title} /></Panel>
 
               <div className="space-y-4">
                 <Panel title="Source"><SourceMetaInline source={p.source} /></Panel>

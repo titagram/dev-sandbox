@@ -972,7 +972,7 @@ export default function ProjectMemoryPage() {
       <PageHeader
         title="Memory"
         subtitle="Project decisions, handoffs, verification notes, and agent findings."
-        meta={<Link to={`/projects/${projectId}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5" />Project {projectId}</Link>}
+        meta={<Link to={`/projects/${encodeURIComponent(projectId)}`} title={`Project ${projectId}`} className="inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5 shrink-0" /><span className="break-all">Project {projectId}</span></Link>}
         actions={
           <>
             <ProjectDetailStatus loading={projectState.loading && !matchedProject} error={projectState.error} stale={projectStale} />
@@ -1034,14 +1034,12 @@ export default function ProjectMemoryPage() {
                 />
               </div>
 
-              <MemoryImportPanel projectId={projectId} canImport={canAdd} />
-
               {recentCreatedEntry && (
                 <div className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/20 px-3 py-2.5" data-testid="recent-memory-entry">
                   <Pill tone="green">Added</Pill>
                   <Pill tone={SOURCE_TONE[recentCreatedEntry.source] || "slate"}>{memorySourceLabel(recentCreatedEntry.source)}</Pill>
                   <span className="min-w-0 flex-1 truncate text-sm">{recentCreatedEntry.summary}</span>
-                  <span className="font-mono text-xs text-muted-foreground">{recentCreatedEntry.id}</span>
+                  <span className="max-w-full break-all font-mono text-xs text-muted-foreground" title={recentCreatedEntry.id}>{recentCreatedEntry.id}</span>
                 </div>
               )}
 
@@ -1120,6 +1118,13 @@ export default function ProjectMemoryPage() {
                   </table>
                 </div>
               </Panel>
+
+              <details className="rounded-md border border-border bg-card" data-testid="advanced-memory-import">
+                <summary className="cursor-pointer list-inside px-4 py-3 text-sm font-medium text-foreground">Advanced import</summary>
+                <div className="border-t border-border">
+                  <MemoryImportPanel projectId={projectId} canImport={canAdd} />
+                </div>
+              </details>
             </>
           );
         }}

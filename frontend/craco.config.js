@@ -71,11 +71,18 @@ if (config.enableHealthCheck) {
 
 let webpackConfig = {
   jest: {
-    configure: {
+    configure: (jestConfig) => ({
+      ...jestConfig,
       moduleNameMapper: {
+        ...jestConfig.moduleNameMapper,
         "^@/(.*)$": "<rootDir>/src/$1",
+        "^unist-util-visit-parents/do-not-use-color$": "<rootDir>/node_modules/unist-util-visit-parents/lib/color.js",
+        "^#minpath$": "<rootDir>/node_modules/vfile/lib/minpath.js",
+        "^#minproc$": "<rootDir>/node_modules/vfile/lib/minproc.js",
+        "^#minurl$": "<rootDir>/node_modules/vfile/lib/minurl.js",
       },
-    },
+      transformIgnorePatterns: [],
+    }),
   },
   eslint: {
     configure: {

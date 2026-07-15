@@ -6,7 +6,7 @@ import { useApi } from "@/hooks/useApi";
 import { useAuth } from "@/context/AuthContext";
 import { PageHeader, Panel } from "@/components/devboard/Layout";
 import { DataState } from "@/components/devboard/DataState";
-import { SourceStatusBadge, SourceMetaInline, Pill } from "@/components/devboard/Badges";
+import { SourceStatusBadge, Pill } from "@/components/devboard/Badges";
 import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -16,20 +16,17 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { relativeTime } from "@/lib/format";
-import { BookPlus, BookText, Boxes, FileWarning, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
-import { Role, SourceStatus, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshScope } from "@/types/devboard";
+import { BookPlus, BookText, Boxes, FileWarning, CheckCircle2, Loader2, RefreshCw, Search } from "lucide-react";
+import { Role, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshScope } from "@/types/devboard";
 
 const ALL = "__all__";
 const NO_BINDING = "__no_binding__";
 const NO_REPOSITORY = "__no_repository__";
 const PAGE_TYPES: WikiPageWriteInput["page_type"][] = ["business", "technical", "runbook", "audit"];
-const MANUAL_SOURCE_STATUSES: SourceStatus[] = ["developer_provided", "needs_verification", "ai_generated", "stale", "conflict_with_code"];
-
 type WikiCreateForm = {
   slug: string;
   title: string;
   pageType: WikiPageWriteInput["page_type"];
-  sourceStatus: SourceStatus;
   content: string;
 };
 
@@ -37,7 +34,6 @@ const emptyWikiCreateForm: WikiCreateForm = {
   slug: "",
   title: "",
   pageType: "technical",
-  sourceStatus: "developer_provided",
   content: "",
 };
 
@@ -136,7 +132,6 @@ function CreateWikiPageDialog({
         slug,
         title,
         page_type: form.pageType,
-        source_status: form.sourceStatus,
         content_markdown: content,
       });
       toast.success(`Wiki page created: ${page.title}`);
@@ -159,7 +154,7 @@ function CreateWikiPageDialog({
         <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
             <DialogTitle>New wiki page</DialogTitle>
-            <DialogDescription>Create or paste a Markdown page for this project wiki.</DialogDescription>
+            <DialogDescription>Create or paste a Markdown page. Manual pages always enter the needs verification queue until code verification is completed.</DialogDescription>
           </DialogHeader>
 
           <div className="grid gap-3 md:grid-cols-2">
@@ -191,22 +186,13 @@ function CreateWikiPageDialog({
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-1">
             <div className="space-y-1.5">
               <Label className="text-xs">Page type</Label>
               <Select value={form.pageType} onValueChange={(value) => setForm((prev) => ({ ...prev, pageType: value as WikiCreateForm["pageType"] }))} disabled={saving}>
                 <SelectTrigger data-testid="wiki-page-type-select"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {PAGE_TYPES.map((pageType) => <SelectItem key={pageType} value={pageType}>{pageType}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Source status</Label>
-              <Select value={form.sourceStatus} onValueChange={(value) => setForm((prev) => ({ ...prev, sourceStatus: value as SourceStatus }))} disabled={saving}>
-                <SelectTrigger data-testid="wiki-source-status-select"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {MANUAL_SOURCE_STATUSES.map((sourceStatus) => <SelectItem key={sourceStatus} value={sourceStatus}>{sourceStatus.replace(/_/g, " ")}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -399,15 +385,19 @@ export default function WikiPage() {
   const { projectId } = useParams();
   const state = useApi(() => api.getWiki(projectId), [projectId]);
   const projectState = useApi(() => projectId ? api.getProject(projectId) : Promise.resolve(null), [projectId]);
-  const [status, setStatus] = useState(ALL);
+  const [query, setQuery] = useState("");
+  const [audience, setAudience] = useState(ALL);
+  const [pageType, setPageType] = useState(ALL);
+  const [sourceType, setSourceType] = useState(ALL);
+  const [verificationStatus, setVerificationStatus] = useState(ALL);
   const canCreate = Boolean(projectId && projectState.data?.status === "active" && canMutateRole(user?.role));
 
   return (
     <div className="space-y-4" data-testid="wiki-page">
       <PageHeader
         title="Wiki"
-        subtitle={projectId ? "Project-specific evidence pages. Other projects are excluded server-side." : "Evidence-backed pages. Source status reflects whether a page is verified from code, stale, or in conflict."}
-        meta={projectId && <Link to={`/projects/${projectId}`} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5" />Project {projectId}</Link>}
+        subtitle={projectId ? "Project-specific evidence pages. Other projects are excluded server-side." : "Evidence-backed pages. Verification status is assigned by the backend workflow."}
+        meta={projectId && <Link to={`/projects/${encodeURIComponent(projectId)}`} title={`Project ${projectId}`} className="inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5 shrink-0" /><span className="truncate">Project {projectId}</span></Link>}
         actions={canCreate && projectId ? <CreateWikiPageDialog projectId={projectId} onCreated={(page) => { state.reload(); nav(`/projects/${encodeURIComponent(projectId)}/wiki/${page.id}`); }} /> : undefined}
       />
 
@@ -415,34 +405,72 @@ export default function WikiPage() {
 
       <DataState state={state} isEmpty={(d) => d.length === 0}>
         {(pages) => {
-          const filtered = pages.filter((p) => status === ALL || p.source_status === status);
-          const cats = Array.from(new Set(filtered.map((p) => p.category)));
+          const audiences = Array.from(new Set(pages.map((p) => p.audience || "mixed"))).sort();
+          const pageTypes = Array.from(new Set(pages.map((p) => p.page_type || p.category))).sort();
+          const sources = Array.from(new Set(pages.map((p) => p.source_type || p.source.type))).sort();
+          const normalizedQuery = query.trim().toLocaleLowerCase();
+          const filtered = pages.filter((p) => {
+            const type = p.page_type || p.category;
+            const facetAudience = p.audience || "mixed";
+            const facetSource = p.source_type || p.source.type;
+            const searchable = [p.title, p.category, type, facetAudience, facetSource, p.source_status, p.source.origin].join(" ").toLocaleLowerCase();
+            return (!normalizedQuery || searchable.includes(normalizedQuery))
+              && (audience === ALL || facetAudience === audience)
+              && (pageType === ALL || type === pageType)
+              && (sourceType === ALL || facetSource === sourceType)
+              && (verificationStatus === ALL || p.source_status === verificationStatus);
+          });
+          const cats = Array.from(new Set(filtered.map((p) => p.page_type || p.category)));
+          const verificationQueueCount = pages.filter((p) => p.source_status === "needs_verification").length;
           return (
             <>
-              <div className="flex items-center gap-2">
-                <Select value={status} onValueChange={setStatus}>
-                  <SelectTrigger className="h-8 w-56 text-xs" data-testid="filter-source-status"><span className="text-muted-foreground">Source status:</span><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value={ALL}>All</SelectItem>{["verified_from_code", "developer_provided", "ai_generated", "needs_verification", "stale", "conflict_with_code"].map((s) => <SelectItem key={s} value={s}>{s.replace(/_/g, " ")}</SelectItem>)}</SelectContent>
+              <div className="flex flex-wrap items-center gap-2" aria-label="Wiki filters">
+                <div className="relative min-w-0 flex-1 sm:max-w-xs">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search wiki pages" className="h-8 pl-7 text-xs" data-testid="wiki-search-input" />
+                </div>
+                <Select value={audience} onValueChange={setAudience}>
+                  <SelectTrigger className="h-8 w-40 text-xs" data-testid="filter-audience"><span className="text-muted-foreground">Audience:</span><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value={ALL}>All</SelectItem>{audiences.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
                 </Select>
+                <Select value={pageType} onValueChange={setPageType}>
+                  <SelectTrigger className="h-8 w-40 text-xs" data-testid="filter-page-type"><span className="text-muted-foreground">Page type:</span><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value={ALL}>All</SelectItem>{pageTypes.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
+                </Select>
+                <Select value={verificationStatus} onValueChange={setVerificationStatus}>
+                  <SelectTrigger className="h-8 w-48 text-xs" data-testid="filter-source"><span className="text-muted-foreground">Verification:</span><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value={ALL}>All</SelectItem>{["verified_from_code", "developer_provided", "ai_generated", "needs_verification", "stale", "conflict_with_code"].map((value) => <SelectItem key={value} value={value}>{value.replace(/_/g, " ")}</SelectItem>)}</SelectContent>
+                </Select>
+                <Select value={sourceType} onValueChange={setSourceType}>
+                  <SelectTrigger className="h-8 w-40 text-xs" data-testid="filter-source-type"><span className="text-muted-foreground">Source:</span><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value={ALL}>All</SelectItem>{sources.map((value) => <SelectItem key={value} value={value}>{value.replace(/_/g, " ")}</SelectItem>)}</SelectContent>
+                </Select>
+                <span className="text-xs text-muted-foreground" data-testid="wiki-verification-queue">Verification queue: {verificationQueueCount}</span>
                 <span className="text-xs text-muted-foreground">{filtered.length} pages</span>
               </div>
+              {filtered.length === 0 && <div className="rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">No pages match these filters.</div>}
 
               {cats.map((cat) => (
                 <div key={cat}>
                   <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">{cat}</h3>
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-                    {filtered.filter((p) => p.category === cat).map((p) => (
+                    {filtered.filter((p) => (p.page_type || p.category) === cat).map((p) => {
+                      const type = p.page_type || p.category;
+                      const facetAudience = p.audience || "mixed";
+                      const facetSource = p.source_type || p.source.type;
+                      return (
                       <button key={p.id} onClick={() => nav(projectId ? `/projects/${encodeURIComponent(projectId)}/wiki/${p.id}` : `/wiki/${p.id}`)} data-testid={`wiki-card-${p.id}`}
-                        className="flex flex-col rounded-md border border-border bg-card p-3.5 text-left transition-colors hover:border-primary/50">
-                        <div className="flex items-start justify-between gap-2">
-                          <span className="flex items-center gap-2 text-sm font-semibold"><BookText className="h-4 w-4 text-muted-foreground" />{p.title}</span>
-                          {p.has_evidence ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" /> : <FileWarning className="h-4 w-4 shrink-0 text-amber-500" />}
+                        className="flex min-w-0 flex-col rounded-md border border-border bg-card p-3.5 text-left transition-colors hover:border-primary/50">
+                        <div className="flex min-w-0 items-start justify-between gap-2">
+                          <span className="flex min-w-0 items-center gap-2 text-sm font-semibold"><BookText className="h-4 w-4 shrink-0 text-muted-foreground" /><span className="truncate" title={p.title}>{p.title}</span></span>
+                          {p.has_evidence ? <CheckCircle2 aria-label="Has evidence" className="h-4 w-4 shrink-0 text-emerald-500" /> : <FileWarning aria-label="Needs evidence" className="h-4 w-4 shrink-0 text-amber-500" />}
                         </div>
-                        <div className="mt-2 flex items-center gap-1.5"><SourceStatusBadge status={p.source_status} />{!p.has_evidence && <Pill tone="amber">No evidence</Pill>}</div>
-                        <div className="mt-2.5 border-t border-border/60 pt-2"><SourceMetaInline source={p.source} /></div>
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5"><SourceStatusBadge status={p.source_status} /><Pill tone="slate">{facetAudience}</Pill>{!p.has_evidence && <Pill tone="amber">No evidence</Pill>}</div>
+                        <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/60 pt-2 text-[11px] text-muted-foreground"><span>{type}</span><span>·</span><span>{facetSource.replace(/_/g, " ")}</span></div>
                         <p className="mt-1 text-[11px] text-muted-foreground">Updated {relativeTime(p.updated_at)}</p>
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               ))}

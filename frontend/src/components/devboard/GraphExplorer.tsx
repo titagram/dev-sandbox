@@ -60,6 +60,25 @@ function nodeDisplayLabel(node: Pick<DashboardGraphNode, "label"> | null | undef
   return node?.label?.trim() || "Unresolved symbol";
 }
 
+function nodeEvidence(node: DashboardGraphNode | null | undefined): string[] {
+  if (!node) return [];
+  const location = node.source_file
+    ? `${node.source_file}${node.line_start ? `:${node.line_start}${node.line_end && node.line_end !== node.line_start ? `-${node.line_end}` : ""}` : ""}`
+    : null;
+  return [location, node.namespace].filter((value): value is string => Boolean(value));
+}
+
+function completenessLabel(value: DashboardGraphDataResponse["completeness"]): string | null {
+  return value ? value.replace(/_/g, " ") : null;
+}
+
+function emptyResultMessage(response: DashboardGraphDataResponse, subject: string): string {
+  if (response.completeness === "verified_none") return `Verified none: no ${subject} are indexed for this symbol.`;
+  if (response.completeness === "partial") return `No complete result: the indexed graph is partial, so ${subject} may be missing.`;
+  if (response.completeness === "not_indexed") return `Not indexed: ${subject} are not available for this scope.`;
+  return `No ${subject} found.`;
+}
+
 function scopeKey(scope: Pick<DashboardGraphScopeItem, "source_scope_type" | "source_scope_id">): string {
   return `${scope.source_scope_type}:${scope.source_scope_id}`;
 }
@@ -145,8 +164,9 @@ function NodeList({ title, response }: { title: string; response: DashboardGraph
             </li>
           ))}
         </ul>
-      ) : <p className="text-sm text-muted-foreground">No related symbols</p>}
+      ) : <p className="text-sm text-muted-foreground">{response ? emptyResultMessage(response, title.toLocaleLowerCase()) : "No response yet."}</p>}
       {responseStatus(response)}
+      {response?.completeness && <p className="mt-1 text-[11px] text-muted-foreground">Completeness: {completenessLabel(response.completeness)}</p>}
       {response && <p className="mt-2 text-[11px] text-muted-foreground">
         {response.source.type} · {response.source.status} · {response.source.origin}
         {` · projection ${response.projection.status}`}
@@ -475,9 +495,22 @@ function GraphExplorerSession({
       {search && (
         <Panel title="Search results">
           <CoverageNotice response={search} />
-          {search.items.length === 0 ? <p>{hasPartialCoverage(search) ? "No match in the indexed subset" : "No matching symbols"}</p> : (
-            <div className="flex flex-wrap gap-2">
-              {search.items.map((item) => <Button key={item.handle} variant="outline" onClick={() => void loadDetails(item.handle)}>{nodeDisplayLabel(item)}</Button>)}
+          {search.items.length === 0 ? <p>{search.reason === "exact_match_not_indexed_capacity"
+            ? "Exact match was omitted by the graph capacity. Narrow the scope or rebuild the projection before retrying."
+            : hasPartialCoverage(search)
+              ? "No match in the indexed subset; the graph is partial."
+              : emptyResultMessage(search, "matching symbols")}</p> : (
+            <div className="grid min-w-0 gap-2 md:grid-cols-2">
+              {search.items.map((item) => <div key={item.handle} className="min-w-0 rounded border border-border/60 p-2">
+                <Button className="w-full justify-start truncate" variant="outline" onClick={() => void loadDetails(item.handle)}>
+                  <span className="truncate" title={nodeDisplayLabel(item)}>{nodeDisplayLabel(item)}</span>
+                </Button>
+                <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                  <span>{item.kind}</span>
+                  {item.match_reason && <span>{item.match_reason}</span>}
+                  {nodeEvidence(item).map((value) => <span key={value} className="break-all">{value}</span>)}
+                </div>
+              </div>)}
             </div>
           )}
           {responseStatus(search)}
@@ -491,8 +524,12 @@ function GraphExplorerSession({
             {details.detail.projection.quality && ` · ${details.detail.projection.quality}`}
           </div>
           <Panel title="Symbol">
-            <p className="font-mono font-semibold">{nodeDisplayLabel(details.detail.node)}</p>
-            <p className="text-xs text-muted-foreground">opaque handle: {selectedHandle}</p>
+            <p className="font-mono font-semibold" title={nodeDisplayLabel(details.detail.node)}>{nodeDisplayLabel(details.detail.node)}</p>
+            <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span>Kind: {details.detail.node?.kind || "unknown"}</span>
+              {nodeEvidence(details.detail.node).map((value) => <span key={value} className="break-all">{value}</span>)}
+              {details.detail.node?.match_reason && <span>{details.detail.node.match_reason}</span>}
+            </div>
             <CompactGraph
               selectedHandle={selectedHandle}
               response={{
