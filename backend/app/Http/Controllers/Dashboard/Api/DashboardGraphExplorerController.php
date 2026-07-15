@@ -5,8 +5,8 @@ namespace App\Http\Controllers\Dashboard\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
 use App\Services\Graph\DashboardGraphExplorerService;
-use App\Services\Graph\DashboardGraphPublicKind;
 use App\Services\Graph\DashboardGraphPublicHandle;
+use App\Services\Graph\DashboardGraphPublicKind;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -468,13 +468,13 @@ final class DashboardGraphExplorerController extends Controller
         if (is_string($item['family'] ?? null) && in_array($item['family'], self::FAMILIES, true)) {
             $public['family'] = $item['family'];
         }
-            if (is_array($item['edge_types'] ?? null)) {
-                $edgeTypes = array_values(array_filter(
-                    $item['edge_types'],
-                    static fn (mixed $type): bool => is_string($type) && isset(self::EDGE_FAMILIES[$type]),
-                ));
-                $public['edge_types'] = array_values(array_unique($edgeTypes));
-            }
+        if (is_array($item['edge_types'] ?? null)) {
+            $edgeTypes = array_values(array_filter(
+                $item['edge_types'],
+                static fn (mixed $type): bool => is_string($type) && isset(self::EDGE_FAMILIES[$type]),
+            ));
+            $public['edge_types'] = array_values(array_unique($edgeTypes));
+        }
         if (($why = $this->publicText($item['why'] ?? null)) !== null) {
             $public['why'] = $why;
         }
@@ -568,6 +568,41 @@ final class DashboardGraphExplorerController extends Controller
         foreach (['node_count', 'relationship_count', 'unknown_kind_count', 'missing_label_count', 'excluded_node_count'] as $field) {
             $public[$field] = is_numeric($projection[$field] ?? null) ? (int) $projection[$field] : 0;
         }
+        $public['coverage'] = $this->publicCoverage($projection['coverage'] ?? null);
+
+        return $public;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function publicCoverage(mixed $coverage): ?array
+    {
+        if (! is_array($coverage) || ! is_array($coverage['languages'] ?? null)) {
+            return null;
+        }
+        $languages = [];
+        foreach ($coverage['languages'] as $language) {
+            if (! is_string($language) || preg_match('/\A[a-z0-9][a-z0-9+#._-]{0,31}\z/D', $language) !== 1) {
+                return null;
+            }
+            $languages[] = $language;
+        }
+        if ($languages === [] || count($languages) > 16) {
+            return null;
+        }
+
+        $public = ['languages' => $languages];
+        foreach ([
+            'files_total', 'files_analyzed', 'files_failed', 'files_budget_omitted',
+            'routes_promoted', 'routes_omitted', 'tests_promoted', 'tests_omitted',
+            'nodes_capacity_omitted',
+        ] as $field) {
+            if (is_int($coverage[$field] ?? null) && $coverage[$field] >= 0) {
+                $public[$field] = $coverage[$field];
+            }
+        }
+        if (! isset($public['files_total'], $public['files_analyzed'], $public['files_failed'])) {
+            return null;
+        }
 
         return $public;
     }
@@ -633,5 +668,4 @@ final class DashboardGraphExplorerController extends Controller
             ? $reason
             : 'query_error';
     }
-
 }

@@ -1110,6 +1110,19 @@ export interface DashboardGraphSource {
   origin: "canonical projection";
 }
 
+export interface DashboardGraphCoverage {
+  languages: string[];
+  files_total: number;
+  files_analyzed: number;
+  files_failed: number;
+  files_budget_omitted?: number;
+  routes_promoted?: number;
+  routes_omitted?: number;
+  tests_promoted?: number;
+  tests_omitted?: number;
+  nodes_capacity_omitted?: number;
+}
+
 export interface DashboardGraphProjection {
   status: string;
   quality: string | null;
@@ -1117,6 +1130,7 @@ export interface DashboardGraphProjection {
   active_graph_version: string | null;
   node_count: number;
   relationship_count: number;
+  coverage?: DashboardGraphCoverage | null;
   unknown_kind_count: number;
   missing_label_count: number;
   excluded_node_count: number;

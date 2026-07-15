@@ -652,10 +652,43 @@ final class DashboardGraphExplorerService
             'active_graph_version' => (string) $projection->active_graph_version,
             'node_count' => (int) ($projection->node_count ?? 0),
             'relationship_count' => (int) ($projection->relationship_count ?? 0),
+            'coverage' => $this->projectionCoverage($projection),
             'unknown_kind_count' => 0,
             'missing_label_count' => 0,
             'excluded_node_count' => 0,
         ];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function projectionCoverage(object $projection): ?array
+    {
+        $coverage = $projection->coverage ?? null;
+        if (is_string($coverage)) {
+            try {
+                $coverage = json_decode($coverage, true, flags: JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                return null;
+            }
+        }
+        if (! is_array($coverage) || ! is_array($coverage['languages'] ?? null)) {
+            return null;
+        }
+
+        $public = ['languages' => array_values(array_filter(
+            $coverage['languages'],
+            static fn (mixed $language): bool => is_string($language),
+        ))];
+        foreach ([
+            'files_total', 'files_analyzed', 'files_failed', 'files_budget_omitted',
+            'routes_promoted', 'routes_omitted', 'tests_promoted', 'tests_omitted',
+            'nodes_capacity_omitted',
+        ] as $field) {
+            if (is_int($coverage[$field] ?? null) && $coverage[$field] >= 0) {
+                $public[$field] = $coverage[$field];
+            }
+        }
+
+        return $public;
     }
 
     private function projectionKeyIsCurrent(

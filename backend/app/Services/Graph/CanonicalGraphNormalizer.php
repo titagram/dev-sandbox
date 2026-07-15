@@ -61,7 +61,21 @@ class CanonicalGraphNormalizer
         if (! is_array($coverage)) {
             $this->malformed('coverage');
         }
-        $this->assertExactKeys($coverage, ['languages', 'files_total', 'files_analyzed', 'files_failed'], 'coverage');
+        $requiredCoverageFields = ['languages', 'files_total', 'files_analyzed', 'files_failed'];
+        $optionalCoverageFields = [
+            'files_budget_omitted',
+            'routes_promoted',
+            'routes_omitted',
+            'tests_promoted',
+            'tests_omitted',
+            'nodes_capacity_omitted',
+        ];
+        $this->assertRequiredAndAllowedKeys(
+            $coverage,
+            $requiredCoverageFields,
+            [...$requiredCoverageFields, ...$optionalCoverageFields],
+            'coverage',
+        );
         if (! is_array($coverage['languages']) || ! array_is_list($coverage['languages'])
             || $coverage['languages'] === [] || count($coverage['languages']) > 16
             || count(array_unique($coverage['languages'], SORT_REGULAR)) !== count($coverage['languages'])) {
@@ -70,7 +84,10 @@ class CanonicalGraphNormalizer
         foreach ($coverage['languages'] as $language) {
             $this->assertPattern($language, 'coverage.languages', 32, '/\A[a-z0-9][a-z0-9+#._-]*\z/D');
         }
-        foreach (['files_total', 'files_analyzed', 'files_failed'] as $field) {
+        foreach (['files_total', 'files_analyzed', 'files_failed', ...$optionalCoverageFields] as $field) {
+            if (! array_key_exists($field, $coverage)) {
+                continue;
+            }
             if (! is_int($coverage[$field]) || $coverage[$field] < 0) {
                 $this->malformed('coverage.'.$field);
             }
@@ -79,6 +96,9 @@ class CanonicalGraphNormalizer
             || $coverage['files_failed'] > $coverage['files_total']
             || $coverage['files_total'] !== $coverage['files_analyzed'] + $coverage['files_failed']) {
             $this->malformed('coverage');
+        }
+        if (($coverage['files_budget_omitted'] ?? 0) > $coverage['files_failed']) {
+            $this->malformed('coverage.files_budget_omitted');
         }
 
         $source = $contract['source'] ?? null;
@@ -100,6 +120,14 @@ class CanonicalGraphNormalizer
         sort($actual);
         sort($expected);
         if ($actual !== $expected) {
+            $this->malformed($field);
+        }
+    }
+
+    private function assertRequiredAndAllowedKeys(array $value, array $required, array $allowed, string $field): void
+    {
+        $actual = array_keys($value);
+        if (array_diff($required, $actual) !== [] || array_diff($actual, $allowed) !== []) {
             $this->malformed($field);
         }
     }

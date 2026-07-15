@@ -890,6 +890,9 @@ class CanonicalGraphProjectionService
             'checksum' => $checksum,
             'head_commit' => $graph['contract']['source']['head_commit'] ?? null,
             'quality' => $graph['contract']['extractor']['quality'],
+            'coverage' => isset($graph['contract']['coverage'])
+                ? json_encode($graph['contract']['coverage'], JSON_THROW_ON_ERROR)
+                : null,
             'status' => 'queued',
             'created_at' => $now,
             'updated_at' => $now,

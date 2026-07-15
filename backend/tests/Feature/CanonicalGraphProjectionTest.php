@@ -19,6 +19,29 @@ afterEach(function (): void {
     config(['app.key' => 'unit-test-app-key']);
 });
 
+it('persists bounded graph coverage with each projection candidate', function (): void {
+    $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
+    $graph = canonicalProjectionGraph($projectId, 'artifact-coverage', str_repeat('9', 64));
+    $graph['contract']['extractor']['quality'] = 'partial';
+    $graph['contract']['coverage'] = [
+        'languages' => ['php', 'typescript'],
+        'files_total' => 12,
+        'files_analyzed' => 9,
+        'files_failed' => 3,
+        'files_budget_omitted' => 2,
+        'routes_promoted' => 4,
+        'routes_omitted' => 1,
+        'tests_promoted' => 3,
+        'tests_omitted' => 1,
+        'nodes_capacity_omitted' => 5,
+    ];
+
+    $projection = app(CanonicalGraphProjectionService::class)->queue($graph);
+
+    expect(json_decode((string) $projection->coverage, true, flags: JSON_THROW_ON_ERROR))
+        ->toBe($graph['contract']['coverage']);
+});
+
 it('keeps the previous projection ready until its replacement is ready', function () {
     $projectId = DB::table('projects')->where('slug', 'demo-project')->value('id');
     $service = app(CanonicalGraphProjectionService::class);

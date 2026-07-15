@@ -520,4 +520,39 @@ describe("GraphExplorer", () => {
     await settle();
     expect(container.textContent).toContain("InvoiceService");
   });
+
+  it("explains partial indexed coverage and qualifies an empty search", async () => {
+    const partialProjection = {
+      ...projection,
+      quality: "partial",
+      coverage: {
+        languages: ["php", "typescript"],
+        files_total: 10,
+        files_analyzed: 8,
+        files_failed: 2,
+        files_budget_omitted: 1,
+        routes_promoted: 3,
+        routes_omitted: 1,
+        tests_promoted: 2,
+        tests_omitted: 0,
+        nodes_capacity_omitted: 4,
+      },
+    };
+    const partialQuery = jest.fn((request: DashboardGraphQueryRequest) => Promise.resolve(
+      envelope(request.type, { projection: partialProjection }),
+    ));
+    await mount(partialQuery);
+    const select = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { select.value = "repository:repo-1"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "Missing"); });
+    await settle(300);
+
+    expect(container.textContent).toContain("Indexed subset");
+    expect(container.textContent).toContain("8/10 files");
+    expect(container.textContent).toContain("3 routes");
+    expect(container.textContent).toContain("2 tests");
+    expect(container.textContent).toContain("4 capacity omissions");
+    expect(container.textContent).toContain("No match in the indexed subset");
+    expect(container.textContent).not.toContain("No matching symbols");
+  });
 });
