@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Hades;
 use App\Enums\SourceStatus;
 use App\Http\Controllers\Controller;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Database\Query\JoinClause;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -38,17 +39,17 @@ class WikiPageController extends Controller
             return $binding;
         }
 
-        $paginator = $this->currentRevisionQuery($validated['project_id'])
+        $paginator = $this->currentRevisionListQuery($validated['project_id'])
             ->when(
                 ($validated['source_status'] ?? null) !== null,
-                fn ($query) => $query->where('wiki_pages.source_status', $validated['source_status']),
+                fn ($query) => $query->where('wiki_revisions.source_status', $validated['source_status']),
             )
             ->orderByDesc('wiki_pages.updated_at')
             ->orderByDesc('wiki_pages.id')
             ->cursorPaginate((int) ($validated['limit'] ?? 20));
 
         $items = $paginator->getCollection()
-            ->map(fn (object $page): array => $this->pagePayload($page, false))
+            ->map(fn (object $page): array => $this->listPagePayload($page))
             ->values()
             ->all();
 
@@ -79,7 +80,7 @@ class WikiPageController extends Controller
             return $binding;
         }
 
-        $wikiPage = $this->currentRevisionQuery($validated['project_id'])
+        $wikiPage = $this->currentRevisionDetailQuery($validated['project_id'])
             ->where('wiki_pages.id', $page)
             ->first();
 
@@ -91,41 +92,93 @@ class WikiPageController extends Controller
             'protocol_version' => 'v1',
             'project_id' => $validated['project_id'],
             'workspace_binding_id' => $binding->id,
-            'wiki_page' => $this->pagePayload($wikiPage, true),
+            'wiki_page' => $this->detailPagePayload($wikiPage),
+        ]);
+    }
+
+    private function currentRevisionListQuery(string $projectId): Builder
+    {
+        return $this->currentRevisionQuery($projectId)->select([
+            ...$this->currentRevisionColumns(),
+            DB::raw('json_array_length(wiki_revisions.evidence_refs) as evidence_count'),
+        ]);
+    }
+
+    private function currentRevisionDetailQuery(string $projectId): Builder
+    {
+        return $this->currentRevisionQuery($projectId)->select([
+            ...$this->currentRevisionColumns(),
+            'wiki_revisions.content_markdown',
+            'wiki_revisions.evidence_refs',
         ]);
     }
 
     private function currentRevisionQuery(string $projectId): Builder
     {
         return DB::table('wiki_pages')
-            ->join('wiki_revisions', 'wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
-            ->where('wiki_pages.project_id', $projectId)
-            ->select([
-                'wiki_pages.id',
-                'wiki_pages.project_id',
-                'wiki_pages.repository_id',
-                'wiki_pages.slug',
-                'wiki_pages.title',
-                'wiki_pages.page_type',
-                'wiki_pages.current_revision_id',
-                'wiki_pages.updated_at',
-                'wiki_revisions.id as revision_id',
-                'wiki_revisions.producer',
-                'wiki_revisions.source_type',
-                'wiki_revisions.source_status',
-                'wiki_revisions.content_markdown',
-                'wiki_revisions.evidence_refs',
-                'wiki_revisions.created_at as revision_created_at',
-            ]);
+            ->join('wiki_revisions', function (JoinClause $join): void {
+                $join->on('wiki_revisions.id', '=', 'wiki_pages.current_revision_id')
+                    ->on('wiki_revisions.wiki_page_id', '=', 'wiki_pages.id');
+            })
+            ->where('wiki_pages.project_id', $projectId);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function currentRevisionColumns(): array
+    {
+        return [
+            'wiki_pages.id',
+            'wiki_pages.project_id',
+            'wiki_pages.repository_id',
+            'wiki_pages.slug',
+            'wiki_pages.title',
+            'wiki_pages.page_type',
+            'wiki_pages.current_revision_id',
+            'wiki_pages.updated_at',
+            'wiki_revisions.id as revision_id',
+            'wiki_revisions.producer',
+            'wiki_revisions.source_type',
+            'wiki_revisions.source_status',
+            'wiki_revisions.created_at as revision_created_at',
+        ];
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function pagePayload(object $page, bool $includeMarkdown): array
+    private function listPagePayload(object $page): array
     {
-        $evidenceRefs = $this->evidenceRefs($page->evidence_refs);
-        $payload = [
+        return array_merge($this->pagePayload($page), [
+            'evidence_count' => (int) $page->evidence_count,
+            'updated_at' => $this->toIsoString($page->updated_at),
+            'revision_created_at' => $this->toIsoString($page->revision_created_at),
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function detailPagePayload(object $page): array
+    {
+        $markdown = (string) $page->content_markdown;
+
+        return array_merge($this->pagePayload($page), [
+            'content_markdown' => Str::substr($markdown, 0, self::MAX_MARKDOWN_CHARACTERS),
+            'content_truncated' => Str::length($markdown) > self::MAX_MARKDOWN_CHARACTERS,
+            'evidence_refs' => array_slice($this->evidenceRefs($page->evidence_refs), 0, 80),
+            'updated_at' => $this->toIsoString($page->updated_at),
+            'revision_created_at' => $this->toIsoString($page->revision_created_at),
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function pagePayload(object $page): array
+    {
+        return [
             'id' => $page->id,
             'project_id' => $page->project_id,
             'repository_id' => $page->repository_id,
@@ -138,20 +191,6 @@ class WikiPageController extends Controller
             'source_type' => $page->source_type,
             'source_status' => $page->source_status,
         ];
-
-        if ($includeMarkdown) {
-            $markdown = (string) $page->content_markdown;
-            $payload['content_markdown'] = Str::substr($markdown, 0, self::MAX_MARKDOWN_CHARACTERS);
-            $payload['content_truncated'] = Str::length($markdown) > self::MAX_MARKDOWN_CHARACTERS;
-            $payload['evidence_refs'] = $evidenceRefs;
-        } else {
-            $payload['evidence_count'] = count($evidenceRefs);
-        }
-
-        $payload['updated_at'] = $this->toIsoString($page->updated_at);
-        $payload['revision_created_at'] = $this->toIsoString($page->revision_created_at);
-
-        return $payload;
     }
 
     /**
@@ -161,7 +200,7 @@ class WikiPageController extends Controller
     {
         $decoded = is_string($value) ? json_decode($value, true) : $value;
 
-        return is_array($decoded) ? array_slice(array_values($decoded), 0, 80) : [];
+        return is_array($decoded) ? array_values($decoded) : [];
     }
 
     private function linkedBinding(object $agent, string $projectId, string $bindingId): mixed

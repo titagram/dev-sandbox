@@ -2,6 +2,7 @@
 
 use App\Models\User;
 use App\Services\Hades\HadesTokenService;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -58,6 +59,128 @@ it('lists only filtered current wiki pages for the authenticated project with a 
 
     expect($returnedIds)->toBe($expectedIds)
         ->and(array_unique($returnedIds))->toHaveCount(3);
+});
+
+it('does not follow a current revision pointer owned by another page', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $revisionOwner = wikiWorkflowPage($agent['project_id'], 'revision-owner', 'needs_verification');
+    $invalidPage = wikiWorkflowPage($agent['project_id'], 'invalid-cross-page-pointer', 'needs_verification');
+
+    DB::table('wiki_pages')->where('id', $invalidPage['page_id'])->update([
+        'current_revision_id' => $revisionOwner['revision_id'],
+    ]);
+
+    $query = http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding->id,
+    ]);
+
+    $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages?'.$query)
+        ->assertOk()
+        ->assertJsonMissing(['id' => $invalidPage['page_id']]);
+
+    $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages/'.$invalidPage['page_id'].'?'.$query)
+        ->assertNotFound()
+        ->assertJsonPath('error.code', 'wiki_page_not_found');
+});
+
+it('does not follow a current revision pointer owned by another project', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $otherAgent = wikiWorkflowAgent();
+    $foreignRevision = wikiWorkflowPage($otherAgent['project_id'], 'foreign-revision-owner', 'needs_verification');
+    $invalidPage = wikiWorkflowPage($agent['project_id'], 'invalid-cross-project-pointer', 'needs_verification');
+
+    DB::table('wiki_pages')->where('id', $invalidPage['page_id'])->update([
+        'current_revision_id' => $foreignRevision['revision_id'],
+    ]);
+
+    $query = http_build_query([
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding->id,
+    ]);
+
+    $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages?'.$query)
+        ->assertOk()
+        ->assertJsonMissing(['id' => $invalidPage['page_id']])
+        ->assertJsonMissing(['revision_id' => $foreignRevision['revision_id']]);
+
+    $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages/'.$invalidPage['page_id'].'?'.$query)
+        ->assertNotFound()
+        ->assertJsonPath('error.code', 'wiki_page_not_found');
+});
+
+it('filters by the current revision source status when page and revision columns diverge', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'divergent-source-status', 'needs_verification');
+
+    DB::table('wiki_revisions')->where('id', $page['revision_id'])->update([
+        'source_status' => 'verified_from_code',
+    ]);
+
+    $query = [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding->id,
+        'limit' => 50,
+    ];
+
+    $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages?'.http_build_query(array_merge($query, [
+            'source_status' => 'needs_verification',
+        ])))
+        ->assertOk()
+        ->assertJsonMissing(['id' => $page['page_id']]);
+
+    $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages?'.http_build_query(array_merge($query, [
+            'source_status' => 'verified_from_code',
+        ])))
+        ->assertOk()
+        ->assertJsonPath('items.0.id', $page['page_id'])
+        ->assertJsonPath('items.0.source_status', 'verified_from_code');
+});
+
+it('uses a lightweight list projection and reports the complete evidence count', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $evidenceRefs = array_map(
+        fn (int $index): array => ['type' => 'file_ref', 'path' => 'src/File'.$index.'.php'],
+        range(1, 82),
+    );
+    $page = wikiWorkflowPage(
+        $agent['project_id'],
+        'lightweight-list-projection',
+        'needs_verification',
+        str_repeat('large-markdown-marker ', 2000),
+        $evidenceRefs,
+    );
+    $wikiQueries = [];
+
+    DB::listen(function (QueryExecuted $query) use (&$wikiQueries): void {
+        if (str_contains($query->sql, 'wiki_pages') && str_contains($query->sql, 'wiki_revisions')) {
+            $wikiQueries[] = $query->sql;
+        }
+    });
+
+    $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages?'.http_build_query([
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding->id,
+        ]))
+        ->assertOk()
+        ->assertJsonPath('items.0.id', $page['page_id'])
+        ->assertJsonPath('items.0.evidence_count', 82)
+        ->assertJsonMissingPath('items.0.content_markdown')
+        ->assertJsonMissingPath('items.0.evidence_refs');
+
+    expect($wikiQueries)->toHaveCount(1)
+        ->and($wikiQueries[0])->not->toContain('content_markdown');
 });
 
 it('validates list bounds and rejects bindings outside the authenticated linked scope', function () {
