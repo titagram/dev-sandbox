@@ -522,6 +522,155 @@ it('rejects a truncated artifact uploaded over HTTP even when it has usable code
         ->assertJsonPath('error.code', 'evidence_invalid');
 });
 
+it('accepts an exact current file reference from a valid truncated git tree', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'truncated-tree-file', 'needs_verification');
+    $fileHash = hash('sha256', 'composer-json');
+
+    $gitTree = wikiWorkflowArtifact($agent, $binding, 'hades.git_tree.v1', [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => $binding->head_commit,
+        'files' => [['path' => 'composer.json', 'sha256' => $fileHash]],
+    ], truncated: true);
+
+    $response = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'file_ref', 'path' => 'composer.json', 'sha256' => $fileHash]],
+        ))
+        ->assertOk()
+        ->assertJsonPath('source_status', 'verified_from_code');
+
+    $evidence = json_decode(
+        DB::table('wiki_revisions')->where('id', $response->json('wiki_revision_id'))->value('evidence_refs'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+
+    expect($evidence[0])
+        ->toMatchArray([
+            'kind' => 'file_ref',
+            'artifact_id' => $gitTree->id,
+            'path' => 'composer.json',
+            'sha256' => $fileHash,
+            'head_commit' => $binding->head_commit,
+        ]);
+});
+
+it('does not accept a truncated git tree as complete artifact evidence', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'truncated-tree-artifact', 'needs_verification');
+    $gitTree = wikiWorkflowArtifact($agent, $binding, 'hades.git_tree.v1', [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => $binding->head_commit,
+        'files' => [['path' => 'composer.json', 'sha256' => hash('sha256', 'composer-json')]],
+    ], truncated: true);
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'artifact_ref', 'sha256' => $gitTree->sha256]],
+        ))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+
+    expect(DB::table('wiki_pages')->where('id', $page['page_id'])->value('source_status'))
+        ->toBe('needs_verification');
+});
+
+it('rejects absent hash-stale and head-stale file references from a truncated git tree', function (array $ref, bool $advanceHead) {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'truncated-tree-stale-file', 'needs_verification');
+    $fileHash = hash('sha256', 'composer-json');
+
+    wikiWorkflowArtifact($agent, $binding, 'hades.git_tree.v1', [
+        'schema' => 'hades.git_tree.v1',
+        'head_commit' => $binding->head_commit,
+        'files' => [['path' => 'composer.json', 'sha256' => $fileHash]],
+    ], truncated: true);
+
+    if ($advanceHead) {
+        DB::table('hades_workspace_bindings')->where('id', $binding->id)->update([
+            'head_commit' => str_repeat('d', 40),
+            'updated_at' => now(),
+        ]);
+    }
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [array_merge(['kind' => 'file_ref'], $ref)],
+        ))
+        ->assertConflict()
+        ->assertJsonPath('error.code', 'evidence_stale');
+
+    expect(DB::table('wiki_pages')->where('id', $page['page_id'])->value('source_status'))
+        ->toBe('needs_verification');
+})->with([
+    'absent path' => [['path' => 'missing.json', 'sha256' => hash('sha256', 'composer-json')], false],
+    'stale hash' => [['path' => 'composer.json', 'sha256' => hash('sha256', 'old-composer-json')], false],
+    'advanced binding head' => [['path' => 'composer.json', 'sha256' => hash('sha256', 'composer-json')], true],
+]);
+
+it('rejects structurally invalid or corrupt truncated git trees for file references', function (array $payload, ?string $storedHash) {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'invalid-truncated-tree', 'needs_verification');
+    $fileHash = hash('sha256', 'composer-json');
+    $payload['head_commit'] ??= $binding->head_commit;
+
+    wikiWorkflowArtifact(
+        $agent,
+        $binding,
+        'hades.git_tree.v1',
+        $payload,
+        sha256: $storedHash,
+        truncated: true,
+    );
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'file_ref', 'path' => 'composer.json', 'sha256' => $fileHash]],
+        ))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+
+    expect(DB::table('wiki_pages')->where('id', $page['page_id'])->value('source_status'))
+        ->toBe('needs_verification');
+})->with([
+    'schema mismatch' => [[
+        'schema' => 'hades.symbols.v1',
+        'files' => [['path' => 'composer.json', 'sha256' => hash('sha256', 'composer-json')]],
+    ], null],
+    'corrupt canonical hash' => [[
+        'schema' => 'hades.git_tree.v1',
+        'files' => [['path' => 'composer.json', 'sha256' => hash('sha256', 'composer-json')]],
+    ], str_repeat('f', 64)],
+    'unsafe sibling entry' => [[
+        'schema' => 'hades.git_tree.v1',
+        'files' => [
+            ['path' => 'composer.json', 'sha256' => hash('sha256', 'composer-json')],
+            ['path' => '../secrets.txt', 'sha256' => hash('sha256', 'secret')],
+        ],
+    ], null],
+    'empty file list' => [[
+        'schema' => 'hades.git_tree.v1',
+        'files' => [],
+    ], null],
+]);
+
 it('rejects an unsafe git tree artifact uploaded over HTTP', function () {
     $agent = wikiWorkflowAgent();
     $binding = wikiWorkflowBinding($agent);
@@ -1389,6 +1538,7 @@ function wikiWorkflowArtifact(
     array $payload,
     ?string $sha256 = null,
     ?DateTimeInterface $createdAt = null,
+    bool $truncated = false,
 ): object {
     $id = (string) Str::ulid();
     $createdAt ??= now();
@@ -1404,7 +1554,7 @@ function wikiWorkflowArtifact(
         'schema' => $schema,
         'artifact' => $artifactJson,
         'sha256' => $sha256 ?? $integrity->sha256($payload),
-        'truncated' => false,
+        'truncated' => $truncated,
         'redactions' => 0,
         'created_at' => $createdAt,
         'updated_at' => $createdAt,

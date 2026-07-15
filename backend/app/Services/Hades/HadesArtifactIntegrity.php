@@ -33,6 +33,22 @@ class HadesArtifactIntegrity
             throw new InvalidArgumentException('Artifact is not complete code evidence.');
         }
 
+        return $this->validateCodePayload($artifact);
+    }
+
+    /** @return array<string, mixed> */
+    public function validateGitTreeForFileReference(object $artifact): array
+    {
+        if ($artifact->schema !== 'hades.git_tree.v1') {
+            throw new InvalidArgumentException('Artifact is not git tree evidence.');
+        }
+
+        return $this->validateCodePayload($artifact);
+    }
+
+    /** @return array<string, mixed> */
+    private function validateCodePayload(object $artifact): array
+    {
         $payload = is_string($artifact->artifact) ? json_decode($artifact->artifact, true) : $artifact->artifact;
         if (! is_array($payload) || ($payload['schema'] ?? null) !== $artifact->schema) {
             throw new InvalidArgumentException('Artifact schema is invalid.');
