@@ -83,7 +83,7 @@ function ProjectGraphPage({ projectId }: { projectId: string }) {
   }, []);
   return <div className="min-w-0 space-y-5" data-testid="graph-page">
     <PageHeader title="Graph" subtitle="Explore bounded dependencies, callers, impact, and paths in the canonical project graph."
-      meta={<Link to={`/projects/${encodeURIComponent(projectId)}`} title={`Project ${projectId}`} className="inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5 shrink-0" /><span className="break-all">Project {projectId}</span></Link>} />
+      meta={<Link to={`/projects/${encodeURIComponent(projectId)}`} title="Open project overview" className="inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><Boxes className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 max-w-full truncate">Project graph</span></Link>} />
     <DataState state={graph}>{(overview) => <>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MetricCard label="Nodes" value={overview.stats.nodes} /><MetricCard label="Edges" value={overview.stats.edges} />
@@ -93,7 +93,7 @@ function ProjectGraphPage({ projectId }: { projectId: string }) {
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <SourceMetaInline source={overview.source} /><span>· generated {relativeTime(overview.generated_at)}</span>
           {overview.quality && <span>· quality {overview.quality}</span>}
-          {overview.source_scope && <span className="break-all">· scope {overview.source_scope.type}: {overview.source_scope.id}</span>}
+          {overview.source_scope && <span className="min-w-0 max-w-full truncate" title={`${overview.source_scope.type}: ${overview.source_scope.id}`}>· scope {overview.source_scope.type}: {overview.source_scope.id}</span>}
         </div>
       </div>
       <DataState state={scopes}>{(response) => response.query_type === "scopes" ? <GraphExplorer

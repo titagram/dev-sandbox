@@ -99,6 +99,21 @@ describe("mockApi approved Hades Agent contracts", () => {
     }));
   });
 
+  it("does not invent a fuzzy answer for an absent exact-looking symbol", async () => {
+    const response = await mockApi.queryProjectGraph("proj-core", {
+      type: "search", scope_type: "repository", scope_id: "repo-api", query: "ImportServiceTes",
+    });
+
+    if (response.query_type === "scopes") throw new Error("Expected graph-node search results.");
+    expect(response).toEqual(expect.objectContaining({
+      found: true,
+      reason: "exact_match_not_found",
+      completeness: "verified_none",
+      returned: 0,
+    }));
+    expect(response.items).toEqual([]);
+  });
+
   it("rejects requests with the same validation reasons and status classes as the controller", async () => {
     const scope = { scope_type: "repository" as const, scope_id: "repo-api" };
     const validHandle = `gh1_${"a".repeat(43)}`;
@@ -183,7 +198,12 @@ describe("mockApi approved Hades Agent contracts", () => {
       type: "search", ...scope, query: "NoSuchSymbol",
     });
 
-    expect(missingQuery).toEqual(expect.objectContaining({ found: true, reason: null, returned: 0 }));
+    expect(missingQuery).toEqual(expect.objectContaining({
+      found: true,
+      reason: "exact_match_not_found",
+      completeness: "verified_none",
+      returned: 0,
+    }));
     await expect(mockApi.queryProjectGraph("proj-core", {
       type: "detail", ...scope, node_handle: `gh1_${"z".repeat(43)}`,
     })).rejects.toEqual(expect.objectContaining({ message: "node_not_found", code: "404" }));

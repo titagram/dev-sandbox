@@ -129,7 +129,7 @@ describe("GraphExplorer", () => {
     expect(container.textContent).toContain("distance 1");
     expect(container.textContent).toContain("complete");
     expect(container.textContent).toContain("truncated");
-    expect(container.textContent).toContain("cursor-2");
+    expect(container.textContent).not.toContain("cursor-2");
 
     const calls = queryGraph.mock.calls.map(([request]: [DashboardGraphQueryRequest]) => request);
     expect(calls).toContainEqual(expect.objectContaining({ type: "detail", node_handle: handles.invoice }));
@@ -161,6 +161,37 @@ describe("GraphExplorer", () => {
       expect(request).not.toHaveProperty("internal");
       if (request.type !== "search") expect(request).not.toHaveProperty("cursor");
     });
+  });
+
+  it("renders backend evidence and completeness on symbol and relationship cards", async () => {
+    const queryGraph = jest.fn((request: DashboardGraphQueryRequest) => {
+      if (request.type === "search") return Promise.resolve(envelope("search", {
+        items: [node(handles.invoice, "InvoiceService", {
+          source_file: "app/Services/InvoiceService.php", line_start: 42, namespace: "App\\Services",
+          match_reason: "Exact symbol-name match",
+        })], returned: 1,
+      }));
+      if (request.type === "detail") return Promise.resolve(detailEnvelope(handles.invoice, "InvoiceService", {
+        completeness: "partial",
+        node: node(handles.invoice, "InvoiceService", { source_file: "app/Services/InvoiceService.php", line_start: 42, namespace: "App\\Services" }),
+      }));
+      return Promise.resolve(envelope(request.type, {
+        items: [node(handles.caller, "BillingController", { source_file: "app/Http/BillingController.php", line_start: 18 })],
+        returned: 1,
+      }));
+    });
+
+    await mount(queryGraph);
+    const scopeSelect = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { scopeSelect.value = "workspace_binding:binding-2"; scopeSelect.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "InvoiceService"); });
+    await settle(300);
+    expect(container.textContent).toContain("app/Services/InvoiceService.php:42");
+    await act(async () => { button("InvoiceService").click(); });
+    await settle();
+    expect(container.textContent).toContain("App\\Services");
+    expect(container.textContent).toContain("app/Http/BillingController.php:18");
+    expect(container.textContent).toContain("Completeness: partial");
   });
 
   it("loads an initial deep-link exactly once to completion under StrictMode effect replay", async () => {

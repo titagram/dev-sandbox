@@ -175,10 +175,65 @@ class CanonicalGraphNormalizer
             throw new InvalidArgumentException('Canonical graph node id is missing.');
         }
         $properties = $this->propertyBag($node, 'node');
-        foreach (['name', 'kind', 'path', 'line_start', 'line_end', 'confidence'] as $key) {
+        foreach (['name', 'kind', 'path', 'uri', 'line_start', 'line_end', 'confidence'] as $key) {
             if (array_key_exists($key, $node)) {
                 $properties[$key] = $node[$key];
             }
+        }
+        $kind = strtolower(trim((string) ($properties['kind'] ?? '')));
+        $isRoute = in_array($kind, ['route', 'endpoint', 'http_endpoint'], true);
+        $routeUri = $isRoute
+            ? $this->routeUri($node['uri'] ?? $properties['uri'] ?? null, $node['path'] ?? $properties['path'] ?? null)
+            : null;
+        $sourceCandidates = [
+            $node['source_file'] ?? null,
+            $node['source_path'] ?? null,
+            $node['file_path'] ?? null,
+            $node['file'] ?? null,
+            $properties['source_file'] ?? null,
+            $properties['source_path'] ?? null,
+            $properties['file_path'] ?? null,
+            $properties['file'] ?? null,
+        ];
+        $path = $node['path'] ?? $properties['path'] ?? null;
+        $pathUri = $isRoute ? $this->routeUri(null, $path) : null;
+        if (! $isRoute || $routeUri === null || $pathUri === null || $routeUri !== $pathUri) {
+            $sourceCandidates[] = $path;
+        }
+        $sourceFile = null;
+        foreach ($sourceCandidates as $candidate) {
+            $sourceFile = $this->safeSourceFile($candidate);
+            if ($sourceFile !== null) {
+                break;
+            }
+        }
+        $lineStart = $this->safeLine($node['line_start'] ?? $node['line'] ?? $properties['line_start'] ?? $properties['line'] ?? null);
+        $lineEnd = $this->safeLine($node['line_end'] ?? $properties['line_end'] ?? null);
+        if ($sourceFile !== null) {
+            $properties['source_file'] = $sourceFile;
+        } else {
+            unset($properties['source_file'], $properties['source_path'], $properties['file_path']);
+        }
+        if (array_key_exists('path', $properties) && $this->safeSourceFile($properties['path']) === null) {
+            unset($properties['path']);
+        }
+        if ($sourceFile !== null && $lineStart !== null) {
+            $properties['line_start'] = $lineStart;
+        } else {
+            unset($properties['line_start']);
+        }
+        if ($sourceFile !== null && $lineEnd !== null) {
+            $properties['line_end'] = $lineEnd;
+        } elseif (array_key_exists('line_end', $properties)) {
+            unset($properties['line_end']);
+        }
+        if ($isRoute) {
+            if ($routeUri !== null) {
+                $properties['uri'] = $routeUri;
+            } else {
+                unset($properties['uri']);
+            }
+            unset($properties['path'], $properties['source_path'], $properties['file_path']);
         }
         $labels = is_array($node['labels'] ?? null) ? array_values($node['labels']) : [];
         if ($labels === []) {
@@ -190,6 +245,60 @@ class CanonicalGraphNormalizer
         }
 
         return ['id' => $id, 'labels' => $labels, 'properties' => $properties];
+    }
+
+    private function routeUri(mixed $uri, mixed $path): ?string
+    {
+        foreach ([$uri, $path] as $candidate) {
+            if (! is_string($candidate)) {
+                continue;
+            }
+            $candidate = trim($candidate);
+            if ($candidate === '' || strlen($candidate) > 512) {
+                continue;
+            }
+            if (! str_starts_with($candidate, '/')) {
+                $candidate = '/'.$candidate;
+            }
+            if (preg_match('#\A/(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._~!$&\x27()*+,;=:@%{}\-/]*\z#', $candidate) === 1
+                && preg_match('/(?:\A|\/)[^\/{}?*]+\.(?:php|phar|inc|phtml|ts|tsx|js|jsx|mjs|cjs|py|rb|go|java|kt|kts|rs|c|cc|cpp|h|hpp|swift|dart|vue|svelte|sql|yaml|yml|json|xml|toml|ini|env)(?:\/|\z)/i', $candidate) !== 1
+                && ! str_contains($candidate, '\\')
+                && stripos($candidate, 'file://') === false) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function safeSourceFile(mixed $value): ?string
+    {
+        if (! is_string($value) || ! mb_check_encoding($value, 'UTF-8')) {
+            return null;
+        }
+        $value = trim($value);
+        if ($value === '' || strlen($value) > 512 || str_contains($value, '\\')
+            || str_contains($value, '://') || str_starts_with($value, '/')
+            || preg_match('/\A[A-Za-z]:[\\\\\/]/', $value) === 1
+            || preg_match('/[\x00-\x1F\x7F]/', $value) === 1
+            || preg_match('~(?:\A|/)(?:\.|\.\.)(?:/|\z)~', $value) === 1
+            || str_contains($value, '//')) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    private function safeLine(mixed $value): ?int
+    {
+        if (is_int($value) && $value >= 1 && $value <= 10_000_000) {
+            return $value;
+        }
+        if (is_string($value) && preg_match('/\A[1-9][0-9]{0,7}\z/D', $value) === 1) {
+            return (int) $value;
+        }
+
+        return null;
     }
 
     private function edge(array $edge): array

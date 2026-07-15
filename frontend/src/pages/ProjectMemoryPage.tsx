@@ -1120,7 +1120,7 @@ export default function ProjectMemoryPage() {
               </Panel>
 
               <details className="rounded-md border border-border bg-card" data-testid="advanced-memory-import">
-                <summary className="cursor-pointer list-inside px-4 py-3 text-sm font-medium text-foreground">Advanced import</summary>
+                <summary className="cursor-pointer list-inside px-4 py-3 text-sm font-medium text-foreground">Advanced import <span className="ml-2 text-xs font-normal text-muted-foreground">Creates reviewable proposals; it never silently merges memory.</span></summary>
                 <div className="border-t border-border">
                   <MemoryImportPanel projectId={projectId} canImport={canAdd} />
                 </div>

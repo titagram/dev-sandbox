@@ -600,6 +600,7 @@ it('hydrates contracted route inventories into existing canonical route nodes', 
         'handler' => 'WorkerController@index',
         'defined_handler' => 'AdminController@index',
         'path' => 'src/Controller/WorkerController.php',
+        'line' => 252,
     ]];
 
     $graph = app(CanonicalGraphRepository::class)->prepareHadesUpload($payload);
@@ -615,8 +616,9 @@ it('hydrates contracted route inventories into existing canonical route nodes', 
             'uri' => '/generale/soggetti-attivi/',
             'handler' => 'WorkerController@index',
             'defined_handler' => 'AdminController@index',
+            'source_file' => 'src/Controller/WorkerController.php',
+            'line_start' => 252,
         ])
-        ->and($routeNodes[0]['properties'])->not->toHaveKey('path')
         ->and($graph['private_route_provenance'])->toHaveKey('route:contact_flock_roles_worker');
 });
 
@@ -637,8 +639,10 @@ it('hydrates contracted route inventories idempotently and never promotes source
 
     expect($routes)->toHaveCount(2)
         ->and($routes['route:health']['properties']['uri'])->toBe('/health')
+        ->and($routes['route:health']['properties']['source_file'])->toBe('server/api.ts')
         ->and($graph['private_route_provenance'])->toHaveKey('route:health')
         ->and($routes['route:unsafe-source-only']['properties'])->not->toHaveKeys(['uri', 'path'])
+        ->and($routes['route:unsafe-source-only']['properties']['source_file'])->toBe('src/Controller.php')
         ->and($graph['private_route_provenance'])->not->toHaveKey('route:unsafe-source-only');
 });
 

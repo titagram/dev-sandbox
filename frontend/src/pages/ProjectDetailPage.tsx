@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { AssistantSuggestion, BacklogTriagePayload, LocalWorkspace, ProjectDetail, ProjectKickstartStepStatus, RepositoryDeclarationInput } from "@/types/devboard";
 import { toast } from "sonner";
+import { workspacePresentation } from "@/lib/workspacePresentation";
 
 const PolicyRow = ({ label, value, good }: { label: string; value: string; good?: boolean }) => (
   <div className="flex items-center justify-between py-1.5 text-sm">
@@ -53,13 +54,6 @@ const STEP_ICON: Record<ProjectKickstartStepStatus, any> = {
   current: CircleDot,
   pending: CircleDot,
   blocked: CircleAlert,
-};
-
-const WORKSPACE_TONE: Record<string, "green" | "amber" | "red" | "slate"> = {
-  linked: "green",
-  missing: "amber",
-  stale: "red",
-  unknown: "slate",
 };
 
 type RepositoryFormState = {
@@ -134,13 +128,22 @@ function KickstartPanel({ project }: { project: ProjectDetail }) {
   );
 }
 
-function WorkspaceSummary({ workspace }: { workspace: LocalWorkspace }) {
+function WorkspaceSummary({ workspace, canonicalLinked }: { workspace: LocalWorkspace; canonicalLinked: boolean }) {
   const status = workspace.status || "unknown";
-  const tone = WORKSPACE_TONE[status] || "slate";
+  const presentation = workspacePresentation(status, canonicalLinked);
+
+  if (!presentation.showLegacyDetails) {
+    return (
+      <div className="min-w-0 space-y-1" data-testid={canonicalLinked ? "canonical-workspace-linked" : undefined}>
+        <Pill tone={presentation.tone} icon={HardDrive}>{presentation.label}</Pill>
+        {canonicalLinked && <p className="max-w-[260px] text-[11px] leading-snug text-muted-foreground">Legacy clone details unavailable.</p>}
+      </div>
+    );
+  }
 
   return (
     <div className="min-w-0 space-y-1">
-      <Pill tone={tone as any} icon={HardDrive}>{titleCase(status)}</Pill>
+      <Pill tone={presentation.tone as any} icon={HardDrive}>{presentation.label}</Pill>
       {status !== "missing" && status !== "unknown" && (
         <div className="space-y-0.5 text-[11px] text-muted-foreground">
           <div className="max-w-[260px] truncate font-mono">{workspace.display_path || "—"}</div>
@@ -428,6 +431,7 @@ export default function ProjectDetailPage() {
                     )}
                     {p.repositories.map((r) => {
                       const workspace = workspaceForRepository(r);
+                      const canonicalLinked = p.operational_status?.workspace.status === "linked";
                       return (
                         <tr key={r.id} className="border-b border-border/60 last:border-0 hover:bg-accent/40" data-testid={`repo-row-${r.id}`}>
                           <td className="px-4 py-2.5">
@@ -435,7 +439,7 @@ export default function ProjectDetailPage() {
                             <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">{r.key || r.id}</div>
                           </td>
                           <td className="px-3 py-2.5 font-mono text-xs">{r.default_branch}</td>
-                          <td className="px-3 py-2.5"><WorkspaceSummary workspace={workspace} /></td>
+                          <td className="px-3 py-2.5"><WorkspaceSummary workspace={workspace} canonicalLinked={canonicalLinked} /></td>
                           <td className="px-3 py-2.5"><Pill tone="slate">{titleCase(r.git_mode)}</Pill></td>
                           <td className="px-3 py-2.5 text-xs text-muted-foreground">{relativeTime(r.last_local_snapshot)}</td>
                           <td className="px-3 py-2.5"><PipelineBadge status={r.genesis_status} /></td>

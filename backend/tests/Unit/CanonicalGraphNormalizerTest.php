@@ -77,6 +77,7 @@ it('normalizes legacy graph nodes and relationships while preserving graphify da
             'properties' => [
                 'language' => 'php', 'name' => 'health', 'kind' => 'function',
                 'path' => 'app.php', 'line_start' => 10, 'line_end' => 12, 'confidence' => 0.98,
+                'source_file' => 'app.php',
             ],
         ]])
         ->relationships->toBe([[
@@ -101,12 +102,70 @@ it('normalizes Hades symbols and edges into the canonical graph shape', function
 
     expect($normalized['nodes'])->toBe([[
         'id' => 'method:User::save', 'labels' => ['Symbol', 'Method'],
-        'properties' => ['name' => 'save', 'kind' => 'method', 'path' => 'app/User.php'],
+        'properties' => ['name' => 'save', 'kind' => 'method', 'path' => 'app/User.php', 'source_file' => 'app/User.php'],
     ]]);
     expect($normalized['relationships'])->toBe([[
         'type' => 'CALLS_METHOD', 'source_id' => 'method:User::save',
         'target_id' => 'function:persist', 'properties' => [],
     ]]);
+});
+
+it('promotes safe top-level symbol paths and line numbers into public evidence fields', function (): void {
+    $normalized = (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => unitCanonicalGraphContract(),
+        'symbols' => [[
+            'symbol_id' => 'method:WorkerController::index',
+            'name' => 'index',
+            'kind' => 'method',
+            'path' => 'WorkerController.php',
+            'line' => 252,
+        ], [
+            'symbol_id' => 'class:AbsolutePath',
+            'name' => 'AbsolutePath',
+            'kind' => 'class',
+            'path' => '/srv/app/AbsolutePath.php',
+            'line' => 12,
+        ], [
+            'symbol_id' => 'class:TraversalPath',
+            'name' => 'TraversalPath',
+            'kind' => 'class',
+            'path' => 'src/../private/TraversalPath.php',
+            'line' => 13,
+        ]],
+        'edges' => [],
+    ], []);
+
+    expect($normalized['nodes'][0]['properties'])
+        ->toMatchArray([
+            'path' => 'WorkerController.php',
+            'source_file' => 'WorkerController.php',
+            'line_start' => 252,
+        ])
+        ->and($normalized['nodes'][1]['properties'])->not->toHaveKeys(['path', 'source_file', 'line_start'])
+        ->and($normalized['nodes'][2]['properties'])->not->toHaveKeys(['path', 'source_file', 'line_start']);
+});
+
+it('keeps route uri and safe route source evidence separate', function (): void {
+    $normalized = (new CanonicalGraphNormalizer)->normalize([
+        'graph_contract' => unitCanonicalGraphContract(),
+        'nodes' => [[
+            'id' => 'route:worker',
+            'kind' => 'route',
+            'uri' => '/generale/soggetti-attivi/',
+            'path' => 'src/Controller/WorkerController.php',
+            'line' => 252,
+        ]],
+        'relationships' => [],
+    ], []);
+
+    expect($normalized['nodes'][0]['properties'])
+        ->toMatchArray([
+            'kind' => 'route',
+            'uri' => '/generale/soggetti-attivi/',
+            'source_file' => 'src/Controller/WorkerController.php',
+            'line_start' => 252,
+        ])
+        ->and($normalized['nodes'][0]['properties']['uri'])->not->toBe('src/Controller/WorkerController.php');
 });
 
 it('rejects nodes with blank identifiers', function () {

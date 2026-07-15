@@ -121,4 +121,3 @@ At 390×844, critical state remains visible. Project IDs, UUIDs, breadcrumb segm
 Every defect starts with a focused failing backend or React test. Each task follows red, minimal implementation, green, and focused regression verification. Existing tests are extended with semantic assertions rather than brittle snapshots. The final gate runs the non-watch frontend suite, production build, relevant backend tests, Pint, available PHP static analysis, and `git diff --check`.
 
 The implementation is additive at the API boundary and requires no schema migration. Existing canonical projections may need a normal non-destructive re-projection to populate new public metadata; the code documents this operational requirement without running imports. Work is committed in coherent steps on the existing branch, with no merge, push, deploy, Traefik change, logbook edit, or destructive database command.
-

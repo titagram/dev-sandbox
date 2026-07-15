@@ -45,12 +45,12 @@ final class DashboardGraphSearchTerms
                 ?? $properties['source_path']
                 ?? ($kind === 'file' ? ($properties['path'] ?? null) : null),
         );
-        $lineStart = $this->safeLine($properties['line_start'] ?? null);
+        $lineStart = $this->safeLine($properties['line_start'] ?? $properties['line'] ?? null);
         $lineEnd = $this->safeLine($properties['line_end'] ?? null);
         $namespace = $this->safeNamespace($properties['namespace'] ?? null);
         $path = strtolower(trim($kind)) === 'route'
             ? $this->safeRoutePath(
-                $properties['path'] ?? $properties['uri'] ?? $properties['route'] ?? null,
+                $properties['uri'] ?? $properties['route'] ?? $properties['route_path'] ?? $properties['url'] ?? $properties['path'] ?? null,
                 $trustedProducerRoute,
             )
             : null;

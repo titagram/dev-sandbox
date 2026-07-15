@@ -90,7 +90,7 @@ function responseStatus(response: DashboardGraphDataResponse | null): React.Reac
     <p className="text-[11px] text-muted-foreground">
       returned {response.returned}
       {response.truncated ? " · truncated" : ""}
-      {searchablePage && response.has_more ? ` · more available${response.next_cursor ? ` · cursor ${response.next_cursor}` : ""}` : ""}
+      {searchablePage && response.has_more ? " · more available" : ""}
     </p>
   );
 }
@@ -156,6 +156,7 @@ function NodeList({ title, response }: { title: string; response: DashboardGraph
             <li key={key} className="rounded border border-border/60 p-2">
               <span className="font-mono">{nodeDisplayLabel(item)}</span>
               {item.why && <p className="text-xs text-muted-foreground">{item.why}</p>}
+              {nodeEvidence(item).map((value) => <p key={value} className="break-all text-xs text-muted-foreground">{value}</p>)}
               {(item.family || item.edge_types?.length || item.distance !== undefined) && (
                 <p className="text-[11px] text-muted-foreground">
                   {[item.family, item.edge_types?.join(", "), item.distance === undefined ? null : `distance ${item.distance}`].filter(Boolean).join(" · ")}
@@ -497,7 +498,9 @@ function GraphExplorerSession({
           <CoverageNotice response={search} />
           {search.items.length === 0 ? <p>{search.reason === "exact_match_not_indexed_capacity"
             ? "Exact match was omitted by the graph capacity. Narrow the scope or rebuild the projection before retrying."
-            : hasPartialCoverage(search)
+            : search.reason === "exact_match_not_found"
+              ? "No exact symbol or route was found. Fuzzy matches are suppressed for exact-looking queries."
+              : hasPartialCoverage(search)
               ? "No match in the indexed subset; the graph is partial."
               : emptyResultMessage(search, "matching symbols")}</p> : (
             <div className="grid min-w-0 gap-2 md:grid-cols-2">
@@ -529,6 +532,7 @@ function GraphExplorerSession({
               <span>Kind: {details.detail.node?.kind || "unknown"}</span>
               {nodeEvidence(details.detail.node).map((value) => <span key={value} className="break-all">{value}</span>)}
               {details.detail.node?.match_reason && <span>{details.detail.node.match_reason}</span>}
+              {details.detail.completeness && <span>Completeness: {completenessLabel(details.detail.completeness)}</span>}
             </div>
             <CompactGraph
               selectedHandle={selectedHandle}

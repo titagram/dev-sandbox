@@ -2,7 +2,7 @@ declare const describe: any;
 declare const expect: any;
 declare const it: any;
 
-import { canAccess, navForRole, navPathForItem } from "./nav";
+import { canAccess, chooseProjectScope, navForRole, navPathForItem } from "./nav";
 
 const labelsFor = (role: Parameters<typeof navForRole>[0]) =>
   navForRole(role).map((item) => item.label);
@@ -57,5 +57,13 @@ describe("workspace primary navigation", () => {
 
     expect(work).toBeTruthy();
     expect(navPathForItem(work!, "developer", "proj/core")).toBe("/projects/proj%2Fcore/kanban");
+  });
+
+  it("prefers the project encoded by the current route over stale stored scope", () => {
+    expect(chooseProjectScope("real-project", "demo-project", [{ id: "demo-project" }, { id: "real-project" }])).toBe("real-project");
+  });
+
+  it("falls back to the first active project when stored scope is stale", () => {
+    expect(chooseProjectScope(undefined, "demo-project", [{ id: "real-project" }, { id: "another-project" }])).toBe("real-project");
   });
 });

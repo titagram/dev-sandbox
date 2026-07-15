@@ -395,8 +395,8 @@ class CanonicalGraphRepository
                 $trustedProducerRoute = $hasGraphContract || isset($legacyRouteIds[$id]);
                 $uri = $this->normalizedRouteUri($properties, $trustedProducerRoute);
                 if ($uri !== null) {
-                    $field = array_key_exists('path', $properties) ? 'path' : (array_key_exists('route', $properties) ? 'route' : 'uri');
-                    $properties[$field] = $uri;
+                    $properties['uri'] = $uri;
+                    unset($properties['path']);
                     $provenance[$id] = true;
                 }
             }
@@ -416,7 +416,7 @@ class CanonicalGraphRepository
     private function normalizedRouteUri(array $properties, bool $trustedProducerRoute): ?string
     {
         $candidate = null;
-        foreach (['path', 'uri', 'route', 'url'] as $field) {
+        foreach (['uri', 'route', 'route_path', 'url', 'path'] as $field) {
             if (is_string($properties[$field] ?? null)) {
                 $candidate = trim($properties[$field]);
                 break;
@@ -582,7 +582,12 @@ class CanonicalGraphRepository
                 'defined_handler' => $definedHandler,
                 'framework' => $this->boundedRouteString($route['framework'] ?? null, 64),
                 'inherited' => is_bool($route['inherited'] ?? null) ? $route['inherited'] : null,
+                'line_start' => $route['line_start'] ?? $route['line'] ?? null,
             ], static fn ($value): bool => $value !== '' && $value !== null);
+            $sourceFile = $this->routeRecordSourceFile($route);
+            if ($sourceFile !== null) {
+                $properties['source_file'] = $sourceFile;
+            }
             $presentationName = $name !== '' ? $name : trim($method.' '.$uri);
             if ($matchingIndexes !== []) {
                 $index = $matchingIndexes[0];
@@ -599,7 +604,6 @@ class CanonicalGraphRepository
                 if ($presentationName !== '' && ($existingName === '' || $existingName === $nodeId)) {
                     $node['name'] = $presentationName;
                 }
-                unset($node['path'], $existingProperties['path'], $existingProperties['source_path'], $existingProperties['file']);
                 $node['properties'] = $existingProperties;
                 $nodes[$index] = $node;
                 $routeRecordIds[] = $actualNodeId;
@@ -683,6 +687,23 @@ class CanonicalGraphRepository
         $path = $this->boundedRouteString($route['path'] ?? null);
 
         return str_starts_with($path, '/') ? $path : '';
+    }
+
+    private function routeRecordSourceFile(array $route): ?string
+    {
+        foreach (['source_file', 'source_path', 'file_path', 'file'] as $field) {
+            $candidate = $this->boundedRouteString($route[$field] ?? null);
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        $path = $this->boundedRouteString($route['path'] ?? null);
+        if ($path !== '' && ! str_starts_with($path, '/')) {
+            return $path;
+        }
+
+        return null;
     }
 
     private function boundedRouteString(mixed $value, int $maxLength = 512): string

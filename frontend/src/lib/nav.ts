@@ -2,9 +2,19 @@ import {
   LayoutDashboard, Boxes, KanbanSquare, PlayCircle, BookText, Network, Package,
   Bot, ShieldCheck, Settings, ServerCog, MessageSquare, Brain, Wrench, Workflow,
 } from "lucide-react";
-import { Role } from "@/types/devboard";
+import { Project, Role } from "@/types/devboard";
 
 export const PROJECT_SCOPE_STORAGE_KEY = "devboard.selectedProjectScope.v1";
+
+export function chooseProjectScope(
+  routeProjectId: string | undefined,
+  storedProjectId: string | undefined,
+  projects: readonly Pick<Project, "id">[],
+): string | undefined {
+  if (routeProjectId) return routeProjectId;
+  if (storedProjectId && projects.some((project) => project.id === storedProjectId)) return storedProjectId;
+  return projects[0]?.id;
+}
 
 export interface NavItem {
   key: string;

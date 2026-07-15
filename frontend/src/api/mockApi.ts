@@ -1621,6 +1621,15 @@ function normalizeGraphQuery(query: string): string {
   return query.replace(/\s+/gu, " ").trim();
 }
 
+function isExactLookingGraphQuery(query: string): boolean {
+  const trimmed = query.trim();
+  const symbolPattern = /^[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*|::[A-Za-z_][A-Za-z0-9_]*)*$/u;
+
+  return trimmed.startsWith("/")
+    || trimmed.includes("::")
+    || (symbolPattern.test(trimmed) && (trimmed.includes("_") || /[a-z][A-Z]/u.test(trimmed)));
+}
+
 function createGraphCursor(context: MockGraphCursorContext): string {
   mockGraphCursorSequence += 1;
   const cursor = `mock-gc1_${mockGraphCursorSequence.toString(36).padStart(8, "0")}`;
@@ -1748,6 +1757,14 @@ function mockDashboardGraphQuery(projectId: string, request: DashboardGraphQuery
         };
       })
       .sort((a, b) => b.score - a.score || (a.label || "").localeCompare(b.label || ""));
+    const exactMatch = matches.some((node) => node.match_type === "exact_symbol_name" || node.match_type === "exact_route_path");
+    if (isExactLookingGraphQuery(normalizedQuery) && !exactMatch) {
+      return dashboardGraphEnvelope(projectId, request, queryType, fixture.projection, {
+        found: true,
+        reason: "exact_match_not_found",
+        completeness: fixture.projection.quality === "complete" ? "verified_none" : "partial",
+      });
+    }
     const cursorContext = {
       projectId,
       queryType: "search" as const,

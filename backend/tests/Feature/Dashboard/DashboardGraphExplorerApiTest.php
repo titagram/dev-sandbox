@@ -84,6 +84,27 @@ it('uses the exact shared public kind vocabulary at the endpoint boundary', func
     }
 });
 
+it('passes safe graph evidence through detail cards without exposing opaque paths', function (): void {
+    $user = task3ApiUser('Admin');
+    $projectId = task3ApiProject();
+    $scope = task3ApiRepositoryScope($projectId);
+    $fixture = task3ApiBindExplorer($this, $projectId, $scope['id'], $scope['graph_version']);
+
+    $this->actingAs($user)
+        ->postJson("/api/dashboard/projects/{$projectId}/graph/query", [
+            'type' => 'detail',
+            'scope_type' => 'repository',
+            'scope_id' => $scope['id'],
+            'node_handle' => $fixture['source_handle'],
+        ])
+        ->assertOk()
+        ->assertJsonPath('node.source_file', 'app/Services/InvoiceService.php')
+        ->assertJsonPath('node.line_start', 42)
+        ->assertJsonPath('node.namespace', 'App\\Services')
+        ->assertJsonMissingPath('node.path')
+        ->assertDontSee('/srv/private/InvoiceService.php');
+});
+
 it('rejects Agent and no-role users from the shared dashboard reader contract', function (): void {
     $projectId = task3ApiProject();
     $agent = task3ApiUser('Agent');
@@ -819,6 +840,8 @@ it('maps result reasons to a closed public vocabulary and safe status behavior',
         'invalid_direction',
         'validation_failed',
         'query_error',
+        'exact_match_not_indexed_capacity',
+        'exact_match_not_found',
     ];
     foreach ($known as $reason) {
         expect(task3ApiBoundaryResponse(['found' => false, 'reason' => $reason])['reason'])->toBe($reason);
@@ -847,6 +870,39 @@ it('drops non-string and nested edge type members without warnings', function ()
     ]);
 
     expect($payload['items'][0]['edge_types'])->toBe(['CALLS_METHOD']);
+});
+
+it('preserves public evidence fields while rejecting unsafe source files', function (): void {
+    $payload = task3ApiBoundaryResponse([
+        'found' => true,
+        'node' => [
+            'handle' => (new DashboardGraphPublicHandle)->forNode(
+                'project-1', 'repository', 'scope-1', 'graph-v1', 'method:Invoice',
+            ),
+            'kind' => 'method',
+            'label' => 'Invoice',
+            'source_file' => 'app/Services/InvoiceService.php',
+            'line_start' => 42,
+            'namespace' => 'App\\Services',
+        ],
+        'items' => [[
+            'handle' => (new DashboardGraphPublicHandle)->forNode(
+                'project-1', 'repository', 'scope-1', 'graph-v1', 'method:Unsafe',
+            ),
+            'kind' => 'method',
+            'label' => 'Unsafe',
+            'source_file' => '/srv/private/Unsafe.php',
+            'line_start' => 99,
+        ]],
+    ]);
+
+    expect($payload['node'])
+        ->toMatchArray([
+            'source_file' => 'app/Services/InvoiceService.php',
+            'line_start' => 42,
+            'namespace' => 'App\\Services',
+        ])
+        ->and($payload['items'][0])->not->toHaveKeys(['source_file', 'line_start']);
 });
 
 it('leaves the plugin graph route token-protected', function (): void {
@@ -1116,6 +1172,10 @@ final class Task3ApiNeo4jClient implements Neo4jClient
             'public_handle' => $this->handles['source_handle'],
             'kind' => $this->nodeKind,
             'public_search_label' => 'InvoiceService::charge',
+            'public_source_file' => 'app/Services/InvoiceService.php',
+            'public_line_start' => 42,
+            'public_namespace' => 'App\\Services',
+            'path' => '/srv/private/InvoiceService.php',
         ];
         $target = [
             'external_id' => 'method:InvoiceService::save',

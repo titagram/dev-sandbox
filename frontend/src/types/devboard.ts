@@ -552,7 +552,7 @@ export interface TaskCard {
   wiki_page_id: string | null;
   attachment_count: number;
   image_attachment_count: number;
-  source_status?: SourceStatus;
+  source_status: SourceStatus;
   blocked: boolean;
   blocked_reason?: string;
   updated_at: string;

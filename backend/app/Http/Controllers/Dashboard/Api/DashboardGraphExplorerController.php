@@ -66,6 +66,7 @@ final class DashboardGraphExplorerController extends Controller
         'validation_failed',
         'query_error',
         'exact_match_not_indexed_capacity',
+        'exact_match_not_found',
     ];
 
     private const ALLOWED_FIELDS = [
@@ -655,12 +656,13 @@ final class DashboardGraphExplorerController extends Controller
     /** @param array<string,mixed> $public @param array<string,mixed> $source */
     private function appendPublicEvidence(array &$public, array $source): void
     {
-        if (($sourceFile = $this->publicSourceFile($source['source_file'] ?? null)) !== null) {
+        $sourceFile = $this->publicSourceFile($source['source_file'] ?? null);
+        if ($sourceFile !== null) {
             $public['source_file'] = $sourceFile;
-        }
-        foreach (['line_start', 'line_end'] as $field) {
-            if (is_int($source[$field] ?? null) && $source[$field] >= 1 && $source[$field] <= 10_000_000) {
-                $public[$field] = $source[$field];
+            foreach (['line_start', 'line_end'] as $field) {
+                if (is_int($source[$field] ?? null) && $source[$field] >= 1 && $source[$field] <= 10_000_000) {
+                    $public[$field] = $source[$field];
+                }
             }
         }
         if (($namespace = $this->publicNamespace($source['namespace'] ?? null)) !== null) {
@@ -677,11 +679,13 @@ final class DashboardGraphExplorerController extends Controller
 
     private function publicSourceFile(mixed $value): ?string
     {
-        if (! is_string($value) || $value === '' || strlen($value) > 512
+        if (! is_string($value) || ! mb_check_encoding($value, 'UTF-8') || $value === '' || strlen($value) > 512
             || str_starts_with($value, '/') || str_contains($value, '\\')
             || str_contains($value, '://')
             || preg_match('/\A[A-Za-z]:[\\\\\/]/', $value) === 1
-            || preg_match('~(?:\A|/)\.\.(?:/|\z)~', $value) === 1) {
+            || preg_match('~(?:\A|/)(?:\.|\.\.)(?:/|\z)~', $value) === 1
+            || str_contains($value, '//')
+            || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
             return null;
         }
 

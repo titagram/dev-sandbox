@@ -225,10 +225,12 @@ final class DashboardGraphExplorerService
             ),
             false,
         );
-        if ($this->isExactLookingQuery($query) && ! $hasExactMatch && $this->capacityOmitted($projection) > 0) {
+        if ($this->isExactLookingQuery($query) && ! $hasExactMatch) {
+            $capacityOmitted = $this->capacityOmitted($projection) > 0;
+
             return [
                 'found' => true,
-                'reason' => 'exact_match_not_indexed_capacity',
+                'reason' => $capacityOmitted ? 'exact_match_not_indexed_capacity' : 'exact_match_not_found',
                 'projection' => $this->projectionEnvelope($projection),
                 'items' => [],
                 'edges' => [],
@@ -236,7 +238,7 @@ final class DashboardGraphExplorerService
                 'limit' => $boundedLimit,
                 'next_cursor' => null,
                 'has_more' => false,
-                'completeness' => 'partial',
+                'completeness' => $capacityOmitted ? 'partial' : $this->emptyCompleteness($projection),
             ];
         }
         $nextCursor = null;
@@ -679,7 +681,7 @@ final class DashboardGraphExplorerService
             'items' => [],
             'edges' => [],
             'limit' => max(1, $limit),
-            'completeness' => 'complete',
+            'completeness' => $this->completeness($resolved['projection']),
         ];
     }
 
@@ -1079,8 +1081,9 @@ final class DashboardGraphExplorerService
         $trimmed = trim($query);
 
         return str_starts_with($trimmed, '/')
-            || preg_match('/[A-Z]/', $trimmed) === 1
-            || str_contains($trimmed, '::');
+            || str_contains($trimmed, '::')
+            || (preg_match('/\A[A-Za-z_][A-Za-z0-9_]*(?:\\\\[A-Za-z_][A-Za-z0-9_]*|::[A-Za-z_][A-Za-z0-9_]*)*\z/D', $trimmed) === 1
+                && (str_contains($trimmed, '_') || preg_match('/[a-z][A-Z]/', $trimmed) === 1));
     }
 
     private function capacityOmitted(object $projection): int
@@ -1155,11 +1158,13 @@ final class DashboardGraphExplorerService
 
     private function safePublicSourceFile(mixed $value): ?string
     {
-        if (! is_string($value) || $value === '' || strlen($value) > 512
+        if (! is_string($value) || ! mb_check_encoding($value, 'UTF-8') || $value === '' || strlen($value) > 512
             || str_starts_with($value, '/') || str_contains($value, '\\')
             || str_contains($value, '://')
             || preg_match('/\A[A-Za-z]:[\\\\\/]/', $value) === 1
-            || preg_match('~(?:\A|/)\.\.(?:/|\z)~', $value) === 1) {
+            || preg_match('~(?:\A|/)(?:\.|\.\.)(?:/|\z)~', $value) === 1
+            || str_contains($value, '//')
+            || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
             return null;
         }
 

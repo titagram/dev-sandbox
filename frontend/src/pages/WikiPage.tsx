@@ -282,12 +282,15 @@ function WikiRefreshPanel({ projectId }: { projectId: string }) {
   };
 
   return (
-    <Panel
-      dense
-      title={<span className="inline-flex items-center gap-1.5"><RefreshCw className="h-4 w-4 text-muted-foreground" />Wiki refresh</span>}
-      action={latest ? <Pill tone={refreshTone(latest.status)}>{latest.status.replace(/_/g, " ")}</Pill> : <Pill tone="slate">No jobs</Pill>}
-    >
-      <div className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_auto]">
+    <details className="rounded-md border border-border bg-card" data-testid="wiki-refresh-panel">
+      <summary className="flex cursor-pointer list-inside flex-wrap items-center gap-2 px-4 py-3 text-sm font-medium">
+        <span className="inline-flex items-center gap-1.5"><RefreshCw className="h-4 w-4 text-muted-foreground" />Wiki refresh</span>
+        {latest ? <Pill tone={refreshTone(latest.status)}>{latest.status.replace(/_/g, " ")}</Pill> : <Pill tone="slate">No jobs</Pill>}
+        <span className="text-xs font-normal text-muted-foreground">{latest?.reason || "Run a bounded Hades populate job when pages need refreshing."}</span>
+      </summary>
+      <div className="border-t border-border">
+      <Panel dense>
+        <div className="grid gap-3 p-3 xl:grid-cols-[minmax(0,1fr)_auto]">
         <div className="min-w-0 text-xs text-muted-foreground">
           {latest ? (
             <>
@@ -374,8 +377,10 @@ function WikiRefreshPanel({ projectId }: { projectId: string }) {
             Request
           </Button>
         </form>
+        </div>
+      </Panel>
       </div>
-    </Panel>
+    </details>
   );
 }
 

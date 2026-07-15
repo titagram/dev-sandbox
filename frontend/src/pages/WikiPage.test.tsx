@@ -151,6 +151,10 @@ describe("WikiPage index controls", () => {
     expect(container.querySelector("[data-testid='filter-audience']")).toBeTruthy();
     expect(container.querySelector("[data-testid='filter-page-type']")).toBeTruthy();
     expect(container.querySelector("[data-testid='filter-source']")).toBeTruthy();
+    const refreshPanel = container.querySelector("[data-testid='wiki-refresh-panel']") as HTMLDetailsElement;
+    expect(refreshPanel).toBeTruthy();
+    expect(refreshPanel.open).toBe(false);
+    expect(refreshPanel.textContent).toContain("Run a bounded Hades populate job");
     expect(container.textContent).toContain("Architecture");
     expect(container.textContent).toContain("Deploy runbook");
 

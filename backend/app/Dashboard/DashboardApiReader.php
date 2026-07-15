@@ -2906,7 +2906,7 @@ final class DashboardApiReader
     }
 
     /**
-     * A route's direct `path` is approved presentation data, not filesystem
+     * A route's direct URI/path is approved presentation data, not filesystem
      * provenance. Nested `source.path` remains private and is never exempted.
      *
      * @param  array<string, mixed>  $node
@@ -2920,7 +2920,7 @@ final class DashboardApiReader
         }
 
         $paths = [];
-        foreach ([$node['path'] ?? null, $properties['path'] ?? null] as $path) {
+        foreach ([$node['path'] ?? null, $properties['path'] ?? null, $properties['uri'] ?? null, $properties['route'] ?? null, $properties['route_path'] ?? null, $properties['url'] ?? null] as $path) {
             if (is_string($path) && $this->isGraphRoutePath(trim($path))) {
                 $paths[] = $path;
             }

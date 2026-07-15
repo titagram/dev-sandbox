@@ -7,7 +7,7 @@ import { API_BASE_URL, USE_MOCK, api } from "@/api/devboardApi";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { useApi } from "@/hooks/useApi";
-import { navForRole, navPathForItem, PROJECT_SCOPE_STORAGE_KEY, ROLE_LABEL } from "@/lib/nav";
+import { chooseProjectScope, navForRole, navPathForItem, PROJECT_SCOPE_STORAGE_KEY, ROLE_LABEL } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -232,12 +232,11 @@ export default function AppShell() {
 
   useEffect(() => {
     if (!projectState.data || projectState.loading) return;
-    const knownProject = effectiveProjectId && projectState.data.some((project) => project.id === effectiveProjectId);
-    if (knownProject || projectState.data.length === 0) return;
-    const nextProjectId = projectState.data[0].id;
+    const nextProjectId = chooseProjectScope(activeProjectId, selectedProjectId, projectState.data);
+    if (!nextProjectId || nextProjectId === selectedProjectId) return;
     setSelectedProjectId(nextProjectId);
     writeStoredProjectScope(nextProjectId);
-  }, [effectiveProjectId, projectState.data, projectState.loading]);
+  }, [activeProjectId, projectState.data, projectState.loading, selectedProjectId]);
 
   if (!user) return null;
 
@@ -278,7 +277,7 @@ export default function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Topbar */}
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-card/40 px-3 sm:px-5">
+        <header className="flex min-w-0 h-14 shrink-0 items-center gap-2 overflow-hidden border-b border-border bg-card/40 px-3 sm:gap-3 sm:px-5">
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" data-testid="mobile-nav-toggle">
@@ -300,24 +299,24 @@ export default function AppShell() {
           </Sheet>
 
           <span
-            className="inline-flex h-7 min-w-0 max-w-[42vw] shrink-0 items-center truncate rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground sm:max-w-[180px]"
+            className="inline-flex h-7 min-w-0 max-w-[30vw] shrink-0 items-center truncate rounded-md border border-border bg-background px-2.5 text-xs font-medium text-muted-foreground sm:max-w-[180px]"
             data-testid="scope-label"
             title={scopeLabel}
           >
             {scopeLabel}
           </span>
 
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 overflow-hidden text-sm text-muted-foreground" data-testid="breadcrumb">
+          <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden whitespace-nowrap text-sm text-muted-foreground" data-testid="breadcrumb">
             {crumbs.length === 0 && <span>dashboard</span>}
             {crumbs.map((c, i) => (
               <React.Fragment key={i}>
-                {i > 0 && <ChevronRight className="h-3.5 w-3.5 opacity-50" />}
-                <span className={cn("min-w-0 max-w-[30vw] break-all font-mono text-xs sm:max-w-[220px]", i === crumbs.length - 1 && "text-foreground")} title={i === 1 && activeProject?.name ? activeProject.name : c}>{i === 1 && activeProject?.name ? activeProject.name : c}</span>
+                {i > 0 && <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-50" />}
+                <span className={cn("min-w-0 max-w-[24vw] shrink truncate font-mono text-xs sm:max-w-[220px]", i === crumbs.length - 1 && "text-foreground")} title={i === 1 && activeProject?.name ? activeProject.name : c}>{i === 1 && activeProject?.name ? activeProject.name : c}</span>
               </React.Fragment>
             ))}
           </div>
 
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
             <button
               type="button"
               onClick={() => cmd.setOpen(true)}

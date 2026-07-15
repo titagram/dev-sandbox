@@ -547,6 +547,42 @@ it('does not return a fuzzy answer when capacity may have omitted an exact symbo
     ]);
 });
 
+it('does not turn an absent exact-looking symbol into a fuzzy answer', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $fixture['client']->searchRows = [[
+        'node' => [
+            'public_handle' => $fixture['handle'],
+            'kind' => 'class',
+            'public_search_name' => 'AdminControllerBulkDeleteBehaviorTest',
+            'public_search_label' => 'AdminControllerBulkDeleteBehaviorTest',
+        ],
+        'labels' => ['Class'],
+        'score' => 9.0,
+    ]];
+
+    expect($fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        'AdminControllerBulkDeleteBehavior',
+        10,
+    ))->toMatchArray([
+        'found' => true,
+        'reason' => 'exact_match_not_found',
+        'items' => [],
+        'completeness' => 'verified_none',
+    ]);
+});
+
+it('reports projection completeness on direct detail cards', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    DB::table('canonical_graph_projections')->where('id', $fixture['projection_id'])->update(['quality' => 'partial']);
+
+    expect($fixture['service']->detail(
+        $fixture['project_id'], 'workspace_binding', $fixture['scope_id'], $fixture['handle'],
+    ))->toMatchArray(['completeness' => 'partial']);
+});
+
 it('ranks an exact class above its similarly named test class', function (): void {
     $fixture = dashboardGraphExplorerFixture();
     $exactHandle = (new DashboardGraphPublicHandle)->forNode(
