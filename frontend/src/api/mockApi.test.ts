@@ -46,6 +46,8 @@ describe("mockApi approved Hades Agent contracts", () => {
       label: "ImportService",
       kind: "class",
       score: expect.any(Number),
+      match_type: "fuzzy",
+      match_reason: "Fuzzy label match",
     });
     expect(search.next_cursor).toEqual(expect.any(String));
     expect(search).toEqual(expect.objectContaining({ has_more: true, truncated: false }));
