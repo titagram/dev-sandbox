@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Services\Hades\HadesArtifactIntegrity;
 use Database\Seeders\DevBoardSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -278,7 +279,6 @@ it('stores Hades git tree, symbols, and PHP graph artifacts from authenticated a
                 ['path' => 'README.md', 'sha256' => str_repeat('1', 64), 'bytes' => 120],
             ],
         ],
-        'sha256' => str_repeat('2', 64),
         'truncated' => false,
     ], hadesM5Headers($agent['agent_token']))
         ->assertCreated()
@@ -395,7 +395,7 @@ it('stores compressed Hades artifacts as decoded JSON', function () {
         'artifact_uncompressed_sha256' => hash('sha256', $json),
         'artifact_uncompressed_bytes' => strlen($json),
         'artifact_compressed_bytes' => strlen($compressed),
-        'sha256' => hash('sha256', $json),
+        'sha256' => app(HadesArtifactIntegrity::class)->sha256($artifact),
     ], hadesM5Headers($agent['agent_token']))
         ->assertCreated()
         ->assertJsonPath('artifact.schema', 'hades.code_graph.v1')
@@ -420,8 +420,7 @@ it('looks up and deduplicates unchanged Hades artifacts by hash', function () {
             ['path' => 'README.md', 'sha256' => str_repeat('1', 64), 'bytes' => 120],
         ],
     ];
-    $json = json_encode($artifact, JSON_THROW_ON_ERROR);
-    $sha256 = hash('sha256', $json);
+    $sha256 = app(HadesArtifactIntegrity::class)->sha256($artifact);
 
     $this->getJson('/api/hades/v1/artifacts/lookup?'.http_build_query([
         'project_id' => $agent['project_id'],

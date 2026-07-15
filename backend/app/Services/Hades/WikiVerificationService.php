@@ -91,6 +91,15 @@ class WikiVerificationService
                 'source_status' => SourceStatus::VerifiedFromCode->value,
                 'content_markdown' => $currentRevision->content_markdown,
                 'evidence_refs' => $resolvedEvidence,
+            ], null, null, [
+                'actor' => ['type' => 'hades_agent'],
+                'payload' => [
+                    'workspace_binding_id' => $workspaceBindingId,
+                    'actor' => [
+                        'hades_agent_id' => $agent->id,
+                        'external_agent_id' => $agent->external_agent_id,
+                    ],
+                ],
             ]);
 
             if ($result['created']) {
@@ -102,6 +111,7 @@ class WikiVerificationService
                 'new_revision_id' => $result['wiki_revision_id'],
                 'workspace_binding_id' => $workspaceBindingId,
                 'verification_note' => $verificationNote,
+                'evidence_refs' => $resolvedEvidence,
                 'actor' => [
                     'hades_agent_id' => $agent->id,
                     'external_agent_id' => $agent->external_agent_id,

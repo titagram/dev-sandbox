@@ -3,13 +3,19 @@
 namespace App\Services\Hades;
 
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\Response;
 
 class WikiVerificationEvidencePolicy
 {
     private const GIT_TREE_SCHEMA = 'hades.git_tree.v1';
 
-    public function __construct(private readonly HadesProjectAwareness $awareness) {}
+    private const MAX_TOTAL_CLAIMS = 80;
+
+    public function __construct(
+        private readonly HadesProjectAwareness $awareness,
+        private readonly HadesArtifactIntegrity $integrity,
+    ) {}
 
     /**
      * @param  list<array<string, mixed>>  $refs
@@ -39,12 +45,14 @@ class WikiVerificationEvidencePolicy
 
         $resolved = [];
         $gitTree = null;
+        $claimCount = 0;
 
         foreach ($refs as $ref) {
             $kind = $ref['kind'] ?? null;
+            $claims = $this->claims($ref['claims'] ?? null, $claimCount);
 
             if ($kind === 'artifact_ref') {
-                $resolved[] = $this->resolveArtifact($projectId, $workspaceBindingId, $binding, $bindingHead, $ref);
+                $resolved[] = $this->resolveArtifact($projectId, $workspaceBindingId, $binding, $bindingHead, $ref) + ['claims' => $claims];
 
                 continue;
             }
@@ -53,7 +61,7 @@ class WikiVerificationEvidencePolicy
                 $path = $this->safeRelativePath($ref['path'] ?? null);
                 $sha256 = $this->sha256($ref['sha256'] ?? $ref['hash'] ?? null);
                 $gitTree ??= $this->latestGitTree($projectId, $workspaceBindingId);
-                $resolved[] = $this->resolveFile($binding, $bindingHead, $gitTree, $path, $sha256);
+                $resolved[] = $this->resolveFile($binding, $bindingHead, $gitTree, $path, $sha256) + ['claims' => $claims];
 
                 continue;
             }
@@ -95,6 +103,12 @@ class WikiVerificationEvidencePolicy
             throw $this->invalid('Artifact evidence could not be resolved in the linked workspace.');
         }
 
+        try {
+            $this->integrity->validateWikiArtifact($artifact);
+        } catch (InvalidArgumentException $exception) {
+            throw $this->invalid($exception->getMessage());
+        }
+
         $artifactHead = $this->currentArtifactHead($artifact, $bindingHead);
 
         return [
@@ -119,6 +133,12 @@ class WikiVerificationEvidencePolicy
 
         if ($gitTree === null) {
             throw $this->stale('No current git tree exists for the linked workspace.');
+        }
+
+        try {
+            $this->integrity->validateWikiArtifact($gitTree);
+        } catch (InvalidArgumentException $exception) {
+            throw $this->invalid($exception->getMessage());
         }
 
         return $gitTree;
@@ -185,6 +205,42 @@ class WikiVerificationEvidencePolicy
         }
 
         return strtolower($value);
+    }
+
+    /**
+     * Normalize the agent-authored claim attestations attached to each evidence
+     * reference. These mappings make the agent's reasoning auditable; the
+     * server still establishes only artifact/file integrity and freshness.
+     *
+     * @return list<array{claim: string, proof: string}>
+     */
+    private function claims(mixed $value, int &$total): array
+    {
+        if (! is_array($value) || ! array_is_list($value) || $value === [] || count($value) > 8) {
+            throw $this->invalid('Evidence claims must be a non-empty bounded list.');
+        }
+
+        $claims = [];
+        foreach ($value as $mapping) {
+            if (! is_array($mapping)
+                || count($mapping) !== 2
+                || ! array_key_exists('claim', $mapping)
+                || ! array_key_exists('proof', $mapping)) {
+                throw $this->invalid('Evidence claim mapping is invalid.');
+            }
+            $claim = is_string($mapping['claim']) ? trim($mapping['claim']) : '';
+            $proof = is_string($mapping['proof']) ? trim($mapping['proof']) : '';
+            if ($claim === '' || $proof === '' || mb_strlen($claim) > 500 || mb_strlen($proof) > 500) {
+                throw $this->invalid('Evidence claim mapping is invalid.');
+            }
+            $claims[] = ['claim' => $claim, 'proof' => $proof];
+            $total++;
+            if ($total > self::MAX_TOTAL_CLAIMS) {
+                throw $this->invalid('Evidence claims exceed the total limit.');
+            }
+        }
+
+        return $claims;
     }
 
     private function safeRelativePath(mixed $value): string

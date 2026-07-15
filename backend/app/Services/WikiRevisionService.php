@@ -14,7 +14,7 @@ class WikiRevisionService
      * @param  array<string, mixed>  $payload
      * @return array{wiki_page_id: string, wiki_revision_id: string, source_status: string, created: bool}
      */
-    public function write(array $payload, ?int $authorUserId = null, ?string $authorDeviceId = null): array
+    public function write(array $payload, ?int $authorUserId = null, ?string $authorDeviceId = null, ?array $auditActor = null): array
     {
         $evidence = $payload['evidence_refs'] ?? [];
         if (($payload['source_status'] ?? null) === 'verified_from_code' && $evidence === []) {
@@ -22,7 +22,7 @@ class WikiRevisionService
         }
 
         $revisionId = (string) Str::ulid();
-        $write = DB::transaction(function () use ($payload, $evidence, $revisionId, $authorUserId, $authorDeviceId): array {
+        $write = DB::transaction(function () use ($payload, $evidence, $revisionId, $authorUserId, $authorDeviceId, $auditActor): array {
             DB::table('projects')
                 ->where('id', $payload['project_id'])
                 ->lockForUpdate()
@@ -71,7 +71,8 @@ class WikiRevisionService
 
             app(AuditLogger::class)->record('wiki.updated', 'wiki_page', $pageId, [
                 'wiki_revision_id' => $revisionId,
-            ], [
+                ...($auditActor['payload'] ?? []),
+            ], $auditActor['actor'] ?? [
                 'type' => $authorUserId ? 'user' : ($authorDeviceId ? 'plugin' : 'system'),
                 'user_id' => $authorUserId,
                 'device_id' => $authorDeviceId,

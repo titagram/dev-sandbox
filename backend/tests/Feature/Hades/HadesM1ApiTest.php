@@ -23,11 +23,11 @@ it('normalizes an explicit bootstrap capability grant to the supported catalog',
         $project['id'],
         'Explicit capability grant',
         90,
-        ['populate_project_wiki', 'not_supported', 'read_files', 'read_files'],
+        ['populate_project_wiki', 'verify_project_wiki', 'not_supported', 'read_files', 'read_files'],
     );
 
     expect(json_decode($created['token']->allowed_capabilities, true, flags: JSON_THROW_ON_ERROR))
-        ->toBe(['read_files', 'populate_project_wiki']);
+        ->toBe(['read_files', 'populate_project_wiki', 'verify_project_wiki']);
 });
 
 it('verifies a project scoped bootstrap token without creating an agent', function () {
@@ -123,6 +123,7 @@ it('keeps an explicitly empty bootstrap grant empty during live registration', f
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',
+        'verify_project_wiki',
     ];
 
     $response = $this->postJson('/api/hades/v1/agents/register', [
@@ -152,6 +153,7 @@ it('treats a legacy SQL NULL bootstrap grant as the complete supported catalog',
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',
+        'verify_project_wiki',
     ];
 
     $response = $this->postJson('/api/hades/v1/agents/register', [

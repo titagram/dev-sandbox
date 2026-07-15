@@ -134,34 +134,90 @@ class WikiPageController extends Controller
 
         $auth = $request->attributes->get('hades_auth');
         $agent = $auth['agent'];
-        $binding = $this->linkedBinding(
-            $agent,
-            $validated['project_id'],
-            $validated['workspace_binding_id'],
-        );
-
-        if ($binding instanceof JsonResponse) {
-            return $binding;
+        if ($agent->project_id !== $validated['project_id']) {
+            return $this->error('project_mismatch', 'Hades agent token is scoped to a different project.', Response::HTTP_FORBIDDEN);
         }
 
         try {
             $this->capability->assertCanWrite($agent);
+            $result = DB::transaction(function () use ($agent, $validated): array {
+                $project = DB::table('projects')
+                    ->where('id', $validated['project_id'])
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($project === null) {
+                    throw new HadesTokenException(
+                        'project_not_found',
+                        'Hades project was not found.',
+                        Response::HTTP_NOT_FOUND,
+                    );
+                }
+
+                if ($project->deleted_at !== null || $project->status === 'deleted') {
+                    throw new HadesTokenException(
+                        'project_deleted',
+                        'Hades mutations are disabled for deleted projects.',
+                        Response::HTTP_CONFLICT,
+                    );
+                }
+
+                if ($project->archived_at !== null || $project->status === 'archived') {
+                    throw new HadesTokenException(
+                        'project_archived',
+                        'Hades mutations are disabled for archived projects.',
+                        Response::HTTP_CONFLICT,
+                    );
+                }
+
+                $binding = DB::table('hades_workspace_bindings')
+                    ->where('id', $validated['workspace_binding_id'])
+                    ->where('project_id', $validated['project_id'])
+                    ->where('hades_agent_id', $agent->id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($binding === null) {
+                    throw new HadesTokenException(
+                        'workspace_binding_not_found',
+                        'Workspace binding was not found.',
+                        Response::HTTP_NOT_FOUND,
+                    );
+                }
+
+                if ($binding->status !== 'linked') {
+                    throw new HadesTokenException(
+                        'workspace_binding_unlinked',
+                        'Workspace binding is not linked.',
+                        Response::HTTP_CONFLICT,
+                    );
+                }
+
+                return $this->wiki->write([
+                    'project_id' => $validated['project_id'],
+                    'repository_id' => null,
+                    'slug' => $validated['slug'],
+                    'title' => $validated['title'],
+                    'page_type' => $validated['page_type'],
+                    'producer' => 'hades',
+                    'source_type' => 'hades_agent_draft',
+                    'source_status' => SourceStatus::NeedsVerification->value,
+                    'content_markdown' => $validated['content_markdown'],
+                    'evidence_refs' => $validated['evidence_refs'] ?? [],
+                ], null, null, [
+                    'actor' => ['type' => 'hades_agent'],
+                    'payload' => [
+                        'workspace_binding_id' => $binding->id,
+                        'actor' => [
+                            'hades_agent_id' => $agent->id,
+                            'external_agent_id' => $agent->external_agent_id,
+                        ],
+                    ],
+                ]);
+            }, 3);
         } catch (HadesTokenException $exception) {
             return $exception->toResponse();
         }
-
-        $result = $this->wiki->write([
-            'project_id' => $validated['project_id'],
-            'repository_id' => null,
-            'slug' => $validated['slug'],
-            'title' => $validated['title'],
-            'page_type' => $validated['page_type'],
-            'producer' => 'hades',
-            'source_type' => 'hades_agent_draft',
-            'source_status' => SourceStatus::NeedsVerification->value,
-            'content_markdown' => $validated['content_markdown'],
-            'evidence_refs' => $validated['evidence_refs'] ?? [],
-        ]);
 
         return response()->json(
             $result,
@@ -176,12 +232,16 @@ class WikiPageController extends Controller
             'workspace_binding_id' => ['required', 'string'],
             'expected_current_revision_id' => ['required', 'string'],
             'evidence_refs' => ['present', 'array', 'list', 'max:'.self::MAX_EVIDENCE_REFS],
-            'evidence_refs.*' => ['required', 'array:kind,schema,sha256,hash,path'],
+            'evidence_refs.*' => ['required', 'array:kind,schema,sha256,hash,path,claims'],
             'evidence_refs.*.kind' => ['required', 'string', 'max:64'],
             'evidence_refs.*.schema' => ['sometimes', 'string', 'max:191'],
             'evidence_refs.*.sha256' => ['sometimes', 'string', 'max:64'],
             'evidence_refs.*.hash' => ['sometimes', 'string', 'max:64'],
             'evidence_refs.*.path' => ['sometimes', 'string', 'max:2048'],
+            'evidence_refs.*.claims' => ['required', 'array', 'list', 'min:1', 'max:8'],
+            'evidence_refs.*.claims.*' => ['required', 'array:claim,proof'],
+            'evidence_refs.*.claims.*.claim' => ['required', 'string', 'max:500'],
+            'evidence_refs.*.claims.*.proof' => ['required', 'string', 'max:500'],
             'verification_note' => ['nullable', 'string', 'max:2000'],
         ]);
 
@@ -208,7 +268,7 @@ class WikiPageController extends Controller
         }
 
         try {
-            $this->capability->assertCanWrite($agent);
+            $this->capability->assertCanVerify($agent);
             $result = $this->verification->verify(
                 $validated['project_id'],
                 $binding->id,

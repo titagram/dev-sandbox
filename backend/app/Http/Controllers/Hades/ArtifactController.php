@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Jobs\ProjectCanonicalGraphToNeo4j;
 use App\Services\Graph\CanonicalGraphProjectionService;
 use App\Services\Graph\CanonicalGraphRepository;
+use App\Services\Hades\HadesArtifactIntegrity;
 use App\Services\Hades\HadesSearchDocumentIndexer;
 use App\Services\Hades\HadesSourceSliceCandidateService;
 use Illuminate\Http\JsonResponse;
@@ -28,6 +29,7 @@ class ArtifactController extends Controller
         private readonly HadesSourceSliceCandidateService $sourceSliceCandidates,
         private readonly CanonicalGraphRepository $graphs,
         private readonly CanonicalGraphProjectionService $projections,
+        private readonly HadesArtifactIntegrity $integrity,
     ) {}
 
     public function lookup(Request $request): JsonResponse
@@ -77,7 +79,7 @@ class ArtifactController extends Controller
             'artifact_uncompressed_sha256' => ['nullable', 'required_with:artifact_compressed', 'string', 'size:64'],
             'artifact_uncompressed_bytes' => ['nullable', 'required_with:artifact_compressed', 'integer', 'min:1', 'max:'.self::MAX_UNCOMPRESSED_BYTES],
             'artifact_compressed_bytes' => ['nullable', 'required_with:artifact_compressed', 'integer', 'min:1', 'max:'.self::MAX_COMPRESSED_BYTES],
-            'sha256' => ['nullable', 'string', 'size:64'],
+            'sha256' => ['nullable', 'string', 'regex:/\A[0-9a-f]{64}\z/i'],
             'truncated' => ['nullable', 'boolean'],
             'redactions' => ['nullable', 'integer', 'min:0', 'max:100000'],
         ]);
@@ -126,11 +128,14 @@ class ArtifactController extends Controller
             }
         }
 
-        $artifactJson = json_encode($artifactPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $artifactJson = $this->integrity->canonicalJson($artifactPayload);
         if (strlen($artifactJson) > self::MAX_UNCOMPRESSED_BYTES) {
             return $this->error('artifact_too_large', 'Artifact exceeds the uncompressed byte limit.', Response::HTTP_REQUEST_ENTITY_TOO_LARGE);
         }
-        $payloadHash = $validated['sha256'] ?? hash('sha256', $artifactJson);
+        $payloadHash = $this->integrity->sha256($artifactPayload);
+        if (isset($validated['sha256']) && ! hash_equals(strtolower($validated['sha256']), $payloadHash)) {
+            return $this->error('artifact_hash_mismatch', 'Artifact hash does not match its canonical payload.', Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
         $existing = $this->findExistingArtifact($validated['project_id'], $binding->id, $validated['schema'], $payloadHash);
         if ($existing) {
             return response()->json([

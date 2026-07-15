@@ -12,6 +12,7 @@ class HadesCapabilityPolicy
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',
+        'verify_project_wiki',
     ];
 
     /**

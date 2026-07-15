@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\User;
+use App\Services\Hades\HadesArtifactIntegrity;
 use App\Services\Hades\HadesTokenService;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -329,6 +330,226 @@ it('rejects wiki drafts from an agent without the populate project wiki capabili
         ->and(DB::table('wiki_revisions')->count())->toBe(0);
 });
 
+it('requires the distinct verify project wiki capability for verification', function () {
+    $agent = wikiWorkflowAgent(effectiveCapabilities: ['populate_project_wiki']);
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'verify-capability-boundary', 'needs_verification');
+    $fileHash = str_repeat('4', 64);
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/artifacts', [
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'schema' => 'hades.git_tree.v1',
+            'artifact' => [
+                'schema' => 'hades.git_tree.v1',
+                'head_commit' => $binding->head_commit,
+                'files' => [['path' => 'app/Current.php', 'sha256' => $fileHash]],
+            ],
+        ])
+        ->assertCreated();
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'file_ref', 'path' => 'app/Current.php', 'sha256' => $fileHash]],
+        ))
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'wiki_verification_capability_not_allowed');
+});
+
+it('rejects claimless evidence even when the uploaded artifact is current and structurally valid', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'claimless-artifact', 'needs_verification');
+    $artifactPayload = [
+        'schema' => 'hades.symbols.v1',
+        'workspace_state' => ['head_commit' => $binding->head_commit],
+        'symbols' => [['name' => 'ClaimedSymbol']],
+    ];
+
+    $artifact = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/artifacts', [
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'schema' => 'hades.symbols.v1',
+            'artifact' => $artifactPayload,
+        ])
+        ->assertCreated()
+        ->json('artifact');
+
+    $claimless = wikiWorkflowVerificationPayload(
+        $agent,
+        $binding,
+        $page['revision_id'],
+        [['kind' => 'artifact_ref', 'sha256' => $artifact['sha256']]],
+    );
+    unset($claimless['evidence_refs'][0]['claims']);
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', $claimless)
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+});
+
+it('rejects a minimal self-attested artifact uploaded over HTTP', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'self-attested-artifact', 'needs_verification');
+    $artifact = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/artifacts', [
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'schema' => 'hades.symbols.v1',
+            'artifact' => [
+                'schema' => 'hades.symbols.v1',
+                'workspace_state' => ['head_commit' => $binding->head_commit],
+            ],
+        ])
+        ->assertCreated()
+        ->json('artifact');
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'artifact_ref', 'sha256' => $artifact['sha256']]],
+        ))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+});
+
+it('rejects a truncated artifact uploaded over HTTP even when it has usable code structure', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'truncated-artifact', 'needs_verification');
+    $artifact = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/artifacts', [
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'schema' => 'hades.symbols.v1',
+            'artifact' => [
+                'schema' => 'hades.symbols.v1',
+                'workspace_state' => ['head_commit' => $binding->head_commit],
+                'symbols' => [['name' => 'PartialSymbol']],
+            ],
+            'truncated' => true,
+        ])
+        ->assertCreated()
+        ->json('artifact');
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'artifact_ref', 'sha256' => $artifact['sha256']]],
+        ))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+});
+
+it('rejects an unsafe git tree artifact uploaded over HTTP', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'unsafe-git-tree', 'needs_verification');
+
+    $unsafeTree = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/artifacts', [
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding->id,
+            'schema' => 'hades.git_tree.v1',
+            'artifact' => [
+                'schema' => 'hades.git_tree.v1',
+                'head_commit' => $binding->head_commit,
+                'files' => [[
+                    'path' => '../secrets.txt',
+                    'sha256' => str_repeat('9', 64),
+                ]],
+            ],
+        ])
+        ->assertCreated()
+        ->json('artifact');
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', wikiWorkflowVerificationPayload(
+            $agent,
+            $binding,
+            $page['revision_id'],
+            [['kind' => 'artifact_ref', 'sha256' => $unsafeTree['sha256']]],
+        ))
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'evidence_invalid');
+});
+
+it('rejects malformed and excessive agent-authored claim attestations', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'bounded-claims', 'needs_verification');
+    $artifact = wikiWorkflowArtifact($agent, $binding, 'hades.symbols.v1', [
+        'schema' => 'hades.symbols.v1',
+        'workspace_state' => ['head_commit' => $binding->head_commit],
+        'symbols' => [['name' => 'BoundedClaim']],
+    ]);
+    $validClaim = [
+        'claim' => 'This is an agent-authored attestation.',
+        'proof' => 'The current artifact was reviewed by the agent.',
+    ];
+    $payloads = [];
+
+    $blank = wikiWorkflowVerificationPayload(
+        $agent,
+        $binding,
+        $page['revision_id'],
+        [['kind' => 'artifact_ref', 'sha256' => $artifact->sha256]],
+    );
+    $blank['evidence_refs'][0]['claims'][0]['proof'] = '   ';
+    $payloads[] = $blank;
+
+    $tooManyTotal = wikiWorkflowVerificationPayload(
+        $agent,
+        $binding,
+        $page['revision_id'],
+        array_fill(0, 11, [
+            'kind' => 'artifact_ref',
+            'sha256' => $artifact->sha256,
+            'claims' => array_fill(0, 8, $validClaim),
+        ]),
+    );
+    $payloads[] = $tooManyTotal;
+
+    foreach ($payloads as $payload) {
+        $this->withToken($agent['agent_token'])
+            ->postJson('/api/hades/v1/wiki/pages/'.$page['page_id'].'/verify', $payload)
+            ->assertUnprocessable()
+            ->assertJsonPath('error.code', 'evidence_invalid');
+    }
+
+    expect(DB::table('wiki_revisions')->where('wiki_page_id', $page['page_id'])->count())->toBe(1);
+});
+
+it('records the Hades agent and binding on draft audit events', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+
+    $response = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages', wikiWorkflowDraftPayload($agent, $binding))
+        ->assertCreated();
+
+    $audit = DB::table('audit_logs')
+        ->where('action', 'wiki.updated')
+        ->where('target_id', $response->json('wiki_page_id'))
+        ->first();
+    $payload = json_decode($audit->payload, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($audit->actor_type)->toBe('hades_agent')
+        ->and($payload['actor']['hades_agent_id'])->toBe($agent['agent_id'])
+        ->and($payload['workspace_binding_id'])->toBe($binding->id);
+});
+
 it('validates bounded agent-authored wiki draft input', function () {
     $agent = wikiWorkflowAgent();
     $binding = wikiWorkflowBinding($agent);
@@ -414,15 +635,26 @@ it('creates a safe wiki draft then appends an immutable revision for the same pr
         ->toBe($second->json('wiki_revision_id'));
 });
 
-it('resolves wiki draft page identity inside the write transaction without a controller preflight query', function () {
+it('locks and rechecks the project then binding before resolving draft page identity in the write transaction', function () {
     $agent = wikiWorkflowAgent();
     $binding = wikiWorkflowBinding($agent);
     $lookupTransactionLevels = [];
     $lookupSql = [];
+    $lockedTables = [];
     $outerTransactionLevel = DB::transactionLevel();
 
-    DB::listen(function (QueryExecuted $query) use (&$lookupTransactionLevels, &$lookupSql): void {
+    DB::listen(function (QueryExecuted $query) use (&$lookupTransactionLevels, &$lookupSql, &$lockedTables, $outerTransactionLevel): void {
         $sql = strtolower($query->sql);
+        if ($query->connection->transactionLevel() > $outerTransactionLevel && str_starts_with(ltrim($sql), 'select')) {
+            foreach (['projects', 'hades_workspace_bindings'] as $table) {
+                if (str_contains($sql, 'from "'.$table.'"') || str_contains($sql, 'from `'.$table.'`')) {
+                    $lockedTables[] = $table;
+
+                    break;
+                }
+            }
+        }
+
         if (str_starts_with(ltrim($sql), 'select')
             && str_contains($sql, 'wiki_pages')
             && str_contains($sql, 'project_id')
@@ -436,10 +668,12 @@ it('resolves wiki draft page identity inside the write transaction without a con
         ->postJson('/api/hades/v1/wiki/pages', wikiWorkflowDraftPayload($agent, $binding))
         ->assertCreated();
 
-    expect($lookupTransactionLevels)->toBe([$outerTransactionLevel + 1])
+    expect($lookupTransactionLevels)->toHaveCount(1)
+        ->and($lookupTransactionLevels[0])->toBeGreaterThan($outerTransactionLevel)
         ->and(collect($lookupSql)->contains(
             fn (string $sql): bool => str_contains($sql, 'exists'),
-        ))->toBeFalse();
+        ))->toBeFalse()
+        ->and(array_slice($lockedTables, 0, 2))->toBe(['projects', 'hades_workspace_bindings']);
 });
 
 it('locks the project before the wiki page and workspace binding during verification', function () {
@@ -449,7 +683,7 @@ it('locks the project before the wiki page and workspace binding during verifica
     $artifact = wikiWorkflowArtifact($agent, $binding, 'hades.symbols.v1', [
         'schema' => 'hades.symbols.v1',
         'workspace_state' => ['head_commit' => $binding->head_commit],
-        'symbols' => [],
+        'symbols' => [['name' => 'VerificationLock']],
     ]);
     $outerTransactionLevel = DB::transactionLevel();
     $lockedTables = [];
@@ -592,7 +826,7 @@ it('rejects artifact and file evidence after the locked binding head advances', 
     $artifact = wikiWorkflowArtifact($agent, $binding, 'hades.symbols.v1', [
         'schema' => 'hades.symbols.v1',
         'workspace_state' => ['head_commit' => $artifactHead],
-        'symbols' => [],
+        'symbols' => [['name' => 'StaleArtifact']],
     ]);
     wikiWorkflowArtifact($agent, $binding, 'hades.git_tree.v1', [
         'schema' => 'hades.git_tree.v1',
@@ -635,7 +869,7 @@ it('rejects artifact and file evidence when the artifact head is unknown', funct
     $fileHash = str_repeat('6', 64);
     $artifact = wikiWorkflowArtifact($agent, $binding, 'hades.symbols.v1', [
         'schema' => 'hades.symbols.v1',
-        'symbols' => [],
+        'symbols' => [['name' => 'UnknownHead']],
     ]);
     wikiWorkflowArtifact($agent, $binding, 'hades.git_tree.v1', [
         'schema' => 'hades.git_tree.v1',
@@ -765,7 +999,7 @@ it('appends a verified revision from a current artifact and file ref', function 
         [
             'schema' => 'hades.symbols.v1',
             'workspace_head_commit' => $binding->head_commit,
-            'symbols' => [],
+            'symbols' => [['name' => 'CurrentSymbol']],
         ],
     );
     $fileHash = str_repeat('4', 64);
@@ -781,7 +1015,15 @@ it('appends a verified revision from a current artifact and file ref', function 
             $binding,
             $page['revision_id'],
             [
-                ['kind' => 'artifact_ref', 'schema' => 'hades.symbols.v1', 'sha256' => $artifact->sha256],
+                [
+                    'kind' => 'artifact_ref',
+                    'schema' => 'hades.symbols.v1',
+                    'sha256' => $artifact->sha256,
+                    'claims' => [[
+                        'proof' => 'The exact current artifact or file hash was reviewed.',
+                        'claim' => 'The cited code supports this wiki revision.',
+                    ]],
+                ],
                 ['kind' => 'file_ref', 'path' => 'app/Current.php', 'hash' => $fileHash],
             ],
         ))
@@ -806,6 +1048,10 @@ it('appends a verified revision from a current artifact and file ref', function 
                 'sha256' => $artifact->sha256,
                 'workspace_binding_id' => $binding->id,
                 'head_commit' => $binding->head_commit,
+                'claims' => [[
+                    'claim' => 'The cited code supports this wiki revision.',
+                    'proof' => 'The exact current artifact or file hash was reviewed.',
+                ]],
             ],
             [
                 'kind' => 'file_ref',
@@ -815,6 +1061,10 @@ it('appends a verified revision from a current artifact and file ref', function 
                 'sha256' => $fileHash,
                 'workspace_binding_id' => $binding->id,
                 'head_commit' => $binding->head_commit,
+                'claims' => [[
+                    'claim' => 'The cited code supports this wiki revision.',
+                    'proof' => 'The exact current artifact or file hash was reviewed.',
+                ]],
             ],
         ])
         ->and(DB::table('wiki_pages')->where('id', $page['page_id'])->value('current_revision_id'))->toBe($newRevisionId)
@@ -833,7 +1083,7 @@ it('emits wiki.verified with actor and prior/new revision ids', function () {
         [
             'schema' => 'hades.symbols.v1',
             'workspace_state' => ['head_commit' => $binding->head_commit],
-            'symbols' => [],
+            'symbols' => [['name' => 'AuditedSymbol']],
         ],
     );
 
@@ -858,6 +1108,12 @@ it('emits wiki.verified with actor and prior/new revision ids', function () {
         ->where('target_id', $page['page_id'])
         ->first();
     $payload = json_decode($audit->payload, true, flags: JSON_THROW_ON_ERROR);
+    $revisionAudit = DB::table('audit_logs')
+        ->where('action', 'wiki.updated')
+        ->where('target_id', $page['page_id'])
+        ->where('payload', 'like', '%'.$response->json('wiki_revision_id').'%')
+        ->first();
+    $revisionAuditPayload = json_decode($revisionAudit->payload, true, flags: JSON_THROW_ON_ERROR);
 
     expect($audit->actor_type)->toBe('hades_agent')
         ->and($audit->actor_user_id)->toBeNull()
@@ -869,6 +1125,10 @@ it('emits wiki.verified with actor and prior/new revision ids', function () {
             'hades_agent_id' => $agent['agent_id'],
             'external_agent_id' => $agent['external_agent_id'],
         ])
+        ->and($payload['evidence_refs'])->toBe($revisionEvidence)
+        ->and($revisionAudit->actor_type)->toBe('hades_agent')
+        ->and($revisionAuditPayload['workspace_binding_id'])->toBe($binding->id)
+        ->and($revisionAuditPayload['actor'])->toBe($payload['actor'])
         ->and($newRevision->content_markdown)->toBe('# Wiki page')
         ->and($revisionEvidence)->toHaveCount(1)
         ->and($revisionEvidence[0])->not->toHaveKey('verification_note');
@@ -913,7 +1173,7 @@ it('rejects an overlong wiki verification note without writes', function () {
 /**
  * @return array{project_id: string, agent_id: string, external_agent_id: string, agent_token: string}
  */
-function wikiWorkflowAgent(?string $projectId = null, array $effectiveCapabilities = ['populate_project_wiki']): array
+function wikiWorkflowAgent(?string $projectId = null, array $effectiveCapabilities = ['populate_project_wiki', 'verify_project_wiki']): array
 {
     if ($projectId === null) {
         $user = User::factory()->create(['status' => 'active']);
@@ -1029,6 +1289,17 @@ function wikiWorkflowBinding(array $agent): object
  */
 function wikiWorkflowVerificationPayload(array $agent, object $binding, string $expectedRevisionId, array $evidenceRefs): array
 {
+    $evidenceRefs = array_map(function (mixed $ref): mixed {
+        if (is_array($ref) && ! array_key_exists('claims', $ref)) {
+            $ref['claims'] = [[
+                'claim' => 'The cited code supports this wiki revision.',
+                'proof' => 'The exact current artifact or file hash was reviewed.',
+            ]];
+        }
+
+        return $ref;
+    }, $evidenceRefs);
+
     return [
         'project_id' => $agent['project_id'],
         'workspace_binding_id' => $binding->id,
@@ -1051,7 +1322,8 @@ function wikiWorkflowArtifact(
 ): object {
     $id = (string) Str::ulid();
     $createdAt ??= now();
-    $artifactJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $integrity = app(HadesArtifactIntegrity::class);
+    $artifactJson = $integrity->canonicalJson($payload);
 
     DB::table('hades_agent_artifacts')->insert([
         'id' => $id,
@@ -1061,7 +1333,7 @@ function wikiWorkflowArtifact(
         'job_id' => null,
         'schema' => $schema,
         'artifact' => $artifactJson,
-        'sha256' => $sha256 ?? hash('sha256', $artifactJson),
+        'sha256' => $sha256 ?? $integrity->sha256($payload),
         'truncated' => false,
         'redactions' => 0,
         'created_at' => $createdAt,
