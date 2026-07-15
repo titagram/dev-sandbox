@@ -527,6 +527,15 @@ class CanonicalGraphRepository
         $nodeKey = is_array($payload['nodes'] ?? null) ? 'nodes' : 'symbols';
         $nodes = is_array($payload[$nodeKey] ?? null) ? array_values($payload[$nodeKey]) : [];
         $routeRecordIds = [];
+        $routeNodeIndexesByAlias = [];
+        foreach ($nodes as $index => $candidate) {
+            if (! is_array($candidate)) {
+                continue;
+            }
+            foreach ($this->routeNodeAliases($candidate) as $alias) {
+                $routeNodeIndexesByAlias[$alias][$index] = true;
+            }
+        }
 
         foreach (array_filter($routes, 'is_array') as $route) {
             $name = $this->boundedRouteString($route['name'] ?? null);
@@ -544,11 +553,12 @@ class CanonicalGraphRepository
             }
             $nodeId = 'route:'.$routeReference;
             $matchingIndexes = [];
-            foreach ($nodes as $index => $candidate) {
-                if (is_array($candidate) && $this->routeNodeMatches($candidate, $nodeId, $routeReference, $name)) {
-                    $matchingIndexes[] = $index;
+            foreach (array_unique(array_filter([$nodeId, $routeReference, $name])) as $alias) {
+                foreach (array_keys($routeNodeIndexesByAlias[$alias] ?? []) as $index) {
+                    $matchingIndexes[$index] = true;
                 }
             }
+            $matchingIndexes = array_keys($matchingIndexes);
             if (count($matchingIndexes) > 1) {
                 throw new InvalidArgumentException('Graph route inventory identity is ambiguous.');
             }
@@ -592,6 +602,10 @@ class CanonicalGraphRepository
                 'properties' => $properties,
             ];
             $nodes[] = $node;
+            $newIndex = array_key_last($nodes);
+            foreach ($this->routeNodeAliases($node) as $alias) {
+                $routeNodeIndexesByAlias[$alias][$newIndex] = true;
+            }
             $routeRecordIds[] = $nodeId;
         }
 
@@ -601,24 +615,30 @@ class CanonicalGraphRepository
         return $payload;
     }
 
-    private function routeNodeMatches(array $node, string $nodeId, string $routeReference, string $routeName): bool
+    /** @return list<string> */
+    private function routeNodeAliases(array $node): array
     {
         $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
-        $values = [];
+        $kind = strtolower($this->boundedRouteString(
+            $node['kind'] ?? $node['type'] ?? $properties['kind'] ?? $properties['type'] ?? null,
+            64,
+        ));
+        $routeLike = in_array($kind, ['route', 'endpoint', 'http_endpoint'], true);
+        $aliases = [];
         foreach ([$node['id'] ?? null, $node['symbol_id'] ?? null, $node['name'] ?? null, $properties['name'] ?? null] as $value) {
             if (! is_string($value) || trim($value) === '') {
                 continue;
             }
             $clean = trim($value);
-            $values[] = $clean;
             if (str_starts_with(strtolower($clean), 'route:')) {
-                $values[] = substr($clean, 6);
+                $aliases[] = $clean;
+                $aliases[] = substr($clean, 6);
+            } elseif ($routeLike) {
+                $aliases[] = $clean;
             }
         }
 
-        return in_array($nodeId, $values, true)
-            || in_array($routeReference, $values, true)
-            || ($routeName !== '' && in_array($routeName, $values, true));
+        return array_values(array_unique(array_filter($aliases)));
     }
 
     private function routeRecordUri(array $route): string

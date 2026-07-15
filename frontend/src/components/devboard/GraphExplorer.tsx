@@ -93,9 +93,13 @@ function CoverageNotice({ response }: { response: DashboardGraphDataResponse }) 
   if (!coverage || !hasPartialCoverage(response)) return null;
   const details = [
     `${coverage.files_analyzed}/${coverage.files_total} files`,
-    `${coverage.routes_promoted ?? 0} routes`,
-    `${coverage.tests_promoted ?? 0} tests`,
   ];
+  if (typeof coverage.routes_promoted === "number") {
+    details.push(`${coverage.routes_promoted} routes`);
+  }
+  if (typeof coverage.tests_promoted === "number") {
+    details.push(`${coverage.tests_promoted} tests`);
+  }
   if ((coverage.nodes_capacity_omitted ?? 0) > 0) {
     details.push(`${coverage.nodes_capacity_omitted} capacity omissions`);
   }

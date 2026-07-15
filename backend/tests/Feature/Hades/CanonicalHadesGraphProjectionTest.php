@@ -642,6 +642,35 @@ it('hydrates contracted route inventories idempotently and never promotes source
         ->and($graph['private_route_provenance'])->not->toHaveKey('route:unsafe-source-only');
 });
 
+it('never rewrites an ordinary symbol that merely shares a route name', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'] = [[
+        'id' => 'function:health',
+        'kind' => 'function',
+        'name' => 'health',
+    ]];
+    $payload['relationships'] = [];
+    $payload['routes'] = [[
+        'name' => 'health',
+        'method' => 'GET',
+        'uri' => '/health',
+    ]];
+
+    $graph = app(CanonicalGraphRepository::class)->prepareHadesUpload($payload);
+    $nodes = collect($graph['nodes'])->keyBy('id');
+
+    expect($nodes)->toHaveCount(2)
+        ->and($nodes['function:health']['properties']['kind'])->toBe('function')
+        ->and($nodes['route:health']['properties'])->toMatchArray([
+            'kind' => 'route',
+            'name' => 'health',
+            'method' => 'GET',
+            'uri' => '/health',
+        ])
+        ->and($graph['private_route_provenance'])->toHaveKey('route:health')
+        ->and($graph['private_route_provenance'])->not->toHaveKey('function:health');
+});
+
 it('keeps artifact upload runtime responses aligned with the documented 422 contracts', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();

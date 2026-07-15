@@ -555,4 +555,30 @@ describe("GraphExplorer", () => {
     expect(container.textContent).toContain("No match in the indexed subset");
     expect(container.textContent).not.toContain("No matching symbols");
   });
+
+  it("does not invent route or test coverage when legacy counters are absent", async () => {
+    const partialProjection = {
+      ...projection,
+      quality: "partial",
+      coverage: {
+        languages: ["php"],
+        files_total: 10,
+        files_analyzed: 8,
+        files_failed: 2,
+      },
+    };
+    const partialQuery = jest.fn((request: DashboardGraphQueryRequest) => Promise.resolve(
+      envelope(request.type, { projection: partialProjection }),
+    ));
+    await mount(partialQuery);
+    const select = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { select.value = "repository:repo-1"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "Missing"); });
+    await settle(300);
+
+    expect(container.textContent).toContain("Indexed subset");
+    expect(container.textContent).toContain("8/10 files");
+    expect(container.textContent).not.toContain("0 routes");
+    expect(container.textContent).not.toContain("0 tests");
+  });
 });
