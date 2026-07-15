@@ -144,15 +144,18 @@ it('keeps an explicitly empty bootstrap grant empty during live registration', f
         ))->toBe([]);
 });
 
-it('treats a legacy SQL NULL bootstrap grant as the complete supported catalog', function () {
+it('does not add newly introduced capabilities to a legacy SQL NULL bootstrap grant', function () {
     $token = createHadesM1BootstrapToken(['allowed_capabilities' => null]);
-    $all = [
+    $legacyCatalog = [
         'read_files',
         'read_source_slice',
         'project_inspection',
         'sync_git_tree',
         'populate_backend_ast',
         'populate_project_wiki',
+    ];
+    $currentCatalog = [
+        ...$legacyCatalog,
         'verify_project_wiki',
     ];
 
@@ -162,11 +165,11 @@ it('treats a legacy SQL NULL bootstrap grant as the complete supported catalog',
         'label' => 'Legacy null grant agent',
         'platform' => 'linux-x64',
         'version' => '0.1.0',
-        'capabilities' => $all,
+        'capabilities' => $currentCatalog,
     ], hadesM1Headers($token['plain_token']))
         ->assertOk();
 
-    expect($response->json('capability_names'))->toBe($all);
+    expect($response->json('capability_names'))->toBe($legacyCatalog);
 });
 
 it('issues a project-scoped Plugin credential bundle during Hades agent registration', function () {

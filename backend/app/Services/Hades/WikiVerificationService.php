@@ -39,10 +39,34 @@ class WikiVerificationService
             $agent,
             $verificationNote,
         ): array {
-            DB::table('projects')
+            $project = DB::table('projects')
                 ->where('id', $projectId)
                 ->lockForUpdate()
                 ->first();
+
+            if ($project === null) {
+                throw new HadesTokenException(
+                    'project_not_found',
+                    'Hades project was not found.',
+                    Response::HTTP_NOT_FOUND,
+                );
+            }
+
+            if ($project->deleted_at !== null || $project->status === 'deleted') {
+                throw new HadesTokenException(
+                    'project_deleted',
+                    'Hades mutations are disabled for deleted projects.',
+                    Response::HTTP_CONFLICT,
+                );
+            }
+
+            if ($project->archived_at !== null || $project->status === 'archived') {
+                throw new HadesTokenException(
+                    'project_archived',
+                    'Hades mutations are disabled for archived projects.',
+                    Response::HTTP_CONFLICT,
+                );
+            }
 
             $page = DB::table('wiki_pages')
                 ->where('id', $pageId)

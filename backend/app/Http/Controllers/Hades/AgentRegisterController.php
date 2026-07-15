@@ -51,7 +51,7 @@ class AgentRegisterController extends Controller
         $declaredCapabilities = $this->capabilities->normalizeNames($validated['capabilities'] ?? []);
         $storedAllowedCapabilities = $auth['token']->allowed_capabilities;
         $allowedCapabilities = $storedAllowedCapabilities === null
-            ? $this->capabilities->supportedNames()
+            ? $this->capabilities->legacyNullGrantNames()
             : $this->capabilities->normalizeNames(
                 json_decode($storedAllowedCapabilities, true, 512, JSON_THROW_ON_ERROR) ?: [],
             );

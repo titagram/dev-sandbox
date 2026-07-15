@@ -2,7 +2,9 @@
 
 use App\Models\User;
 use App\Services\Hades\HadesArtifactIntegrity;
+use App\Services\Hades\HadesTokenException;
 use App\Services\Hades\HadesTokenService;
+use App\Services\Hades\WikiVerificationService;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -359,6 +361,74 @@ it('requires the distinct verify project wiki capability for verification', func
         ->assertForbidden()
         ->assertJsonPath('error.code', 'wiki_verification_capability_not_allowed');
 });
+
+it('rejects verification when the locked project no longer exists', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $missingProjectId = (string) Str::ulid();
+    $exception = null;
+
+    try {
+        app(WikiVerificationService::class)->verify(
+            $missingProjectId,
+            $binding->id,
+            (string) Str::ulid(),
+            (string) Str::ulid(),
+            [],
+            DB::table('hades_agents')->where('id', $agent['agent_id'])->first(),
+        );
+    } catch (HadesTokenException $caught) {
+        $exception = $caught;
+    }
+
+    expect($exception)->toBeInstanceOf(HadesTokenException::class)
+        ->and($exception->errorCode)->toBe('project_not_found')
+        ->and(DB::table('audit_logs')->where('action', 'wiki.verified')->count())->toBe(0);
+});
+
+it('rejects verification when the locked project is read-only', function (string $status, string $timestampColumn, string $errorCode) {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage($agent['project_id'], 'locked-project-'.$status, 'needs_verification');
+    $artifact = wikiWorkflowArtifact($agent, $binding, 'hades.symbols.v1', [
+        'schema' => 'hades.symbols.v1',
+        'workspace_state' => ['head_commit' => $binding->head_commit],
+        'symbols' => [['name' => 'LifecycleGuard']],
+    ]);
+    DB::table('projects')->where('id', $agent['project_id'])->update([
+        'status' => $status,
+        $timestampColumn => now(),
+    ]);
+    $exception = null;
+
+    try {
+        app(WikiVerificationService::class)->verify(
+            $agent['project_id'],
+            $binding->id,
+            $page['page_id'],
+            $page['revision_id'],
+            [[
+                'kind' => 'artifact_ref',
+                'sha256' => $artifact->sha256,
+                'claims' => [[
+                    'claim' => 'The cited code supports this wiki revision.',
+                    'proof' => 'The exact current artifact was reviewed.',
+                ]],
+            ]],
+            DB::table('hades_agents')->where('id', $agent['agent_id'])->first(),
+        );
+    } catch (HadesTokenException $caught) {
+        $exception = $caught;
+    }
+
+    expect($exception)->toBeInstanceOf(HadesTokenException::class)
+        ->and($exception->errorCode)->toBe($errorCode)
+        ->and(DB::table('wiki_revisions')->where('wiki_page_id', $page['page_id'])->count())->toBe(1)
+        ->and(DB::table('audit_logs')->where('action', 'wiki.verified')->count())->toBe(0);
+})->with([
+    'archived' => ['archived', 'archived_at', 'project_archived'],
+    'deleted' => ['deleted', 'deleted_at', 'project_deleted'],
+]);
 
 it('rejects claimless evidence even when the uploaded artifact is current and structurally valid', function () {
     $agent = wikiWorkflowAgent();

@@ -126,6 +126,7 @@ it('applies a Hades wiki refresh result through the wiki revision service', func
                     'slug' => 'hades-wiki-refresh',
                     'title' => 'Hades Wiki Refresh',
                     'page_type' => 'technical',
+                    'producer' => 'malicious-agent-supplied-producer',
                     'source_status' => 'verified_from_code',
                     'content_markdown' => "# Hades Wiki Refresh\n\nGenerated from bounded local summaries.",
                     'evidence_refs' => [
@@ -141,8 +142,26 @@ it('applies a Hades wiki refresh result through the wiki revision service', func
 
     $page = DB::table('wiki_pages')->where('project_id', $projectId)->where('slug', 'hades-wiki-refresh')->first();
 
+    $revision = DB::table('wiki_revisions')->where('wiki_page_id', $page->id)->first();
+    $audit = DB::table('audit_logs')
+        ->where('action', 'wiki.updated')
+        ->where('target_type', 'wiki_page')
+        ->where('target_id', $page->id)
+        ->first();
+    $auditPayload = json_decode((string) $audit->payload, true, flags: JSON_THROW_ON_ERROR);
+
     expect($page)->not->toBeNull()
-        ->and(DB::table('wiki_revisions')->where('wiki_page_id', $page->id)->value('source_type'))->toBe('hades_wiki_refresh')
+        ->and($page->source_status)->toBe('needs_verification')
+        ->and($revision->producer)->toBe('hades')
+        ->and($revision->source_type)->toBe('hades_wiki_refresh')
+        ->and($revision->source_status)->toBe('needs_verification')
+        ->and($audit)->not->toBeNull()
+        ->and($audit->actor_type)->toBe('hades_agent')
+        ->and($auditPayload['workspace_binding_id'])->toBe($bindingId)
+        ->and($auditPayload['actor'])->toBe([
+            'hades_agent_id' => $agent['backend_agent_id'],
+            'external_agent_id' => $agent['external_agent_id'],
+        ])
         ->and(DB::table('hades_agent_jobs')->where('id', $jobId)->value('result_applied_at'))->not->toBeNull();
 
     $memory = DB::table('project_memory_entries')
@@ -201,7 +220,8 @@ it('applies legacy local-agent wiki_revisions results and records written page t
     expect($revision)->not->toBeNull();
     $evidence = json_decode((string) $revision->evidence_refs, true, flags: JSON_THROW_ON_ERROR);
 
-    expect($page->source_status)->toBe('verified_from_code')
+    expect($page->source_status)->toBe('needs_verification')
+        ->and($revision->source_status)->toBe('needs_verification')
         ->and($revision->producer)->toBe('hades')
         ->and($revision->source_type)->toBe('hades_wiki_refresh')
         ->and($evidence[0]['path'])->toBe('AGENTS.md');

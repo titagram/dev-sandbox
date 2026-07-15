@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\SourceStatus;
 use App\Services\Hades\HadesSearchDocumentIndexer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -28,6 +29,7 @@ class WikiRefreshResultService
             throw new WikiRevisionException('schema_validation_failed', 'Wiki refresh result pages must be an array.');
         }
 
+        $auditActor = $this->auditActor($job);
         $written = [];
         foreach ($pages as $page) {
             if (! is_array($page)) {
@@ -46,7 +48,6 @@ class WikiRefreshResultService
             }
 
             $evidenceRefs = $this->evidenceRefs($page);
-            $sourceStatus = $this->sourceStatus($page, $evidenceRefs);
 
             $payload = [
                 'project_id' => (string) $job->project_id,
@@ -54,15 +55,15 @@ class WikiRefreshResultService
                 'slug' => (string) $page['slug'],
                 'title' => (string) $page['title'],
                 'page_type' => (string) ($page['page_type'] ?? 'technical'),
-                'producer' => (string) ($page['producer'] ?? 'hades'),
+                'producer' => 'hades',
                 'source_type' => 'hades_wiki_refresh',
-                'source_status' => $sourceStatus,
+                'source_status' => SourceStatus::NeedsVerification->value,
                 'content_markdown' => (string) $page['content_markdown'],
                 'evidence_refs' => $evidenceRefs,
             ];
 
             $written[] = [
-                ...$this->revisions->write($payload),
+                ...$this->revisions->write($payload, null, null, $auditActor),
                 'slug' => $payload['slug'],
                 'title' => $payload['title'],
             ];
@@ -194,31 +195,34 @@ class WikiRefreshResultService
         return [];
     }
 
-    /**
-     * @param  array<string, mixed>  $page
-     * @param  list<mixed>  $evidenceRefs
-     */
-    private function sourceStatus(array $page, array $evidenceRefs): string
+    /** @return array{actor: array{type: string}, payload: array<string, mixed>} */
+    private function auditActor(object $job): array
     {
-        $status = (string) ($page['source_status'] ?? $page['source'] ?? '');
-        $allowed = [
-            'verified_from_code',
-            'developer_provided',
-            'ai_generated',
-            'needs_verification',
-            'stale',
-            'conflict_with_code',
+        $hadesAgentId = trim((string) ($job->hades_agent_id ?? ''));
+        $workspaceBindingId = trim((string) ($job->workspace_binding_id ?? ''));
+        if ($hadesAgentId === '' || $workspaceBindingId === '') {
+            throw new WikiRevisionException(
+                'schema_validation_failed',
+                'Wiki refresh jobs require Hades agent and workspace provenance.',
+            );
+        }
+
+        $agentPayload = ['hades_agent_id' => $hadesAgentId];
+        $externalAgentId = DB::table('hades_agents')
+            ->where('id', $hadesAgentId)
+            ->where('project_id', (string) $job->project_id)
+            ->value('external_agent_id');
+        if (is_string($externalAgentId) && trim($externalAgentId) !== '') {
+            $agentPayload['external_agent_id'] = $externalAgentId;
+        }
+
+        return [
+            'actor' => ['type' => 'hades_agent'],
+            'payload' => [
+                'workspace_binding_id' => $workspaceBindingId,
+                'actor' => $agentPayload,
+            ],
         ];
-
-        if (! in_array($status, $allowed, true)) {
-            $status = $evidenceRefs === [] ? 'needs_verification' : 'verified_from_code';
-        }
-
-        if ($status === 'verified_from_code' && $evidenceRefs === []) {
-            return 'needs_verification';
-        }
-
-        return $status;
     }
 
     private function repositoryBelongsToProject(string $repositoryId, string $projectId): bool
