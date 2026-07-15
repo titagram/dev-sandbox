@@ -100,8 +100,27 @@ class WikiPageController extends Controller
     {
         return $this->currentRevisionQuery($projectId)->select([
             ...$this->currentRevisionColumns(),
-            DB::raw('json_array_length(wiki_revisions.evidence_refs) as evidence_count'),
+            DB::raw($this->evidenceCountExpression().' as evidence_count'),
         ]);
+    }
+
+    private function evidenceCountExpression(): string
+    {
+        return match (DB::connection()->getDriverName()) {
+            'sqlite' => "CASE json_type(wiki_revisions.evidence_refs)
+                WHEN 'array' THEN json_array_length(wiki_revisions.evidence_refs)
+                WHEN 'object' THEN (SELECT count(*) FROM json_each(wiki_revisions.evidence_refs))
+                ELSE 0 END",
+            'pgsql' => "CASE jsonb_typeof(wiki_revisions.evidence_refs::jsonb)
+                WHEN 'array' THEN jsonb_array_length(wiki_revisions.evidence_refs::jsonb)
+                WHEN 'object' THEN (SELECT count(*) FROM jsonb_object_keys(wiki_revisions.evidence_refs::jsonb))
+                ELSE 0 END",
+            'mysql', 'mariadb' => "CASE JSON_TYPE(wiki_revisions.evidence_refs)
+                WHEN 'ARRAY' THEN JSON_LENGTH(wiki_revisions.evidence_refs)
+                WHEN 'OBJECT' THEN JSON_LENGTH(wiki_revisions.evidence_refs)
+                ELSE 0 END",
+            default => throw new \RuntimeException('Unsupported database driver for wiki evidence counts.'),
+        };
     }
 
     private function currentRevisionDetailQuery(string $projectId): Builder

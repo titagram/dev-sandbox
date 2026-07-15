@@ -183,6 +183,33 @@ it('uses a lightweight list projection and reports the complete evidence count',
         ->and($wikiQueries[0])->not->toContain('content_markdown');
 });
 
+it('counts sparse-key evidence objects without loading raw evidence in the list', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $page = wikiWorkflowPage(
+        $agent['project_id'],
+        'sparse-evidence-count',
+        'needs_verification',
+        '# Sparse evidence',
+        [
+            2 => ['type' => 'artifact_ref', 'sha256' => str_repeat('a', 64)],
+            7 => ['type' => 'file_ref', 'path' => 'app/Foo.php', 'sha256' => str_repeat('b', 64)],
+            19 => ['type' => 'file_ref', 'path' => 'app/Bar.php', 'sha256' => str_repeat('c', 64)],
+        ],
+    );
+
+    $this->withToken($agent['agent_token'])
+        ->getJson('/api/hades/v1/wiki/pages?'.http_build_query([
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding->id,
+        ]))
+        ->assertOk()
+        ->assertJsonPath('items.0.id', $page['page_id'])
+        ->assertJsonPath('items.0.evidence_count', 3)
+        ->assertJsonMissingPath('items.0.content_markdown')
+        ->assertJsonMissingPath('items.0.evidence_refs');
+});
+
 it('validates list bounds and rejects bindings outside the authenticated linked scope', function () {
     $agent = wikiWorkflowAgent();
     $binding = wikiWorkflowBinding($agent);
