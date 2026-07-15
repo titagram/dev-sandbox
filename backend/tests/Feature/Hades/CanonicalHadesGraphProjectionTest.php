@@ -689,6 +689,53 @@ it('fails closed when an explicitly non-route node occupies a route identity', f
         ->toThrow(InvalidArgumentException::class, 'Graph route inventory identity conflicts with a non-route node.');
 });
 
+it('fails closed when an invalid explicit kind occupies a route identity', function () {
+    foreach ([str_repeat('function', 10), 123] as $invalidKind) {
+        $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+        $payload['nodes'] = [[
+            'id' => 'route:health',
+            'kind' => $invalidKind,
+            'name' => 'health',
+        ]];
+        $payload['relationships'] = [];
+        $payload['routes'] = [[
+            'name' => 'health',
+            'method' => 'GET',
+            'uri' => '/health',
+        ]];
+
+        expect(fn () => app(CanonicalGraphRepository::class)->prepareHadesUpload($payload))
+            ->toThrow(InvalidArgumentException::class, 'Graph route inventory identity conflicts with a non-route node.');
+    }
+});
+
+it('hydrates a legacy route-prefixed placeholder whose kind is absent', function () {
+    $payload = canonicalProjectionUpload(['project_id' => 'project-test'], 'scope-test')['artifact'];
+    $payload['nodes'] = [[
+        'id' => 'route:health',
+        'name' => 'route:health',
+    ]];
+    $payload['relationships'] = [];
+    $payload['routes'] = [[
+        'name' => 'health',
+        'method' => 'GET',
+        'uri' => '/health',
+    ]];
+
+    $graph = app(CanonicalGraphRepository::class)->prepareHadesUpload($payload);
+    $routes = collect($graph['nodes'])->filter(
+        fn (array $node): bool => ($node['properties']['kind'] ?? null) === 'route',
+    )->values();
+
+    expect($routes)->toHaveCount(1)
+        ->and($routes[0]['id'])->toBe('route:health')
+        ->and($routes[0]['properties'])->toMatchArray([
+            'name' => 'health',
+            'method' => 'GET',
+            'uri' => '/health',
+        ]);
+});
+
 it('keeps artifact upload runtime responses aligned with the documented 422 contracts', function () {
     Bus::fake();
     [$agent, $bindingId] = canonicalProjectionAgent();

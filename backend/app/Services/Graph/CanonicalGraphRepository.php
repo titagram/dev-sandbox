@@ -653,14 +653,23 @@ class CanonicalGraphRepository
         return array_values(array_unique(array_filter($aliases)));
     }
 
-    private function routeNodeKind(array $node): string
+    private function routeNodeKind(array $node): ?string
     {
         $properties = is_array($node['properties'] ?? null) ? $node['properties'] : [];
+        foreach ([[$node, 'kind'], [$node, 'type'], [$properties, 'kind'], [$properties, 'type']] as [$source, $key]) {
+            if (! array_key_exists($key, $source)) {
+                continue;
+            }
+            $value = $source[$key];
+            if (is_string($value) && trim($value) === '') {
+                continue;
+            }
+            $kind = $this->boundedRouteString($value, 64);
 
-        return strtolower($this->boundedRouteString(
-            $node['kind'] ?? $node['type'] ?? $properties['kind'] ?? $properties['type'] ?? null,
-            64,
-        ));
+            return $kind === '' ? null : strtolower($kind);
+        }
+
+        return '';
     }
 
     private function routeRecordUri(array $route): string
