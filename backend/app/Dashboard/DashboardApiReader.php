@@ -2196,6 +2196,8 @@ final class DashboardApiReader
             'title' => (string) $page->title,
             'project_id' => (string) $page->project_id,
             'category' => (string) $page->page_type,
+            'page_type' => (string) $page->page_type,
+            'audience' => $this->wikiAudience((string) $page->page_type),
             'source_status' => $this->sourceStatus($sourceStatus),
             'has_evidence' => $evidence !== [],
             'updated_at' => (string) $page->updated_at,
@@ -2205,7 +2207,18 @@ final class DashboardApiReader
                 generatedAt: $page->revision_created_at ? (string) $page->revision_created_at : (string) $page->updated_at,
                 ref: (string) $page->id,
             ),
+            'source_type' => $this->sourceType($sourceType),
         ];
+    }
+
+    private function wikiAudience(string $pageType): string
+    {
+        return match ($pageType) {
+            'business' => 'business',
+            'runbook' => 'operations',
+            'technical' => 'engineering',
+            default => 'mixed',
+        };
     }
 
     /**

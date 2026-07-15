@@ -115,6 +115,29 @@ it('keeps a manually submitted verified status in the verification queue', funct
         ->assertJsonPath('source_status', 'needs_verification');
 });
 
+it('exposes additive wiki facets for readable index filters', function () {
+    $developer = wikiManualDashboardApiUserWithRole('Developer');
+    $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
+
+    $this->actingAs($developer)
+        ->postJson("/api/dashboard/projects/{$projectId}/wiki/pages", [
+            'slug' => 'operations/filter-facets',
+            'title' => 'Filter Facets',
+            'page_type' => 'runbook',
+            'source_status' => 'developer_provided',
+            'content_markdown' => 'Manual runbook.',
+        ])
+        ->assertCreated();
+
+    $page = collect($this->actingAs($developer)->getJson("/api/dashboard/projects/{$projectId}/wiki")->assertOk()->json())
+        ->firstWhere('title', 'Filter Facets');
+
+    expect($page)->not->toBeNull()
+        ->and($page['page_type'])->toBe('runbook')
+        ->and($page['audience'])->toBe('operations')
+        ->and($page['source_type'])->toBe('user_manual');
+});
+
 it('blocks sysadmin from manually writing wiki pages', function () {
     $sysadmin = wikiManualDashboardApiUserWithRole('Sysadmin');
     $projectId = (string) DB::table('projects')->where('slug', 'demo-project')->value('id');
