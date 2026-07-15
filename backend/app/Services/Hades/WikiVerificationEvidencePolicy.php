@@ -136,7 +136,7 @@ class WikiVerificationEvidencePolicy
         }
 
         try {
-            $this->integrity->validateWikiArtifact($gitTree);
+            $this->integrity->validateGitTreeForFileReference($gitTree);
         } catch (InvalidArgumentException $exception) {
             throw $this->invalid($exception->getMessage());
         }
