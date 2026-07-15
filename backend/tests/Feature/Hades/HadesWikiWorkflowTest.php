@@ -317,10 +317,85 @@ it('advertises the wiki list detail draft and verification routes', function () 
         ->assertJsonPath('routes.wiki_page_verify', '/api/hades/v1/wiki/pages/{page}/verify');
 });
 
+it('rejects wiki drafts from an agent without the populate project wiki capability', function () {
+    $agent = wikiWorkflowAgent(effectiveCapabilities: ['read_files']);
+    $binding = wikiWorkflowBinding($agent);
+
+    $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages', wikiWorkflowDraftPayload($agent, $binding))
+        ->assertForbidden();
+
+    expect(DB::table('wiki_pages')->where('project_id', $agent['project_id'])->count())->toBe(0)
+        ->and(DB::table('wiki_revisions')->count())->toBe(0);
+});
+
+it('validates bounded agent-authored wiki draft input', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+
+    foreach ([
+        'empty markdown' => [['content_markdown' => ''], 'content_markdown'],
+        'overlong markdown' => [['content_markdown' => str_repeat('à', 24001)], 'content_markdown'],
+        'too many evidence refs' => [[
+            'evidence_refs' => array_map(
+                fn (int $index): array => ['type' => 'file_ref', 'path' => "app/File{$index}.php"],
+                range(1, 81),
+            ),
+        ], 'evidence_refs'],
+        'caller-selected verified status' => [['source_status' => 'verified_from_code'], 'source_status'],
+    ] as [$overrides, $invalidField]) {
+        $this->withToken($agent['agent_token'])
+            ->postJson('/api/hades/v1/wiki/pages', array_merge(
+                wikiWorkflowDraftPayload($agent, $binding),
+                $overrides,
+            ))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors($invalidField);
+    }
+
+    expect(DB::table('wiki_pages')->where('project_id', $agent['project_id'])->count())->toBe(0)
+        ->and(DB::table('wiki_revisions')->count())->toBe(0);
+});
+
+it('creates a safe wiki draft then appends an immutable revision for the same project and slug', function () {
+    $agent = wikiWorkflowAgent();
+    $binding = wikiWorkflowBinding($agent);
+    $payload = wikiWorkflowDraftPayload($agent, $binding);
+
+    $first = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages', $payload)
+        ->assertCreated()
+        ->assertJsonPath('source_status', 'needs_verification')
+        ->assertJsonStructure(['wiki_page_id', 'wiki_revision_id']);
+
+    $second = $this->withToken($agent['agent_token'])
+        ->postJson('/api/hades/v1/wiki/pages', array_merge($payload, [
+            'title' => 'Architecture draft v2',
+            'content_markdown' => '# Architecture v2',
+        ]))
+        ->assertOk()
+        ->assertJsonPath('wiki_page_id', $first->json('wiki_page_id'))
+        ->assertJsonPath('source_status', 'needs_verification');
+
+    $revisions = DB::table('wiki_revisions')
+        ->where('wiki_page_id', $first->json('wiki_page_id'))
+        ->orderBy('created_at')
+        ->get();
+
+    expect($second->json('wiki_revision_id'))->not->toBe($first->json('wiki_revision_id'))
+        ->and($revisions)->toHaveCount(2)
+        ->and($revisions->pluck('id')->all())->toContain($first->json('wiki_revision_id'))
+        ->and($revisions->pluck('producer')->unique()->all())->toBe(['hades'])
+        ->and($revisions->pluck('source_type')->unique()->all())->toBe(['hades_agent_draft'])
+        ->and($revisions->pluck('source_status')->unique()->all())->toBe(['needs_verification'])
+        ->and(DB::table('wiki_pages')->where('id', $first->json('wiki_page_id'))->value('current_revision_id'))
+        ->toBe($second->json('wiki_revision_id'));
+});
+
 /**
  * @return array{project_id: string, agent_id: string, agent_token: string}
  */
-function wikiWorkflowAgent(?string $projectId = null): array
+function wikiWorkflowAgent(?string $projectId = null, array $effectiveCapabilities = ['populate_project_wiki']): array
 {
     if ($projectId === null) {
         $user = User::factory()->create(['status' => 'active']);
@@ -350,8 +425,8 @@ function wikiWorkflowAgent(?string $projectId = null): array
         'label' => 'Wiki workflow agent',
         'platform' => 'linux-x64',
         'version' => '0.1.0',
-        'declared_capabilities' => json_encode(['populate_project_wiki'], JSON_THROW_ON_ERROR),
-        'effective_capabilities' => json_encode(['populate_project_wiki'], JSON_THROW_ON_ERROR),
+        'declared_capabilities' => json_encode($effectiveCapabilities, JSON_THROW_ON_ERROR),
+        'effective_capabilities' => json_encode($effectiveCapabilities, JSON_THROW_ON_ERROR),
         'last_seen_at' => $now,
         'status' => 'active',
         'created_at' => $now,
@@ -365,6 +440,25 @@ function wikiWorkflowAgent(?string $projectId = null): array
         'project_id' => $projectId,
         'agent_id' => $agentId,
         'agent_token' => $token['plain_token'],
+    ];
+}
+
+/**
+ * @param  array{project_id: string, agent_id: string, agent_token: string}  $agent
+ * @return array<string, mixed>
+ */
+function wikiWorkflowDraftPayload(array $agent, object $binding): array
+{
+    return [
+        'project_id' => $agent['project_id'],
+        'workspace_binding_id' => $binding->id,
+        'slug' => 'technical/architecture',
+        'title' => 'Architecture draft',
+        'page_type' => 'technical',
+        'content_markdown' => '# Architecture v1',
+        'evidence_refs' => [
+            ['type' => 'file_ref', 'path' => 'app/Architecture.php'],
+        ],
     ];
 }
 

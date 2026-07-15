@@ -4,6 +4,9 @@ namespace App\Http\Controllers\Hades;
 
 use App\Enums\SourceStatus;
 use App\Http\Controllers\Controller;
+use App\Services\Hades\HadesTokenException;
+use App\Services\Hades\HadesWikiCapability;
+use App\Services\WikiRevisionService;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
 use Illuminate\Http\JsonResponse;
@@ -17,6 +20,15 @@ use Symfony\Component\HttpFoundation\Response;
 class WikiPageController extends Controller
 {
     private const MAX_MARKDOWN_CHARACTERS = 24000;
+
+    private const MAX_EVIDENCE_REFS = 80;
+
+    private const PAGE_TYPES = ['business', 'technical', 'runbook', 'audit'];
+
+    public function __construct(
+        private readonly WikiRevisionService $wiki,
+        private readonly HadesWikiCapability $capability,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -94,6 +106,62 @@ class WikiPageController extends Controller
             'workspace_binding_id' => $binding->id,
             'wiki_page' => $this->detailPagePayload($wikiPage),
         ]);
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'project_id' => ['required', 'string'],
+            'workspace_binding_id' => ['required', 'string'],
+            'slug' => ['required', 'string', 'max:255', 'regex:/^[a-z0-9][a-z0-9\/-]*$/'],
+            'title' => ['required', 'string', 'max:255'],
+            'page_type' => ['required', 'string', Rule::in(self::PAGE_TYPES)],
+            'content_markdown' => ['required', 'string', 'min:1', 'max:'.self::MAX_MARKDOWN_CHARACTERS],
+            'evidence_refs' => ['sometimes', 'array', 'max:'.self::MAX_EVIDENCE_REFS],
+            'source_status' => ['prohibited'],
+        ]);
+
+        $auth = $request->attributes->get('hades_auth');
+        $agent = $auth['agent'];
+        $binding = $this->linkedBinding(
+            $agent,
+            $validated['project_id'],
+            $validated['workspace_binding_id'],
+        );
+
+        if ($binding instanceof JsonResponse) {
+            return $binding;
+        }
+
+        try {
+            $this->capability->assertCanWrite($agent);
+        } catch (HadesTokenException $exception) {
+            return $exception->toResponse();
+        }
+
+        $pageExists = DB::table('wiki_pages')
+            ->where('project_id', $validated['project_id'])
+            ->whereNull('repository_id')
+            ->where('slug', $validated['slug'])
+            ->exists();
+
+        $result = $this->wiki->write([
+            'project_id' => $validated['project_id'],
+            'repository_id' => null,
+            'slug' => $validated['slug'],
+            'title' => $validated['title'],
+            'page_type' => $validated['page_type'],
+            'producer' => 'hades',
+            'source_type' => 'hades_agent_draft',
+            'source_status' => SourceStatus::NeedsVerification->value,
+            'content_markdown' => $validated['content_markdown'],
+            'evidence_refs' => $validated['evidence_refs'] ?? [],
+        ]);
+
+        return response()->json(
+            $result,
+            $pageExists ? Response::HTTP_OK : Response::HTTP_CREATED,
+        );
     }
 
     private function currentRevisionListQuery(string $projectId): Builder
