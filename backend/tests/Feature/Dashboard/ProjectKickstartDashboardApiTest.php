@@ -121,6 +121,71 @@ it('keeps repository declaration behind dashboard roles and active project state
         ->assertJsonPath('error.code', 'project_not_active');
 });
 
+it('uses the ready canonical projection as the operational source of truth', function () {
+    $admin = kickstartUserWithRole('Admin');
+    $project = DB::table('projects')->orderBy('created_at')->firstOrFail();
+    $agentId = (string) Str::ulid();
+    $bindingId = (string) Str::ulid();
+    $now = now();
+
+    DB::table('hades_agents')->insert([
+        'id' => $agentId,
+        'project_id' => $project->id,
+        'external_agent_id' => 'operational-status-agent',
+        'label' => 'Operational status test agent',
+        'platform' => 'linux',
+        'version' => 'test',
+        'declared_capabilities' => '[]',
+        'effective_capabilities' => '[]',
+        'status' => 'active',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('hades_workspace_bindings')->insert([
+        'id' => $bindingId,
+        'project_id' => $project->id,
+        'hades_agent_id' => $agentId,
+        'external_agent_id' => 'operational-status-agent',
+        'workspace_fingerprint' => hash('sha256', $bindingId),
+        'display_path' => '/workspace/operational-status',
+        'status' => 'linked',
+        'linked_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+    DB::table('canonical_graph_projections')->insert([
+        'id' => (string) Str::ulid(),
+        'project_id' => $project->id,
+        'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => $bindingId,
+        'artifact_type' => 'hades_agent_artifact',
+        'artifact_id' => 'canonical-artifact-operational-status',
+        'graph_version' => 'operational-status-v1',
+        'checksum' => hash('sha256', 'operational-status'),
+        'active_graph_version' => 'operational-status-v1',
+        'quality' => 'full',
+        'status' => 'ready',
+        'node_count' => 12,
+        'relationship_count' => 18,
+        'projected_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ]);
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/dashboard/projects/{$project->id}")
+        ->assertOk();
+
+    $response
+        ->assertJsonPath('operational_status.graph.status', 'ready')
+        ->assertJsonPath('operational_status.workspace.status', 'linked')
+        ->assertJsonPath('operational_status.genesis.status', 'complete')
+        ->assertJsonPath('operational_status.artifacts.status', 'available')
+        ->assertJsonPath('kickstart.operational_status.graph.status', 'ready')
+        ->assertJsonPath('kickstart.operational_status.workspace.linked_count', 1)
+        ->assertJsonPath('kickstart.state', 'active');
+});
+
 function kickstartUserWithRole(string $roleName): User
 {
     $user = User::factory()->create(['status' => 'active']);

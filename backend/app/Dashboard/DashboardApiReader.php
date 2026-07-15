@@ -2,6 +2,7 @@
 
 namespace App\Dashboard;
 
+use App\Services\Dashboard\ProjectOperationalStatusResolver;
 use App\Services\Graph\CanonicalGraphRepository;
 use App\Services\Graph\DashboardGraphPublicHandle;
 use App\Services\Graph\DashboardGraphPublicKind;
@@ -73,6 +74,7 @@ final class DashboardApiReader
 
     public function __construct(
         private readonly CanonicalGraphRepository $canonicalGraphs,
+        private readonly ProjectOperationalStatusResolver $operationalStatuses,
         private readonly ?DashboardGraphPublicHandle $publicHandles = null,
         private readonly ?Neo4jClient $neo4j = null,
         private readonly ?DashboardGraphPublicKind $publicKinds = null,
@@ -1246,6 +1248,7 @@ final class DashboardApiReader
     private function projectSummary(object $project): array
     {
         $projectId = (string) $project->id;
+        $operationalStatus = $this->operationalStatuses->forProject($projectId);
         $repoCount = DB::table('repositories')->where('project_id', $projectId)->count();
         $openTasks = DB::table('tasks')
             ->join('kanban_columns', 'kanban_columns.id', '=', 'tasks.status_column_id')
@@ -1264,9 +1267,17 @@ final class DashboardApiReader
             'open_tasks' => $openTasks,
             'risk_level' => $this->risk($latestRun?->risk_level ?? 'low'),
             'wiki_freshness' => DB::table('wiki_pages')->where('project_id', $projectId)->whereIn('source_status', ['stale', 'conflict_with_code'])->exists() ? 'stale' : 'complete',
-            'genesis_status' => $this->pipelineStatus(DB::table('genesis_imports')->where('project_id', $projectId)->orderByDesc('created_at')->value('status')),
+            'genesis_status' => $operationalStatus['genesis']['status'] === 'in_progress'
+                ? 'in_progress'
+                : (string) $operationalStatus['genesis']['status'],
             'delta_status' => $this->pipelineStatus(DB::table('delta_syncs')->where('project_id', $projectId)->orderByDesc('created_at')->value('status')),
-            'graph_status' => DB::table('artifacts')->where('project_id', $projectId)->where('artifact_type', 'graph_snapshot')->exists() ? 'complete' : 'not_started',
+            'graph_status' => match ($operationalStatus['graph']['status']) {
+                'ready' => 'complete',
+                'not_ready' => 'in_progress',
+                'partial' => 'stale',
+                default => 'not_started',
+            },
+            'operational_status' => $operationalStatus,
             'status' => (string) $project->status,
             'archived_at' => $project->archived_at ? (string) $project->archived_at : null,
             'deleted_at' => $project->deleted_at ? (string) $project->deleted_at : null,
@@ -1710,27 +1721,24 @@ final class DashboardApiReader
         $repositoryCount = (int) DB::table('repositories')
             ->where('project_id', $projectId)
             ->count();
-        $linkedWorkspaceCount = (int) DB::table('local_workspaces')
-            ->join('repositories', 'repositories.id', '=', 'local_workspaces.repository_id')
-            ->where('repositories.project_id', $projectId)
-            ->count();
-        $genesisExists = DB::table('genesis_imports')
-            ->where('project_id', $projectId)
-            ->exists();
+        $operationalStatus = $this->operationalStatuses->forProject($projectId);
+        $linkedWorkspaceCount = (int) $operationalStatus['workspace']['linked_count'];
         $genesisActive = DB::table('genesis_imports')
             ->where('project_id', $projectId)
             ->whereIn('status', ['active', 'started', 'queued', 'running', 'uploading'])
             ->exists();
 
         $repositoryDeclared = $repositoryCount > 0;
-        $workspaceLinked = $linkedWorkspaceCount > 0;
+        $workspaceLinked = $operationalStatus['workspace']['status'] === 'linked'
+            || $linkedWorkspaceCount > 0;
+        $genesisComplete = $operationalStatus['genesis']['status'] === 'complete';
 
         $state = match (true) {
             ! $repositoryDeclared => 'awaiting_repository_declaration',
             ! $workspaceLinked => 'awaiting_local_workspace_link',
-            ! $genesisExists => 'awaiting_genesis',
+            $genesisComplete => 'active',
             $genesisActive => 'analyzing',
-            default => 'active',
+            default => 'awaiting_genesis',
         };
 
         return [
@@ -1748,19 +1756,20 @@ final class DashboardApiReader
                 ],
                 [
                     'key' => 'local_workspace_link',
-                    'label' => 'Local workspace link',
+                    'label' => 'Workspace link',
                     'status' => ! $repositoryDeclared ? 'pending' : ($workspaceLinked ? 'complete' : 'current'),
                 ],
                 [
                     'key' => 'genesis',
-                    'label' => 'Genesis import',
-                    'status' => ! $workspaceLinked ? 'pending' : ($genesisExists ? 'complete' : 'current'),
+                    'label' => 'Genesis analysis',
+                    'status' => ! $workspaceLinked ? 'pending' : ($genesisComplete ? 'complete' : 'current'),
                 ],
             ],
             'pairing' => [
                 'api_base' => '/api/plugin/v1',
                 'local_workspace_endpoint' => '/api/plugin/v1/repositories/{repository}/local-workspaces',
             ],
+            'operational_status' => $operationalStatus,
         ];
     }
 
