@@ -37,6 +37,11 @@ class WikiVerificationService
             $evidenceRefs,
             $agent,
         ): array {
+            DB::table('projects')
+                ->where('id', $projectId)
+                ->lockForUpdate()
+                ->first();
+
             $page = DB::table('wiki_pages')
                 ->where('id', $pageId)
                 ->where('project_id', $projectId)

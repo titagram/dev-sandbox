@@ -14,6 +14,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Symfony\Component\HttpFoundation\Response;
@@ -170,7 +171,7 @@ class WikiPageController extends Controller
 
     public function verify(Request $request, string $page): JsonResponse
     {
-        $validated = $request->validate([
+        $validator = Validator::make($request->all(), [
             'project_id' => ['required', 'string'],
             'workspace_binding_id' => ['required', 'string'],
             'expected_current_revision_id' => ['required', 'string'],
@@ -182,6 +183,16 @@ class WikiPageController extends Controller
             'evidence_refs.*.hash' => ['sometimes', 'string', 'max:64'],
             'evidence_refs.*.path' => ['sometimes', 'string', 'max:2048'],
         ]);
+
+        if ($validator->fails()) {
+            return $this->error(
+                'evidence_invalid',
+                'Wiki verification evidence payload is invalid.',
+                Response::HTTP_UNPROCESSABLE_ENTITY,
+            );
+        }
+
+        $validated = $validator->validated();
 
         $auth = $request->attributes->get('hades_auth');
         $agent = $auth['agent'];

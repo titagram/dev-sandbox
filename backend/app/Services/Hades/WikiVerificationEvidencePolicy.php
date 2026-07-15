@@ -9,6 +9,8 @@ class WikiVerificationEvidencePolicy
 {
     private const GIT_TREE_SCHEMA = 'hades.git_tree.v1';
 
+    public function __construct(private readonly HadesProjectAwareness $awareness) {}
+
     /**
      * @param  list<array<string, mixed>>  $refs
      * @return list<array<string, mixed>>
@@ -30,6 +32,11 @@ class WikiVerificationEvidencePolicy
             throw $this->invalid('The evidence workspace binding is not linked to the project.');
         }
 
+        $bindingHead = trim((string) ($binding->head_commit ?? ''));
+        if ($bindingHead === '') {
+            throw $this->stale('The linked workspace head commit is unknown.');
+        }
+
         $resolved = [];
         $gitTree = null;
 
@@ -37,14 +44,16 @@ class WikiVerificationEvidencePolicy
             $kind = $ref['kind'] ?? null;
 
             if ($kind === 'artifact_ref') {
-                $resolved[] = $this->resolveArtifact($projectId, $workspaceBindingId, $binding, $ref);
+                $resolved[] = $this->resolveArtifact($projectId, $workspaceBindingId, $binding, $bindingHead, $ref);
 
                 continue;
             }
 
             if ($kind === 'file_ref') {
+                $path = $this->safeRelativePath($ref['path'] ?? null);
+                $sha256 = $this->sha256($ref['sha256'] ?? $ref['hash'] ?? null);
                 $gitTree ??= $this->latestGitTree($projectId, $workspaceBindingId);
-                $resolved[] = $this->resolveFile($binding, $gitTree, $ref);
+                $resolved[] = $this->resolveFile($binding, $bindingHead, $gitTree, $path, $sha256);
 
                 continue;
             }
@@ -63,6 +72,7 @@ class WikiVerificationEvidencePolicy
         string $projectId,
         string $workspaceBindingId,
         object $binding,
+        string $bindingHead,
         array $ref,
     ): array {
         $sha256 = $this->sha256($ref['sha256'] ?? null);
@@ -85,13 +95,15 @@ class WikiVerificationEvidencePolicy
             throw $this->invalid('Artifact evidence could not be resolved in the linked workspace.');
         }
 
+        $artifactHead = $this->currentArtifactHead($artifact, $bindingHead);
+
         return [
             'kind' => 'artifact_ref',
             'artifact_id' => $artifact->id,
             'schema' => $artifact->schema,
             'sha256' => $artifact->sha256,
             'workspace_binding_id' => $binding->id,
-            'head_commit' => $binding->head_commit,
+            'head_commit' => $artifactHead,
         ];
     }
 
@@ -113,13 +125,16 @@ class WikiVerificationEvidencePolicy
     }
 
     /**
-     * @param  array<string, mixed>  $ref
      * @return array<string, mixed>
      */
-    private function resolveFile(object $binding, object $gitTree, array $ref): array
-    {
-        $path = $this->safeRelativePath($ref['path'] ?? null);
-        $sha256 = $this->sha256($ref['sha256'] ?? $ref['hash'] ?? null);
+    private function resolveFile(
+        object $binding,
+        string $bindingHead,
+        object $gitTree,
+        string $path,
+        string $sha256,
+    ): array {
+        $artifactHead = $this->currentArtifactHead($gitTree, $bindingHead);
         $payload = is_string($gitTree->artifact)
             ? json_decode($gitTree->artifact, true)
             : $gitTree->artifact;
@@ -148,8 +163,19 @@ class WikiVerificationEvidencePolicy
             'path' => $path,
             'sha256' => $sha256,
             'workspace_binding_id' => $binding->id,
-            'head_commit' => $binding->head_commit,
+            'head_commit' => $artifactHead,
         ];
+    }
+
+    private function currentArtifactHead(object $artifact, string $bindingHead): string
+    {
+        $artifactHead = $this->awareness->artifactHeadCommit($artifact->artifact ?? null);
+
+        if ($artifactHead === null || ! hash_equals($bindingHead, $artifactHead)) {
+            throw $this->stale('Artifact evidence does not match the linked workspace head commit.');
+        }
+
+        return $artifactHead;
     }
 
     private function sha256(mixed $value): string
