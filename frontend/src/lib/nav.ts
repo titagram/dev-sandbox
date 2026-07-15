@@ -4,6 +4,8 @@ import {
 } from "lucide-react";
 import { Role } from "@/types/devboard";
 
+export const PROJECT_SCOPE_STORAGE_KEY = "devboard.selectedProjectScope.v1";
+
 export interface NavItem {
   key: string;
   label: string;

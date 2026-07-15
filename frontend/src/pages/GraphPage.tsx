@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Boxes } from "lucide-react";
 import { api } from "@/api/devboardApi";
@@ -8,36 +8,41 @@ import { SourceMetaInline } from "@/components/devboard/Badges";
 import { MetricCard, PageHeader, Panel } from "@/components/devboard/Layout";
 import { useApi } from "@/hooks/useApi";
 import { relativeTime } from "@/lib/format";
+import { PROJECT_SCOPE_STORAGE_KEY } from "@/lib/nav";
 import { DashboardGraphScopeType } from "@/types/devboard";
+
+function projectGraphPath(projectId: string, runId?: string, snapshotId?: string): string {
+  const preserved = new URLSearchParams();
+  if (runId) preserved.set("run_id", runId);
+  if (snapshotId) preserved.set("snapshot_id", snapshotId);
+  const suffix = preserved.toString();
+
+  return `/projects/${encodeURIComponent(projectId)}/graph${suffix ? `?${suffix}` : ""}`;
+}
 
 function GlobalGraphPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const runId = params.get("run_id") || undefined;
   const snapshotId = params.get("snapshot_id") || undefined;
-  const graph = useApi(() => api.getGraph(undefined, { runId, snapshotId }), [runId, snapshotId]);
   const projects = useApi(() => api.getProjects("active"), []);
+  const [persistedProjectId] = useState(() => {
+    if (typeof window === "undefined") return undefined;
+    return window.localStorage.getItem(PROJECT_SCOPE_STORAGE_KEY) || undefined;
+  });
+
+  useEffect(() => {
+    if (!persistedProjectId || !projects.data?.some((project) => project.id === persistedProjectId)) return;
+    navigate(projectGraphPath(persistedProjectId, runId, snapshotId), { replace: true });
+  }, [navigate, persistedProjectId, projects.data, runId, snapshotId]);
+
   return <div className="space-y-5" data-testid="graph-page">
     <PageHeader title="Graph" subtitle="Choose a project before querying its canonical code graph." />
-    <DataState state={graph}>{(overview) => <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <MetricCard label="Nodes" value={overview.stats.nodes} /><MetricCard label="Edges" value={overview.stats.edges} />
-        <MetricCard label="Modules" value={overview.stats.modules} /><MetricCard label="Routes" value={overview.stats.routes} />
-      </div>
-      <div className="rounded-md border border-border bg-card/40 px-4 py-2">
-        <SourceMetaInline source={overview.source} /><span className="ml-2 text-[11px] text-muted-foreground">· generated {relativeTime(overview.generated_at)}</span>
-        {overview.quality && <span className="ml-2 text-[11px] text-muted-foreground">· quality {overview.quality}</span>}
-      </div>
-    </>}</DataState>
     <DataState state={projects}>{(items) => <Panel title="Choose a project">
       <label className="text-sm">Project
         <select aria-label="Project" defaultValue="" onChange={(event) => {
           if (event.target.value) {
-            const preserved = new URLSearchParams();
-            if (runId) preserved.set("run_id", runId);
-            if (snapshotId) preserved.set("snapshot_id", snapshotId);
-            const suffix = preserved.toString();
-            navigate(`/projects/${encodeURIComponent(event.target.value)}/graph${suffix ? `?${suffix}` : ""}`);
+            navigate(projectGraphPath(event.target.value, runId, snapshotId));
           }
         }} className="mt-1 block w-full max-w-xl rounded border border-input bg-background px-3 py-2">
           <option value="">Select a project</option>

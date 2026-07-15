@@ -101,6 +101,7 @@ describe("GraphPage global project selection", () => {
     mockRouterState.params = {};
     mockRouterState.search = new URLSearchParams();
     mockGraphExplorerSeen.splice(0);
+    window.localStorage.clear();
   });
   afterEach(() => { act(() => root.unmount()); container.remove(); });
 
@@ -111,10 +112,8 @@ describe("GraphPage global project selection", () => {
     });
     await settle();
     expect(container.textContent).toContain("Choose a project");
-    expect(container.textContent).toContain("Nodes 4");
-    expect(container.textContent).toContain("Source");
     expect(mockQueryProjectGraph).not.toHaveBeenCalled();
-    expect(mockGetGraph).toHaveBeenCalledWith(undefined, { runId: "run-7", snapshotId: "snapshot-9" });
+    expect(mockGetGraph).not.toHaveBeenCalled();
 
     const select = container.querySelector("select[aria-label='Project']") as HTMLSelectElement;
     await act(async () => { select.value = "project-1"; select.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -122,6 +121,50 @@ describe("GraphPage global project selection", () => {
     await settle();
     expect(mockNavigate).toHaveBeenCalledWith("/projects/project-1/graph?run_id=run-7&snapshot_id=snapshot-9");
     expect(mockNavigate.mock.calls.flat().join(" ")).not.toContain("undefined");
+  });
+
+  it("redirects a persisted active project without requesting the obsolete global graph", async () => {
+    window.localStorage.setItem("devboard.selectedProjectScope.v1", "project-1");
+    mockRouterState.search = new URLSearchParams("run_id=run-7&snapshot_id=snapshot-9");
+
+    await act(async () => { root.render(<GraphPage />); });
+    await settle();
+    await settle();
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/projects/project-1/graph?run_id=run-7&snapshot_id=snapshot-9",
+      { replace: true },
+    );
+    expect(mockGetGraph).not.toHaveBeenCalled();
+    expect(mockQueryProjectGraph).not.toHaveBeenCalled();
+  });
+
+  it("keeps the chooser visible when the persisted project is no longer active", async () => {
+    window.localStorage.setItem("devboard.selectedProjectScope.v1", "stale-project");
+
+    await act(async () => { root.render(<GraphPage />); });
+    await settle();
+
+    expect(container.textContent).toContain("Choose a project");
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockGetGraph).not.toHaveBeenCalled();
+    expect(mockQueryProjectGraph).not.toHaveBeenCalled();
+  });
+
+  it("encodes a persisted project ID before redirecting", async () => {
+    const encodedProject = { ...project, id: "project/with space" };
+    mockGetProjects.mockResolvedValue([encodedProject]);
+    window.localStorage.setItem("devboard.selectedProjectScope.v1", encodedProject.id);
+
+    await act(async () => { root.render(<GraphPage />); });
+    await settle();
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/projects/project%2Fwith%20space/graph",
+      { replace: true },
+    );
+    expect(mockGetGraph).not.toHaveBeenCalled();
+    expect(mockQueryProjectGraph).not.toHaveBeenCalled();
   });
 
   it("preserves existing URL state while writing scope and opaque symbol parameters", async () => {

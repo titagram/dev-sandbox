@@ -7,7 +7,7 @@ import { API_BASE_URL, USE_MOCK, api } from "@/api/devboardApi";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { useApi } from "@/hooks/useApi";
-import { navForRole, navPathForItem, ROLE_LABEL } from "@/lib/nav";
+import { navForRole, navPathForItem, PROJECT_SCOPE_STORAGE_KEY, ROLE_LABEL } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -17,7 +17,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Project } from "@/types/devboard";
 
-const PROJECT_SCOPE_STORAGE_KEY = "devboard.selectedProjectScope.v1";
 const PROJECT_SCOPED_SECTIONS = new Set(["kanban", "ask", "agent-chat", "agent-work", "memory", "wiki", "engineering", "runs", "graph", "artifacts"]);
 
 function activeProjectFromPath(pathname: string): string | undefined {
