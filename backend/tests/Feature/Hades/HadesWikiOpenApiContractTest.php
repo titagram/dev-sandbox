@@ -63,7 +63,10 @@ it('publishes the authoritative Hades wiki verification trust contract', functio
 
     expect($verify['responses']['401']['$ref'])->toBe('#/components/responses/Unauthorized')
         ->and($verify['responses']['403']['content']['application/json']['example']['error']['code'])
-        ->toBe('wiki_verification_capability_not_allowed');
+        ->toBe('wiki_verification_capability_not_allowed')
+        ->and($verify['responses']['422']['$ref'])->toBe('#/components/responses/Error')
+        ->and($spec['components']['responses']['Error']['content']['application/json']['schema']['$ref'])
+        ->toBe('#/components/schemas/HadesStructuredErrorResponse');
 
     $artifactRequest = $spec['components']['schemas']['ArtifactUploadRequest'];
     $artifact422 = $spec['paths']['/api/hades/v1/artifacts']['post']['responses']['422'];
