@@ -410,6 +410,13 @@ it('searches sanitized fields with stable limit-plus-one pagination', function (
         ->and($search['cypher'])->toContain(
             'CALL db.index.fulltext.queryNodes(\'canonical_node_search_v2\', $lucene_query)',
         )
+        ->toContain(
+            'WITH exact_hits CALL db.index.fulltext.queryNodes(\'canonical_node_search_v2\', $lucene_query)',
+        )
+        ->toContain('WITH exact_hits, collect({node: properties(node), labels: labels(node), score: score}) AS fuzzy_hits')
+        ->toContain('UNWIND hits AS hit WITH version, hit WHERE hit.node IS NOT NULL')
+        ->toContain('WITH version, hit.node AS node, hit.labels AS labels, max(hit.score) AS score')
+        ->toContain('WITH version, node, labels, score ORDER BY score DESC')
         ->not->toContain('active-v2')
         ->toContain('WHERE node.graph_version = $active_graph_version')
         ->not->toContain('CONTAINS')
@@ -504,6 +511,77 @@ it('ranks exact route and symbol names before unrelated fuzzy results', function
         'namespace' => 'App\\Routing',
     ])->and($response['items'][0]['match_reason'])->toContain('Exact route')
         ->and($response['items'][1]['handle'])->toBe($workerHandle);
+});
+
+it('keeps paginating fuzzy results after an exact-looking query matched on the first page', function (): void {
+    $fixture = dashboardGraphExplorerFixture();
+    $handles = collect([
+        'route:/generale/soggetti-attivi/',
+        'route:contact_flock_roles_worker',
+        'route:contact_flock_roles_worker_show',
+    ])->mapWithKeys(fn (string $externalId): array => [$externalId => (new DashboardGraphPublicHandle)->forNode(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        $fixture['active_graph_version'],
+        $externalId,
+    )]);
+    $fixture['client']->searchRows = [
+        [
+            'node' => [
+                'public_handle' => $handles['route:/generale/soggetti-attivi/'],
+                'kind' => 'route',
+                'public_search_name' => 'contact_flock_roles_soggetti_attivi',
+                'public_search_path_normalized' => '/generale/soggetti-attivi/',
+                'public_search_label' => '/generale/soggetti-attivi/',
+            ],
+            'labels' => ['Route'],
+            'score' => 10000.0,
+        ],
+        [
+            'node' => [
+                'public_handle' => $handles['route:contact_flock_roles_worker'],
+                'kind' => 'route',
+                'public_search_name' => 'contact_flock_roles_worker',
+                'public_search_label' => 'contact_flock_roles_worker',
+            ],
+            'labels' => ['Route'],
+            'score' => 8.0,
+        ],
+        [
+            'node' => [
+                'public_handle' => $handles['route:contact_flock_roles_worker_show'],
+                'kind' => 'route',
+                'public_search_name' => 'contact_flock_roles_worker_show',
+                'public_search_label' => 'contact_flock_roles_worker_show',
+            ],
+            'labels' => ['Route'],
+            'score' => 7.0,
+        ],
+    ];
+
+    $first = $fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        '/generale/soggetti-attivi/',
+        1,
+    );
+    $second = $fixture['service']->search(
+        $fixture['project_id'],
+        'workspace_binding',
+        $fixture['scope_id'],
+        '/generale/soggetti-attivi/',
+        1,
+        $first['next_cursor'],
+    );
+
+    expect($first['items'][0]['handle'])->toBe($handles['route:/generale/soggetti-attivi/'])
+        ->and($first['has_more'])->toBeTrue()
+        ->and($first['next_cursor'])->not->toBeNull()
+        ->and($second['reason'])->toBeNull()
+        ->and($second['items'])->toHaveCount(1)
+        ->and($second['items'][0]['handle'])->toBe($handles['route:contact_flock_roles_worker']);
 });
 
 it('does not return a fuzzy answer when capacity may have omitted an exact symbol', function (): void {

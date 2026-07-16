@@ -648,4 +648,40 @@ describe("GraphExplorer", () => {
     expect(container.textContent).not.toContain("0 routes");
     expect(container.textContent).not.toContain("0 tests");
   });
+
+  it("does not claim that an absent exact-looking symbol was definitely omitted", async () => {
+    const partialQuery = jest.fn((request: DashboardGraphQueryRequest) => Promise.resolve(
+      envelope(request.type, request.type === "search" ? {
+        found: true,
+        reason: "exact_match_not_indexed_capacity",
+        completeness: "partial",
+        items: [],
+        projection: {
+          ...projection,
+          quality: "partial",
+          coverage: {
+            languages: [],
+            files_total: 10,
+            files_analyzed: 8,
+            files_failed: 2,
+            files_budget_omitted: 0,
+            routes_promoted: 0,
+            routes_omitted: 0,
+            tests_promoted: 0,
+            tests_omitted: 0,
+            nodes_capacity_omitted: 4,
+          },
+        },
+      } : {}),
+    ));
+    await mount(partialQuery);
+    const select = container.querySelector("select[aria-label='Graph scope']") as HTMLSelectElement;
+    await act(async () => { select.value = "repository:repo-1"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { changeInput(input("Search symbols"), "AdminControllerBulkDeleteBehavior"); });
+    await settle(300);
+
+    expect(container.textContent).toContain("No exact match is indexed");
+    expect(container.textContent).toContain("absence cannot be proven");
+    expect(container.textContent).not.toContain("was omitted by the graph capacity");
+  });
 });

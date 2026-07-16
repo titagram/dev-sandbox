@@ -9,7 +9,7 @@ final class DashboardGraphExplorerCursor
 {
     private const PREFIX = 'gc1_';
 
-    private const MAX_LENGTH = 4096;
+    public const MAX_LENGTH = 4096;
 
     public function encode(
         string $projectId,

@@ -110,17 +110,18 @@ final class DashboardGraphExplorerService
                 .'OR exact.public_search_path_normalized = $normalized_query '
                 .'WITH collect(CASE WHEN exact IS NULL THEN null ELSE {node: properties(exact), labels: labels(exact), score: CASE '
                 .'WHEN exact.public_search_name_normalized = $normalized_query THEN 10000.0 ELSE 9000.0 END} END) AS exact_hits '
+                .'WITH exact_hits '
                 ."CALL db.index.fulltext.queryNodes('canonical_node_search_v2', \$lucene_query) YIELD node, score "
                 .'WHERE node.graph_version = $active_graph_version AND node.project_id = $project_id '
                 .'AND node.source_scope_type = $source_scope_type AND node.source_scope_id = $source_scope_id '
-                .'WITH collect({node: properties(node), labels: labels(node), score: score}) AS fuzzy_hits '
+                .'WITH exact_hits, collect({node: properties(node), labels: labels(node), score: score}) AS fuzzy_hits '
                 .'RETURN exact_hits + fuzzy_hits AS hits '
                 .'} '
                 .'UNWIND hits AS hit '
-                .'WITH hit WHERE hit.node IS NOT NULL '
-                .'WITH hit.node AS node, hit.labels AS labels, hit.score AS score '
+                .'WITH version, hit WHERE hit.node IS NOT NULL '
+                .'WITH version, hit.node AS node, hit.labels AS labels, max(hit.score) AS score '
                 .$cursorPredicate
-                .'WITH node, labels, score ORDER BY score DESC, node.public_handle ASC LIMIT $fetch_limit '
+                .'WITH version, node, labels, score ORDER BY score DESC, node.public_handle ASC LIMIT $fetch_limit '
                 .'RETURN version.public_handle_key_version AS version_project_key, '
                 .'version.public_handle_key_fingerprint AS version_source_fingerprint, '
                 .'node, labels, score',
@@ -225,7 +226,7 @@ final class DashboardGraphExplorerService
             ),
             false,
         );
-        if ($this->isExactLookingQuery($query) && ! $hasExactMatch) {
+        if ($cursor === null && $this->isExactLookingQuery($query) && ! $hasExactMatch) {
             $capacityOmitted = $this->capacityOmitted($projection) > 0;
 
             return [

@@ -488,10 +488,15 @@ export default function ProjectDetailPage() {
                 <DataState state={artifactsState} loadingRows={3}>
                   {(arts) => {
                     const list = arts.slice(0, 5);
-                    if (!list.length) return <div className="space-y-1 text-sm text-muted-foreground">
-                      <p>{p.operational_status?.artifacts.status === "available" ? "Canonical graph artifacts are available; no legacy artifact rows were returned." : "No artifacts are available yet."}</p>
-                      {p.operational_status?.artifacts.reason && <p className="text-xs">{p.operational_status.artifacts.reason}</p>}
-                    </div>;
+                    if (!list.length) {
+                      const operationalArtifacts = p.operational_status?.artifacts;
+                      const message = operationalArtifacts?.reason
+                        ?? (operationalArtifacts?.status === "available"
+                          ? "Canonical graph artifacts are available; the legacy artifact list is empty."
+                          : "No artifacts are available yet.");
+
+                      return <p className="text-sm text-muted-foreground">{message}</p>;
+                    }
                     return (
                       <ul className="space-y-2">
                         {list.map((a) => (

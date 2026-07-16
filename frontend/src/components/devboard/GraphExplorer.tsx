@@ -497,7 +497,7 @@ function GraphExplorerSession({
         <Panel title="Search results">
           <CoverageNotice response={search} />
           {search.items.length === 0 ? <p>{search.reason === "exact_match_not_indexed_capacity"
-            ? "Exact match was omitted by the graph capacity. Narrow the scope or rebuild the projection before retrying."
+            ? "No exact match is indexed. This partial graph hit its node capacity, so absence cannot be proven; narrow the scope or rebuild before retrying."
             : search.reason === "exact_match_not_found"
               ? "No exact symbol or route was found. Fuzzy matches are suppressed for exact-looking queries."
               : hasPartialCoverage(search)

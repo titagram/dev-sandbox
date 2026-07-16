@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Dashboard\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Dashboard\Concerns\ChecksDashboardRoles;
+use App\Services\Graph\DashboardGraphExplorerCursor;
 use App\Services\Graph\DashboardGraphExplorerService;
 use App\Services\Graph\DashboardGraphPublicHandle;
 use App\Services\Graph\DashboardGraphPublicKind;
@@ -219,7 +220,7 @@ final class DashboardGraphExplorerController extends Controller
             'families.*' => ['string', Rule::in(self::FAMILIES)],
             'max_depth' => ['sometimes', 'integer', 'min:1', 'max:3'],
             'limit' => ['sometimes', 'integer', 'min:1', 'max:100'],
-            'cursor' => ['sometimes', 'nullable', 'string', 'max:512'],
+            'cursor' => ['sometimes', 'nullable', 'string', 'max:'.DashboardGraphExplorerCursor::MAX_LENGTH],
         ]);
 
         $type = (string) $validated['type'];
