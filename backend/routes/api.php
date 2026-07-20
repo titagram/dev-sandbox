@@ -13,6 +13,7 @@ use App\Http\Controllers\Hades\DataPrivacyController as HadesDataPrivacyControll
 use App\Http\Controllers\Hades\DiagnosisReportController as HadesDiagnosisReportController;
 use App\Http\Controllers\Hades\DoctorReportController as HadesDoctorReportController;
 use App\Http\Controllers\Hades\EvidencePackController as HadesEvidencePackController;
+use App\Http\Controllers\Hades\GraphImportController as HadesGraphImportController;
 use App\Http\Controllers\Hades\GraphTraversalController as HadesGraphTraversalController;
 use App\Http\Controllers\Hades\HealthController as HadesHealthController;
 use App\Http\Controllers\Hades\MemoryImportBundleController as HadesMemoryImportBundleController;
@@ -278,6 +279,18 @@ Route::prefix('hades/v1')->middleware(HadesProjectWritable::class)->group(functi
 
     Route::post('/artifacts', HadesArtifactController::class)
         ->middleware(['throttle:plugin-api-heavy', 'hades.agent']);
+
+    Route::post('/graph-imports', [HadesGraphImportController::class, 'store'])
+        ->middleware(['throttle:plugin-api-heavy', 'hades.agent']);
+
+    Route::put('/graph-imports/{graphImport}/chunks/{index}', [HadesGraphImportController::class, 'putChunk'])
+        ->middleware(['throttle:plugin-api-heavy', 'hades.agent']);
+
+    Route::post('/graph-imports/{graphImport}/complete', [HadesGraphImportController::class, 'complete'])
+        ->middleware(['throttle:plugin-api-heavy', 'hades.agent']);
+
+    Route::get('/graph-imports/{graphImport}', [HadesGraphImportController::class, 'show'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/doctor/reports', HadesDoctorReportController::class)
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);

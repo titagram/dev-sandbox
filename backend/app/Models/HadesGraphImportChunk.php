@@ -30,8 +30,8 @@ class HadesGraphImportChunk extends Model
      * @var list<string>
      */
     public const array KINDS = [
-        self::KIND_NODES,
         self::KIND_ENTRYPOINTS,
+        self::KIND_NODES,
         self::KIND_STRUCTURES,
         self::KIND_EDGES,
         self::KIND_FLOWS,

@@ -8,6 +8,46 @@ use Illuminate\Support\Facades\Storage;
 
 class ArtifactStorageService
 {
+    public function graphChunkPath(string $importId, int $chunkIndex): string
+    {
+        DevBoardUlid::assertStrict($importId, 'graph_import_id');
+
+        if ($chunkIndex < 0) {
+            throw new \InvalidArgumentException('chunk_index must be non-negative');
+        }
+
+        return "graph-v2/{$importId}/chunks/{$chunkIndex}";
+    }
+
+    /** @param resource $stream */
+    public function storeGraphChunk(string $importId, int $chunkIndex, $stream): string
+    {
+        $path = $this->graphChunkPath($importId, $chunkIndex);
+        $disk = Storage::disk((string) config('devboard.artifacts.disk', 'local'));
+        if (! $disk->put($path, $stream)) {
+            throw new \RuntimeException('Graph chunk storage write failed.');
+        }
+
+        return $path;
+    }
+
+    public function deleteGraphChunk(string $importId, int $chunkIndex, ?string $disk = null): void
+    {
+        Storage::disk($disk ?? (string) config('devboard.artifacts.disk', 'local'))
+            ->delete($this->graphChunkPath($importId, $chunkIndex));
+    }
+
+    /** @return resource */
+    public function readGraphChunkStream(string $disk, string $path)
+    {
+        $stream = Storage::disk($disk)->readStream($path);
+        if (! is_resource($stream)) {
+            throw new \RuntimeException('Graph chunk storage read failed.');
+        }
+
+        return $stream;
+    }
+
     public function chunkPath(string $importId, string $artifactId, int $chunkIndex, string $scope = 'genesis'): string
     {
         DevBoardUlid::assertStrict($artifactId, 'artifact_id');
