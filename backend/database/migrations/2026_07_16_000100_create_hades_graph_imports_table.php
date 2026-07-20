@@ -24,6 +24,7 @@ return new class extends Migration
             $table->foreignUlid('workspace_binding_id');
             $table->foreignUlid('hades_agent_id')->nullable();
             $table->unsignedInteger('attempt_generation');
+            $table->unsignedBigInteger('scope_generation');
             $table->string('schema', 64);
             $table->char('artifact_graph_version', 64);
             $table->char('manifest_semantic_sha256', 64);
@@ -64,6 +65,10 @@ return new class extends Migration
                 ['project_id', 'workspace_binding_id', 'artifact_graph_version', 'attempt_generation'],
                 'hades_graph_imports_identity_unique',
             );
+            $table->unique(
+                ['project_id', 'workspace_binding_id', 'scope_generation'],
+                'hades_graph_imports_scope_generation_unique',
+            );
             $table->foreign('project_id', 'hades_graph_imports_project_id_foreign')
                 ->references('id')
                 ->on('projects')
@@ -96,6 +101,11 @@ return new class extends Migration
                 ALTER TABLE hades_graph_imports
                 ADD CONSTRAINT hades_graph_imports_attempt_generation_check
                 CHECK (attempt_generation >= 1)
+            SQL);
+            DB::statement(<<<'SQL'
+                ALTER TABLE hades_graph_imports
+                ADD CONSTRAINT hades_graph_imports_scope_generation_check
+                CHECK (scope_generation >= 1)
             SQL);
             DB::statement(<<<'SQL'
                 ALTER TABLE hades_graph_imports
@@ -160,6 +170,8 @@ return new class extends Migration
                             THEN RAISE(ABORT, 'invalid graph import status')
                         WHEN NEW.attempt_generation < 1
                             THEN RAISE(ABORT, 'graph import attempt generation must be positive')
+                        WHEN NEW.scope_generation < 1
+                            THEN RAISE(ABORT, 'graph import scope generation must be positive')
                         WHEN NEW.expected_chunks < 0
                             OR NEW.received_chunks < 0
                             OR NEW.expected_uncompressed_bytes < 0
@@ -184,6 +196,8 @@ return new class extends Migration
                             THEN RAISE(ABORT, 'invalid graph import status')
                         WHEN NEW.attempt_generation < 1
                             THEN RAISE(ABORT, 'graph import attempt generation must be positive')
+                        WHEN NEW.scope_generation < 1
+                            THEN RAISE(ABORT, 'graph import scope generation must be positive')
                         WHEN NEW.expected_chunks < 0
                             OR NEW.received_chunks < 0
                             OR NEW.expected_uncompressed_bytes < 0
@@ -241,6 +255,9 @@ return new class extends Migration
                 'ALTER TABLE hades_graph_imports DROP CONSTRAINT IF EXISTS hades_graph_imports_attempt_generation_check',
             );
             DB::statement(
+                'ALTER TABLE hades_graph_imports DROP CONSTRAINT IF EXISTS hades_graph_imports_scope_generation_check',
+            );
+            DB::statement(
                 'ALTER TABLE hades_graph_imports DROP CONSTRAINT IF EXISTS hades_graph_imports_unsigned_check',
             );
             DB::statement(
@@ -252,6 +269,10 @@ return new class extends Migration
             DB::statement('DROP TRIGGER IF EXISTS hades_graph_imports_immutable_validated_update');
             DB::statement('DROP INDEX IF EXISTS hades_graph_imports_live_unique');
         }
+
+        Schema::table('hades_graph_imports', function (Blueprint $table): void {
+            $table->dropUnique('hades_graph_imports_scope_generation_unique');
+        });
 
         Schema::dropIfExists('hades_graph_imports');
         Schema::table('hades_workspace_bindings', function (Blueprint $table): void {

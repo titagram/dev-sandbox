@@ -2,6 +2,7 @@
 
 use App\Services\ArtifactRetentionService;
 use App\Services\AuditExportService;
+use App\Services\Graph\V2\GraphV2ValidationRunService;
 use App\Services\Neo4jRebuildService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -9,6 +10,18 @@ use Illuminate\Support\Facades\Artisan;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+Artisan::command('hades:graph-v2:reconcile', function () {
+    $service = app(GraphV2ValidationRunService::class);
+    $expired = $service->reconcileExpiredLeases();
+    $projections = $service->reconcileValidatedProjections();
+    $this->line(json_encode([
+        'expired_validation_leases' => $expired,
+        'validated_projection_heads_repaired' => $projections,
+    ], JSON_THROW_ON_ERROR));
+
+    return 0;
+})->purpose('Reconcile expired graph v2 validation leases and validated projection requests');
 
 Artisan::command('devboard:neo4j-rebuild {--reconcile} {--force} {--project=} {--scope-type=} {--scope-id=} {--dry-run} {--repository=} {--snapshot=} {--mode=}', function () {
     $project = is_string($this->option('project')) && trim($this->option('project')) !== '' ? trim($this->option('project')) : null;

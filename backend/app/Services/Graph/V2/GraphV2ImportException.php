@@ -9,7 +9,8 @@ final class GraphV2ImportException extends \RuntimeException
         string $message,
         public readonly int $statusCode = 422,
         public readonly array $details = [],
+        ?\Throwable $previous = null,
     ) {
-        parent::__construct($message);
+        parent::__construct($message, 0, $previous);
     }
 }

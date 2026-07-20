@@ -8,12 +8,17 @@ use App\Services\Graph\V2\GraphV2JsonSchemaValidator;
 use App\Services\Hades\HadesTokenService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
+
+beforeEach(function (): void {
+    config(['app.key' => 'base64:'.base64_encode(str_repeat('g', 32))]);
+});
 
 it('creates a graph v2 import and is idempotent for the same semantic manifest', function (): void {
     $fixture = graphImportFixture();
@@ -319,6 +324,7 @@ it('rejects nondeterministic gzip metadata, trailing members, and expired chunk 
 });
 
 it('hides imports from a different authenticated project and keeps validating completion idempotent', function (): void {
+    Bus::fake();
     $owner = graphImportFixture();
     $foreign = graphImportFixture();
     $manifest = graphImportManifest($owner['project_id'], $owner['binding_id']);
@@ -665,6 +671,55 @@ it('preserves exact projection candidate states and isolates artifact versions',
         ]);
 });
 
+it('does not report a ready orphan projection when the head active pointer names another projection', function (): void {
+    $fixture = graphImportFixture();
+    $manifest = graphImportManifest($fixture['project_id'], $fixture['binding_id']);
+    $import = $this->postJson('/api/hades/v1/graph-imports', $manifest, graphImportHeaders($fixture['token']))->json('import_id');
+    $projectionVersion = str_repeat('a', 64);
+    $orphanId = (string) Str::ulid();
+    DB::table('canonical_graph_projections')->insert([
+        'id' => $orphanId, 'project_id' => $fixture['project_id'], 'graph_import_id' => $import,
+        'source_scope_type' => 'workspace_binding', 'source_scope_id' => $fixture['binding_id'], 'artifact_type' => 'graph',
+        'artifact_id' => (string) Str::ulid(), 'graph_version' => 'orphan', 'checksum' => str_repeat('b', 64), 'head_commit' => null,
+        'quality' => 'complete', 'status' => 'ready', 'node_count' => 0, 'relationship_count' => 0, 'error_code' => null,
+        'projected_at' => now(), 'graph_contract_version' => 'hades.graph_artifact.v2', 'artifact_graph_version' => $manifest['artifact_graph_version'],
+        'verification_set_hash' => str_repeat('c', 64), 'projection_version' => $projectionVersion, 'source_identity' => json_encode([], JSON_THROW_ON_ERROR),
+        'completeness' => json_encode([], JSON_THROW_ON_ERROR), 'base_node_count' => 0, 'base_relationship_count' => 0, 'base_flow_count' => 0,
+        'effective_node_count' => 0, 'effective_relationship_count' => 0, 'effective_flow_count' => 0, 'created_at' => now(), 'updated_at' => now(),
+    ]);
+    DB::table('canonical_graph_projection_heads')->insert([
+        'id' => (string) Str::ulid(), 'project_id' => $fixture['project_id'], 'source_scope_type' => 'workspace_binding', 'source_scope_id' => $fixture['binding_id'],
+        'desired_generation' => 1, 'desired_graph_import_id' => $import, 'desired_source_generation' => 1, 'desired_artifact_graph_version' => $manifest['artifact_graph_version'], 'desired_verification_set_hash' => str_repeat('c', 64),
+        'desired_projection_version' => $projectionVersion, 'active_projection_id' => null, 'previous_projection_id' => null,
+        'failed_generation' => null, 'failed_projection_version' => null, 'failed_at' => null, 'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $this->getJson("/api/hades/v1/graph-imports/{$import}", graphImportHeaders($fixture['token']))
+        ->assertOk()
+        ->assertJsonPath('publication_status', 'queued');
+});
+
+it('complete on one validated import requests only that import projection', function (): void {
+    $fixture = graphImportFixture();
+    $manifest = graphImportManifest($fixture['project_id'], $fixture['binding_id']);
+    $import = $this->postJson('/api/hades/v1/graph-imports', $manifest, graphImportHeaders($fixture['token']))->json('import_id');
+    DB::table('hades_graph_imports')->where('id', $import)->update(['status' => 'validated', 'validated_at' => now(), 'expires_at' => null]);
+    $siblingId = (string) Str::ulid();
+    DB::table('hades_graph_imports')->insert([
+        'id' => $siblingId, 'project_id' => $fixture['project_id'], 'workspace_binding_id' => $fixture['binding_id'], 'hades_agent_id' => $fixture['agent_id'],
+        'attempt_generation' => 2, 'scope_generation' => 2, 'schema' => 'hades.code_graph.v2', 'artifact_graph_version' => str_repeat('d', 64), 'manifest_semantic_sha256' => str_repeat('e', 64),
+        'source_identity' => json_encode($manifest['source'], JSON_THROW_ON_ERROR), 'manifest' => json_encode([], JSON_THROW_ON_ERROR), 'status' => 'validated', 'completeness_status' => 'full',
+        'expected_chunks' => 0, 'received_chunks' => 0, 'expected_uncompressed_bytes' => 0, 'received_uncompressed_bytes' => 0, 'expected_compressed_bytes' => 0, 'received_compressed_bytes' => 0,
+        'failure_code' => null, 'failure_details' => null, 'completed_at' => null, 'validated_at' => now(), 'validation_started_at' => null, 'validation_heartbeat_at' => null,
+        'validation_attempts' => 0, 'validation_run_token_hash' => null, 'validation_lease_expires_at' => null, 'expires_at' => null, 'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $this->postJson("/api/hades/v1/graph-imports/{$import}/complete", ['artifact_graph_version' => $manifest['artifact_graph_version']], graphImportHeaders($fixture['token']))
+        ->assertAccepted();
+    expect(DB::table('canonical_graph_projection_heads')->where('desired_artifact_graph_version', $manifest['artifact_graph_version'])->count())->toBe(1)
+        ->and(DB::table('canonical_graph_projection_heads')->where('desired_artifact_graph_version', str_repeat('d', 64))->count())->toBe(0);
+});
+
 it('rejects completion when counters claim receipts that rows do not prove', function (): void {
     $fixture = graphImportFixture();
     $chunk = graphImportChunk($fixture['binding_id']);
@@ -956,6 +1011,8 @@ function insertGraphImportProjectionState(
         'source_scope_type' => 'workspace_binding',
         'source_scope_id' => $bindingId,
         'desired_generation' => 1,
+        'desired_graph_import_id' => $importId,
+        'desired_source_generation' => 1,
         'desired_artifact_graph_version' => $artifactVersion,
         'desired_verification_set_hash' => str_repeat('e', 64),
         'desired_projection_version' => $projectionVersion,

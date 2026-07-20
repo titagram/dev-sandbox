@@ -13,6 +13,36 @@ return new class extends Migration
             $table->foreignUlid('graph_import_id');
             $table->string('record_kind', 32);
             $table->string('public_id', 191);
+            $table->string('record_subkind', 64)->nullable();
+            $table->string('reason_code', 64)->nullable();
+            $table->string('identity_variant', 64)->nullable();
+            $table->string('owner_public_id', 191)->nullable();
+            $table->string('aux_public_id', 191)->nullable();
+            $table->string('language', 64)->nullable();
+            $table->string('analysis_status', 32)->nullable();
+            $table->string('flow_public_id', 191)->nullable();
+            $table->string('edge_public_id', 191)->nullable();
+            $table->string('source_node_public_id', 191)->nullable();
+            $table->string('target_node_public_id', 191)->nullable();
+            $table->string('uncertainty_public_id', 191)->nullable();
+            $table->string('root_node_public_id', 191)->nullable();
+            $table->string('stage_from', 32)->nullable();
+            $table->string('stage_to', 32)->nullable();
+            $table->string('async_context', 32)->nullable();
+            $table->string('async_child_flow_id', 191)->nullable();
+            $table->string('relation', 32)->nullable();
+            $table->string('edge_flow', 32)->nullable();
+            $table->string('branch_group_id', 191)->nullable();
+            $table->string('occurrence_owner_public_id', 191)->nullable();
+            $table->string('backbone_role', 32)->nullable();
+            $table->string('omission_reason', 64)->nullable();
+            $table->char('identity_digest', 64)->nullable();
+            $table->char('entrypoint_identity_digest', 64)->nullable();
+            $table->unsignedInteger('count_hint')->nullable();
+            $table->json('flow_counts')->nullable();
+            $table->json('flow_capabilities')->nullable();
+            $table->string('completeness_status', 32)->nullable();
+            $table->json('stage_counts')->nullable();
             $table->unsignedInteger('chunk_index');
             $table->unsignedInteger('record_ordinal');
 
@@ -23,6 +53,22 @@ return new class extends Migration
             $table->index(
                 ['graph_import_id', 'public_id'],
                 'hades_graph_import_record_keys_import_public_id_idx',
+            );
+            $table->index(
+                ['graph_import_id', 'record_kind', 'record_subkind'],
+                'hades_graph_import_record_keys_subkind_idx',
+            );
+            $table->index(
+                ['graph_import_id', 'record_kind', 'uncertainty_public_id'],
+                'hades_graph_import_record_keys_uncertainty_idx',
+            );
+            $table->index(
+                ['graph_import_id', 'record_kind', 'flow_public_id'],
+                'hades_graph_import_record_keys_flow_idx',
+            );
+            $table->index(
+                ['graph_import_id', 'record_kind', 'edge_public_id'],
+                'hades_graph_import_record_keys_edge_idx',
             );
             $table->foreign('graph_import_id', 'hades_graph_import_record_keys_import_foreign')
                 ->references('id')
@@ -62,6 +108,10 @@ return new class extends Migration
             $table->index(
                 ['graph_import_id', 'target_record_kind', 'target_public_id'],
                 'hades_graph_import_references_target_idx',
+            );
+            $table->index(
+                ['graph_import_id', 'owner_record_kind', 'owner_public_id', 'reference_kind'],
+                'hades_graph_import_references_owner_lookup_idx',
             );
             $table->foreign('graph_import_id', 'hades_graph_import_references_import_foreign')
                 ->references('id')
@@ -203,22 +253,6 @@ return new class extends Migration
                     SELECT RAISE(ABORT, 'cross-kind public id collision is not allowed');
                 END
             SQL);
-            DB::statement(<<<'SQL'
-                CREATE TRIGGER hades_graph_import_references_unsigned_insert
-                BEFORE INSERT ON hades_graph_import_references
-                WHEN NEW.id < 0
-                BEGIN
-                    SELECT RAISE(ABORT, 'graph import reference id must be non-negative');
-                END
-            SQL);
-            DB::statement(<<<'SQL'
-                CREATE TRIGGER hades_graph_import_references_unsigned_update
-                BEFORE UPDATE ON hades_graph_import_references
-                WHEN NEW.id < 0
-                BEGIN
-                    SELECT RAISE(ABORT, 'graph import reference id must be non-negative');
-                END
-            SQL);
         }
     }
 
@@ -247,8 +281,6 @@ return new class extends Migration
             DB::statement('DROP TRIGGER IF EXISTS hades_graph_import_record_keys_kind_check_update');
             DB::statement('DROP TRIGGER IF EXISTS hades_graph_import_record_keys_cross_kind_insert');
             DB::statement('DROP TRIGGER IF EXISTS hades_graph_import_record_keys_cross_kind_update');
-            DB::statement('DROP TRIGGER IF EXISTS hades_graph_import_references_unsigned_insert');
-            DB::statement('DROP TRIGGER IF EXISTS hades_graph_import_references_unsigned_update');
         }
 
         Schema::dropIfExists('hades_graph_import_references');

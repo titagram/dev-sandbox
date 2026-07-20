@@ -41,6 +41,7 @@ class HadesGraphImport extends Model
         'workspace_binding_id',
         'hades_agent_id',
         'attempt_generation',
+        'scope_generation',
         'schema',
         'artifact_graph_version',
         'manifest_semantic_sha256',
@@ -75,6 +76,7 @@ class HadesGraphImport extends Model
     {
         return [
             'attempt_generation' => 'integer',
+            'scope_generation' => 'integer',
             'source_identity' => 'array',
             'manifest' => 'array',
             'expected_chunks' => 'integer',

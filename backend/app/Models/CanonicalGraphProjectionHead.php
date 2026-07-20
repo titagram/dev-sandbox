@@ -24,6 +24,8 @@ class CanonicalGraphProjectionHead extends Model
         'source_scope_type',
         'source_scope_id',
         'desired_generation',
+        'desired_graph_import_id',
+        'desired_source_generation',
         'desired_artifact_graph_version',
         'desired_verification_set_hash',
         'desired_projection_version',
@@ -43,6 +45,7 @@ class CanonicalGraphProjectionHead extends Model
     {
         return [
             'desired_generation' => 'integer',
+            'desired_source_generation' => 'integer',
             'failed_generation' => 'integer',
             'failed_at' => 'immutable_datetime',
         ];

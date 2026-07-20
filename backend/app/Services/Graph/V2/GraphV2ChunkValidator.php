@@ -31,7 +31,7 @@ final class GraphV2ChunkValidator
         $compressed = $this->retainCompressed($source, $compressedLimit);
         $keepCompressed = false;
         try {
-            $compressedBytes = (int) (fstat($compressed)['size'] ?? 0);
+            $compressedBytes = $this->streamSize($compressed);
             $compressedSha = hash_final($this->compressedHash);
             $this->assert($compressedBytes === (int) $descriptor['compressed_bytes'], 'graph_chunk_invalid', "Compressed graph chunk byte count does not match its descriptor ({$compressedBytes}/{$descriptor['compressed_bytes']}).");
             $this->assert($compressedSha === $descriptor['compressed_sha256'], 'graph_chunk_invalid', 'Compressed graph chunk digest does not match its descriptor.');
@@ -41,7 +41,7 @@ final class GraphV2ChunkValidator
             $this->assertHeader($headers, 'X-Hades-Chunk-Uncompressed-Bytes', (string) $descriptor['uncompressed_bytes']);
 
             $this->assertGzipHeader($compressed);
-            rewind($compressed);
+            $this->rewindOrThrow($compressed, 'Graph chunk temporary storage could not be rewound.');
             $uncompressed = $this->inflate($compressed, $uncompressedLimit, $compressedBytes);
             $this->assert(strlen($uncompressed) === (int) $descriptor['uncompressed_bytes'], 'graph_chunk_invalid', 'Uncompressed graph chunk byte count does not match its descriptor.');
             $this->assert(hash('sha256', $uncompressed) === $descriptor['sha256'], 'graph_chunk_invalid', 'Uncompressed graph chunk digest does not match its descriptor.');
@@ -74,7 +74,7 @@ final class GraphV2ChunkValidator
                 $previous = $id;
             }
 
-            rewind($compressed);
+            $this->rewindOrThrow($compressed, 'Graph chunk temporary storage could not be rewound.');
             $keepCompressed = true;
 
             return [
@@ -90,6 +90,128 @@ final class GraphV2ChunkValidator
         }
     }
 
+    /**
+     * Validate a stored chunk without decoding its records array. The
+     * uncompressed bytes remain bounded by the artifact limit and each record
+     * is decoded, schema-checked, and yielded independently.
+     *
+     * @param  resource  $source
+     * @param  array<string, string>  $headers
+     * @param  array<string, mixed>  $descriptor
+     * @return \Generator<int, \stdClass, void, void>
+     */
+    public function streamRecords(HadesGraphImport $import, int $index, $source, array $headers, array $descriptor): \Generator
+    {
+        $this->assert(($descriptor['compression'] ?? null) === 'gzip', 'graph_chunk_invalid', 'Graph chunk compression is invalid.');
+        $contentEncoding = $this->header($headers, 'Content-Encoding');
+        $this->assert($contentEncoding === null || $contentEncoding === '', 'graph_chunk_invalid', 'Content-Encoding is forbidden for graph chunks.');
+        $contentType = $this->header($headers, 'Content-Type') ?? '';
+        $this->assert(strtolower((string) strtok($contentType, ';')) === 'application/vnd.hades.graph-chunk+gzip', 'graph_chunk_invalid', 'Graph chunk content type is invalid.');
+
+        $compressed = $this->retainCompressed($source, min((int) config('devboard.artifacts.max_chunk_bytes'), self::MAX_BYTES, (int) $descriptor['compressed_bytes']));
+        try {
+            $compressedBytes = $this->streamSize($compressed);
+            $compressedSha = hash_final($this->compressedHash);
+            $this->assert($compressedBytes === (int) $descriptor['compressed_bytes'], 'graph_chunk_invalid', 'Compressed graph chunk byte count does not match its descriptor.');
+            $this->assert($compressedSha === $descriptor['compressed_sha256'], 'graph_chunk_invalid', 'Compressed graph chunk digest does not match its descriptor.');
+            $this->assertHeader($headers, 'X-Hades-Chunk-Compressed-Bytes', (string) $compressedBytes);
+            $this->assertHeader($headers, 'X-Hades-Chunk-Compressed-Sha256', $compressedSha);
+            $this->assertHeader($headers, 'X-Hades-Chunk-Sha256', (string) $descriptor['sha256']);
+            $this->assertHeader($headers, 'X-Hades-Chunk-Uncompressed-Bytes', (string) $descriptor['uncompressed_bytes']);
+            $this->assertGzipHeader($compressed);
+            $this->rewindOrThrow($compressed, 'Graph chunk temporary storage could not be rewound.');
+            $uncompressed = $this->inflate($compressed, min((int) config('devboard.artifacts.max_chunk_bytes'), self::MAX_BYTES, (int) $descriptor['uncompressed_bytes']), $compressedBytes);
+            $this->assert(strlen($uncompressed) === (int) $descriptor['uncompressed_bytes'], 'graph_chunk_invalid', 'Uncompressed graph chunk byte count does not match its descriptor.');
+            $this->assert(hash('sha256', $uncompressed) === $descriptor['sha256'], 'graph_chunk_invalid', 'Uncompressed graph chunk digest does not match its descriptor.');
+
+            $kind = (string) ($descriptor['kind'] ?? '');
+            $prefix = '{"index":'.$index.',"kind":'.json_encode($kind, JSON_THROW_ON_ERROR).',"records":[';
+            $suffix = '],"schema":"hades.graph_chunk.v2"}';
+            $this->assert(str_starts_with($uncompressed, $prefix) && str_ends_with($uncompressed, $suffix), 'graph_chunk_invalid', 'Stored graph chunk envelope is not canonical.');
+
+            $position = strlen($prefix);
+            $end = strlen($uncompressed) - strlen($suffix);
+            $count = 0;
+            $previous = null;
+            while ($position < $end) {
+                if ($count > 0) {
+                    $this->assert($uncompressed[$position] === ',', 'graph_chunk_invalid', 'Graph chunk record separators are invalid.');
+                    $position++;
+                }
+                $start = $position;
+                $this->assert($uncompressed[$position] === '{', 'graph_chunk_invalid', 'Graph chunk records must be objects.');
+                $depth = 0;
+                $inString = false;
+                $escaped = false;
+                for (; $position < $end; $position++) {
+                    $character = $uncompressed[$position];
+                    if ($inString) {
+                        if ($escaped) {
+                            $escaped = false;
+                        } elseif ($character === '\\') {
+                            $escaped = true;
+                        } elseif ($character === '"') {
+                            $inString = false;
+                        }
+
+                        continue;
+                    }
+                    if ($character === '"') {
+                        $inString = true;
+                    } elseif ($character === '{' || $character === '[') {
+                        $depth++;
+                    } elseif ($character === '}' || $character === ']') {
+                        $depth--;
+                        if ($depth === 0) {
+                            $position++;
+                            break;
+                        }
+                    }
+                }
+                $this->assert(! $inString && $depth === 0, 'graph_chunk_invalid', 'Graph chunk record is truncated.');
+                $recordBytes = substr($uncompressed, $start, $position - $start);
+                try {
+                    $record = json_decode($recordBytes, false, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
+                } catch (\JsonException) {
+                    throw new GraphV2ImportException('graph_chunk_invalid', 'Graph chunk record is not valid JSON.');
+                }
+                $this->assert($record instanceof \stdClass, 'graph_chunk_invalid', 'Graph chunk records must be objects.');
+                try {
+                    $this->schema->assertValid($record, 'artifact.schema.json#/$defs/'.$this->recordSchema($kind), 'graph_chunk_invalid');
+                    $this->assert(app(GraphV2Canonicalizer::class)->canonicalJson($record) === $recordBytes, 'graph_chunk_invalid', 'Graph chunk record is not canonical.');
+                } catch (GraphV2ImportException $exception) {
+                    throw $exception;
+                } catch (\Throwable) {
+                    throw new GraphV2ImportException('graph_chunk_invalid', 'Graph chunk record is not canonicalizable.');
+                }
+                $id = $record->id ?? null;
+                $this->assert(is_string($id) && ($previous === null || strcmp($previous, $id) < 0), 'graph_chunk_invalid', 'Graph chunk record IDs must be strictly increasing.');
+                $previous = $id;
+                $count++;
+                yield $record;
+            }
+            $this->assert($position === $end && $count === (int) $descriptor['record_count'] && $count > 0, 'graph_chunk_invalid', 'Graph chunk record count does not match its descriptor.');
+        } finally {
+            if (is_resource($compressed)) {
+                fclose($compressed);
+            }
+        }
+    }
+
+    private function recordSchema(string $kind): string
+    {
+        return match ($kind) {
+            'entrypoints' => 'entrypoint',
+            'nodes' => 'node',
+            'structures' => 'structure',
+            'edges' => 'edge',
+            'flows' => 'flow',
+            'flow_steps' => 'flowStep',
+            'uncertainties' => 'uncertainty',
+            default => throw new GraphV2ImportException('graph_chunk_invalid', 'Graph chunk kind is invalid.'),
+        };
+    }
+
     /** @param resource $source @return array{stream:resource,bytes:int,sha256:string} */
     public function fingerprint($source, int $limit): array
     {
@@ -97,7 +219,7 @@ final class GraphV2ChunkValidator
 
         return [
             'stream' => $stream,
-            'bytes' => (int) (fstat($stream)['size'] ?? 0),
+            'bytes' => $this->streamSize($stream),
             'sha256' => hash_final($this->compressedHash),
         ];
     }
@@ -109,15 +231,21 @@ final class GraphV2ChunkValidator
     {
         $this->assert(is_resource($source), 'graph_chunk_invalid', 'Graph chunk body is not streamable.');
         $target = fopen('php://temp/maxmemory:2097152', 'w+b');
-        $this->assert(is_resource($target), 'graph_chunk_invalid', 'Graph chunk temporary storage could not be created.');
+        if (! is_resource($target)) {
+            throw $this->infrastructure('Graph chunk temporary storage could not be created.');
+        }
         $this->compressedHash = hash_init('sha256');
         try {
             while (! feof($source)) {
-                $remaining = $limit - (int) ftell($target);
+                $position = ftell($target);
+                if ($position === false) {
+                    throw $this->infrastructure('Graph chunk temporary storage position could not be read.');
+                }
+                $remaining = $limit - (int) $position;
                 if ($remaining <= 0) {
                     $extra = fread($source, 1);
                     if ($extra === false) {
-                        throw new GraphV2ImportException('graph_chunk_invalid', 'Graph chunk body could not be read.');
+                        throw $this->infrastructure('Graph chunk body could not be read.');
                     }
                     if ($extra !== '') {
                         throw new GraphV2ImportException('graph_chunk_too_large', 'Compressed graph chunk exceeds the byte limit.');
@@ -127,7 +255,7 @@ final class GraphV2ChunkValidator
                 }
                 $part = fread($source, min(65536, $remaining + 1));
                 if ($part === false) {
-                    throw new GraphV2ImportException('graph_chunk_invalid', 'Graph chunk body could not be read.');
+                    throw $this->infrastructure('Graph chunk body could not be read.');
                 }
                 if ($part === '') {
                     continue;
@@ -136,11 +264,11 @@ final class GraphV2ChunkValidator
                     throw new GraphV2ImportException('graph_chunk_too_large', 'Compressed graph chunk exceeds the byte limit.');
                 }
                 if (fwrite($target, $part) !== strlen($part)) {
-                    throw new GraphV2ImportException('graph_chunk_invalid', 'Graph chunk temporary storage could not be written.');
+                    throw $this->infrastructure('Graph chunk temporary storage could not be written.');
                 }
                 hash_update($this->compressedHash, $part);
             }
-            rewind($target);
+            $this->rewindOrThrow($target, 'Graph chunk temporary storage could not be rewound.');
 
             return $target;
         } catch (\Throwable $exception) {
@@ -153,15 +281,19 @@ final class GraphV2ChunkValidator
     private function inflate($compressed, int $limit, int $compressedBytes): string
     {
         $inflate = inflate_init(ZLIB_ENCODING_GZIP);
-        $this->assert($inflate !== false, 'graph_chunk_invalid', 'Graph chunk gzip stream could not be initialized.');
+        if ($inflate === false) {
+            throw $this->infrastructure('Graph chunk gzip stream could not be initialized.');
+        }
         $output = fopen('php://temp/maxmemory:2097152', 'w+b');
-        $this->assert(is_resource($output), 'graph_chunk_invalid', 'Graph chunk temporary storage could not be created.');
+        if (! is_resource($output)) {
+            throw $this->infrastructure('Graph chunk temporary storage could not be created.');
+        }
         $total = 0;
         try {
             while (! feof($compressed)) {
                 $part = fread($compressed, 65536);
                 if ($part === false) {
-                    throw new GraphV2ImportException('graph_chunk_invalid', 'Graph chunk gzip stream is invalid.');
+                    throw $this->infrastructure('Graph chunk gzip stream could not be read.');
                 }
                 if ($part === '') {
                     $decoded = @inflate_add($inflate, '', ZLIB_FINISH);
@@ -169,7 +301,9 @@ final class GraphV2ChunkValidator
                     $total += strlen($decoded);
                     $this->assert($total <= $limit && $total <= max(1, $compressedBytes) * 100, 'graph_chunk_too_large', 'Graph chunk expansion exceeds the configured limit.');
                     if ($decoded !== '') {
-                        $this->assert(fwrite($output, $decoded) === strlen($decoded), 'graph_chunk_invalid', 'Graph chunk temporary storage could not be written.');
+                        if (fwrite($output, $decoded) !== strlen($decoded)) {
+                            throw $this->infrastructure('Graph chunk temporary storage could not be written.');
+                        }
                     }
 
                     continue;
@@ -180,14 +314,18 @@ final class GraphV2ChunkValidator
                 $this->assert($total <= $limit, 'graph_chunk_too_large', 'Uncompressed graph chunk exceeds the byte limit.');
                 $this->assert($total <= max(1, $compressedBytes) * 100, 'graph_chunk_too_large', 'Graph chunk expansion ratio exceeds 100:1.');
                 if ($decoded !== '') {
-                    $this->assert(fwrite($output, $decoded) === strlen($decoded), 'graph_chunk_invalid', 'Graph chunk temporary storage could not be written.');
+                    if (fwrite($output, $decoded) !== strlen($decoded)) {
+                        throw $this->infrastructure('Graph chunk temporary storage could not be written.');
+                    }
                 }
             }
             $this->assert(inflate_get_status($inflate) === ZLIB_STREAM_END, 'graph_chunk_invalid', 'Graph chunk gzip stream did not terminate exactly.');
             $this->assert(inflate_get_read_len($inflate) === $compressedBytes, 'graph_chunk_invalid', 'Graph chunk contains a second gzip member or trailing bytes.');
-            rewind($output);
+            $this->rewindOrThrow($output, 'Graph chunk output could not be rewound.');
             $result = stream_get_contents($output);
-            $this->assert(is_string($result), 'graph_chunk_invalid', 'Graph chunk output could not be read.');
+            if ($result === false) {
+                throw $this->infrastructure('Graph chunk output could not be read.');
+            }
 
             return $result;
         } finally {
@@ -198,9 +336,12 @@ final class GraphV2ChunkValidator
     /** @param resource $compressed */
     private function assertGzipHeader($compressed): void
     {
-        rewind($compressed);
+        $this->rewindOrThrow($compressed, 'Graph chunk gzip stream could not be rewound.');
         $header = fread($compressed, 10);
-        $this->assert(is_string($header) && strlen($header) === 10, 'graph_chunk_invalid', 'Graph chunk gzip member is truncated.');
+        if ($header === false) {
+            throw $this->infrastructure('Graph chunk gzip header could not be read.');
+        }
+        $this->assert(strlen($header) === 10, 'graph_chunk_invalid', 'Graph chunk gzip member is truncated.');
         $values = unpack('C2id/Ccm/Cflg/Vmtime/Cxfl/Cos', $header);
         $this->assert(is_array($values), 'graph_chunk_invalid', 'Graph chunk gzip header is invalid.');
         $this->assert($values['id1'] === 31 && $values['id2'] === 139 && $values['cm'] === 8, 'graph_chunk_invalid', 'Graph chunk is not RFC 1952 gzip.');
@@ -240,5 +381,29 @@ final class GraphV2ChunkValidator
         if (! $condition) {
             throw new GraphV2ImportException($code, $message);
         }
+    }
+
+    /** @param resource $stream */
+    private function streamSize($stream): int
+    {
+        $stat = fstat($stream);
+        if ($stat === false || ! array_key_exists('size', $stat)) {
+            throw $this->infrastructure('Graph chunk stream metadata could not be read.');
+        }
+
+        return (int) $stat['size'];
+    }
+
+    /** @param resource $stream */
+    private function rewindOrThrow($stream, string $message): void
+    {
+        if (! rewind($stream)) {
+            throw $this->infrastructure($message);
+        }
+    }
+
+    private function infrastructure(string $message, ?\Throwable $previous = null): GraphV2InfrastructureException
+    {
+        return new GraphV2InfrastructureException($message, 0, $previous);
     }
 }

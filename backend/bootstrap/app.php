@@ -41,6 +41,11 @@ return Application::configure(basePath: dirname(__DIR__))
             ->command('hades:search-documents-reindex', ['--limit' => 100000])
             ->dailyAt('03:45')
             ->withoutOverlapping();
+        $schedule
+            ->command('hades:graph-v2:reconcile')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->onOneServer();
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->trustProxies(at: '*');

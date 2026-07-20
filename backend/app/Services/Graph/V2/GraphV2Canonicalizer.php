@@ -76,7 +76,7 @@ final class GraphV2Canonicalizer
     }
 
     /**
-     * @param iterable<array-key, mixed>|stdClass $properties
+     * @param  iterable<array-key, mixed>|stdClass  $properties
      */
     private function normalizeObject(iterable|stdClass $properties): stdClass
     {

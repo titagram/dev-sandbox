@@ -16,7 +16,7 @@ uses(RefreshDatabase::class);
 it('creates graph v2 storage without columns outside the approved schema', function (): void {
     $expectedColumns = [
         'hades_graph_imports' => [
-            'id', 'project_id', 'workspace_binding_id', 'hades_agent_id', 'attempt_generation',
+            'id', 'project_id', 'workspace_binding_id', 'hades_agent_id', 'attempt_generation', 'scope_generation',
             'schema', 'artifact_graph_version', 'manifest_semantic_sha256', 'source_identity',
             'manifest', 'status', 'completeness_status', 'expected_chunks', 'received_chunks',
             'expected_uncompressed_bytes', 'received_uncompressed_bytes',
@@ -31,7 +31,9 @@ it('creates graph v2 storage without columns outside the approved schema', funct
             'storage_disk', 'storage_path', 'received_at', 'created_at', 'updated_at',
         ],
         'hades_graph_import_record_keys' => [
-            'graph_import_id', 'record_kind', 'public_id', 'chunk_index', 'record_ordinal',
+            'graph_import_id', 'record_kind', 'public_id', 'record_subkind', 'reason_code', 'identity_variant', 'owner_public_id', 'aux_public_id',
+            'language', 'analysis_status', 'flow_public_id', 'edge_public_id', 'source_node_public_id', 'target_node_public_id', 'uncertainty_public_id', 'root_node_public_id', 'stage_from', 'stage_to', 'async_context', 'async_child_flow_id', 'relation', 'edge_flow', 'branch_group_id', 'occurrence_owner_public_id', 'backbone_role', 'omission_reason', 'identity_digest', 'entrypoint_identity_digest', 'count_hint', 'flow_counts', 'flow_capabilities', 'completeness_status', 'stage_counts',
+            'chunk_index', 'record_ordinal',
         ],
         'hades_graph_import_file_paths' => [
             'graph_import_id', 'path', 'file_node_public_id', 'file_sha256',
@@ -41,7 +43,7 @@ it('creates graph v2 storage without columns outside the approved schema', funct
             'reference_kind', 'target_record_kind', 'target_public_id',
         ],
         'canonical_graph_projection_heads' => [
-            'id', 'project_id', 'source_scope_type', 'source_scope_id', 'desired_generation',
+            'id', 'project_id', 'source_scope_type', 'source_scope_id', 'desired_generation', 'desired_graph_import_id', 'desired_source_generation',
             'desired_artifact_graph_version', 'desired_verification_set_hash',
             'desired_projection_version', 'active_projection_id', 'previous_projection_id',
             'failed_generation', 'failed_projection_version', 'failed_at', 'created_at',
@@ -107,7 +109,7 @@ it('allows only one live import for a project binding and artifact version', fun
     ]);
 });
 
-it('rejects cross-import references through composite record-key foreign keys', function (): void {
+it('rejects missing and cross-import-shaped reference targets at the database boundary', function (): void {
     if (! Schema::hasTable('hades_graph_import_references')) {
         expect(Schema::hasTable('hades_graph_import_references'))->toBeTrue();
 
@@ -120,7 +122,7 @@ it('rejects cross-import references through composite record-key foreign keys', 
 
     DB::table('hades_graph_imports')->insert([
         graphV2ImportPayload($context, str_repeat('b', 64), 1, 'validating', $firstImport),
-        graphV2ImportPayload($context, str_repeat('c', 64), 1, 'validating', $secondImport),
+        graphV2ImportPayload($context, str_repeat('c', 64), 1, 'validating', $secondImport, ['scope_generation' => 2]),
     ]);
     DB::table('hades_graph_import_record_keys')->insert([
         'graph_import_id' => $firstImport,
@@ -144,6 +146,15 @@ it('rejects cross-import references through composite record-key foreign keys', 
         'reference_kind' => 'target',
         'target_record_kind' => 'nodes',
         'target_public_id' => 'target-node',
+    ]))->toThrow(QueryException::class);
+
+    expect(fn () => DB::table('hades_graph_import_references')->insert([
+        'graph_import_id' => $firstImport,
+        'owner_record_kind' => 'nodes',
+        'owner_public_id' => 'owner-node',
+        'reference_kind' => 'target',
+        'target_record_kind' => 'nodes',
+        'target_public_id' => 'missing-node',
     ]))->toThrow(QueryException::class);
 });
 
@@ -298,6 +309,7 @@ it('rejects negative values in every graph v2 unsigned integer family', function
 
     foreach ([
         'attempt_generation',
+        'scope_generation',
         'expected_chunks',
         'received_chunks',
         'expected_uncompressed_bytes',
@@ -321,7 +333,7 @@ it('rejects negative values in every graph v2 unsigned integer family', function
     foreach (['chunk_index', 'record_count', 'uncompressed_bytes', 'compressed_bytes'] as $offset => $column) {
         $importId = (string) Str::ulid();
         DB::table('hades_graph_imports')->insert(
-            graphV2ImportPayload($context, str_repeat(dechex($offset + 20), 64), 1, 'staging', $importId),
+            graphV2ImportPayload($context, str_repeat(dechex($offset + 20), 64), 1, 'staging', $importId, ['scope_generation' => $offset + 1]),
         );
 
         expect(fn () => DB::table('hades_graph_import_chunks')->insert(
@@ -361,6 +373,27 @@ it('enforces one projection head per project and workspace binding scope', funct
     expect(fn () => DB::table('canonical_graph_projection_heads')->insert([
         ...$head,
         'id' => (string) Str::ulid(),
+    ]))->toThrow(QueryException::class);
+});
+
+it('requires projection desired import and source generation to be coherent', function (): void {
+    $context = graphV2MigrationContext();
+    $import = graphV2ImportPayload($context, str_repeat('9', 64), 1, 'validated');
+    DB::table('hades_graph_imports')->insert($import);
+    $empty = [
+        'id' => (string) Str::ulid(), 'project_id' => $context['project_id'], 'source_scope_type' => 'workspace_binding',
+        'source_scope_id' => $context['workspace_binding_id'], 'desired_generation' => 0,
+        'desired_graph_import_id' => null, 'desired_source_generation' => null,
+        'desired_artifact_graph_version' => null, 'desired_verification_set_hash' => null, 'desired_projection_version' => null,
+        'active_projection_id' => null, 'previous_projection_id' => null, 'failed_generation' => null,
+        'failed_projection_version' => null, 'failed_at' => null, 'created_at' => now(), 'updated_at' => now(),
+    ];
+    DB::table('canonical_graph_projection_heads')->insert($empty);
+
+    expect(fn () => DB::table('canonical_graph_projection_heads')->insert([
+        ...$empty, 'id' => (string) Str::ulid(), 'desired_graph_import_id' => $import['id'],
+        'desired_artifact_graph_version' => str_repeat('9', 64), 'desired_verification_set_hash' => str_repeat('8', 64),
+        'desired_projection_version' => str_repeat('7', 64),
     ]))->toThrow(QueryException::class);
 });
 
@@ -424,6 +457,8 @@ it('casts graph v2 models and exposes their approved relationships', function ()
         'source_scope_type' => 'workspace_binding',
         'source_scope_id' => $context['workspace_binding_id'],
         'desired_generation' => 4,
+        'desired_graph_import_id' => $importId,
+        'desired_source_generation' => 1,
         'desired_artifact_graph_version' => str_repeat('3', 64),
         'desired_verification_set_hash' => str_repeat('4', 64),
         'desired_projection_version' => str_repeat('5', 64),
@@ -437,6 +472,8 @@ it('casts graph v2 models and exposes their approved relationships', function ()
     ]);
 
     expect($head->desired_generation)->toBe(4)
+        ->and($head->desired_graph_import_id)->toBe($importId)
+        ->and($head->desired_source_generation)->toBe(1)
         ->and($head->failed_generation)->toBe(3)
         ->and($head->failed_at)->toBeInstanceOf(CarbonImmutable::class)
         ->and($head->project->id)->toBe($context['project_id'])
@@ -565,6 +602,7 @@ function graphV2ImportPayload(
         'workspace_binding_id' => $context['workspace_binding_id'],
         'hades_agent_id' => $context['hades_agent_id'],
         'attempt_generation' => $attemptGeneration,
+        'scope_generation' => $overrides['scope_generation'] ?? $attemptGeneration,
         'schema' => 'hades.code_graph.v2',
         'artifact_graph_version' => $artifactVersion,
         'manifest_semantic_sha256' => str_repeat('0', 64),

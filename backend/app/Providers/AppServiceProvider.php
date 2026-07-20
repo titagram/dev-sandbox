@@ -10,6 +10,12 @@ use App\Models\User;
 use App\Policies\PluginTokenPolicy;
 use App\Policies\ProjectPolicy;
 use App\Services\AuditLogger;
+use App\Services\Graph\V2\GraphV2ArtifactReader;
+use App\Services\Graph\V2\GraphV2ArtifactReaderContract;
+use App\Services\Graph\V2\GraphV2Normalizer;
+use App\Services\Graph\V2\GraphV2NormalizerContract;
+use App\Services\Graph\V2\GraphV2StoredChunkReader;
+use App\Services\Graph\V2\GraphV2StoredChunkReaderContract;
 use App\Services\Search\ProviderEmbeddingGenerator;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -27,6 +33,9 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(ProviderHostResolver::class, SystemProviderHostResolver::class);
         $this->app->singleton(ProviderEndpointPolicy::class);
         $this->app->bind(EmbeddingGenerator::class, ProviderEmbeddingGenerator::class);
+        $this->app->bind(GraphV2ArtifactReaderContract::class, GraphV2ArtifactReader::class);
+        $this->app->bind(GraphV2NormalizerContract::class, GraphV2Normalizer::class);
+        $this->app->bind(GraphV2StoredChunkReaderContract::class, GraphV2StoredChunkReader::class);
     }
 
     /**

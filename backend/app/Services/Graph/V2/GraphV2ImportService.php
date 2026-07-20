@@ -50,9 +50,13 @@ final class GraphV2ImportService
                 return $this->result($validatedImport, 200);
             }
             $generation = ((int) (clone $base)->max('attempt_generation')) + 1;
+            $scopeGeneration = ((int) HadesGraphImport::query()
+                ->where('project_id', $project->id)
+                ->where('workspace_binding_id', $binding->id)
+                ->max('scope_generation')) + 1;
             $import = HadesGraphImport::query()->create([
                 'id' => (string) Str::ulid(), 'project_id' => $project->id, 'workspace_binding_id' => $binding->id,
-                'hades_agent_id' => $agent->id, 'attempt_generation' => $generation, 'schema' => 'hades.code_graph.v2',
+                'hades_agent_id' => $agent->id, 'attempt_generation' => $generation, 'scope_generation' => $scopeGeneration, 'schema' => 'hades.code_graph.v2',
                 'artifact_graph_version' => $artifactVersion, 'manifest_semantic_sha256' => $validated['semantic_sha256'],
                 'source_identity' => $manifest['source'], 'manifest' => $manifest, 'status' => HadesGraphImport::STATUS_STAGING,
                 'completeness_status' => $validated['completeness_status'], 'expected_chunks' => $validated['expected_chunks'],
@@ -193,6 +197,12 @@ final class GraphV2ImportService
                     throw new GraphV2ImportException('graph_import_incomplete', 'Graph import is missing one or more chunks.');
                 }
                 $locked->update(['status' => HadesGraphImport::STATUS_VALIDATING, 'completed_at' => now(), 'expires_at' => null]);
+                DB::afterCommit(function () use ($locked): void {
+                    $fresh = HadesGraphImport::query()->whereKey($locked->id)->first();
+                    if ($fresh !== null) {
+                        app(GraphV2ValidationRunService::class)->acquireAndDispatch($fresh);
+                    }
+                });
 
                 return $this->completePayload($locked, 202);
             }
@@ -206,6 +216,15 @@ final class GraphV2ImportService
                 throw new GraphV2ImportException('graph_import_stale', 'Graph import is stale.', 410);
             }
             $status = $this->publicationStatus($locked);
+            if ($status !== 'ready') {
+                DB::afterCommit(function () use ($locked): void {
+                    try {
+                        app(GraphV2ValidationRunService::class)->requestProjectionForValidatedImport((string) $locked->id);
+                    } catch (\Throwable) {
+                        // The validated import is durable; scheduled reconciliation repairs a lost request.
+                    }
+                });
+            }
 
             return $this->completePayload($locked, $status === 'ready' ? 200 : 202);
         });
@@ -274,7 +293,16 @@ final class GraphV2ImportService
     /** @return array{first_id:string,last_id:string} */
     private function storedBoundary(HadesGraphImport $import, HadesGraphImportChunk $row, array $descriptor): array
     {
-        $stream = $this->storage->readGraphChunkStream((string) $row->storage_disk, (string) $row->storage_path);
+        try {
+            $stream = $this->storage->readGraphChunkStream((string) $row->storage_disk, (string) $row->storage_path);
+        } catch (GraphV2ImportException|GraphV2InfrastructureException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            throw new GraphV2InfrastructureException('Graph artifact storage could not be read.', 0, $exception);
+        }
+        if (! is_resource($stream)) {
+            throw new GraphV2InfrastructureException('Graph artifact storage returned an invalid stream.');
+        }
         $validated = null;
         try {
             $validated = $this->chunks->validate($import, (int) $row->chunk_index, $stream, [
@@ -394,6 +422,10 @@ final class GraphV2ImportService
             ->where('projection_version', $head->desired_projection_version)
             ->first();
         if (! $projection) {
+            return 'queued';
+        }
+
+        if ($projection->status === 'ready' && (string) $head->active_projection_id !== (string) $projection->id) {
             return 'queued';
         }
 
