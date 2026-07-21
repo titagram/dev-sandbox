@@ -403,9 +403,10 @@ final class ProjectLogbookService
 
         if (isset($filters['q'])) {
             $term = $this->requiredString($filters['q'], 'q', 200);
-            $query->where(function ($builder) use ($term): void {
-                $builder->where('summary', 'like', '%'.$term.'%')
-                    ->orWhere('narrative_markdown', 'like', '%'.$term.'%');
+            $like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
+            $query->where(function ($builder) use ($like): void {
+                $builder->whereRaw("summary LIKE ? ESCAPE '!'", [$like])
+                    ->orWhereRaw("narrative_markdown LIKE ? ESCAPE '!'", [$like]);
             });
         }
     }

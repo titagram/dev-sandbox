@@ -163,6 +163,39 @@ it('lists and shows entries only inside the requested project', function () {
         ->and($service->showForProject($projectB, $entryA->id))->toBeNull();
 });
 
+it('treats SQL LIKE metacharacters as literal logbook search text', function () {
+    [$projectId] = logbookProject('literal-search');
+    $service = app(ProjectLogbookService::class);
+
+    $summaryMatch = $service->append([
+        ...logbookCommand($projectId, 'stable-key-search-summary-match'),
+        'summary' => 'Literal 100%_C:\\temp marker',
+    ], logbookAgentActor())['entry'];
+    $service->append([
+        ...logbookCommand($projectId, 'stable-key-search-summary-decoy'),
+        'summary' => 'Literal 100XXC:\\temp marker',
+    ], logbookAgentActor());
+
+    $narrativeMatch = $service->append([
+        ...logbookCommand($projectId, 'stable-key-search-narrative-match'),
+        'summary' => 'Narrative literal match',
+        'narrative_markdown' => 'Narrative token 25%_D:\\logs.',
+    ], logbookAgentActor())['entry'];
+    $service->append([
+        ...logbookCommand($projectId, 'stable-key-search-narrative-decoy'),
+        'summary' => 'Narrative wildcard decoy',
+        'narrative_markdown' => 'Narrative token 25YYD:\\logs.',
+    ], logbookAgentActor());
+
+    $summaryResults = $service->listForProject($projectId, ['q' => '100%_C:\\temp'], null, 20);
+    $narrativeResults = $service->listForProject($projectId, ['q' => '25%_D:\\logs'], null, 20);
+
+    expect($summaryResults['items'])->toHaveCount(1)
+        ->and($summaryResults['items'][0]->id)->toBe($summaryMatch->id)
+        ->and($narrativeResults['items'])->toHaveCount(1)
+        ->and($narrativeResults['items'][0]->id)->toBe($narrativeMatch->id);
+});
+
 /** @return array{string,string} */
 function logbookProject(string $suffix): array
 {
