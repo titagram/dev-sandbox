@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
@@ -93,31 +93,38 @@ function TimelineEntry({ entry, projectId }: { entry: ProjectLogbookEntry; proje
   </Panel>;
 }
 
-function AddNote({ projectId, onAdded }: { projectId: string; onAdded: (entry: ProjectLogbookEntry) => void }) {
+function AddNote({ projectId, onAdded }: { projectId: string; onAdded: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [summary, setSummary] = useState("");
   const [narrative, setNarrative] = useState("");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!summary.trim()) return;
     setSaving(true);
+    setError(null);
     try {
-      const response = await api.createProjectLogbookNote(projectId, {
+      await api.createProjectLogbookNote(projectId, {
         event_type: "note", severity: "info", summary: summary.trim(), narrative_markdown: narrative.trim() || null,
-        references: [], correlation_id: null, idempotency_key: typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `dashboard-note-${Date.now()}-${Math.random()}`, supersedes_entry_id: null,
+        references: [], correlation_id: null, idempotency_key: typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `dashboard-note-${Date.now()}-${Math.random()}`, supersedes_entry_id: null,
       });
-      onAdded(response.entry);
+      await onAdded();
       setOpen(false); setSummary(""); setNarrative("");
+    } catch (reason: any) {
+      setError(reason?.message || "The note could not be saved.");
     } finally {
       setSaving(false);
     }
   };
   return <div>
-    <Button size="sm" type="button" onClick={() => setOpen((value) => !value)} data-testid="add-logbook-note"><Plus className="mr-1.5 h-3.5 w-3.5" />Add note</Button>
+    <Button size="sm" type="button" onClick={() => { setError(null); setOpen((value) => !value); }} data-testid="add-logbook-note"><Plus className="mr-1.5 h-3.5 w-3.5" />Add note</Button>
     {open && <form onSubmit={submit} className="mt-3 grid gap-2 rounded border border-border bg-card p-3">
-      <Input value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="What should the project remember?" maxLength={240} autoFocus />
-      <Textarea value={narrative} onChange={(event) => setNarrative(event.target.value)} placeholder="Optional Markdown context" maxLength={8000} />
+      <label htmlFor="logbook-note-summary" className="text-xs font-medium text-foreground">Summary</label>
+      <Input id="logbook-note-summary" value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="What should the project remember?" maxLength={240} autoFocus />
+      <label htmlFor="logbook-note-narrative" className="text-xs font-medium text-foreground">Narrative</label>
+      <Textarea id="logbook-note-narrative" value={narrative} onChange={(event) => setNarrative(event.target.value)} placeholder="Optional Markdown context" maxLength={8000} />
+      {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving || !summary.trim()}>Save note</Button></div>
     </form>}
   </div>;
@@ -138,39 +145,45 @@ function ProjectLogbookTimeline({ projectId }: { projectId: string }) {
     from: from || undefined, to: to || undefined, q: query.trim() || undefined, limit: 20,
   }), [actor, from, query, severity, to, type]);
   const filterKey = JSON.stringify(filters);
+  const activeQueryKey = `${projectId}:${filterKey}`;
+  const activeQueryKeyRef = useRef(activeQueryKey);
+  const requestVersionRef = useRef(0);
+  activeQueryKeyRef.current = activeQueryKey;
   const [items, setItems] = useState<ProjectLogbookEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = async (cursor?: string, append = false) => {
+  const load = useCallback(async (cursor?: string, append = false) => {
+    const requestKey = activeQueryKey;
+    const requestVersion = ++requestVersionRef.current;
     if (append) setLoadingMore(true); else { setLoading(true); setError(null); }
     try {
       const response = await api.getProjectLogbook(projectId, { ...filters, cursor });
+      if (activeQueryKeyRef.current !== requestKey || requestVersionRef.current !== requestVersion) return;
       setItems((current) => append ? addUnique(current, response.items) : response.items);
       setNextCursor(response.next_cursor);
       setError(null);
     } catch (reason: any) {
+      if (activeQueryKeyRef.current !== requestKey || requestVersionRef.current !== requestVersion) return;
       setError(reason?.message || "The logbook could not be loaded.");
     } finally {
+      if (activeQueryKeyRef.current !== requestKey || requestVersionRef.current !== requestVersion) return;
       if (append) setLoadingMore(false); else setLoading(false);
     }
-  };
+  }, [activeQueryKey, filters, projectId]);
 
   useEffect(() => {
-    let active = true;
-    setLoading(true); setError(null); setItems([]); setNextCursor(null);
-    api.getProjectLogbook(projectId, filters).then(
-      (response) => { if (active) { setItems(response.items); setNextCursor(response.next_cursor); setLoading(false); } },
-      (reason: any) => { if (active) { setError(reason?.message || "The logbook could not be loaded."); setLoading(false); } },
-    );
-    return () => { active = false; };
-  }, [projectId, filterKey]);
+    setItems([]); setNextCursor(null); setLoadingMore(false);
+    void load();
+    return () => { requestVersionRef.current += 1; };
+  }, [load]);
 
   return <div className="space-y-4">
     <div className="flex flex-wrap items-center gap-2" aria-label="Logbook filters">
-      <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the logbook" className="h-8 min-w-48 flex-1 text-xs" data-testid="logbook-query" />
+      <label htmlFor="logbook-search" className="sr-only">Search the logbook</label>
+      <Input id="logbook-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the logbook" className="h-8 min-w-48 flex-1 text-xs" data-testid="logbook-query" />
       <Select value={type} onValueChange={setType}><SelectTrigger className="h-8 w-36 text-xs"><span>Type:</span><SelectValue /></SelectTrigger><SelectContent><SelectItem value={ALL}>All types</SelectItem>{EVENT_TYPES.map((value) => <SelectItem key={value} value={value}>{labelFor(value)}</SelectItem>)}</SelectContent></Select>
       <Select value={actor} onValueChange={setActor}><SelectTrigger className="h-8 w-36 text-xs"><span>Actor:</span><SelectValue /></SelectTrigger><SelectContent><SelectItem value={ALL}>All actors</SelectItem>{ACTOR_KINDS.map((value) => <SelectItem key={value} value={value}>{labelFor(value)}</SelectItem>)}</SelectContent></Select>
       <Select value={severity} onValueChange={setSeverity}><SelectTrigger className="h-8 w-36 text-xs"><span>Severity:</span><SelectValue /></SelectTrigger><SelectContent><SelectItem value={ALL}>All severities</SelectItem>{SEVERITIES.map((value) => <SelectItem key={value} value={value}>{labelFor(value)}</SelectItem>)}</SelectContent></Select>
@@ -183,7 +196,7 @@ function ProjectLogbookTimeline({ projectId }: { projectId: string }) {
     {!loading && !error && items.length === 0 && <EmptyState title="No logbook activity yet" hint="Project events and dashboard notes will appear here in newest-first order." icon={FileText} />}
     {items.map((entry) => <TimelineEntry key={entry.id} entry={entry} projectId={projectId} />)}
     {nextCursor && <div className="flex justify-center"><Button variant="outline" onClick={() => void load(nextCursor, true)} disabled={loadingMore}>{loadingMore ? "Loading…" : <><RefreshCw className="mr-1.5 h-3.5 w-3.5" />Load more</>}</Button></div>}
-    {canAddNote(user?.role) && <AddNote projectId={projectId} onAdded={(entry) => setItems((current) => addUnique(current, [entry]))} />}
+    {canAddNote(user?.role) && <AddNote projectId={projectId} onAdded={() => load()} />}
   </div>;
 }
 

@@ -217,6 +217,38 @@ describe("httpApi multiproject dashboard endpoints", () => {
     expect(fetchMock.mock.calls.map(([url]) => String(url)).some((url) => url.includes(forbiddenPluginNamespace))).toBe(false);
   });
 
+  it("encodes every normative logbook filter on the project dashboard endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ project_id: "proj/core", items: [], next_cursor: null }));
+
+    await httpApi.getProjectLogbook("proj/core", {
+      types: ["decision", "failure"],
+      actor: "agent",
+      severity: "warning",
+      from: "2026-07-20T08:30:00+02:00",
+      to: "2026-07-21T18:45:00+02:00",
+      q: "rollback & retry",
+      cursor: "cursor+/=value",
+      limit: 50,
+    });
+
+    const [url, options] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe("/api/dashboard/projects/proj%2Fcore/logbook");
+    expect(parsed.searchParams.getAll("types[]")).toEqual(["decision", "failure"]);
+    expect(Object.fromEntries(parsed.searchParams.entries())).toEqual(expect.objectContaining({
+      actor: "agent",
+      severity: "warning",
+      from: "2026-07-20T08:30:00+02:00",
+      to: "2026-07-21T18:45:00+02:00",
+      q: "rollback & retry",
+      cursor: "cursor+/=value",
+      limit: "50",
+    }));
+    expect(parsed.searchParams.has("source")).toBe(false);
+    expect(options).toEqual(expect.objectContaining({ method: "GET" }));
+    expect(String(url)).not.toContain(forbiddenPluginNamespace);
+  });
+
   it("uses dashboard API endpoints for project memory updates and scoped wiki pages", async () => {
     Object.defineProperty(document, "cookie", {
       configurable: true,
