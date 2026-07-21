@@ -124,7 +124,8 @@ it('treats an empty PHP payload array as an empty JSON object but rejects non-em
     );
 
     expect($created['replayed'])->toBeFalse()
-        ->and($created['entry']->payload)->toBe([])
+        ->and($created['entry']->payload)->toBeInstanceOf(stdClass::class)
+        ->and(get_object_vars($created['entry']->payload))->toBe([])
         ->and($replayed['replayed'])->toBeTrue()
         ->and($replayed['entry']->id)->toBe($created['entry']->id)
         ->and($storedJson)->toBeInstanceOf(stdClass::class)
@@ -136,6 +137,16 @@ it('treats an empty PHP payload array as an empty JSON object but rejects non-em
         ...logbookCommand($projectId, 'stable-key-non-empty-list'),
         'payload' => ['list-item'],
     ], logbookAgentActor()))->toThrow(ProjectLogbookException::class, 'Payload must be a JSON object.');
+});
+
+it('rejects non-finite numbers that cannot exist in JSON', function () {
+    [$projectId] = logbookProject('non-finite-number');
+    $service = app(ProjectLogbookService::class);
+
+    expect(fn () => $service->append([
+        ...logbookCommand($projectId, 'stable-key-non-finite-number'),
+        'payload' => ['ratio' => INF],
+    ], logbookAgentActor()))->toThrow(ProjectLogbookException::class, 'Logbook JSON numbers must be finite.');
 });
 
 it('rejects references owned by another project and unsafe file references', function () {

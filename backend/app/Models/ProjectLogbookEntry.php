@@ -21,7 +21,7 @@ final class ProjectLogbookEntry extends Model
             'recorded_at' => 'immutable_datetime',
             'actor_user_id' => 'integer',
             'references' => 'array',
-            'payload' => 'array',
+            'payload' => 'object',
         ];
     }
 }

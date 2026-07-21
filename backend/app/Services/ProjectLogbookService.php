@@ -230,11 +230,15 @@ final class ProjectLogbookService
             throw ProjectLogbookException::invalid('Idempotency key must contain 16 to 128 printable ASCII characters without spaces.');
         }
 
-        if (! is_array($command['payload'])) {
+        if (! is_array($command['payload']) && ! $command['payload'] instanceof \stdClass) {
             throw ProjectLogbookException::invalid('Payload must be an object.');
         }
-        $payload = $this->canonicalValue($command['payload'], 0);
-        if (! is_array($payload) || ($payload !== [] && array_is_list($payload))) {
+        $canonicalPayload = $this->canonicalValue($command['payload'], 0);
+        if ($canonicalPayload instanceof \stdClass) {
+            $payload = get_object_vars($canonicalPayload);
+        } elseif (is_array($canonicalPayload) && ($canonicalPayload === [] || ! array_is_list($canonicalPayload))) {
+            $payload = $canonicalPayload;
+        } else {
             throw ProjectLogbookException::invalid('Payload must be a JSON object.');
         }
 
@@ -332,8 +336,32 @@ final class ProjectLogbookService
             return $value;
         }
 
-        if (is_float($value) || is_object($value) || is_resource($value) || ! is_array($value)) {
-            throw ProjectLogbookException::invalid('Logbook JSON accepts only null, booleans, integers, strings, arrays, and objects.');
+        if (is_float($value)) {
+            if (! is_finite($value)) {
+                throw ProjectLogbookException::invalid('Logbook JSON numbers must be finite.');
+            }
+
+            return $value;
+        }
+
+        if ($value instanceof \stdClass) {
+            $properties = get_object_vars($value);
+            foreach (array_keys($properties) as $key) {
+                if ($key === '') {
+                    throw ProjectLogbookException::invalid('Logbook JSON object keys must be non-empty strings.');
+                }
+            }
+            ksort($properties, SORT_STRING);
+            $canonical = new \stdClass;
+            foreach ($properties as $key => $item) {
+                $canonical->{$key} = $this->canonicalValue($item, $depth + 1);
+            }
+
+            return $canonical;
+        }
+
+        if (is_object($value) || is_resource($value) || ! is_array($value)) {
+            throw ProjectLogbookException::invalid('Logbook JSON accepts only null, booleans, finite numbers, strings, arrays, and objects.');
         }
 
         if (array_is_list($value)) {

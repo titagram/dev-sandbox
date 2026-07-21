@@ -87,6 +87,109 @@ it('preserves an empty payload object through Hades storage replay and dashboard
         ->and($detailJson->entry->payload)->toBeInstanceOf(stdClass::class);
 });
 
+it('preserves nested empty JSON objects and arrays through storage and replay', function () {
+    $agent = projectLogbookRegisteredAgent(['write_project_logbook']);
+    $binding = projectLogbookBindWorkspace($agent);
+    $command = [
+        ...projectLogbookAgentEntry($agent, $binding),
+        'idempotency_key' => 'hades-nested-json-containers-0001',
+        'payload' => (object) [
+            'metadata' => (object) [],
+            'items' => [],
+            'nested' => (object) [
+                'empty_object' => (object) [],
+                'empty_array' => [],
+            ],
+        ],
+    ];
+    $rawJson = json_encode($command, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    $server = [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_ACCEPT' => 'application/json',
+        'HTTP_AUTHORIZATION' => 'Bearer '.$agent['agent_token'],
+    ];
+
+    $created = $this->call('POST', '/api/hades/v1/logbook/entries', server: $server, content: $rawJson)
+        ->assertCreated();
+    $entryId = $created->json('entry.id');
+    $createdJson = json_decode($created->getContent(), false, 512, JSON_THROW_ON_ERROR);
+    $storedJson = json_decode(
+        (string) DB::table('project_logbook_entries')->where('id', $entryId)->value('payload'),
+        false,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+
+    expect($createdJson->entry->payload->metadata)->toBeInstanceOf(stdClass::class)
+        ->and($createdJson->entry->payload->items)->toBeArray()->toBe([])
+        ->and($createdJson->entry->payload->nested)->toBeInstanceOf(stdClass::class)
+        ->and($createdJson->entry->payload->nested->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($createdJson->entry->payload->nested->empty_array)->toBeArray()->toBe([])
+        ->and($storedJson->metadata)->toBeInstanceOf(stdClass::class)
+        ->and($storedJson->items)->toBeArray()->toBe([])
+        ->and($storedJson->nested->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($storedJson->nested->empty_array)->toBeArray()->toBe([]);
+
+    $replayed = $this->call('POST', '/api/hades/v1/logbook/entries', server: $server, content: $rawJson)
+        ->assertOk()
+        ->assertJsonPath('entry.id', $entryId)
+        ->assertJsonPath('replayed', true);
+    $replayedJson = json_decode($replayed->getContent(), false, 512, JSON_THROW_ON_ERROR);
+
+    expect($replayedJson->entry->payload->metadata)->toBeInstanceOf(stdClass::class)
+        ->and($replayedJson->entry->payload->items)->toBeArray()->toBe([])
+        ->and($replayedJson->entry->payload->nested->empty_object)->toBeInstanceOf(stdClass::class)
+        ->and($replayedJson->entry->payload->nested->empty_array)->toBeArray()->toBe([])
+        ->and(DB::table('project_logbook_entries')->where('project_id', $agent['project_id'])->count())->toBe(1);
+});
+
+it('accepts finite fractional JSON numbers with canonical replay semantics', function () {
+    $agent = projectLogbookRegisteredAgent(['write_project_logbook']);
+    $binding = projectLogbookBindWorkspace($agent);
+    $command = [
+        ...projectLogbookAgentEntry($agent, $binding),
+        'idempotency_key' => 'hades-finite-json-numbers-0001',
+        'payload' => (object) ['ratio' => 1.25, 'delta' => -0.5],
+    ];
+    $server = [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_ACCEPT' => 'application/json',
+        'HTTP_AUTHORIZATION' => 'Bearer '.$agent['agent_token'],
+    ];
+
+    $created = $this->call(
+        'POST',
+        '/api/hades/v1/logbook/entries',
+        server: $server,
+        content: json_encode($command, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+    )->assertCreated();
+    $entryId = $created->json('entry.id');
+    $storedJson = json_decode(
+        (string) DB::table('project_logbook_entries')->where('id', $entryId)->value('payload'),
+        false,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+
+    expect($created->json('entry.payload.ratio'))->toBe(1.25)
+        ->and($created->json('entry.payload.delta'))->toBe(-0.5)
+        ->and($storedJson->ratio)->toBe(1.25)
+        ->and($storedJson->delta)->toBe(-0.5);
+
+    $reordered = [...$command, 'payload' => (object) ['delta' => -0.5, 'ratio' => 1.25]];
+    $this->call(
+        'POST',
+        '/api/hades/v1/logbook/entries',
+        server: $server,
+        content: json_encode($reordered, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+    )->assertOk()
+        ->assertJsonPath('entry.id', $entryId)
+        ->assertJsonPath('replayed', true);
+
+    expect(DB::table('project_logbook_entries')->where('project_id', $agent['project_id'])->count())->toBe(1)
+        ->and(DB::table('audit_logs')->where('action', 'project_logbook.appended')->count())->toBe(1);
+});
+
 it('rejects a JSON list payload at the Hades request boundary', function () {
     $agent = projectLogbookRegisteredAgent(['write_project_logbook']);
     $binding = projectLogbookBindWorkspace($agent);

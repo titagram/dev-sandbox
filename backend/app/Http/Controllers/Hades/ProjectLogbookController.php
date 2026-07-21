@@ -64,7 +64,7 @@ final class ProjectLogbookController extends Controller
 
     public function store(Request $request): JsonResponse
     {
-        $payloadIsJsonObject = $this->payloadIsJsonObject($request);
+        $payloadObject = $this->payloadJsonObject($request);
         $rules = [
             ...$this->scopeRules(),
             'event_type' => ['required', 'string', Rule::in(self::EVENT_TYPES)],
@@ -77,8 +77,8 @@ final class ProjectLogbookController extends Controller
             'payload' => [
                 'present',
                 'array',
-                static function (string $attribute, mixed $value, \Closure $fail) use ($payloadIsJsonObject): void {
-                    if (! $payloadIsJsonObject) {
+                static function (string $attribute, mixed $value, \Closure $fail) use ($payloadObject): void {
+                    if (! $payloadObject instanceof stdClass) {
                         $fail('The payload field must be a JSON object.');
                     }
                 },
@@ -134,7 +134,7 @@ final class ProjectLogbookController extends Controller
                 'project_id' => $validated['project_id'], 'event_type' => $validated['event_type'], 'severity' => $validated['severity'],
                 'summary' => $validated['summary'], 'narrative_markdown' => $validated['narrative_markdown'], 'references' => $validated['references'],
                 'correlation_id' => $validated['correlation_id'], 'idempotency_key' => $validated['idempotency_key'],
-                'payload' => $validated['payload'], 'supersedes_entry_id' => $validated['supersedes_entry_id'],
+                'payload' => $payloadObject, 'supersedes_entry_id' => $validated['supersedes_entry_id'],
             ], new ProjectLogbookActor('agent', (string) $agent->label, agentId: (string) $agent->id, deviceId: $auth['token']->device_id ?? null));
         } catch (ProjectLogbookException $exception) {
             return $this->logbookError($exception);
@@ -199,17 +199,19 @@ final class ProjectLogbookController extends Controller
         return is_array($decoded) && in_array('write_project_logbook', $decoded, true);
     }
 
-    private function payloadIsJsonObject(Request $request): bool
+    private function payloadJsonObject(Request $request): ?stdClass
     {
         try {
             $body = json_decode($request->getContent(), false, 64, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
-            return false;
+            return null;
         }
 
         return $body instanceof stdClass
             && property_exists($body, 'payload')
-            && $body->payload instanceof stdClass;
+            && $body->payload instanceof stdClass
+                ? $body->payload
+                : null;
     }
 
     /** @return array<string, mixed> */
