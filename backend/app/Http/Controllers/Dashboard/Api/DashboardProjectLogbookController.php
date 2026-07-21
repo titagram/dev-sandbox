@@ -30,7 +30,7 @@ final class DashboardProjectLogbookController extends Controller
     public function index(Request $request, string $project): JsonResponse
     {
         $this->abortUnlessDashboardReader($request);
-        $this->assertProjectExists($project);
+        $this->assertProjectReadable($project);
         $validated = $request->validate([
             'types' => ['sometimes', 'array', 'list', 'max:10'], 'types.*' => ['string', Rule::in(self::EVENT_TYPES)],
             'actor' => ['sometimes', 'string', Rule::in(self::ACTOR_KINDS)], 'severity' => ['sometimes', 'string', Rule::in(self::SEVERITIES)],
@@ -49,7 +49,7 @@ final class DashboardProjectLogbookController extends Controller
     public function show(Request $request, string $project, string $entry): JsonResponse
     {
         $this->abortUnlessDashboardReader($request);
-        $this->assertProjectExists($project);
+        $this->assertProjectReadable($project);
         $row = $this->logbook->showForProject($project, $entry);
         abort_unless($row, Response::HTTP_NOT_FOUND);
 
@@ -89,9 +89,12 @@ final class DashboardProjectLogbookController extends Controller
         abort_unless($this->userHasRole($request->user(), 'PM') || $this->userHasRole($request->user(), 'Developer') || $this->userHasRole($request->user(), 'Admin'), Response::HTTP_FORBIDDEN);
     }
 
-    private function assertProjectExists(string $project): void
+    private function assertProjectReadable(string $project): void
     {
-        abort_unless(DB::table('projects')->where('id', $project)->exists(), Response::HTTP_NOT_FOUND);
+        abort_unless(
+            DB::table('projects')->where('id', $project)->where('status', '!=', 'deleted')->exists(),
+            Response::HTTP_NOT_FOUND,
+        );
     }
 
     /** @param array<string,mixed> $validated @return array<string,mixed> */

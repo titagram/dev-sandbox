@@ -42,6 +42,25 @@ it('rejects an agent without the explicit project logbook capability', function 
     $this->postJson('/api/hades/v1/logbook/entries', projectLogbookAgentEntry($agent, $binding), projectLogbookHeaders($agent['agent_token']))
         ->assertForbidden()
         ->assertJsonPath('code', 'logbook_capability_not_allowed');
+
+    $auditQuery = DB::table('audit_logs')->where('action', 'permission.denied');
+
+    expect($auditQuery->count())->toBe(1);
+
+    $audit = $auditQuery->first();
+    $payload = json_decode($audit->payload, true, flags: JSON_THROW_ON_ERROR);
+
+    expect($audit->target_type)->toBe('authorization')
+        ->and($audit->target_id)->toBe('write_project_logbook')
+        ->and($audit->actor_type)->toBe('hades_agent')
+        ->and($audit->actor_user_id)->toBeNull()
+        ->and($audit->actor_device_id)->toBeNull()
+        ->and($payload)->toBe([
+            'ability' => 'write_project_logbook',
+            'project_id' => $agent['project_id'],
+            'workspace_binding_id' => $binding['workspace_binding_id'],
+            'hades_agent_id' => $agent['backend_agent_id'],
+        ]);
 });
 
 it('exposes dashboard logbook reads and allows dashboard notes without client-supplied actor or payload', function () {
@@ -70,6 +89,36 @@ it('exposes dashboard logbook reads and allows dashboard notes without client-su
         ->assertOk()->assertJsonPath('items.0.id', $entryId);
     $this->actingAs($user)->getJson('/api/dashboard/projects/'.$project['id'].'/logbook/'.$entryId)
         ->assertOk()->assertJsonPath('entry.id', $entryId);
+});
+
+it('keeps archived project logbooks readable and hides deleted project logbooks', function () {
+    $user = projectLogbookDashboardUser('Developer');
+    $project = projectLogbookProject($user);
+
+    $created = $this->actingAs($user)->postJson('/api/dashboard/projects/'.$project['id'].'/logbook/notes', [
+        'event_type' => 'decision', 'severity' => 'info', 'summary' => 'Retain the lifecycle boundary.',
+        'narrative_markdown' => 'Archived remains readable; deleted is hidden.', 'references' => [],
+        'correlation_id' => null, 'idempotency_key' => 'dashboard-logbook-lifecycle-0001', 'supersedes_entry_id' => null,
+    ])->assertCreated();
+    $entryId = $created->json('entry.id');
+
+    DB::table('projects')->where('id', $project['id'])->update([
+        'status' => 'archived', 'archived_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $this->actingAs($user)->getJson('/api/dashboard/projects/'.$project['id'].'/logbook')
+        ->assertOk()->assertJsonPath('items.0.id', $entryId);
+    $this->actingAs($user)->getJson('/api/dashboard/projects/'.$project['id'].'/logbook/'.$entryId)
+        ->assertOk()->assertJsonPath('entry.id', $entryId);
+
+    DB::table('projects')->where('id', $project['id'])->update([
+        'status' => 'deleted', 'deleted_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $this->actingAs($user)->getJson('/api/dashboard/projects/'.$project['id'].'/logbook')
+        ->assertNotFound();
+    $this->actingAs($user)->getJson('/api/dashboard/projects/'.$project['id'].'/logbook/'.$entryId)
+        ->assertNotFound();
 });
 
 function projectLogbookHeaders(?string $token = null): array

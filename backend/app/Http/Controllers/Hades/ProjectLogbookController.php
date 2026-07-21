@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Hades;
 use App\Exceptions\ProjectLogbookException;
 use App\Http\Controllers\Controller;
 use App\Models\ProjectLogbookEntry;
+use App\Services\AuditLogger;
 use App\Services\ProjectLogbookService;
 use App\Support\ProjectLogbookActor;
 use Illuminate\Http\JsonResponse;
@@ -80,6 +81,24 @@ final class ProjectLogbookController extends Controller
             return $binding;
         }
         if (! $this->hasWriteCapability($agent)) {
+            app(AuditLogger::class)->record(
+                'permission.denied',
+                'authorization',
+                'write_project_logbook',
+                [
+                    'ability' => 'write_project_logbook',
+                    'project_id' => $validated['project_id'],
+                    'workspace_binding_id' => $binding->id,
+                    'hades_agent_id' => $agent->id,
+                ],
+                [
+                    'type' => 'hades_agent',
+                    'device_id' => $auth['token']->device_id ?? null,
+                    'ip_address' => $request->ip(),
+                    'user_agent' => $request->userAgent(),
+                ],
+            );
+
             return response()->json(['code' => 'logbook_capability_not_allowed', 'message' => 'The write_project_logbook capability is not enabled for this Hades agent.'], Response::HTTP_FORBIDDEN);
         }
 
