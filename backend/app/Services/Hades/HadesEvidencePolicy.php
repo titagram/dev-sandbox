@@ -70,6 +70,20 @@ class HadesEvidencePolicy
     }
 
     /**
+     * @param  array<string, mixed>  $payload
+     * @return array{code: string, message: string}|null
+     */
+    public function validateProjectLogbook(
+        string $summary,
+        ?string $narrative,
+        array $references,
+        ?string $correlationId,
+        array $payload,
+    ): ?array {
+        return $this->rejectUnredactedSecret([$summary, $narrative, $references, $correlationId, $payload]);
+    }
+
+    /**
      * @return array{summary: string, payload: array<string, mixed>, redactions: int}
      */
     public function redactBugEvidenceMaterial(string $summary, array $payload): array
@@ -151,7 +165,7 @@ class HadesEvidencePolicy
     {
         return [
             '/\bBearer\s+(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{12,}/i',
-            '/\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|cookie|password|private[_-]?key|secret|token)\s*[:=]\s*["\']?(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{8,}/i',
+            '/\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|cookie|password|private[_-]?key|secret|token)["\']?\s*[:=]\s*["\']?(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{8,}/i',
             '/\b(?:sk|pk)-(?:live|test)-[A-Za-z0-9_\-]{8,}/i',
             '/-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i',
         ];
@@ -161,7 +175,7 @@ class HadesEvidencePolicy
     {
         $patterns = [
             '/\bBearer\s+(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{12,}/i' => 'Bearer [redacted]',
-            '/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|cookie|password|private[_-]?key|secret|token)\s*[:=]\s*)["\']?(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{8,}/i' => '$1[redacted]',
+            '/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|cookie|password|private[_-]?key|secret|token)["\']?\s*[:=]\s*)["\']?(?!\*{3,}|redacted|\[redacted\])[A-Za-z0-9._~+\/=\-]{8,}/i' => '$1[redacted]',
             '/\b(?:sk|pk)-(?:live|test)-[A-Za-z0-9_\-]{8,}/i' => '[redacted-token]',
             '/-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----.*?-----END (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/is' => '[redacted-private-key]',
         ];

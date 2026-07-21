@@ -81,5 +81,6 @@ describe("AppShell project scope and narrow header", () => {
     expect(container.querySelector("[data-testid='breadcrumb']")?.className).toContain("flex-nowrap");
     expect(container.querySelector("header")?.className).toContain("overflow-hidden");
     expect(container.querySelector("[data-testid='scope-label']")?.getAttribute("title")).toBe("Real Project");
+    expect(container.querySelector("[data-testid='nav-logbook']")?.getAttribute("href")).toBe("/projects/real-project/logbook");
   });
 });

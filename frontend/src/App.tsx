@@ -23,6 +23,7 @@ import TaskDetailPage from "@/pages/TaskDetailPage";
 import WikiPage from "@/pages/WikiPage";
 import WikiPageDetailPage from "@/pages/WikiPageDetailPage";
 import GraphPage from "@/pages/GraphPage";
+import ProjectLogbookPage from "@/pages/ProjectLogbookPage";
 import ArtifactsPage from "@/pages/ArtifactsPage";
 import QualityCenterPage from "@/pages/quality/QualityCenterPage";
 import RouteInventoryPage from "@/pages/quality/RouteInventoryPage";
@@ -108,6 +109,7 @@ export default function App() {
               <Route path="/projects/:projectId/wiki" element={<Section navKey="wiki"><WikiPage /></Section>} />
               <Route path="/projects/:projectId/wiki/:pageId" element={<Section navKey="wiki"><WikiPageDetailPage /></Section>} />
               <Route path="/projects/:projectId/graph" element={<Section navKey="graph"><GraphPage /></Section>} />
+              <Route path="/projects/:projectId/logbook" element={<Section navKey="logbook"><ProjectLogbookPage /></Section>} />
               <Route path="/projects/:projectId/artifacts" element={<Section navKey="artifacts"><ArtifactsPage /></Section>} />
               <Route path="/kanban" element={<Section navKey="kanban"><KanbanPage /></Section>} />
               <Route path="/ask" element={<Section navKey="ask"><AskAgentsPage /></Section>} />
@@ -120,6 +122,7 @@ export default function App() {
               <Route path="/wiki" element={<Section navKey="wiki"><WikiPage /></Section>} />
               <Route path="/wiki/:pageId" element={<Section navKey="wiki"><WikiPageDetailPage /></Section>} />
               <Route path="/graph" element={<Section navKey="graph"><GraphPage /></Section>} />
+              <Route path="/logbook" element={<Section navKey="logbook"><ProjectLogbookPage /></Section>} />
               <Route path="/artifacts" element={<Section navKey="artifacts"><ArtifactsPage /></Section>} />
               <Route path="/quality" element={<Section navKey="quality"><QualityCenterPage /></Section>} />
               <Route path="/quality/route-inventory" element={<Section navKey="quality"><RouteInventoryPage /></Section>} />

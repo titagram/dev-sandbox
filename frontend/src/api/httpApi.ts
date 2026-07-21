@@ -1,5 +1,5 @@
 import { API_BASE_URL, DevboardApi } from "@/api/devboardApi";
-import { KanbanBoard, ProjectLifecycleInput, ProjectStatusFilter, TaskAttachment, TaskDetail, User } from "@/types/devboard";
+import { KanbanBoard, ProjectLifecycleInput, ProjectLogbookNoteInput, ProjectLogbookNoteResponse, ProjectLogbookQuery, ProjectLogbookResponse, ProjectStatusFilter, TaskAttachment, TaskDetail, User } from "@/types/devboard";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 let csrfCookieRequest: Promise<void> | null = null;
@@ -188,6 +188,15 @@ const queryString = (params: Record<string, string | null | undefined>) => {
   const qs = q.toString();
   return qs ? `?${qs}` : "";
 };
+const logbookQueryString = (query?: ProjectLogbookQuery) => {
+  const params = new URLSearchParams();
+  query?.types?.forEach((type) => params.append("types[]", type));
+  ([["actor", query?.actor], ["severity", query?.severity], ["from", query?.from], ["to", query?.to], ["q", query?.q], ["cursor", query?.cursor]] as const)
+    .forEach(([key, value]) => { if (value) params.set(key, value); });
+  if (query?.limit) params.set("limit", String(query.limit));
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : "";
+};
 
 export const httpApi: DevboardApi = {
   login: (p) => req("POST", `${D}/login`, p),
@@ -227,6 +236,10 @@ export const httpApi: DevboardApi = {
     req("PATCH", `${D}/projects/${encodeURIComponent(projectId)}/memory/${encodeURIComponent(memoryId)}`, input),
   deleteProjectMemory: (projectId, memoryId) =>
     req("DELETE", `${D}/projects/${encodeURIComponent(projectId)}/memory/${encodeURIComponent(memoryId)}`),
+  getProjectLogbook: (projectId, query): Promise<ProjectLogbookResponse> =>
+    req("GET", `${D}/projects/${encodeURIComponent(projectId)}/logbook${logbookQueryString(query)}`),
+  createProjectLogbookNote: (projectId, input: ProjectLogbookNoteInput): Promise<ProjectLogbookNoteResponse> =>
+    req("POST", `${D}/projects/${encodeURIComponent(projectId)}/logbook/notes`, input),
   getProjectWorkspaceBindings: (projectId) =>
     req("GET", `${D}/projects/${encodeURIComponent(projectId)}/workspace-bindings`)
       .then((payload: any) => payload?.workspace_bindings ?? payload),

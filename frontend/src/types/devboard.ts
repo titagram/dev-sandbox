@@ -102,6 +102,81 @@ export type ProjectMemorySource =
   | "system_event";
 export type ProjectMemoryDomain = "logbook" | "wiki" | "agent_notes";
 
+// ---------- Project logbook ----------
+
+export type ProjectLogbookEventType =
+  | "change" | "creation" | "import" | "projection" | "verification"
+  | "wiki" | "decision" | "failure" | "rollback" | "note";
+export type ProjectLogbookSeverity = "info" | "warning" | "error";
+export type ProjectLogbookActorKind = "user" | "agent" | "subagent" | "system";
+export type ProjectLogbookReferenceKind =
+  | "wiki_page" | "wiki_revision" | "graph_import" | "verification_work"
+  | "kanban_task" | "run" | "repository" | "commit" | "file";
+
+export interface ProjectLogbookActor {
+  kind: ProjectLogbookActorKind;
+  label: string;
+  user_id: number | null;
+  agent_id: string | null;
+  device_id: string | null;
+  role: string | null;
+  model: string | null;
+}
+
+export interface ProjectLogbookReference {
+  kind: ProjectLogbookReferenceKind;
+  id: string;
+}
+
+export interface ProjectLogbookEntry {
+  id: string;
+  project_id: string;
+  occurred_at: string | null;
+  recorded_at: string | null;
+  actor: ProjectLogbookActor;
+  event_type: ProjectLogbookEventType;
+  severity: ProjectLogbookSeverity;
+  summary: string;
+  narrative_markdown: string | null;
+  references: ProjectLogbookReference[];
+  correlation_id: string | null;
+  payload: Record<string, unknown>;
+  supersedes_entry_id: string | null;
+}
+
+export interface ProjectLogbookQuery {
+  types?: ProjectLogbookEventType[];
+  actor?: ProjectLogbookActorKind;
+  severity?: ProjectLogbookSeverity;
+  from?: string;
+  to?: string;
+  q?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ProjectLogbookResponse {
+  project_id: string;
+  items: ProjectLogbookEntry[];
+  next_cursor: string | null;
+}
+
+export interface ProjectLogbookNoteInput {
+  event_type: "note" | "decision";
+  severity: ProjectLogbookSeverity;
+  summary: string;
+  narrative_markdown: string | null;
+  references: ProjectLogbookReference[];
+  correlation_id: string | null;
+  idempotency_key: string;
+  supersedes_entry_id: string | null;
+}
+
+export interface ProjectLogbookNoteResponse {
+  entry: ProjectLogbookEntry;
+  replayed: boolean;
+}
+
 // ---------- Auth ----------
 
 export interface User {

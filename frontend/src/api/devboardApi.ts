@@ -6,7 +6,7 @@ import {
   MemoryCreateInput,
   MemoryUpdateInput,
   PluginToken, DashboardOverview, Project, ProjectDetail, ProjectInput, ProjectLifecycleInput, ProjectStatusFilter, QualityCurrentState, QualityGate, QualityOverview,
-  ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryQuery, ProjectMemoryResponse, ProjectWorkspaceBinding,
+  ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryQuery, ProjectMemoryResponse, ProjectWorkspaceBinding, ProjectLogbookNoteInput, ProjectLogbookNoteResponse, ProjectLogbookQuery, ProjectLogbookResponse,
   QualityReport, RepositoryDeclarationInput, RoadmapPhase, RouteInventoryEntry, RouteSmokeRow, RunDetail, RunSummary,
   SecurityCheck, SystemStatus, TaskAttachment, TaskClarificationPayload, TaskCreateInput, TaskDetail, TaskMutationInput, TruthRegistryEntry, User, WikiPageDetail, WikiPageSummary, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
   HadesAdminSnapshot, HadesBootstrapTokenCreateInput, HadesBootstrapTokenCreateResponse, HadesJobCreateInput, HadesJobCreateResponse, HadesMemoryProposalReviewInput, HadesMemoryProposalReviewResponse,
@@ -39,6 +39,8 @@ export interface DevboardApi {
   createProjectMemory(projectId: string, input: MemoryCreateInput): Promise<ProjectMemoryEntry>;
   updateProjectMemory(projectId: string, memoryId: string, input: MemoryUpdateInput): Promise<ProjectMemoryEntry>;
   deleteProjectMemory(projectId: string, memoryId: string): Promise<void>;
+  getProjectLogbook(projectId: string, query?: ProjectLogbookQuery): Promise<ProjectLogbookResponse>;
+  createProjectLogbookNote(projectId: string, input: ProjectLogbookNoteInput): Promise<ProjectLogbookNoteResponse>;
   getProjectWorkspaceBindings(projectId: string): Promise<ProjectWorkspaceBinding[]>;
   getProjectMemoryImports(projectId: string): Promise<ProjectMemoryImportBatch[]>;
   getProjectMemoryImport(projectId: string, batchId: string): Promise<ProjectMemoryImportBatch>;

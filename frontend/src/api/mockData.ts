@@ -10,6 +10,7 @@ import {
   LocalWorkspace,
   PluginDevice,
   PluginToken,
+  ProjectLogbookEntry,
   Project,
   ProjectDetail,
   ProjectKickstart,
@@ -1069,3 +1070,23 @@ export const BACKUP_READINESS: BackupReadiness = {
   last_backup: null,
   warnings: [],
 };
+
+export const PROJECT_LOGBOOK_ENTRIES: ProjectLogbookEntry[] = [
+  {
+    id: "logbook-graph-import-1", project_id: "proj-core",
+    occurred_at: iso(42), recorded_at: iso(41),
+    actor: { kind: "agent", label: "Hades Agent", user_id: null, agent_id: "hades-agent", device_id: null, role: null, model: "gpt-5" },
+    event_type: "import", severity: "info", summary: "Imported Symfony Demo graph",
+    narrative_markdown: "The canonical graph import completed and is ready for projection.",
+    references: [{ kind: "graph_import", id: "graph-import-1" }, { kind: "commit", id: "0123456789abcdef0123456789abcdef01234567" }],
+    correlation_id: "mock-graph-import-1", payload: { request_sha256: "mock-request-digest", nodes: 42 }, supersedes_entry_id: null,
+  },
+  {
+    id: "logbook-wiki-1", project_id: "proj-core",
+    occurred_at: iso(160), recorded_at: iso(159),
+    actor: { kind: "user", label: "Avery Cole", user_id: 1, agent_id: null, device_id: null, role: "Admin", model: null },
+    event_type: "decision", severity: "warning", summary: "Kept manual architecture page pending verification",
+    narrative_markdown: "Verification must be completed before this page becomes authoritative.",
+    references: [{ kind: "wiki_page", id: "wiki-architecture" }], correlation_id: null, payload: { source: "dashboard" }, supersedes_entry_id: null,
+  },
+];

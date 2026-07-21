@@ -23,6 +23,7 @@ use App\Http\Controllers\Hades\MemorySnapshotController as HadesMemorySnapshotCo
 use App\Http\Controllers\Hades\PersephoneController as HadesPersephoneController;
 use App\Http\Controllers\Hades\ProjectAwarenessBootstrapController as HadesProjectAwarenessBootstrapController;
 use App\Http\Controllers\Hades\ProjectAwarenessStatusController as HadesProjectAwarenessStatusController;
+use App\Http\Controllers\Hades\ProjectLogbookController as HadesProjectLogbookController;
 use App\Http\Controllers\Hades\SourceSliceController as HadesSourceSliceController;
 use App\Http\Controllers\Hades\TokenVerifyController as HadesTokenVerifyController;
 use App\Http\Controllers\Hades\WikiPageController as HadesWikiPageController;
@@ -197,6 +198,15 @@ Route::prefix('hades/v1')->middleware(HadesProjectWritable::class)->group(functi
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::post('/project-awareness/bootstrap', HadesProjectAwarenessBootstrapController::class)
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/logbook/entries', [HadesProjectLogbookController::class, 'index'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::post('/logbook/entries', [HadesProjectLogbookController::class, 'store'])
+        ->middleware(['throttle:plugin-api-light', 'hades.agent']);
+
+    Route::get('/logbook/entries/{entry}', [HadesProjectLogbookController::class, 'show'])
         ->middleware(['throttle:plugin-api-light', 'hades.agent']);
 
     Route::get('/wiki/pages', [HadesWikiPageController::class, 'index'])

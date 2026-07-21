@@ -23,6 +23,7 @@ class HadesCapabilityPolicy
         'populate_backend_ast',
         'populate_project_wiki',
         'verify_project_wiki',
+        'write_project_logbook',
     ];
 
     /**

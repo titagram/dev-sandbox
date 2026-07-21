@@ -9,10 +9,10 @@ const labelsFor = (role: Parameters<typeof navForRole>[0]) =>
 
 describe("workspace primary navigation", () => {
   it("shows only project workspace primary items for dashboard roles", () => {
-    expect(labelsFor("pm")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph"]);
-    expect(labelsFor("developer")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Engineering"]);
-    expect(labelsFor("admin")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Engineering", "Settings", "Hades"]);
-    expect(labelsFor("sysadmin")).toEqual(["Projects", "Chat", "Engineering", "Settings"]);
+    expect(labelsFor("pm")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Logbook"]);
+    expect(labelsFor("developer")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Logbook", "Engineering"]);
+    expect(labelsFor("admin")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Logbook", "Engineering", "Settings", "Hades"]);
+    expect(labelsFor("sysadmin")).toEqual(["Projects", "Chat", "Logbook", "Engineering", "Settings"]);
     expect(labelsFor("agent")).toEqual([]);
   });
 
@@ -23,10 +23,11 @@ describe("workspace primary navigation", () => {
     expect(canAccess("admin", "admin")).toEqual({ ok: true, readOnly: false });
   });
 
-  it("allows sysadmin read-only access to Memory, Agent Work, and Chat", () => {
+  it("allows sysadmin read-only access to Memory, Agent Work, Chat, and Logbook", () => {
     expect(canAccess("sysadmin", "memory")).toEqual({ ok: true, readOnly: true });
     expect(canAccess("sysadmin", "agent-work")).toEqual({ ok: true, readOnly: true });
     expect(canAccess("sysadmin", "agent-chat")).toEqual({ ok: true, readOnly: true });
+    expect(canAccess("sysadmin", "logbook")).toEqual({ ok: true, readOnly: true });
   });
 
   it("routes project-scoped primary Work to the Kanban board", () => {
