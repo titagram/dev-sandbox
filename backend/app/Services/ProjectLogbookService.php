@@ -270,7 +270,7 @@ final class ProjectLogbookService
         ];
 
         try {
-            $canonicalValue = $this->canonicalValue(['actor' => $actor->toArray(), 'command' => $normalized], 0);
+            $canonicalValue = $this->canonicalValue(['actor' => $this->actorIdentity($actor), 'command' => $normalized], 0);
             if ($payload === []) {
                 $canonicalValue['command']['payload'] = (object) [];
             }
@@ -287,6 +287,17 @@ final class ProjectLogbookService
         }
 
         return [$normalized, hash('sha256', $canonical)];
+    }
+
+    /** @return array<string, int|string|null> */
+    private function actorIdentity(ProjectLogbookActor $actor): array
+    {
+        return match ($actor->kind) {
+            'agent', 'subagent' => ['kind' => $actor->kind, 'agent_id' => $actor->agentId],
+            'user' => ['kind' => $actor->kind, 'user_id' => $actor->userId],
+            'system' => ['kind' => $actor->kind],
+            default => ['kind' => $actor->kind],
+        };
     }
 
     private function requiredString(mixed $value, string $field, int $max): string

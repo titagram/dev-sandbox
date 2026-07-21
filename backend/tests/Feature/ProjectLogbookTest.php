@@ -65,6 +65,47 @@ it('replays a semantically identical project idempotency key and rejects changed
     ))->toThrow(ProjectLogbookException::class, 'logbook_idempotency_conflict');
 });
 
+it('replays across mutable actor metadata but conflicts for a different stable actor', function () {
+    [$projectId] = logbookProject('actor-identity');
+    $service = app(ProjectLogbookService::class);
+    $command = logbookCommand($projectId, 'stable-key-actor-identity');
+    $originalActor = new ProjectLogbookActor(
+        kind: 'agent',
+        label: 'Original agent label',
+        agentId: 'stable-agent-id',
+        deviceId: 'original-device',
+        role: 'implementer',
+        model: 'gpt-original',
+    );
+    $updatedActor = new ProjectLogbookActor(
+        kind: 'agent',
+        label: 'Renamed agent label',
+        agentId: 'stable-agent-id',
+        deviceId: 'replacement-device',
+        role: 'reviewer',
+        model: 'gpt-replacement',
+    );
+
+    $created = $service->append($command, $originalActor);
+    $replayed = $service->append($command, $updatedActor);
+
+    expect($replayed['replayed'])->toBeTrue()
+        ->and($replayed['entry']->id)->toBe($created['entry']->id)
+        ->and($replayed['entry']->actor_label)->toBe('Original agent label')
+        ->and($replayed['entry']->actor_device_id)->toBe('original-device')
+        ->and(DB::table('project_logbook_entries')->where('project_id', $projectId)->count())->toBe(1)
+        ->and(DB::table('audit_logs')->where('action', 'project_logbook.appended')->count())->toBe(1);
+
+    $differentActor = new ProjectLogbookActor(
+        kind: 'agent',
+        label: 'Different agent',
+        agentId: 'different-agent-id',
+    );
+
+    expect(fn () => $service->append($command, $differentActor))
+        ->toThrow(ProjectLogbookException::class, 'logbook_idempotency_conflict');
+});
+
 it('treats an empty PHP payload array as an empty JSON object but rejects non-empty lists', function () {
     [$projectId] = logbookProject('empty-object');
     $service = app(ProjectLogbookService::class);
