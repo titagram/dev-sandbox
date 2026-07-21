@@ -39,6 +39,8 @@ class CapabilitiesController extends Controller
                 'memory_proposals' => '/api/hades/v1/memory/proposals',
                 'project_awareness_status' => '/api/hades/v1/project-awareness/status',
                 'project_awareness_bootstrap' => '/api/hades/v1/project-awareness/bootstrap',
+                'logbook_entries' => '/api/hades/v1/logbook/entries',
+                'logbook_entry' => '/api/hades/v1/logbook/entries/{entry_id}',
                 'wiki_pages' => '/api/hades/v1/wiki/pages',
                 'wiki_page' => '/api/hades/v1/wiki/pages/{page}',
                 'wiki_page_draft' => '/api/hades/v1/wiki/pages',
