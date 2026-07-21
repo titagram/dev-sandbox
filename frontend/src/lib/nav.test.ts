@@ -9,9 +9,9 @@ const labelsFor = (role: Parameters<typeof navForRole>[0]) =>
 
 describe("workspace primary navigation", () => {
   it("shows only project workspace primary items for dashboard roles", () => {
-    expect(labelsFor("pm")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph"]);
-    expect(labelsFor("developer")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Engineering"]);
-    expect(labelsFor("admin")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Engineering", "Settings", "Hades"]);
+    expect(labelsFor("pm")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Logbook"]);
+    expect(labelsFor("developer")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Logbook", "Engineering"]);
+    expect(labelsFor("admin")).toEqual(["Projects", "Work", "Ask", "Chat", "Memory", "Wiki", "Graph", "Logbook", "Engineering", "Settings", "Hades"]);
     expect(labelsFor("sysadmin")).toEqual(["Projects", "Chat", "Engineering", "Settings"]);
     expect(labelsFor("agent")).toEqual([]);
   });

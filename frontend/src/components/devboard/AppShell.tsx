@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Project } from "@/types/devboard";
 
-const PROJECT_SCOPED_SECTIONS = new Set(["kanban", "ask", "agent-chat", "agent-work", "memory", "wiki", "engineering", "runs", "graph", "artifacts"]);
+const PROJECT_SCOPED_SECTIONS = new Set(["kanban", "ask", "agent-chat", "agent-work", "memory", "wiki", "engineering", "runs", "graph", "logbook", "artifacts"]);
 
 function activeProjectFromPath(pathname: string): string | undefined {
   const raw = pathname.match(/^\/projects\/([^/]+)/)?.[1];

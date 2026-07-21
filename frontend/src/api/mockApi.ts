@@ -5,14 +5,14 @@ import {
   GRAPH, PLUGIN_DEVICES,
   PLUGIN_TOKENS, PROJECT_DETAILS, PROJECTS, QUALITY_CURRENT_STATE, QUALITY_OVERVIEW,
   agentWorkItems, memoryEntries, ROADMAP, ROUTE_INVENTORY, ROUTE_SMOKE, runSummaries, RUNS, SECURITY_CHECKS, SYSTEM_STATUS,
-  TASKS, TRUTH_REGISTRY, USERS, WIKI, wikiSummaries,
+  PROJECT_LOGBOOK_ENTRIES, TASKS, TRUTH_REGISTRY, USERS, WIKI, wikiSummaries,
 } from "@/api/mockData";
 import {
   AgentChatThread, AgentChatThreadSummary, AgentKey, AgentWorkDetailResponse, AgentWorkItem,
   AiAgentProfile, AiAgentProfileInput, AiAgentsSnapshot, AiModelProfile, AiModelProfileCreateInput, AiModelProfileInput, AiModelProvider, AiModelProviderInput, AiModelProviderValidationResult,
   AssistantRun, AssistantSuggestion, AssistantSuggestionResponse, BacklogTriagePayload,
   DashboardGraphDataQueryType, DashboardGraphDataResponse, DashboardGraphDirection, DashboardGraphEdge, DashboardGraphFamily, DashboardGraphNode, DashboardGraphProjection, DashboardGraphQueryRequest, DashboardGraphQueryType, DashboardGraphResponse, DashboardGraphScopeItem, DashboardGraphScopeType, DashboardGraphScopesResponse, DashboardOverview, IntakeNormalizationType, LoginPayload, Project, ProjectDetail, ProjectLifecycleInput,
-  HadesCapability, ProjectMemoryDomain, ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryImportItem, ProjectMemoryQuery, ProjectStatusFilter, ProjectWorkspaceBinding, RepositoryDeclarationInput, Role, SourceStatus, TaskAttachment, TaskClarificationPayload, TaskColumn, TaskDetail, User, WikiEvidence, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
+  HadesCapability, ProjectLogbookEntry, ProjectLogbookNoteInput, ProjectLogbookNoteResponse, ProjectLogbookQuery, ProjectLogbookResponse, ProjectMemoryDomain, ProjectMemoryEntry, ProjectMemoryImportBatch, ProjectMemoryImportInput, ProjectMemoryImportItem, ProjectMemoryQuery, ProjectStatusFilter, ProjectWorkspaceBinding, RepositoryDeclarationInput, Role, SourceStatus, TaskAttachment, TaskClarificationPayload, TaskColumn, TaskDetail, User, WikiEvidence, WikiPageDetail, WikiPageWriteInput, WikiRefreshRequest, WikiRefreshRequestInput,
 } from "@/types/devboard";
 
 const SESSION_KEY = "devboard_session_role";
@@ -32,6 +32,7 @@ const MOCK_HADES_SUPPORTED_CAPABILITIES: HadesCapability[] = [
 let tokens = clone(PLUGIN_TOKENS);
 let devices = clone(PLUGIN_DEVICES);
 let system = clone(SYSTEM_STATUS);
+let logbookEntries = clone(PROJECT_LOGBOOK_ENTRIES);
 let backupReadiness = clone(BACKUP_READINESS);
 let aiProviders: AiModelProvider[] = [
   {
@@ -2108,6 +2109,37 @@ export const mockApi: DevboardApi = {
     const before = memory.length;
     memory = memory.filter((entry) => !(entry.project_id === projectId && entry.id === memoryId));
     if (memory.length === before) throw { message: "Memory entry not found." };
+  },
+
+  async getProjectLogbook(projectId, query?: ProjectLogbookQuery): Promise<ProjectLogbookResponse> {
+    await delay();
+    requireProject(projectId);
+    const matches = logbookEntries
+      .filter((entry) => entry.project_id === projectId)
+      .filter((entry) => !query?.types?.length || query.types.includes(entry.event_type))
+      .filter((entry) => !query?.actor || query.actor === entry.actor.kind)
+      .filter((entry) => !query?.severity || query.severity === entry.severity)
+      .filter((entry) => !query?.q || [entry.summary, entry.narrative_markdown, entry.actor.label, entry.event_type].join(" ").toLocaleLowerCase().includes(query.q.toLocaleLowerCase()))
+      .filter((entry) => !query?.from || (entry.recorded_at || "") >= query.from)
+      .filter((entry) => !query?.to || (entry.recorded_at || "") <= query.to)
+      .sort((left, right) => (right.recorded_at || "").localeCompare(left.recorded_at || ""));
+    const limit = Math.min(Math.max(query?.limit || 20, 1), 50);
+    const start = query?.cursor ? Math.max(0, Number(query.cursor)) : 0;
+    const items = matches.slice(start, start + limit);
+    return clone({ project_id: projectId, items, next_cursor: start + limit < matches.length ? String(start + limit) : null });
+  },
+  async createProjectLogbookNote(projectId, input: ProjectLogbookNoteInput): Promise<ProjectLogbookNoteResponse> {
+    await delay();
+    requireProject(projectId);
+    const id = `logbook-note-${Date.now()}`;
+    const entry: ProjectLogbookEntry = {
+      id, project_id: projectId, occurred_at: new Date().toISOString(), recorded_at: new Date().toISOString(),
+      actor: { kind: "user", label: currentUser()?.name || "Dashboard user", user_id: currentUser()?.id || null, agent_id: null, device_id: null, role: currentUser()?.role || null, model: null },
+      event_type: input.event_type, severity: input.severity, summary: input.summary, narrative_markdown: input.narrative_markdown,
+      references: input.references, correlation_id: input.correlation_id, payload: { source: "dashboard" }, supersedes_entry_id: input.supersedes_entry_id,
+    };
+    logbookEntries.unshift(entry);
+    return clone({ entry, replayed: false });
   },
   async getProjectWorkspaceBindings(projectId) {
     await delay();
