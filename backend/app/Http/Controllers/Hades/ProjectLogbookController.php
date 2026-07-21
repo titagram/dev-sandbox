@@ -122,7 +122,11 @@ final class ProjectLogbookController extends Controller
                 ],
             );
 
-            return response()->json(['code' => 'logbook_capability_not_allowed', 'message' => 'The write_project_logbook capability is not enabled for this Hades agent.'], Response::HTTP_FORBIDDEN);
+            return $this->error(
+                'logbook_capability_not_allowed',
+                'The write_project_logbook capability is not enabled for this Hades agent.',
+                Response::HTTP_FORBIDDEN,
+            );
         }
 
         try {
@@ -219,7 +223,7 @@ final class ProjectLogbookController extends Controller
 
     private function logbookError(ProjectLogbookException $exception): JsonResponse
     {
-        return response()->json(['code' => $exception->errorCode, 'message' => $exception->getMessage()], $exception->status);
+        return $this->error($exception->errorCode, $exception->getMessage(), $exception->status);
     }
 
     private function error(string $code, string $message, int $status): JsonResponse

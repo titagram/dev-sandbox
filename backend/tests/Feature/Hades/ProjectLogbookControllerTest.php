@@ -118,7 +118,7 @@ it('rejects unknown top-level fields before building a logbook command', functio
         'typo' => 'must not be silently discarded',
     ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
 
-    $this->call('POST', '/api/hades/v1/logbook/entries', server: [
+    $response = $this->call('POST', '/api/hades/v1/logbook/entries', server: [
         'CONTENT_TYPE' => 'application/json',
         'HTTP_ACCEPT' => 'application/json',
         'HTTP_AUTHORIZATION' => 'Bearer '.$agent['agent_token'],
@@ -126,7 +126,9 @@ it('rejects unknown top-level fields before building a logbook command', functio
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['typo']);
 
-    expect(DB::table('project_logbook_entries')->where('project_id', $agent['project_id'])->count())->toBe(0)
+    expect($response->json('message'))->toBe('The typo field is prohibited.')
+        ->and($response->json('error'))->toBeNull()
+        ->and(DB::table('project_logbook_entries')->where('project_id', $agent['project_id'])->count())->toBe(0)
         ->and(DB::table('audit_logs')->where('action', 'project_logbook.appended')->count())->toBe(0);
 });
 
@@ -134,9 +136,15 @@ it('rejects an agent without the explicit project logbook capability', function 
     $agent = projectLogbookRegisteredAgent([]);
     $binding = projectLogbookBindWorkspace($agent);
 
-    $this->postJson('/api/hades/v1/logbook/entries', projectLogbookAgentEntry($agent, $binding), projectLogbookHeaders($agent['agent_token']))
-        ->assertForbidden()
-        ->assertJsonPath('code', 'logbook_capability_not_allowed');
+    $response = $this->postJson('/api/hades/v1/logbook/entries', projectLogbookAgentEntry($agent, $binding), projectLogbookHeaders($agent['agent_token']))
+        ->assertForbidden();
+
+    expect($response->json())->toBe([
+        'error' => [
+            'code' => 'logbook_capability_not_allowed',
+            'message' => 'The write_project_logbook capability is not enabled for this Hades agent.',
+        ],
+    ]);
 
     $auditQuery = DB::table('audit_logs')->where('action', 'permission.denied');
 
@@ -156,6 +164,31 @@ it('rejects an agent without the explicit project logbook capability', function 
             'workspace_binding_id' => $binding['workspace_binding_id'],
             'hades_agent_id' => $agent['backend_agent_id'],
         ]);
+});
+
+it('returns domain conflicts in the standard Hades error envelope', function () {
+    $agent = projectLogbookRegisteredAgent(['write_project_logbook']);
+    $binding = projectLogbookBindWorkspace($agent);
+    $command = [
+        ...projectLogbookAgentEntry($agent, $binding),
+        'idempotency_key' => 'hades-domain-conflict-envelope-0001',
+    ];
+
+    $this->postJson('/api/hades/v1/logbook/entries', $command, projectLogbookHeaders($agent['agent_token']))
+        ->assertCreated();
+    $response = $this->postJson('/api/hades/v1/logbook/entries', [
+        ...$command,
+        'summary' => 'Changed content for the same idempotency key.',
+    ], projectLogbookHeaders($agent['agent_token']))
+        ->assertConflict();
+
+    expect($response->json())->toBe([
+        'error' => [
+            'code' => 'logbook_idempotency_conflict',
+            'message' => 'logbook_idempotency_conflict: The idempotency key was already used for different logbook content.',
+        ],
+    ])->and(DB::table('project_logbook_entries')->where('project_id', $agent['project_id'])->count())->toBe(1)
+        ->and(DB::table('audit_logs')->where('action', 'project_logbook.appended')->count())->toBe(1);
 });
 
 it('exposes dashboard logbook reads and allows dashboard notes without client-supplied actor or payload', function () {
