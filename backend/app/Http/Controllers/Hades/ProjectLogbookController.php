@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use JsonException;
 use stdClass;
 use Symfony\Component\HttpFoundation\Response;
@@ -64,7 +65,7 @@ final class ProjectLogbookController extends Controller
     public function store(Request $request): JsonResponse
     {
         $payloadIsJsonObject = $this->payloadIsJsonObject($request);
-        $validated = $request->validate([
+        $rules = [
             ...$this->scopeRules(),
             'event_type' => ['required', 'string', Rule::in(self::EVENT_TYPES)],
             'severity' => ['required', 'string', Rule::in(self::SEVERITIES)],
@@ -84,7 +85,18 @@ final class ProjectLogbookController extends Controller
             ],
             'supersedes_entry_id' => ['present', 'nullable', 'string', 'max:191'],
             'actor' => ['prohibited'], 'occurred_at' => ['prohibited'], 'recorded_at' => ['prohibited'],
-        ]);
+        ];
+        $unknownFields = array_diff(array_keys($request->json()->all()), array_keys($rules));
+        if ($unknownFields !== []) {
+            $errors = [];
+            foreach ($unknownFields as $field) {
+                $field = (string) $field;
+                $errors[$field] = ['The '.$field.' field is prohibited.'];
+            }
+
+            throw ValidationException::withMessages($errors);
+        }
+        $validated = $request->validate($rules);
         $auth = $request->attributes->get('hades_auth');
         $agent = $auth['agent'];
         $binding = $this->linkedBinding($agent, $validated['project_id'], $validated['workspace_binding_id']);

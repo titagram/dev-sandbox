@@ -108,6 +108,28 @@ it('rejects a JSON list payload at the Hades request boundary', function () {
     expect(DB::table('project_logbook_entries')->where('project_id', $agent['project_id'])->count())->toBe(0);
 });
 
+it('rejects unknown top-level fields before building a logbook command', function () {
+    $agent = projectLogbookRegisteredAgent(['write_project_logbook']);
+    $binding = projectLogbookBindWorkspace($agent);
+    $rawJson = json_encode([
+        ...projectLogbookAgentEntry($agent, $binding),
+        'idempotency_key' => 'hades-unknown-field-rejected-0001',
+        'payload' => (object) [],
+        'typo' => 'must not be silently discarded',
+    ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+    $this->call('POST', '/api/hades/v1/logbook/entries', server: [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_ACCEPT' => 'application/json',
+        'HTTP_AUTHORIZATION' => 'Bearer '.$agent['agent_token'],
+    ], content: $rawJson)
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['typo']);
+
+    expect(DB::table('project_logbook_entries')->where('project_id', $agent['project_id'])->count())->toBe(0)
+        ->and(DB::table('audit_logs')->where('action', 'project_logbook.appended')->count())->toBe(0);
+});
+
 it('rejects an agent without the explicit project logbook capability', function () {
     $agent = projectLogbookRegisteredAgent([]);
     $binding = projectLogbookBindWorkspace($agent);
