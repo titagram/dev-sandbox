@@ -59,7 +59,9 @@ jest.mock("sonner", () => ({ toast: { error: require("jest-mock").fn(), success:
 jest.mock("lucide-react", () => new Proxy({}, { get: () => () => null }), { virtual: true });
 
 import { api } from "@/api/devboardApi";
+import { toast } from "sonner";
 import ProjectLogbookPage from "./ProjectLogbookPage";
+import { ProjectLogbookActor } from "@/types/devboard";
 
 const page = {
   project_id: "project-1",
@@ -128,6 +130,7 @@ describe("ProjectLogbookPage", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     (api.getProjectLogbook as any).mockReset().mockResolvedValue(page);
+    (toast.success as any).mockReset();
   });
   afterEach(() => { act(() => root.unmount()); container.remove(); });
 
@@ -241,8 +244,11 @@ describe("ProjectLogbookPage", () => {
 
     await click(button("Save note"));
     expect(api.createProjectLogbookNote).toHaveBeenCalledTimes(2);
+    expect((api.createProjectLogbookNote as any).mock.calls[0][1].idempotency_key)
+      .toBe((api.createProjectLogbookNote as any).mock.calls[1][1].idempotency_key);
     expect(container.querySelector("#logbook-note-summary")).toBeNull();
     expect(container.textContent).toContain("Retryable note");
+    expect(toast.success).toHaveBeenCalledWith("Note saved");
   });
 
   it("provides programmatic labels for search, note summary, and note narrative", async () => {
@@ -283,7 +289,7 @@ describe("ProjectLogbookPage", () => {
   it("renders hostile Markdown without executable HTML or unsafe links", async () => {
     (api.getProjectLogbook as any).mockReset().mockResolvedValue({
       ...page,
-      items: [entry("log-hostile", "Untrusted narrative", '<script>alert(1)</script><img src=x onerror=alert(1)> [unsafe](javascript:alert(1)) [safe](https://example.test/docs)')],
+      items: [entry("log-hostile", "Untrusted narrative", "<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n[unsafe](javascript:alert(1)) [safe](https://example.test/docs) <https://example.test/autolink>")],
     });
 
     await act(async () => { root.render(<ProjectLogbookPage />); });
@@ -293,5 +299,39 @@ describe("ProjectLogbookPage", () => {
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector("a[href^='javascript:']")).toBeNull();
     expect(container.querySelector("a[href='https://example.test/docs']")).toBeTruthy();
+    expect(container.querySelector("a[href='https://example.test/autolink']")).toBeTruthy();
+  });
+
+  it("converts a browser-local date-time to an explicit UTC query timestamp", async () => {
+    await act(async () => { root.render(<ProjectLogbookPage />); });
+    await settle();
+
+    const localValue = "2026-07-20T08:30";
+    await changeInput(container.querySelector("input[aria-label='From time']") as HTMLInputElement, localValue);
+
+    expect(api.getProjectLogbook).toHaveBeenLastCalledWith("project-1", expect.objectContaining({
+      from: new Date(localValue).toISOString(),
+    }));
+  });
+
+  it("links a kanban task reference to the referenced task detail", async () => {
+    (api.getProjectLogbook as any).mockReset().mockResolvedValue({
+      ...page,
+      items: [{ ...page.items[0], references: [{ kind: "kanban_task", id: "task/42" }] }],
+    });
+
+    await act(async () => { root.render(<ProjectLogbookPage />); });
+    await settle();
+
+    expect(container.querySelector("a[href='/tasks/task%2F42']")).toBeTruthy();
+  });
+
+  it("accepts the numeric dashboard user id returned by the backend contract", () => {
+    const actor: ProjectLogbookActor = {
+      kind: "user", label: "Dashboard user", user_id: 42,
+      agent_id: null, device_id: null, role: "Developer", model: null,
+    };
+
+    expect(actor.user_id).toBe(42);
   });
 });

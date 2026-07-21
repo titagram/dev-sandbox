@@ -116,7 +116,7 @@ export type ProjectLogbookReferenceKind =
 export interface ProjectLogbookActor {
   kind: ProjectLogbookActorKind;
   label: string;
-  user_id: string | null;
+  user_id: number | null;
   agent_id: string | null;
   device_id: string | null;
   role: string | null;

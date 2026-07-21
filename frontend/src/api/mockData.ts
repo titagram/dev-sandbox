@@ -1084,7 +1084,7 @@ export const PROJECT_LOGBOOK_ENTRIES: ProjectLogbookEntry[] = [
   {
     id: "logbook-wiki-1", project_id: "proj-core",
     occurred_at: iso(160), recorded_at: iso(159),
-    actor: { kind: "user", label: "Avery Cole", user_id: "u-admin", agent_id: null, device_id: null, role: "Admin", model: null },
+    actor: { kind: "user", label: "Avery Cole", user_id: 1, agent_id: null, device_id: null, role: "Admin", model: null },
     event_type: "decision", severity: "warning", summary: "Kept manual architecture page pending verification",
     narrative_markdown: "Verification must be completed before this page becomes authoritative.",
     references: [{ kind: "wiki_page", id: "wiki-architecture" }], correlation_id: null, payload: { source: "dashboard" }, supersedes_entry_id: null,

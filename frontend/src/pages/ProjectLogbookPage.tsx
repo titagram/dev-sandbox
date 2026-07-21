@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { Boxes, FileText, Plus, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "@/api/devboardApi";
 import { useAuth } from "@/context/AuthContext";
 import { useApi } from "@/hooks/useApi";
@@ -24,8 +25,10 @@ const EVENT_TYPES: ProjectLogbookEventType[] = ["change", "creation", "import", 
 const ACTOR_KINDS: ProjectLogbookActorKind[] = ["user", "agent", "subagent", "system"];
 const SEVERITIES: ProjectLogbookSeverity[] = ["info", "warning", "error"];
 
-function escapeRawHtml(value: string): string {
-  return value.replace(/<\/?[A-Za-z][^>]*>/g, (tag) => tag.replaceAll("<", "&lt;").replaceAll(">", "&gt;"));
+function localDateTimeToUtcIso(value: string): string | undefined {
+  if (!value) return undefined;
+  const instant = new Date(value);
+  return Number.isNaN(instant.getTime()) ? undefined : instant.toISOString();
 }
 
 function labelFor(value: string): string {
@@ -46,7 +49,7 @@ function referenceTarget(projectId: string, reference: ProjectLogbookReference):
   const base = `/projects/${encodeURIComponent(projectId)}`;
   if (reference.kind === "wiki_page") return `${base}/wiki/${encodeURIComponent(reference.id)}`;
   if (reference.kind === "graph_import") return `${base}/graph`;
-  if (reference.kind === "kanban_task") return `${base}/kanban`;
+  if (reference.kind === "kanban_task") return `/tasks/${encodeURIComponent(reference.id)}`;
   if (reference.kind === "run") return `${base}/runs/${encodeURIComponent(reference.id)}`;
   return null;
 }
@@ -82,7 +85,7 @@ function TimelineEntry({ entry, projectId }: { entry: ProjectLogbookEntry; proje
         </time>
       </div>
       {entry.narrative_markdown && <div className="prose prose-sm mt-3 max-w-none text-muted-foreground dark:prose-invert">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeSanitize, { protocols: { href: ["http", "https", "mailto"], src: [] } }]]}>{escapeRawHtml(entry.narrative_markdown)}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeSanitize, { protocols: { href: ["http", "https", "mailto"], src: [] } }]]}>{entry.narrative_markdown}</ReactMarkdown>
       </div>}
       <References projectId={projectId} references={entry.references} />
       <div className="mt-3 rounded border border-border bg-muted/20">
@@ -99,18 +102,31 @@ function AddNote({ projectId, onAdded }: { projectId: string; onAdded: () => Pro
   const [narrative, setNarrative] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const idempotencyKeyRef = useRef<string | null>(null);
+  const newIdempotencyKey = () => typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
+    : `dashboard-note-${Date.now()}-${Math.random()}`;
+  const resetDraft = () => {
+    idempotencyKeyRef.current = null;
+    setOpen(false);
+    setSummary("");
+    setNarrative("");
+    setError(null);
+  };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!summary.trim()) return;
     setSaving(true);
     setError(null);
+    idempotencyKeyRef.current ??= newIdempotencyKey();
     try {
       await api.createProjectLogbookNote(projectId, {
         event_type: "note", severity: "info", summary: summary.trim(), narrative_markdown: narrative.trim() || null,
-        references: [], correlation_id: null, idempotency_key: typeof globalThis.crypto?.randomUUID === "function" ? globalThis.crypto.randomUUID() : `dashboard-note-${Date.now()}-${Math.random()}`, supersedes_entry_id: null,
+        references: [], correlation_id: null, idempotency_key: idempotencyKeyRef.current, supersedes_entry_id: null,
       });
       await onAdded();
-      setOpen(false); setSummary(""); setNarrative("");
+      toast.success("Note saved");
+      resetDraft();
     } catch (reason: any) {
       setError(reason?.message || "The note could not be saved.");
     } finally {
@@ -118,14 +134,21 @@ function AddNote({ projectId, onAdded }: { projectId: string; onAdded: () => Pro
     }
   };
   return <div>
-    <Button size="sm" type="button" onClick={() => { setError(null); setOpen((value) => !value); }} data-testid="add-logbook-note"><Plus className="mr-1.5 h-3.5 w-3.5" />Add note</Button>
+    <Button size="sm" type="button" onClick={() => {
+      if (open) resetDraft();
+      else {
+        idempotencyKeyRef.current = newIdempotencyKey();
+        setError(null);
+        setOpen(true);
+      }
+    }} data-testid="add-logbook-note"><Plus className="mr-1.5 h-3.5 w-3.5" />Add note</Button>
     {open && <form onSubmit={submit} className="mt-3 grid gap-2 rounded border border-border bg-card p-3">
       <label htmlFor="logbook-note-summary" className="text-xs font-medium text-foreground">Summary</label>
       <Input id="logbook-note-summary" value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="What should the project remember?" maxLength={240} autoFocus />
       <label htmlFor="logbook-note-narrative" className="text-xs font-medium text-foreground">Narrative</label>
       <Textarea id="logbook-note-narrative" value={narrative} onChange={(event) => setNarrative(event.target.value)} placeholder="Optional Markdown context" maxLength={8000} />
       {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
-      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving || !summary.trim()}>Save note</Button></div>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={resetDraft} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving || !summary.trim()}>Save note</Button></div>
     </form>}
   </div>;
 }
@@ -142,7 +165,7 @@ function ProjectLogbookTimeline({ projectId }: { projectId: string }) {
     types: type === ALL ? undefined : [type as ProjectLogbookEventType],
     actor: actor === ALL ? undefined : actor as ProjectLogbookActorKind,
     severity: severity === ALL ? undefined : severity as ProjectLogbookSeverity,
-    from: from || undefined, to: to || undefined, q: query.trim() || undefined, limit: 20,
+    from: localDateTimeToUtcIso(from), to: localDateTimeToUtcIso(to), q: query.trim() || undefined, limit: 20,
   }), [actor, from, query, severity, to, type]);
   const filterKey = JSON.stringify(filters);
   const activeQueryKey = `${projectId}:${filterKey}`;

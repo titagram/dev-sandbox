@@ -15,6 +15,52 @@ function scopeIds(response: DashboardGraphResponse): string[] {
 }
 
 describe("mockApi approved Hades Agent contracts", () => {
+  it("replays identical project logbook notes by project and idempotency key", async () => {
+    const input = {
+      event_type: "note" as const,
+      severity: "info" as const,
+      summary: "Mock idempotent note",
+      narrative_markdown: "One logical note.",
+      references: [],
+      correlation_id: null,
+      idempotency_key: "mock-logbook-idempotency-0001",
+      supersedes_entry_id: null,
+    };
+
+    const first = await mockApi.createProjectLogbookNote("proj-core", input);
+    const replay = await mockApi.createProjectLogbookNote("proj-core", input);
+    const page = await mockApi.getProjectLogbook("proj-core", { q: input.summary });
+
+    expect(first.replayed).toBe(false);
+    expect(replay).toEqual({ entry: first.entry, replayed: true });
+    expect(page.items.filter((entry) => entry.id === first.entry.id)).toHaveLength(1);
+    await expect(mockApi.createProjectLogbookNote("proj-core", { ...input, summary: "Different content" }))
+      .rejects.toEqual(expect.objectContaining({ message: "logbook_idempotency_conflict", code: "409" }));
+  });
+
+  it("compares project logbook time filters as instants rather than ISO strings", async () => {
+    const created = await mockApi.createProjectLogbookNote("proj-core", {
+      event_type: "note",
+      severity: "info",
+      summary: "Offset-aware mock date comparison",
+      narrative_markdown: null,
+      references: [],
+      correlation_id: null,
+      idempotency_key: "mock-logbook-time-filter-0001",
+      supersedes_entry_id: null,
+    });
+    const recordedAt = Date.parse(created.entry.recorded_at!);
+    const oneMinuteBeforeAtPlusTwo = new Date(recordedAt - 60_000 + 120 * 60_000)
+      .toISOString()
+      .replace("Z", "+02:00");
+    const response = await mockApi.getProjectLogbook("proj-core", {
+      q: "Offset-aware mock date comparison",
+      from: oneMinuteBeforeAtPlusTwo,
+    });
+
+    expect(response.items.map((entry) => entry.id)).toContain(created.entry.id);
+  });
+
   it("serves every bounded dashboard graph query through opaque handles", async () => {
     const scopes = await mockApi.queryProjectGraph("proj-core", { type: "scopes", limit: 1 });
     expect(scopes).toEqual(expect.objectContaining({

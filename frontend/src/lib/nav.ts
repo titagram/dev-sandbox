@@ -50,7 +50,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "memory", label: "Memory", path: "/memory", icon: Brain, roles: ["admin", "pm", "developer"], readOnlyRoles: ["sysadmin"], hideReadOnlyFromNav: true },
   { key: "wiki", label: "Wiki", path: "/wiki", icon: BookText, roles: ["admin", "pm", "developer"] },
   { key: "graph", label: "Graph", path: "/graph", icon: Network, roles: ["admin", "pm", "developer"] },
-  { key: "logbook", label: "Logbook", path: "/logbook", icon: NotebookText, roles: ["admin", "pm", "developer"] },
+  { key: "logbook", label: "Logbook", path: "/logbook", icon: NotebookText, roles: ["admin", "pm", "developer"], readOnlyRoles: ["sysadmin"] },
   { key: "engineering", label: "Engineering", path: "/engineering", icon: Wrench, roles: ["admin", "developer", "sysadmin"] },
   { key: "settings", label: "Settings", path: "/admin", icon: Settings, roles: ["admin", "sysadmin"] },
   { key: "hades", label: "Hades", path: "/admin/hades", icon: Workflow, roles: ["admin"] },
