@@ -65,6 +65,38 @@ it('replays a semantically identical project idempotency key and rejects changed
     ))->toThrow(ProjectLogbookException::class, 'logbook_idempotency_conflict');
 });
 
+it('treats an empty PHP payload array as an empty JSON object but rejects non-empty lists', function () {
+    [$projectId] = logbookProject('empty-object');
+    $service = app(ProjectLogbookService::class);
+    $command = [
+        ...logbookCommand($projectId, 'stable-key-empty-object'),
+        'payload' => [],
+    ];
+
+    $created = $service->append($command, logbookAgentActor());
+    $replayed = $service->append($command, logbookAgentActor());
+    $storedJson = json_decode(
+        (string) DB::table('project_logbook_entries')->where('id', $created['entry']->id)->value('payload'),
+        false,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+
+    expect($created['replayed'])->toBeFalse()
+        ->and($created['entry']->payload)->toBe([])
+        ->and($replayed['replayed'])->toBeTrue()
+        ->and($replayed['entry']->id)->toBe($created['entry']->id)
+        ->and($storedJson)->toBeInstanceOf(stdClass::class)
+        ->and(get_object_vars($storedJson))->toBe([])
+        ->and(DB::table('project_logbook_entries')->where('project_id', $projectId)->count())->toBe(1)
+        ->and(DB::table('audit_logs')->where('action', 'project_logbook.appended')->where('target_id', $created['entry']->id)->count())->toBe(1);
+
+    expect(fn () => $service->append([
+        ...logbookCommand($projectId, 'stable-key-non-empty-list'),
+        'payload' => ['list-item'],
+    ], logbookAgentActor()))->toThrow(ProjectLogbookException::class, 'Payload must be a JSON object.');
+});
+
 it('rejects references owned by another project and unsafe file references', function () {
     [$projectId] = logbookProject('owner');
     [, $foreignRepositoryId] = logbookProject('foreign');

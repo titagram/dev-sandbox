@@ -35,6 +35,79 @@ it('lets an explicitly capable linked Hades agent append a project logbook entry
         ->toBe($agent['backend_agent_id']);
 });
 
+it('preserves an empty payload object through Hades storage replay and dashboard serializers', function () {
+    $agent = projectLogbookRegisteredAgent(['write_project_logbook']);
+    $binding = projectLogbookBindWorkspace($agent);
+    $command = [
+        ...projectLogbookAgentEntry($agent, $binding),
+        'idempotency_key' => 'hades-empty-object-payload-0001',
+        'payload' => (object) [],
+    ];
+    $rawJson = json_encode($command, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    $server = [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_ACCEPT' => 'application/json',
+        'HTTP_AUTHORIZATION' => 'Bearer '.$agent['agent_token'],
+    ];
+
+    $created = $this->call('POST', '/api/hades/v1/logbook/entries', server: $server, content: $rawJson)
+        ->assertCreated()
+        ->assertJsonPath('replayed', false);
+    $entryId = $created->json('entry.id');
+    $createdJson = json_decode($created->getContent(), false, 512, JSON_THROW_ON_ERROR);
+    $storedJson = json_decode(
+        (string) DB::table('project_logbook_entries')->where('id', $entryId)->value('payload'),
+        false,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+
+    expect($createdJson->entry->payload)->toBeInstanceOf(stdClass::class)
+        ->and(get_object_vars($createdJson->entry->payload))->toBe([])
+        ->and($storedJson)->toBeInstanceOf(stdClass::class)
+        ->and(get_object_vars($storedJson))->toBe([]);
+
+    $replayed = $this->call('POST', '/api/hades/v1/logbook/entries', server: $server, content: $rawJson)
+        ->assertOk()
+        ->assertJsonPath('entry.id', $entryId)
+        ->assertJsonPath('replayed', true);
+    $replayedJson = json_decode($replayed->getContent(), false, 512, JSON_THROW_ON_ERROR);
+
+    expect($replayedJson->entry->payload)->toBeInstanceOf(stdClass::class)
+        ->and(DB::table('project_logbook_entries')->where('id', $entryId)->count())->toBe(1)
+        ->and(DB::table('audit_logs')->where('action', 'project_logbook.appended')->where('target_id', $entryId)->count())->toBe(1);
+
+    $dashboardUser = projectLogbookDashboardUser('Developer');
+    $list = $this->actingAs($dashboardUser)->getJson('/api/dashboard/projects/'.$agent['project_id'].'/logbook')->assertOk();
+    $detail = $this->actingAs($dashboardUser)->getJson('/api/dashboard/projects/'.$agent['project_id'].'/logbook/'.$entryId)->assertOk();
+    $listJson = json_decode($list->getContent(), false, 512, JSON_THROW_ON_ERROR);
+    $detailJson = json_decode($detail->getContent(), false, 512, JSON_THROW_ON_ERROR);
+
+    expect($listJson->items[0]->payload)->toBeInstanceOf(stdClass::class)
+        ->and($detailJson->entry->payload)->toBeInstanceOf(stdClass::class);
+});
+
+it('rejects a JSON list payload at the Hades request boundary', function () {
+    $agent = projectLogbookRegisteredAgent(['write_project_logbook']);
+    $binding = projectLogbookBindWorkspace($agent);
+    $rawJson = json_encode([
+        ...projectLogbookAgentEntry($agent, $binding),
+        'idempotency_key' => 'hades-list-payload-rejected-0001',
+        'payload' => [],
+    ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+
+    $this->call('POST', '/api/hades/v1/logbook/entries', server: [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_ACCEPT' => 'application/json',
+        'HTTP_AUTHORIZATION' => 'Bearer '.$agent['agent_token'],
+    ], content: $rawJson)
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['payload'])
+        ->assertJsonPath('errors.payload.0', 'The payload field must be a JSON object.');
+
+    expect(DB::table('project_logbook_entries')->where('project_id', $agent['project_id'])->count())->toBe(0);
+});
+
 it('rejects an agent without the explicit project logbook capability', function () {
     $agent = projectLogbookRegisteredAgent([]);
     $binding = projectLogbookBindWorkspace($agent);

@@ -91,7 +91,7 @@ final class ProjectLogbookService
                     'correlation_id' => $normalized['correlation_id'],
                     'idempotency_key' => $normalized['idempotency_key'],
                     'request_sha256' => $digest,
-                    'payload' => $normalized['payload'],
+                    'payload' => $normalized['payload'] === [] ? (object) [] : $normalized['payload'],
                     'supersedes_entry_id' => $normalized['supersedes_entry_id'],
                 ]);
 
@@ -234,7 +234,7 @@ final class ProjectLogbookService
             throw ProjectLogbookException::invalid('Payload must be an object.');
         }
         $payload = $this->canonicalValue($command['payload'], 0);
-        if (! is_array($payload) || array_is_list($payload)) {
+        if (! is_array($payload) || ($payload !== [] && array_is_list($payload))) {
             throw ProjectLogbookException::invalid('Payload must be a JSON object.');
         }
 
@@ -270,8 +270,12 @@ final class ProjectLogbookService
         ];
 
         try {
+            $canonicalValue = $this->canonicalValue(['actor' => $actor->toArray(), 'command' => $normalized], 0);
+            if ($payload === []) {
+                $canonicalValue['command']['payload'] = (object) [];
+            }
             $canonical = json_encode(
-                $this->canonicalValue(['actor' => $actor->toArray(), 'command' => $normalized], 0),
+                $canonicalValue,
                 JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
             );
         } catch (JsonException $exception) {

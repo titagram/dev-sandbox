@@ -12,6 +12,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use JsonException;
+use stdClass;
 use Symfony\Component\HttpFoundation\Response;
 
 final class ProjectLogbookController extends Controller
@@ -61,6 +63,7 @@ final class ProjectLogbookController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        $payloadIsJsonObject = $this->payloadIsJsonObject($request);
         $validated = $request->validate([
             ...$this->scopeRules(),
             'event_type' => ['required', 'string', Rule::in(self::EVENT_TYPES)],
@@ -70,7 +73,15 @@ final class ProjectLogbookController extends Controller
             'references' => ['present', 'array', 'list', 'max:80'],
             'correlation_id' => ['present', 'nullable', 'string', 'max:191'],
             'idempotency_key' => ['required', 'string', 'min:16', 'max:128'],
-            'payload' => ['present', 'array'],
+            'payload' => [
+                'present',
+                'array',
+                static function (string $attribute, mixed $value, \Closure $fail) use ($payloadIsJsonObject): void {
+                    if (! $payloadIsJsonObject) {
+                        $fail('The payload field must be a JSON object.');
+                    }
+                },
+            ],
             'supersedes_entry_id' => ['present', 'nullable', 'string', 'max:191'],
             'actor' => ['prohibited'], 'occurred_at' => ['prohibited'], 'recorded_at' => ['prohibited'],
         ]);
@@ -172,13 +183,26 @@ final class ProjectLogbookController extends Controller
         return is_array($decoded) && in_array('write_project_logbook', $decoded, true);
     }
 
+    private function payloadIsJsonObject(Request $request): bool
+    {
+        try {
+            $body = json_decode($request->getContent(), false, 64, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return false;
+        }
+
+        return $body instanceof stdClass
+            && property_exists($body, 'payload')
+            && $body->payload instanceof stdClass;
+    }
+
     /** @return array<string, mixed> */
     private function entryPayload(ProjectLogbookEntry $entry): array
     {
         return ['id' => $entry->id, 'project_id' => $entry->project_id, 'occurred_at' => $entry->occurred_at?->toISOString(), 'recorded_at' => $entry->recorded_at?->toISOString(),
             'actor' => ['kind' => $entry->actor_kind, 'label' => $entry->actor_label, 'user_id' => $entry->actor_user_id, 'agent_id' => $entry->actor_agent_id, 'device_id' => $entry->actor_device_id, 'role' => $entry->actor_role, 'model' => $entry->actor_model],
             'event_type' => $entry->event_type, 'severity' => $entry->severity, 'summary' => $entry->summary, 'narrative_markdown' => $entry->narrative_markdown,
-            'references' => $entry->references, 'correlation_id' => $entry->correlation_id, 'payload' => $entry->payload, 'supersedes_entry_id' => $entry->supersedes_entry_id];
+            'references' => $entry->references, 'correlation_id' => $entry->correlation_id, 'payload' => $entry->payload === [] ? (object) [] : $entry->payload, 'supersedes_entry_id' => $entry->supersedes_entry_id];
     }
 
     private function logbookError(ProjectLogbookException $exception): JsonResponse
